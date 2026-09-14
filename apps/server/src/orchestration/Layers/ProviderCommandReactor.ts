@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  MessageId,
   type ModelSelection,
   type OrchestrationEvent,
   ProviderDriverKind,
@@ -10,7 +11,7 @@ import {
   ThreadId,
   type ProviderSession,
   type RuntimeMode,
-  type TurnId,
+  TurnId,
 } from "@t3tools/contracts";
 import { assistantCitationsToPlainText } from "@t3tools/shared/assistantCitations";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
@@ -26,6 +27,8 @@ import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
@@ -43,6 +46,7 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import { loadDelegationPermissionEnvelope } from "../../provider/DelegationPermissionEnvelope.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -116,6 +120,9 @@ const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
 const HANDLED_TURN_START_KEY_MAX = 10_000;
 const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
+const DELEGATION_CANCEL_REQUESTED_ACTIVITY = "delegation.cancel-requested";
+const DELEGATION_CANCELLED_ACTIVITY = "delegation.cancelled";
+const DELEGATION_PROVIDER_BOUND_ACTIVITY = "delegation.provider-bound";
 
 function providerErrorLabel(value: string | undefined): string {
   const normalized = value?.trim();
@@ -214,6 +221,7 @@ const make = Effect.gen(function* () {
   const providerRegistry = yield* ProviderRegistry;
   const gitWorkflow = yield* GitWorkflowService;
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
@@ -273,6 +281,7 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
+    readonly code?: "provider_configuration_changed";
   }) =>
     Effect.all({
       commandId: serverCommandId("provider-failure-activity"),
@@ -291,6 +300,7 @@ const make = Effect.gen(function* () {
             payload: {
               detail: input.detail,
               ...(input.requestId ? { requestId: input.requestId } : {}),
+              ...(input.code ? { code: input.code } : {}),
             },
             turnId: input.turnId,
             createdAt: input.createdAt,
@@ -299,6 +309,106 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
+
+  const loadDelegationActivities = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const detail = yield* projectionSnapshotQuery.getThreadDetailById(threadId, {
+      activityKinds: [
+        DELEGATION_CANCEL_REQUESTED_ACTIVITY,
+        DELEGATION_CANCELLED_ACTIVITY,
+        DELEGATION_PROVIDER_BOUND_ACTIVITY,
+      ],
+      activityHistory: "complete",
+    });
+    return Option.isSome(detail) ? detail.value.activities : [];
+  });
+
+  const hasDelegationCancellationIntent = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    messageId: MessageId,
+  ) {
+    const activities = yield* loadDelegationActivities(threadId);
+    return activities.some(
+      (activity) =>
+        activity.kind === DELEGATION_CANCEL_REQUESTED_ACTIVITY &&
+        Predicate.isObject(activity.payload) &&
+        activity.payload.taskId === threadId &&
+        activity.payload.delegatedMessageId === messageId,
+    );
+  });
+
+  const appendDelegationCancelled = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly turnId: TurnId | null;
+    readonly createdAt: string;
+    readonly reason: "provider-interrupted" | "provider-not-active" | "start-suppressed";
+  }) {
+    const id = `server:delegation-cancelled:${input.messageId}`;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId: input.threadId,
+      activity: {
+        id: EventId.make(id),
+        tone: "info",
+        kind: DELEGATION_CANCELLED_ACTIVITY,
+        summary: "Delegated task cancelled",
+        payload: {
+          version: 1,
+          taskId: input.threadId,
+          delegatedMessageId: input.messageId,
+          delegatedTurnId: input.turnId,
+          reason: input.reason,
+        },
+        turnId: input.turnId,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const appendDelegationProviderBound = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly providerConfigFingerprint: string;
+    readonly createdAt: string;
+  }) {
+    const session = (yield* providerService.listSessions()).find(
+      (candidate) => candidate.threadId === input.threadId,
+    );
+    if (session?.providerInstanceId === undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(session?.provider),
+        method: "thread.turn.start",
+        detail: `Delegated thread '${input.threadId}' has no runtime-bound provider instance.`,
+      });
+    }
+    const instance = yield* providerService.getInstanceInfo(session.providerInstanceId);
+    const id = `server:delegation-provider-bound:${input.messageId}`;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId: input.threadId,
+      activity: {
+        id: EventId.make(id),
+        tone: "info",
+        kind: DELEGATION_PROVIDER_BOUND_ACTIVITY,
+        summary: "Delegated task provider bound",
+        payload: {
+          version: 1,
+          taskId: input.threadId,
+          delegatedMessageId: input.messageId,
+          providerInstanceId: session.providerInstanceId,
+          driverKind: instance.driverKind,
+          providerConfigFingerprint: input.providerConfigFingerprint,
+          observedAt: input.createdAt,
+        },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
 
   const cancelTurnsAfterCompaction = Effect.fn("cancelTurnsAfterCompaction")(function* (
     threadId: ThreadId,
@@ -551,12 +661,88 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const verifyDelegationConfigForThread = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly modelSelection?: ModelSelection;
+    readonly interactionMode?: "default" | "plan";
+    readonly expectedFingerprint?: string;
+  }) {
+    if (input.expectedFingerprint === undefined) return;
+    const thread = yield* resolveThreadShell(input.threadId);
+    if (!thread) {
+      return yield* Effect.die(
+        new Error(`Thread '${input.threadId}' was not found in read model.`),
+      );
+    }
+    const project = yield* resolveProject(thread.projectId);
+    if (!project) {
+      return yield* new ProviderAdapterRequestError({
+        provider: "delegated provider",
+        method: "thread.turn.start",
+        detail: `provider_configuration_changed: project '${thread.projectId}' is unavailable.`,
+      });
+    }
+    const settings = yield* projectSettingsForThread(input.threadId).pipe(
+      Effect.mapError(
+        () =>
+          new ProviderAdapterRequestError({
+            provider: "delegated provider",
+            method: "thread.turn.start",
+            detail: "provider_configuration_changed: effective provider settings are unreadable.",
+          }),
+      ),
+    );
+    const modelSelection = input.modelSelection ?? thread.modelSelection;
+    const instanceConfig = settings.providerInstances[modelSelection.instanceId];
+    if (instanceConfig === undefined) {
+      return yield* new ProviderAdapterRequestError({
+        provider: String(modelSelection.instanceId),
+        method: "thread.turn.start",
+        detail: `provider_configuration_changed: provider instance '${modelSelection.instanceId}' is no longer configured.`,
+      });
+    }
+    const capabilities = new Set<string>(["pull-requests", "orchestration"]);
+    if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+    if (settings.enableAgentDeviceAccess) capabilities.add("device");
+    const worktreePath = thread.worktreePath ?? project.workspaceRoot;
+    const permissionEnvelope = yield* loadDelegationPermissionEnvelope({
+      driverKind: instanceConfig.driver,
+      runtimeMode: thread.runtimeMode,
+      interactionMode: input.interactionMode ?? thread.interactionMode,
+      instanceConfig,
+      environment: process.env,
+      workspaceRoot: project.workspaceRoot,
+      worktreePath,
+      branch: thread.branch,
+      t3McpCapabilities: capabilities,
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+    if (
+      permissionEnvelope.status !== "verified" ||
+      permissionEnvelope.fingerprint !== input.expectedFingerprint
+    ) {
+      const reason =
+        permissionEnvelope.status === "verified"
+          ? "the effective provider configuration changed after delegation was accepted"
+          : permissionEnvelope.reason;
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabel(instanceConfig.driver),
+        method: "thread.turn.start",
+        detail: `provider_configuration_changed: ${reason}.`,
+      });
+    }
+  });
+
   const ensureSessionForThread = Effect.fn("ensureSessionForThread")(function* (
     threadId: ThreadId,
     createdAt: string,
     options?: {
       readonly modelSelection?: ModelSelection;
       readonly pendingTurnStart?: boolean;
+      readonly interactionMode?: "default" | "plan";
+      readonly delegationConfigFingerprint?: string;
     },
   ) {
     const thread = yield* resolveThreadShell(threadId);
@@ -699,18 +885,31 @@ const make = Effect.gen(function* () {
       readonly resumeCursor?: unknown;
       readonly provider?: ProviderDriverKind;
     }) =>
-      providerService
-        .startSession(threadId, {
-          threadId,
-          ...(preferredProvider ? { provider: preferredProvider } : {}),
-          providerInstanceId: desiredInstanceId,
-          ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
-          ...(thread.title ? { title: thread.title } : {}),
-          modelSelection: desiredModelSelection,
-          ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-          runtimeMode: desiredRuntimeMode,
-        })
-        .pipe(Effect.tap(() => refreshWorkspaceSnapshot));
+      verifyDelegationConfigForThread({
+        threadId,
+        modelSelection: desiredModelSelection,
+        ...(options?.interactionMode === undefined
+          ? {}
+          : { interactionMode: options.interactionMode }),
+        ...(options?.delegationConfigFingerprint === undefined
+          ? {}
+          : { expectedFingerprint: options.delegationConfigFingerprint }),
+      }).pipe(
+        Effect.andThen(
+          providerService
+            .startSession(threadId, {
+              threadId,
+              ...(preferredProvider ? { provider: preferredProvider } : {}),
+              providerInstanceId: desiredInstanceId,
+              ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
+              ...(thread.title ? { title: thread.title } : {}),
+              modelSelection: desiredModelSelection,
+              ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+              runtimeMode: desiredRuntimeMode,
+            })
+            .pipe(Effect.tap(() => refreshWorkspaceSnapshot)),
+        ),
+      );
 
     const bindSessionToThread = (session: ProviderSession) =>
       Effect.gen(function* () {
@@ -820,6 +1019,7 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
+    readonly delegationConfigFingerprint?: string;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThreadShell(input.threadId);
@@ -830,6 +1030,10 @@ const make = Effect.gen(function* () {
     }
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.delegationConfigFingerprint !== undefined
+        ? { delegationConfigFingerprint: input.delegationConfigFingerprint }
+        : {}),
       pendingTurnStart: true,
     });
     if (input.modelSelection !== undefined) {
@@ -864,6 +1068,15 @@ const make = Effect.gen(function* () {
             }
           : requestedModelSelection
         : input.modelSelection;
+
+    yield* verifyDelegationConfigForThread({
+      threadId: input.threadId,
+      modelSelection: requestedModelSelection,
+      ...(input.interactionMode === undefined ? {} : { interactionMode: input.interactionMode }),
+      ...(input.delegationConfigFingerprint === undefined
+        ? {}
+        : { expectedFingerprint: input.delegationConfigFingerprint }),
+    });
 
     return {
       threadId: input.threadId,
@@ -1224,7 +1437,11 @@ const make = Effect.gen(function* () {
       return;
     }
     const { message, hasOtherUserMessages } = turnStart.value;
-    const appendTurnStartFailure = (summary: string, detail: string) =>
+    const appendTurnStartFailure = (
+      summary: string,
+      detail: string,
+      code?: "provider_configuration_changed",
+    ) =>
       appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
@@ -1233,12 +1450,26 @@ const make = Effect.gen(function* () {
         turnId: null,
         createdAt: event.payload.createdAt,
         requestId: event.payload.messageId,
+        ...(code === undefined ? {} : { code }),
       });
     if (resumed && turnsAfterCompaction.get(event.payload.threadId) !== resumed.queued) {
       return yield* appendTurnStartFailure(
         "Queued message was not sent",
         "The queued message was canceled before it could resume. Send it again to continue.",
       );
+    }
+    if (
+      event.payload.delegationConfigFingerprint !== undefined &&
+      (yield* hasDelegationCancellationIntent(event.payload.threadId, event.payload.messageId))
+    ) {
+      yield* appendDelegationCancelled({
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+        reason: "start-suppressed",
+      });
+      return;
     }
 
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
@@ -1251,7 +1482,15 @@ const make = Effect.gen(function* () {
         detail,
         createdAt: event.payload.createdAt,
       }).pipe(
-        Effect.flatMap(() => appendTurnStartFailure("Provider turn start failed", detail)),
+        Effect.flatMap(() =>
+          appendTurnStartFailure(
+            "Provider turn start failed",
+            detail,
+            detail.includes("provider_configuration_changed")
+              ? "provider_configuration_changed"
+              : undefined,
+          ),
+        ),
         Effect.asVoid,
       );
     };
@@ -1422,13 +1661,20 @@ const make = Effect.gen(function* () {
         () => void compactingThreadIds.delete(event.payload.threadId),
       );
       yield* Effect.gen(function* () {
-        yield* ensureSessionForThread(
-          event.payload.threadId,
-          event.payload.createdAt,
-          event.payload.modelSelection !== undefined
-            ? { modelSelection: event.payload.modelSelection, pendingTurnStart: true }
-            : { pendingTurnStart: true },
-        );
+        yield* ensureSessionForThread(event.payload.threadId, event.payload.createdAt, {
+          ...(event.payload.modelSelection === undefined
+            ? {}
+            : { modelSelection: event.payload.modelSelection }),
+          ...(event.payload.interactionMode === undefined
+            ? {}
+            : { interactionMode: event.payload.interactionMode }),
+          ...(event.payload.delegationConfigFingerprint === undefined
+            ? {}
+            : {
+                delegationConfigFingerprint: event.payload.delegationConfigFingerprint,
+              }),
+          pendingTurnStart: true,
+        });
         compactionSessionEnsured = true;
         if (event.payload.modelSelection !== undefined) {
           threadModelSelections.set(event.payload.threadId, event.payload.modelSelection);
@@ -1478,6 +1724,9 @@ const make = Effect.gen(function* () {
         ? { modelSelection: event.payload.modelSelection }
         : {}),
       interactionMode: event.payload.interactionMode,
+      ...(event.payload.delegationConfigFingerprint === undefined
+        ? {}
+        : { delegationConfigFingerprint: event.payload.delegationConfigFingerprint }),
       createdAt: event.payload.createdAt,
     }).pipe(
       Effect.map(Option.some),
@@ -1486,6 +1735,19 @@ const make = Effect.gen(function* () {
 
     if (Option.isNone(sendTurnRequest)) {
       return;
+    }
+
+    if (event.payload.delegationConfigFingerprint !== undefined) {
+      const providerBound = yield* appendDelegationProviderBound({
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        providerConfigFingerprint: event.payload.delegationConfigFingerprint,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(false))),
+      );
+      if (!providerBound) return;
     }
 
     const send = providerService
@@ -1502,16 +1764,57 @@ const make = Effect.gen(function* () {
   const processTurnInterruptRequested = Effect.fn("processTurnInterruptRequested")(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
   ) {
-    yield* cancelTurnsAfterCompaction(
-      event.payload.threadId,
-      "Context compaction was interrupted. Send this message again to continue.",
-    );
     const thread = yield* resolveThreadShell(event.payload.threadId);
     if (!thread) {
       return;
     }
     const session = thread.session;
+    const cancellationIntent = (yield* loadDelegationActivities(event.payload.threadId)).findLast(
+      (activity) =>
+        activity.kind === DELEGATION_CANCEL_REQUESTED_ACTIVITY &&
+        Predicate.isObject(activity.payload) &&
+        typeof activity.payload.delegatedMessageId === "string" &&
+        ((event.payload.pendingMessageId !== undefined &&
+          activity.payload.delegatedMessageId === event.payload.pendingMessageId) ||
+          (event.payload.turnId !== undefined &&
+            activity.payload.delegatedTurnId === event.payload.turnId)),
+    );
+    const delegatedMessageId =
+      cancellationIntent !== undefined && Predicate.isObject(cancellationIntent.payload)
+        ? MessageId.make(String(cancellationIntent.payload.delegatedMessageId))
+        : undefined;
+    const delegatedTurnId =
+      event.payload.turnId ??
+      (cancellationIntent !== undefined &&
+      Predicate.isObject(cancellationIntent.payload) &&
+      typeof cancellationIntent.payload.delegatedTurnId === "string"
+        ? TurnId.make(cancellationIntent.payload.delegatedTurnId)
+        : null);
+    const delegatedCancellation = delegatedMessageId !== undefined;
+    if (
+      event.payload.turnId !== undefined &&
+      session?.activeTurnId !== event.payload.turnId &&
+      !delegatedCancellation
+    ) {
+      return;
+    }
+    if (event.payload.pendingMessageId !== undefined && session?.activeTurnId != null) {
+      return;
+    }
+    yield* cancelTurnsAfterCompaction(
+      event.payload.threadId,
+      "Context compaction was interrupted. Send this message again to continue.",
+    );
     if (!session || session.status === "stopped") {
+      if (delegatedCancellation && delegatedMessageId !== undefined) {
+        return yield* appendDelegationCancelled({
+          threadId: event.payload.threadId,
+          messageId: delegatedMessageId,
+          turnId: delegatedTurnId,
+          createdAt: event.payload.createdAt,
+          reason: delegatedTurnId === null ? "start-suppressed" : "provider-not-active",
+        });
+      }
       return yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.interrupt.failed",
@@ -1520,6 +1823,33 @@ const make = Effect.gen(function* () {
         turnId: event.payload.turnId ?? null,
         createdAt: event.payload.createdAt,
       });
+    }
+
+    if (delegatedCancellation && delegatedMessageId !== undefined) {
+      return yield* providerService.interruptTurn({ threadId: event.payload.threadId }).pipe(
+        Effect.matchCauseEffect({
+          onFailure: (cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+            return appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.turn.interrupt.failed",
+              summary: "Provider turn interrupt failed",
+              detail: formatFailureDetail(cause),
+              turnId: delegatedTurnId,
+              createdAt: event.payload.createdAt,
+              ...(event.commandId === null ? {} : { requestId: event.commandId }),
+            });
+          },
+          onSuccess: () =>
+            appendDelegationCancelled({
+              threadId: event.payload.threadId,
+              messageId: delegatedMessageId,
+              turnId: delegatedTurnId,
+              createdAt: event.payload.createdAt,
+              reason: "provider-interrupted",
+            }),
+        }),
+      );
     }
 
     const recoverInterruptFailure = (cause: Cause.Cause<unknown>) => {

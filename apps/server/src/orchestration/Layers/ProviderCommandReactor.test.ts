@@ -10,6 +10,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
+  type ProviderInstanceConfig,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
@@ -45,6 +46,7 @@ import {
   ProviderWorkspaceMissingError,
   type ProviderServiceError,
 } from "../../provider/Errors.ts";
+import { loadDelegationPermissionEnvelope } from "../../provider/DelegationPermissionEnvelope.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -120,6 +122,7 @@ describe("ProviderCommandReactor", () => {
     | OrchestrationEngineService
     | ProviderCommandReactor
     | ProjectionSnapshotQuery
+    | ServerSettingsService
     | SqlClient.SqlClient,
     unknown
   > | null = null;
@@ -203,6 +206,20 @@ describe("ProviderCommandReactor", () => {
     const modelSelection = input?.threadModelSelection ?? {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5-codex",
+    };
+    const providerDriverKind = ProviderDriverKind.make(
+      String(modelSelection.instanceId).startsWith("claude")
+        ? "claudeAgent"
+        : String(modelSelection.instanceId).startsWith("antigravity")
+          ? "antigravity"
+          : "codex",
+    );
+    const providerHomePath = NodePath.join(baseDir, "provider-home");
+    NodeFS.mkdirSync(providerHomePath, { recursive: true });
+    const providerInstanceConfig: ProviderInstanceConfig = {
+      driver: providerDriverKind,
+      enabled: true,
+      config: { homePath: providerHomePath, launchArgs: "" },
     };
     const startSessionEffect = input?.startSessionEffect;
     const startSession = vi.fn((_: unknown, input: unknown) => {
@@ -490,7 +507,11 @@ describe("ProviderCommandReactor", () => {
           generateThreadTitle,
         }),
       ),
-      Layer.provideMerge(ServerSettingsService.layerTest()),
+      Layer.provideMerge(
+        ServerSettingsService.layerTest({
+          providerInstances: { [modelSelection.instanceId]: providerInstanceConfig },
+        }),
+      ),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
@@ -500,6 +521,7 @@ describe("ProviderCommandReactor", () => {
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const snapshotQuery = await runtime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
+    const serverSettings = await runtime.runPromise(Effect.service(ServerSettingsService));
     const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
 
     await Effect.runPromise(
@@ -625,6 +647,8 @@ describe("ProviderCommandReactor", () => {
       generateBranchName,
       generateThreadTitle,
       runtimeSessions,
+      providerInstanceConfig,
+      serverSettings,
       stateDir,
       drain,
       startReactor,
@@ -3621,6 +3645,213 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
     });
+  });
+
+  it("rejects an interrupt pinned to a turn that is no longer active", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-set-newer-turn"),
+        threadId: ThreadId.make("thread-1"),
+        session: {
+          threadId: ThreadId.make("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-2"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await expect(
+      Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-stale-turn-interrupt"),
+          threadId: ThreadId.make("thread-1"),
+          turnId: asTurnId("turn-1"),
+          createdAt: now,
+        }),
+      ),
+    ).rejects.toThrow("turn turn-1 is not the active turn");
+    await harness.drain();
+    expect(harness.interruptTurn).not.toHaveBeenCalled();
+  });
+
+  it("interrupts only the exact queued message before a provider turn id is bound", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const messageId = asMessageId("queued-delegated-message");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-queued-delegated-turn"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId,
+          role: "user",
+          text: "perform delegated work",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-interrupt-queued-delegated-turn"),
+        threadId: ThreadId.make("thread-1"),
+        pendingMessageId: messageId,
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
+    expect(harness.interruptTurn).toHaveBeenCalledWith({ threadId: ThreadId.make("thread-1") });
+  });
+
+  it("rejects delegated execution when the frozen provider configuration changed", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const messageId = asMessageId("delegated-config-drift");
+    const runtimeSessionCountBeforeDelegation = harness.runtimeSessions.length;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-delegated-config-drift"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId,
+          role: "user",
+          text: "do not execute with changed authority",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        delegationConfigFingerprint: "stale-provider-config-fingerprint",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const model = await harness.readModel();
+      return model.threads.some((thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "provider.turn.start.failed" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            "code" in activity.payload &&
+            activity.payload.code === "provider_configuration_changed",
+        ),
+      );
+    });
+    expect(harness.runtimeSessions).toHaveLength(runtimeSessionCountBeforeDelegation);
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("persists delegated provider binding and cancellation only after interrupt succeeds", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const messageId = asMessageId("delegated-provider-bound");
+    const settings = await Effect.runPromise(harness.serverSettings.getSettings);
+    const effectiveInstanceConfig = settings.providerInstances[ProviderInstanceId.make("codex")];
+    expect(effectiveInstanceConfig).toBeDefined();
+    if (effectiveInstanceConfig === undefined) return;
+    const capabilities = new Set<string>(["pull-requests", "orchestration"]);
+    if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+    if (settings.enableAgentDeviceAccess) capabilities.add("device");
+    const permissionEnvelope = await Effect.runPromise(
+      loadDelegationPermissionEnvelope({
+        driverKind: effectiveInstanceConfig.driver,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        instanceConfig: effectiveInstanceConfig,
+        environment: process.env,
+        workspaceRoot: "/tmp/provider-project",
+        worktreePath: "/tmp/provider-project",
+        branch: null,
+        t3McpCapabilities: capabilities,
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(permissionEnvelope.status).toBe("verified");
+    if (permissionEnvelope.status !== "verified") return;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-delegated-provider-bound"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId,
+          role: "user",
+          text: "execute delegated work",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        delegationConfigFingerprint: permissionEnvelope.fingerprint,
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-delegation-cancel-intent"),
+        threadId: ThreadId.make("thread-1"),
+        activity: {
+          id: EventId.make("activity-delegation-cancel-intent"),
+          tone: "info",
+          kind: "delegation.cancel-requested",
+          summary: "Delegated task cancellation requested",
+          payload: {
+            taskId: ThreadId.make("thread-1"),
+            delegatedMessageId: messageId,
+            delegatedTurnId: null,
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.make("cmd-delegation-interrupt"),
+        threadId: ThreadId.make("thread-1"),
+        pendingMessageId: messageId,
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const model = await harness.readModel();
+      const thread = model.threads.find((candidate) => candidate.id === ThreadId.make("thread-1"));
+      return (
+        thread?.activities.some((activity) => activity.kind === "delegation.cancelled") === true
+      );
+    });
+
+    const model = await harness.readModel();
+    const thread = model.threads.find((candidate) => candidate.id === ThreadId.make("thread-1"));
+    expect(
+      thread?.activities.some((activity) => activity.kind === "delegation.provider-bound"),
+    ).toBe(true);
+    expect(harness.interruptTurn).toHaveBeenCalledTimes(1);
   });
 
   effectIt.effect(

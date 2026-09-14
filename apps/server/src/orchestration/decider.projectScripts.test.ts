@@ -432,6 +432,7 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           ]),
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: "approval-required",
+          delegationConfigFingerprint: "delegated-config-fingerprint",
           createdAt: now,
         },
         readModel,
@@ -455,7 +456,108 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
           { id: "fastMode", value: true },
         ]),
         runtimeMode: "approval-required",
+        delegationConfigFingerprint: "delegated-config-fingerprint",
       });
+    }),
+  );
+
+  it.effect("allows exact queued-message cancellation after an arbitrary delay", () =>
+    Effect.gen(function* () {
+      const requestedAt = "2026-01-01T00:00:00.000Z";
+      const cancelledAt = "2026-01-02T00:00:00.000Z";
+      const projectId = asProjectId("project-delayed-cancel");
+      const threadId = ThreadId.make("thread-delayed-cancel");
+      const messageId = asMessageId("message-delayed-cancel");
+      const withProject = yield* projectEvent(createEmptyReadModel(requestedAt), {
+        sequence: 1,
+        eventId: asEventId("evt-project-delayed-cancel"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        type: "project.created",
+        occurredAt: requestedAt,
+        commandId: CommandId.make("cmd-project-delayed-cancel"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-project-delayed-cancel"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Delayed cancel",
+          workspaceRoot: "/tmp/delayed-cancel",
+          defaultModelSelection: null,
+          scripts: [],
+          createdAt: requestedAt,
+          updatedAt: requestedAt,
+        },
+      });
+      const withThread = yield* projectEvent(withProject, {
+        sequence: 2,
+        eventId: asEventId("evt-thread-delayed-cancel"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.created",
+        occurredAt: requestedAt,
+        commandId: CommandId.make("cmd-thread-delayed-cancel"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-thread-delayed-cancel"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Delayed cancel",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: requestedAt,
+          updatedAt: requestedAt,
+        },
+      });
+      const readModel = yield* projectEvent(withThread, {
+        sequence: 3,
+        eventId: asEventId("evt-message-delayed-cancel"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        type: "thread.message-sent",
+        occurredAt: requestedAt,
+        commandId: CommandId.make("cmd-message-delayed-cancel"),
+        causationEventId: null,
+        correlationId: CommandId.make("cmd-message-delayed-cancel"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId,
+          role: "user",
+          text: "queued delegated work",
+          attachments: [],
+          turnId: null,
+          streaming: false,
+          createdAt: requestedAt,
+          updatedAt: requestedAt,
+        },
+      });
+
+      const event = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-delayed-cancel"),
+          threadId,
+          pendingMessageId: messageId,
+          createdAt: cancelledAt,
+        },
+        readModel,
+      });
+
+      expect(Array.isArray(event)).toBe(false);
+      const interruptEvent = (Array.isArray(event) ? event[0] : event) as {
+        readonly type: string;
+        readonly payload: unknown;
+      };
+      expect(interruptEvent.type).toBe("thread.turn-interrupt-requested");
+      expect(interruptEvent.payload).toMatchObject({ threadId, pendingMessageId: messageId });
     }),
   );
 

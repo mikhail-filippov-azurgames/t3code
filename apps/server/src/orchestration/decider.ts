@@ -129,6 +129,17 @@ function hasQueuedTurnStartForThread(
   );
 }
 
+function latestUserMessageId(thread: Pick<OrchestrationThread, "messages">): MessageId | null {
+  let latest: { readonly id: MessageId; readonly at: number } | null = null;
+  for (const message of thread.messages) {
+    if (message.role !== "user" || isImportedAgentSessionMessageId(message.id)) continue;
+    const at = Date.parse(message.createdAt);
+    if (Number.isNaN(at)) continue;
+    if (latest === null || at >= latest.at) latest = { id: message.id, at };
+  }
+  return latest?.id ?? null;
+}
+
 function findPullRequestLink(
   thread: Pick<OrchestrationThread, "pullRequests">,
   key: ThreadPullRequestKey,
@@ -1442,6 +1453,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           runtimeMode: targetThread.runtimeMode,
           interactionMode: targetThread.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
+          ...(command.delegationConfigFingerprint !== undefined
+            ? { delegationConfigFingerprint: command.delegationConfigFingerprint }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1533,11 +1547,33 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.turn.interrupt": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (command.turnId !== undefined && command.pendingMessageId !== undefined) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "turnId and pendingMessageId cannot both be specified",
+        });
+      }
+      if (command.turnId !== undefined && thread.session?.activeTurnId !== command.turnId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `turn ${command.turnId} is not the active turn for thread ${command.threadId}`,
+        });
+      }
+      if (
+        command.pendingMessageId !== undefined &&
+        (thread.session?.activeTurnId != null ||
+          latestUserMessageId(thread) !== command.pendingMessageId)
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `message ${command.pendingMessageId} is not the uniquely queued turn start for thread ${command.threadId}`,
+        });
+      }
       return {
         ...(yield* withEventBase({
           aggregateKind: "thread",
@@ -1549,6 +1585,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          ...(command.pendingMessageId !== undefined
+            ? { pendingMessageId: command.pendingMessageId }
+            : {}),
           createdAt: command.createdAt,
         },
       };
