@@ -66,11 +66,15 @@ export interface ProjectionFullThreadDiffContext {
 
 export interface ProjectionThreadDetailQuery {
   /**
-   * Limit activities before SQLite returns and decodes their payloads.
+   * Filter activities before SQLite returns and decodes their payloads.
+   * Filtered reads keep the generic recent-activity window unless an internal
+   * durable-protocol caller explicitly requests complete history.
    * Any explicit filter omits pinned-request reads. An empty list also skips
    * the activity query. Omit this option to preserve the full detail response.
    */
   readonly activityKinds?: ReadonlyArray<string>;
+  /** Internal durable-protocol reads can explicitly bypass the recent 500-activity window. */
+  readonly activityHistory?: "recent" | "complete";
 }
 
 /**

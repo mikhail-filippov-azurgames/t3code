@@ -732,6 +732,43 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         ]);
       }
 
+      yield* sql`
+        WITH RECURSIVE activity_numbers(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1 FROM activity_numbers WHERE value < 501
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        )
+        SELECT
+          'activity-history-' || value,
+          'thread-1',
+          NULL,
+          'info',
+          'task.history',
+          'Durable task history',
+          '{"durable":true}',
+          '2026-02-24T00:00:07.000Z'
+        FROM activity_numbers
+      `;
+      const recentTaskHistory = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-1"),
+        { activityKinds: ["task.history"] },
+      );
+      assert.equal(recentTaskHistory._tag, "Some");
+      if (recentTaskHistory._tag === "Some") {
+        assert.equal(recentTaskHistory.value.activities.length, 500);
+      }
+      const completeTaskHistory = yield* snapshotQuery.getThreadDetailById(
+        ThreadId.make("thread-1"),
+        { activityKinds: ["task.history"], activityHistory: "complete" },
+      );
+      assert.equal(completeTaskHistory._tag, "Some");
+      if (completeTaskHistory._tag === "Some") {
+        assert.equal(completeTaskHistory.value.activities.length, 501);
+      }
+
       const counter = makeSqlStatementCounter();
       const context = yield* snapshotQuery
         .getThreadRuntimeContext(ThreadId.make("thread-1"))
