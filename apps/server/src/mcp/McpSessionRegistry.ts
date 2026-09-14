@@ -15,6 +15,7 @@ export interface McpCredentialRequest {
   readonly threadId: ThreadId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
+  readonly orchestration?: McpInvocationContext.McpOrchestrationScope;
 }
 
 export interface McpIssuedCredential {
@@ -133,6 +134,7 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           "pull-requests",
           ...request.capabilities,
         ]),
+        ...(request.orchestration === undefined ? {} : { orchestration: request.orchestration }),
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {

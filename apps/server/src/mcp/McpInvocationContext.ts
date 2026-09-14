@@ -1,14 +1,28 @@
 import {
   type EnvironmentId,
   McpCapabilityUnavailableError,
+  type OrchestratorMcpPermissionEnvelopeSummary,
   PreviewAutomationUnavailableError,
+  type ProjectId,
   type ProviderInstanceId,
+  type ProviderInteractionMode,
+  type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 
-export type McpCapability = "preview" | "device" | "pull-requests";
+export type McpCapability = "preview" | "device" | "pull-requests" | "orchestration";
+
+export interface McpOrchestrationScope {
+  readonly projectId: ProjectId;
+  readonly runtimeMode: RuntimeMode;
+  readonly interactionMode: ProviderInteractionMode;
+  readonly branch: string | null;
+  readonly workspaceRoot: string;
+  readonly worktreePath: string;
+  readonly permissionEnvelope: OrchestratorMcpPermissionEnvelopeSummary;
+}
 
 export interface McpInvocationScope {
   readonly environmentId: EnvironmentId;
@@ -16,6 +30,7 @@ export interface McpInvocationScope {
   readonly providerSessionId: string;
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpCapability>;
+  readonly orchestration?: McpOrchestrationScope;
   readonly issuedAt: number;
 }
 

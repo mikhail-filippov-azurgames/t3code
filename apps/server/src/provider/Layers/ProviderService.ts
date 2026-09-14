@@ -86,6 +86,7 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { loadDelegationPermissionEnvelope } from "../DelegationPermissionEnvelope.ts";
 const isModelSelection = Schema.is(ModelSelection);
 const encodePromptJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -943,7 +944,56 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
       const capabilities = yield* agentAccessCapabilities(threadId);
-      const credential = yield* issueMcpCredential({ threadId, providerInstanceId, capabilities });
+      const orchestration = yield* Effect.gen(function* () {
+        if (Option.isNone(projectionQuery)) return undefined;
+        const threadOption = yield* projectionQuery.value.getThreadShellById(threadId);
+        if (Option.isNone(threadOption)) return undefined;
+        const thread = threadOption.value;
+        const projectOption = yield* projectionQuery.value.getProjectShellById(thread.projectId);
+        if (Option.isNone(projectOption)) return undefined;
+        const project = projectOption.value;
+        const settings = yield* serverSettings.getSettings;
+        const instanceConfig = settings.providerInstances[providerInstanceId];
+        if (instanceConfig === undefined) return undefined;
+        capabilities.add("orchestration");
+        const worktreePath = thread.worktreePath ?? project.workspaceRoot;
+        return {
+          projectId: thread.projectId,
+          runtimeMode: thread.runtimeMode,
+          interactionMode: thread.interactionMode,
+          branch: thread.branch,
+          workspaceRoot: project.workspaceRoot,
+          worktreePath,
+          permissionEnvelope: yield* loadDelegationPermissionEnvelope({
+            driverKind: instanceConfig.driver,
+            runtimeMode: thread.runtimeMode,
+            interactionMode: thread.interactionMode,
+            instanceConfig,
+            environment: process.env,
+            workspaceRoot: project.workspaceRoot,
+            worktreePath,
+            branch: thread.branch,
+            t3McpCapabilities: capabilities,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, pathService),
+          ),
+        } satisfies McpInvocationContext.McpOrchestrationScope;
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not derive the MCP orchestration permission envelope.", {
+            cause,
+            threadId,
+            providerInstanceId,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+      const credential = yield* issueMcpCredential({
+        threadId,
+        providerInstanceId,
+        capabilities,
+        ...(orchestration === undefined ? {} : { orchestration }),
+      });
       if (credential) {
         const deviceEnvironment = capabilities.has("device")
           ? yield* agentDeviceEnvironment

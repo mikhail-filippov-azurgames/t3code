@@ -19,6 +19,7 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
+  type OrchestrationProjectShell,
   OrchestrationThreadShell,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -78,6 +79,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import type { McpOrchestrationScope } from "../../mcp/McpInvocationContext.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
@@ -4945,12 +4947,29 @@ describe("agent browser access", () => {
     access: boolean | { readonly browser: boolean; readonly device: boolean },
     threadId: ThreadId,
     projectOverride?: boolean | { readonly browser?: boolean; readonly device?: boolean },
-    options?: { readonly withoutOrchestration?: boolean },
+    options?: {
+      readonly withoutOrchestration?: boolean;
+      readonly withOrchestrationScope?: boolean;
+    },
   ) =>
     Effect.gen(function* () {
       const enableAgentBrowserAccess = typeof access === "boolean" ? access : access.browser;
       const enableAgentDeviceAccess = typeof access === "boolean" ? access : access.device;
-      const issued: Array<{ threadId: ThreadId; capabilities: ReadonlyArray<string> }> = [];
+      const workspaceRoot = fixtureCwd(`mcp-scope-${String(threadId)}`);
+      const project = {
+        id: projectId,
+        title: "Browser access project",
+        workspaceRoot,
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      } satisfies OrchestrationProjectShell;
+      const issued: Array<{
+        threadId: ThreadId;
+        capabilities: ReadonlyArray<string>;
+        orchestration?: McpOrchestrationScope;
+      }> = [];
       const codex = makeFakeCodexAdapter();
       const providerAdapterLayer = Layer.succeed(
         ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -4976,7 +4995,11 @@ describe("agent browser access", () => {
         getEventReplayStats: () => Effect.die("unused"),
         getActiveProjectByWorkspaceRoot: () => Effect.die("unused"),
         getProjectShells: () => Effect.die("unused"),
-        getProjectShellById: () => Effect.die("unused"),
+        getProjectShellById: (requestedProjectId) =>
+          Effect.sync(() => {
+            assert.equal(requestedProjectId, projectId);
+            return options?.withOrchestrationScope ? Option.some(project) : Option.none();
+          }),
         getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
         getThreadCheckpointContext: () => Effect.die("unused"),
         getFullThreadDiffContext: () => Effect.die("unused"),
@@ -5014,6 +5037,9 @@ describe("agent browser access", () => {
             issued.push({
               threadId: request.threadId,
               capabilities: [...request.capabilities].toSorted(),
+              ...(request.orchestration === undefined
+                ? {}
+                : { orchestration: request.orchestration }),
             });
             return undefined;
           }),
@@ -5040,6 +5066,20 @@ describe("agent browser access", () => {
                           : {}),
                       },
                     },
+            ...(options?.withOrchestrationScope
+              ? {
+                  providerInstances: {
+                    [codexInstanceId]: {
+                      driver: CODEX_DRIVER,
+                      enabled: true,
+                      config: {
+                        homePath: fixtureCwd(`mcp-config-${String(threadId)}`),
+                        launchArgs: "",
+                      },
+                    },
+                  },
+                }
+              : {}),
           }),
         ),
         Layer.provide(serverConfigTestLayer),
@@ -5146,6 +5186,38 @@ describe("agent browser access", () => {
         { withoutOrchestration: true },
       );
       assert.deepEqual(issued, [{ threadId, capabilities: ["preview", "pull-requests"] }]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("freezes the current thread permission envelope into the MCP credential", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-orchestration-scope");
+      const issued = yield* startSessionWith(
+        { browser: false, device: false },
+        threadId,
+        undefined,
+        { withOrchestrationScope: true },
+      );
+
+      assert.equal(issued.length, 1);
+      const credential = issued[0];
+      assert.ok(credential);
+      const orchestration = credential.orchestration;
+      assert.ok(orchestration);
+      assert.deepEqual(credential.capabilities, ["orchestration", "pull-requests"]);
+      assert.deepEqual(orchestration, {
+        projectId,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        workspaceRoot: orchestration.workspaceRoot,
+        worktreePath: orchestration.workspaceRoot,
+        permissionEnvelope: orchestration.permissionEnvelope,
+      });
+      assert.equal(orchestration.permissionEnvelope.status, "verified");
+      if (orchestration.permissionEnvelope.status === "verified") {
+        assert.match(orchestration.permissionEnvelope.fingerprint, /^[a-f0-9]{64}$/);
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

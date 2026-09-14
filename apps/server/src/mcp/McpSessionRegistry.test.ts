@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/unstable/http";
 
@@ -81,6 +81,35 @@ it.effect("always grants pull-requests and gates browser and device access indep
     expect(yield* capabilitiesOf(withPreview)).toEqual(["preview", "pull-requests"]);
     expect(yield* capabilitiesOf(withoutPreview)).toEqual(["pull-requests"]);
     expect(yield* capabilitiesOf(withDevice)).toEqual(["device", "pull-requests"]);
+  }),
+);
+
+it.effect("freezes orchestration scope alongside the provider credential", () =>
+  Effect.gen(function* () {
+    const registry = yield* makeRegistry(() => 1_000);
+    const orchestration = {
+      projectId: ProjectId.make("project-one"),
+      runtimeMode: "approval-required" as const,
+      interactionMode: "default" as const,
+      branch: "main",
+      workspaceRoot: "C:/repo",
+      worktreePath: "C:/repo",
+      permissionEnvelope: {
+        status: "unverifiable" as const,
+        reason: "test envelope",
+      },
+    };
+    const issued = yield* registry.issue({
+      threadId: ThreadId.make("thread-orchestration"),
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      capabilities: new Set(["orchestration"]),
+      orchestration,
+    });
+    const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
+    const resolved = yield* registry.resolve(token);
+
+    expect(resolved?.capabilities.has("orchestration")).toBe(true);
+    expect(resolved?.orchestration).toEqual(orchestration);
   }),
 );
 
