@@ -1,7 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { EnvironmentId, PreviewTabId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ORCHESTRATOR_MCP_TOOL_NAMES,
+  PreviewTabId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -15,7 +21,10 @@ import { HttpBody, HttpClient, HttpRouter, HttpServerResponse } from "effect/uns
 
 import { OrchestrationEngineService } from "../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
+import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -59,6 +68,19 @@ const PullRequestsTestLayer = McpHttpServer.PullRequestsToolkitRegistrationLive.
         getThreadShellById: () => Effect.succeed(Option.none()),
       }),
       Layer.mock(OrchestrationEngineService)({}),
+      NodeServices.layer,
+    ),
+  ),
+);
+const OrchestratorTestLayer = McpHttpServer.OrchestratorMcpToolkitRegistrationLive.pipe(
+  Layer.provideMerge(McpServer.McpServer.layer),
+  Layer.provide(
+    Layer.mergeAll(
+      Layer.mock(ProjectionSnapshotQuery)({}),
+      Layer.mock(ProjectionTurnRepository)({}),
+      Layer.mock(ProviderRegistry)({}),
+      Layer.mock(OrchestrationEngineService)({}),
+      ServerSettings.layerTest(),
       NodeServices.layer,
     ),
   ),
@@ -338,7 +360,10 @@ it.effect("saves the snapshot PNG on request and reports its path", () =>
       );
       expect(Buffer.from(yield* fileSystem.readFile(screenshotPath!)).toString()).toBe("png");
       const [, text] = snapshot.content;
-      expect(text?.type === "text" ? text.text : "").toContain(screenshotPath);
+      const textPayload = decodeJsonText(text?.type === "text" ? text.text : "{}") as {
+        readonly screenshotPath?: string;
+      };
+      expect(textPayload.screenshotPath).toBe(screenshotPath);
 
       const unsaved = yield* callSnapshot({});
       expect(unsaved.structuredContent).not.toHaveProperty("screenshotPath");
@@ -381,6 +406,7 @@ it.effect(
           "list_thread_pull_requests",
         ]),
       );
+
       const linkTool = server.tools.find(({ tool }) => tool.name === "link_pull_request");
       expect(linkTool?.tool.annotations?.idempotentHint).toBe(true);
       expect(linkTool?.tool.annotations?.openWorldHint).toBe(false);
@@ -398,6 +424,15 @@ it.effect(
         { type: "text", text: "MCP credential does not grant the pull-requests capability." },
       ]);
     }).pipe(Effect.provide(PullRequestsTestLayer)),
+);
+
+it.effect("registers exactly the accepted orchestrator toolkit surface", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    expect(server.tools.map(({ tool }) => tool.name)).toEqual(
+      Object.values(ORCHESTRATOR_MCP_TOOL_NAMES),
+    );
+  }).pipe(Effect.provide(OrchestratorTestLayer)),
 );
 
 it.effect("keeps the snapshot text under the agent's output ceiling", () =>

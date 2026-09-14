@@ -17,6 +17,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -40,6 +41,9 @@ import {
   DeviceScreenshotToolkit,
   DeviceStandardToolkit,
 } from "./toolkits/device/tools.ts";
+import { OrchestratorMcpToolkitHandlersLive } from "./toolkits/orchestrator/handlers.ts";
+import { layer as OrchestratorMcpServiceLive } from "./toolkits/orchestrator/service.ts";
+import { OrchestratorMcpToolkit } from "./toolkits/orchestrator/tools.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -621,6 +625,13 @@ export const DeviceToolkitRegistrationLive = Layer.mergeAll(
   DeviceScreenshotRegistrationLive,
 );
 
+export const OrchestratorMcpToolkitRegistrationLive = McpServer.toolkit(
+  OrchestratorMcpToolkit,
+).pipe(
+  Layer.provide(OrchestratorMcpToolkitHandlersLive),
+  Layer.provide(OrchestratorMcpServiceLive),
+);
+
 const McpTransportLive = McpServer.layerHttp({
   name: "T3 Code",
   version: packageJson.version,
@@ -632,4 +643,5 @@ export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
-).pipe(Layer.provideMerge(McpTransportLive));
+  OrchestratorMcpToolkitRegistrationLive,
+).pipe(Layer.provideMerge(McpTransportLive), Layer.provide(ProjectionTurnRepositoryLive));
