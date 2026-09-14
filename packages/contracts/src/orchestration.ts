@@ -1245,6 +1245,9 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  // Internal delegated starts carry the accepted provider configuration to
+  // the reactor. Client turn-start commands cannot set this field.
+  delegationConfigFingerprint: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
@@ -1273,6 +1276,9 @@ const ThreadTurnInterruptCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  // Internal callers that need to cancel a turn before the provider has
+  // assigned a TurnId can pin the interrupt to the exact queued message.
+  pendingMessageId: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 
@@ -1811,12 +1817,14 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROVIDER_INTERACTION_MODE)),
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  delegationConfigFingerprint: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
 
 export const ThreadTurnInterruptRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnId: Schema.optional(TurnId),
+  pendingMessageId: Schema.optional(MessageId),
   createdAt: IsoDateTime,
 });
 
