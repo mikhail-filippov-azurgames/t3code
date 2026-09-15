@@ -47,6 +47,7 @@ import {
   type ProviderServiceError,
 } from "../../provider/Errors.ts";
 import { loadDelegationPermissionEnvelope } from "../../provider/DelegationPermissionEnvelope.ts";
+import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
@@ -190,6 +191,7 @@ describe("ProviderCommandReactor", () => {
       session: ProviderSession,
     ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly tryHandlePromptCommandEffect?: ProviderAuthService["Service"]["tryHandlePromptCommand"];
+    readonly useLegacyProviderConfig?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -508,9 +510,19 @@ describe("ProviderCommandReactor", () => {
         }),
       ),
       Layer.provideMerge(
-        ServerSettingsService.layerTest({
-          providerInstances: { [modelSelection.instanceId]: providerInstanceConfig },
-        }),
+        ServerSettingsService.layerTest(
+          input?.useLegacyProviderConfig === true
+            ? {
+                providers: {
+                  codex: {
+                    homePath: providerHomePath,
+                    launchArgs: "",
+                  },
+                },
+                providerInstances: {},
+              }
+            : { providerInstances: { [modelSelection.instanceId]: providerInstanceConfig } },
+        ),
       ),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
@@ -3762,12 +3774,68 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
+  it("accepts delegated execution through a legacy default provider configuration", async () => {
+    const harness = await createHarness({ useLegacyProviderConfig: true });
+    const now = "2026-01-01T00:00:00.000Z";
+    const settings = await Effect.runPromise(harness.serverSettings.getSettings);
+    const effectiveInstanceConfig =
+      deriveProviderInstanceConfigMap(settings)[ProviderInstanceId.make("codex")];
+    expect(effectiveInstanceConfig).toBeDefined();
+    if (effectiveInstanceConfig === undefined) return;
+    const capabilities = new Set<string>(["pull-requests", "orchestration"]);
+    if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+    if (settings.enableAgentDeviceAccess) capabilities.add("device");
+    const permissionEnvelope = await Effect.runPromise(
+      loadDelegationPermissionEnvelope({
+        driverKind: effectiveInstanceConfig.driver,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        instanceConfig: effectiveInstanceConfig,
+        environment: process.env,
+        workspaceRoot: "/tmp/provider-project",
+        worktreePath: "/tmp/provider-project",
+        branch: null,
+        t3McpCapabilities: capabilities,
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(permissionEnvelope.status).toBe("verified");
+    if (permissionEnvelope.status !== "verified") return;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-delegated-legacy-provider"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("delegated-legacy-provider"),
+          role: "user",
+          text: "execute through the legacy default provider",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        delegationConfigFingerprint: permissionEnvelope.fingerprint,
+        createdAt: now,
+      }),
+    );
+
+    await harness.drain();
+    const model = await harness.readModel();
+    expect(
+      model.threads
+        .find(({ id }) => id === ThreadId.make("thread-1"))
+        ?.activities.filter(({ kind }) => kind === "provider.turn.start.failed"),
+    ).toEqual([]);
+    expect(harness.sendTurn).toHaveBeenCalledOnce();
+  });
+
   it("persists delegated provider binding and cancellation only after interrupt succeeds", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
     const messageId = asMessageId("delegated-provider-bound");
     const settings = await Effect.runPromise(harness.serverSettings.getSettings);
-    const effectiveInstanceConfig = settings.providerInstances[ProviderInstanceId.make("codex")];
+    const effectiveInstanceConfig =
+      deriveProviderInstanceConfigMap(settings)[ProviderInstanceId.make("codex")];
     expect(effectiveInstanceConfig).toBeDefined();
     if (effectiveInstanceConfig === undefined) return;
     const capabilities = new Set<string>(["pull-requests", "orchestration"]);

@@ -36,7 +36,7 @@ export const OrchestratorCapabilitiesTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAME
 
 export const DelegateTaskTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.delegateTask, {
   description:
-    "Create one ordinary child T3 Code thread in this thread's project and inherited worktree, then start exactly one provider turn using the selected provider/model. An optional OCL handoff is stored in durable lineage and is not appended to the child message; put every child-facing instruction in prompt. Reuse the same idempotencyKey only for an exact retry.",
+    "Create one ordinary child T3 Code thread in this thread's project and inherited worktree, then start exactly one provider turn using the selected provider/model. Use this instead of an in-process subagent when the user asks for a new or separate T3 thread. Call orchestrator_capabilities first and select only a provider with delegatable=true. An optional OCL handoff is stored in durable lineage and is not appended to the child message; put every child-facing instruction in prompt. Reuse the same idempotencyKey only for an exact retry. A typed pre-spawn validation failure creates no child. For any other failure without a taskId, do not assume that no child work exists: retry the exact request with the same idempotencyKey to recover its deterministic task.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,

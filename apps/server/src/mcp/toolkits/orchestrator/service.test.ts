@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   CheckpointRef,
+  DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   EventId,
   MessageId,
@@ -38,6 +39,7 @@ const parentTurnId = TurnId.make("parent-turn");
 const projectId = ProjectId.make("project-one");
 const environmentId = EnvironmentId.make("environment-one");
 const providerInstanceId = ProviderInstanceId.make("codex_one");
+const legacyProviderInstanceId = ProviderInstanceId.make("codex");
 const driverKind = ProviderDriverKind.make("codex");
 const workspaceRoot = "C:/repo";
 
@@ -45,6 +47,17 @@ const instanceConfig: ProviderInstanceConfig = {
   driver: driverKind,
   enabled: true,
   config: { binaryPath: "codex", launchArgs: "" },
+};
+
+const legacyCodexSettings = {
+  ...DEFAULT_SERVER_SETTINGS.providers.codex,
+  binaryPath: "codex",
+  launchArgs: "",
+};
+
+const legacyInstanceConfig: ProviderInstanceConfig = {
+  driver: driverKind,
+  config: legacyCodexSettings,
 };
 
 const provider = {
@@ -80,6 +93,11 @@ const provider = {
   ],
   slashCommands: [],
   skills: [],
+} as ServerProvider;
+
+const legacyProvider = {
+  ...provider,
+  instanceId: legacyProviderInstanceId,
 } as ServerProvider;
 
 function parentShell(): OrchestrationThreadShell {
@@ -123,13 +141,16 @@ const project = {
   updatedAt: now,
 } as OrchestrationProjectShell;
 
-function makeScope(runtimeMode: RuntimeMode = "full-access"): McpInvocationScope {
+function makeScope(
+  runtimeMode: RuntimeMode = "full-access",
+  targetInstanceConfig: ProviderInstanceConfig = instanceConfig,
+): McpInvocationScope {
   const capabilities = new Set(["pull-requests", "orchestration"] as const);
   const permissionEnvelope = normalizeDelegationPermissionEnvelope({
     driverKind,
     runtimeMode,
     interactionMode: "default",
-    instanceConfig,
+    instanceConfig: targetInstanceConfig,
     environment: {},
     workspaceRoot,
     worktreePath: workspaceRoot,
@@ -222,6 +243,7 @@ function pendingTurn(threadId: ThreadId, messageId: MessageId): ProjectionTurn {
 
 interface HarnessOptions {
   readonly settingsSequence?: ReadonlyArray<ProviderInstanceConfig>;
+  readonly useLegacyProviderConfig?: boolean;
   readonly parentRuntimeMode?: RuntimeMode;
   readonly interruptOutcomes?: ReadonlyArray<"failure" | "success">;
   readonly failAfterOnce?: "thread.create" | "thread.activity.append";
@@ -403,14 +425,21 @@ function makeHarness(options: HarnessOptions = {}): {
         });
       }),
     listTurnsByThreadId: ({ threadId }) => Effect.succeed(turns.get(threadId) ?? []),
-    getProviders: Effect.succeed([provider]),
+    getProviders: Effect.succeed([options.useLegacyProviderConfig ? legacyProvider : provider]),
     getSettings: Effect.sync(() => {
       const sequence = options.settingsSequence ?? [instanceConfig];
       const selected = sequence[Math.min(settingsRead, sequence.length - 1)]!;
       settingsRead += 1;
       return {
-        providerInstances: { [providerInstanceId]: selected },
-      } as ServerSettings;
+        ...DEFAULT_SERVER_SETTINGS,
+        providers: {
+          ...DEFAULT_SERVER_SETTINGS.providers,
+          codex: legacyCodexSettings,
+        },
+        providerInstances: options.useLegacyProviderConfig
+          ? {}
+          : { [providerInstanceId]: selected },
+      } satisfies ServerSettings;
     }),
     loadPermissionEnvelope: (input) =>
       Effect.succeed(
@@ -468,6 +497,41 @@ function bindDelegatedTurn(
 }
 
 describe("OrchestratorMcpService", () => {
+  it.effect("delegates through a legacy default provider configuration", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ useLegacyProviderConfig: true });
+      const scope = makeScope("full-access", legacyInstanceConfig);
+
+      const capabilities = yield* harness.service.capabilities(scope);
+      expect(capabilities.providers).toHaveLength(1);
+      expect(capabilities.providers[0]).toMatchObject({
+        providerInstanceId: legacyProviderInstanceId,
+        driverKind,
+        delegatable: true,
+        unavailableReason: null,
+        permissionEnvelope: { status: "verified" },
+      });
+
+      const delegated = yield* harness.service.delegateTask(
+        scope,
+        delegateInput({
+          target: {
+            providerInstanceId: legacyProviderInstanceId,
+            driverKind,
+            model: "gpt-test",
+            options: [{ id: "effort", value: "high" }],
+          },
+        }),
+      );
+      expect(delegated.status).toBe("queued");
+      expect(harness.dispatched.map(({ type }) => type)).toEqual([
+        "thread.create",
+        "thread.activity.append",
+        "thread.turn.start",
+      ]);
+    }),
+  );
+
   it.effect("creates one inherited child, stores its handoff, and sends the exact prompt", () =>
     Effect.gen(function* () {
       const harness = makeHarness();

@@ -27,6 +27,7 @@ import {
   type OrchestratorMcpTaskResult,
   type OrchestratorMcpTaskWaitResult,
   type ProviderInstanceConfig,
+  type ProviderInstanceConfigMap,
   type ProviderOptionDescriptor,
   type ProviderOptionSelection,
   type ServerProvider,
@@ -49,6 +50,7 @@ import {
   loadDelegationPermissionEnvelope,
 } from "../../../provider/DelegationPermissionEnvelope.ts";
 import type { DelegationPermissionEnvelopeInput } from "../../../provider/DelegationPermissionEnvelope.ts";
+import { deriveProviderInstanceConfigMap } from "../../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import type { ProjectionTurn } from "../../../persistence/Services/ProjectionTurns.ts";
 import * as ProjectionTurns from "../../../persistence/Services/ProjectionTurns.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
@@ -544,7 +546,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         return yield* failure("invalid_model_options", invalidOptions.join(" "));
       }
       const settings = yield* dependencies.getSettings;
-      const instanceConfig = settings.providerInstances[input.target.providerInstanceId];
+      const instanceConfig =
+        deriveProviderInstanceConfigMap(settings)[input.target.providerInstanceId];
       if (instanceConfig === undefined || instanceConfig.driver !== input.target.driverKind) {
         return yield* failure(
           "provider_unavailable",
@@ -829,11 +832,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
   const providerCapability = Effect.fn("OrchestratorMcpService.providerCapability")(function* (
     scope: McpInvocationScope,
     parent: ParentContext,
-    settings: ServerSettingsValue,
+    providerInstances: ProviderInstanceConfigMap,
     provider: ServerProvider,
   ) {
     const unavailable = providerUnavailableReason(provider);
-    const instanceConfig = settings.providerInstances[provider.instanceId];
+    const instanceConfig = providerInstances[provider.instanceId];
     const permissionEnvelope =
       instanceConfig === undefined
         ? ({ status: "unverifiable", reason: "Provider configuration is unavailable." } as const)
@@ -975,6 +978,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         const parent = yield* requireActiveParent(scope);
         const providers = yield* dependencies.getProviders;
         const settings = yield* dependencies.getSettings;
+        const providerInstances = deriveProviderInstanceConfigMap(settings);
         return {
           protocolVersion: ORCHESTRATOR_MCP_PROTOCOL_VERSION,
           parent: {
@@ -994,7 +998,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             maxTimeoutMs: ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
           },
           providers: yield* Effect.forEach(providers, (provider) =>
-            providerCapability(scope, parent, settings, provider),
+            providerCapability(scope, parent, providerInstances, provider),
           ),
           workspacePolicy: "inherit-only",
           oclPolicy: "optional-stable-ref-plus-durable-handoff",

@@ -47,6 +47,7 @@ import { ProviderAuthService } from "../../provider/Services/ProviderAuthService
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 import { loadDelegationPermissionEnvelope } from "../../provider/DelegationPermissionEnvelope.ts";
+import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import {
@@ -693,7 +694,7 @@ const make = Effect.gen(function* () {
       ),
     );
     const modelSelection = input.modelSelection ?? thread.modelSelection;
-    const instanceConfig = settings.providerInstances[modelSelection.instanceId];
+    const instanceConfig = deriveProviderInstanceConfigMap(settings)[modelSelection.instanceId];
     if (instanceConfig === undefined) {
       return yield* new ProviderAdapterRequestError({
         provider: String(modelSelection.instanceId),

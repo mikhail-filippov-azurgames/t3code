@@ -47,6 +47,12 @@ describe("orchestrator MCP tools", () => {
 
   it("describes inherited workspace, exact-turn isolation, and non-cancelling waits", () => {
     expect(Tool.getDescription(DelegateTaskTool)).toContain("inherited worktree");
+    expect(Tool.getDescription(DelegateTaskTool)).toContain("instead of an in-process subagent");
+    expect(Tool.getDescription(DelegateTaskTool)).toContain("delegatable=true");
+    expect(Tool.getDescription(DelegateTaskTool)).toContain(
+      "do not assume that no child work exists",
+    );
+    expect(Tool.getDescription(DelegateTaskTool)).toContain("same idempotencyKey");
     expect(Tool.getDescription(TaskStatusTool)).toContain("never follows a later ordinary turn");
     expect(Tool.getDescription(TaskWaitTool)).toContain("never cancels");
     expect(Tool.getDescription(TaskCancelTool)).toContain("later ordinary child turn");
