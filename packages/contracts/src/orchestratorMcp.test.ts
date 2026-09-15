@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import {
   ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
   ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
+  ORCHESTRATOR_MCP_PROTOCOL_VERSION,
   ORCHESTRATOR_MCP_TOOL_NAMES,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpDelegateTaskInput,
@@ -77,6 +78,7 @@ const taskResult = {
 
 describe("orchestrator MCP contracts", () => {
   it("freezes the accepted five-tool protocol surface", () => {
+    expect(ORCHESTRATOR_MCP_PROTOCOL_VERSION).toBe(2);
     expect(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES)).toEqual([
       "orchestrator_capabilities",
       "delegate_task",
@@ -253,7 +255,7 @@ describe("orchestrator MCP contracts", () => {
 
   it("decodes fail-closed capability summaries and wait limits", () => {
     const decoded = decodeCapabilities({
-      protocolVersion: 1,
+      protocolVersion: 2,
       parent: {
         environmentId: "environment-1",
         threadId: "parent-thread-1",
@@ -288,7 +290,7 @@ describe("orchestrator MCP contracts", () => {
         },
       ],
       workspacePolicy: "inherit-only",
-      oclPolicy: "optional-stable-ref-plus-materialized-handoff",
+      oclPolicy: "optional-stable-ref-plus-durable-handoff",
     });
 
     expect(decoded.parent.permissionEnvelope.status).toBe("unverifiable");

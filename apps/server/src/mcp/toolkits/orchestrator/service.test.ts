@@ -468,27 +468,23 @@ function bindDelegatedTurn(
 }
 
 describe("OrchestratorMcpService", () => {
-  it.effect("creates one ordinary inherited child and materializes an optional OCL handoff", () =>
+  it.effect("creates one inherited child, stores its handoff, and sends the exact prompt", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
-      const result = yield* harness.service.delegateTask(
-        makeScope(),
-        delegateInput({
-          handoff: {
-            contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
-            requiredRevision: 2,
-            implementsRevision: 2,
-            stage: "implementation",
-            owns: ["server toolkit"],
-            reads: ["accepted contract"],
-            forbidden: ["provider adapters"],
-            acceptance: ["focused tests pass"],
-            outputs: ["child result"],
-            evidence: ["test log"],
-            predecessorRefs: ["oc://doc/1a02392b-6ad7-4d21-aae9-dfaa911c8831"],
-          },
-        }),
-      );
+      const handoff = {
+        contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
+        requiredRevision: 2,
+        implementsRevision: 2,
+        stage: "implementation",
+        owns: ["server toolkit"],
+        reads: ["accepted contract"],
+        forbidden: ["provider adapters"],
+        acceptance: ["focused tests pass"],
+        outputs: ["child result"],
+        evidence: ["test log"],
+        predecessorRefs: ["oc://doc/1a02392b-6ad7-4d21-aae9-dfaa911c8831"],
+      } as const;
+      const result = yield* harness.service.delegateTask(makeScope(), delegateInput({ handoff }));
 
       expect(result.status).toBe("queued");
       expect(result.lineage.parentTurnId).toBe(parentTurnId);
@@ -508,10 +504,21 @@ describe("OrchestratorMcpService", () => {
       const start = harness.dispatched[2];
       expect(start?.type).toBe("thread.turn.start");
       if (start?.type === "thread.turn.start") {
-        expect(start.message.text).toContain("OpenContext delegated-work handoff");
-        expect(start.message.text).toContain("Required revision: 2");
-        expect(start.message.text).toContain("Forbidden:\n- provider adapters");
+        expect(start.message.text).toBe("Implement the accepted widget contract.");
+        expect(start.message.text).not.toContain(handoff.contractRef);
       }
+      const child = harness.children.get(result.taskId)!;
+      const lineage = child.activities.find(({ kind }) => kind === "delegation.created");
+      expect(lineage?.payload).toMatchObject({
+        handoff,
+        stage: handoff.stage,
+        evidenceRefs: handoff.evidence,
+        ocl: {
+          contractRef: handoff.contractRef,
+          requiredRevision: handoff.requiredRevision,
+          implementsRevision: handoff.implementsRevision,
+        },
+      });
     }),
   );
 
@@ -529,6 +536,28 @@ describe("OrchestratorMcpService", () => {
         .delegateTask(scope, delegateInput({ prompt: "Different work under the same key." }))
         .pipe(Effect.flip);
       expect(conflict.code).toBe("idempotency_conflict");
+
+      const handoffConflict = yield* harness.service
+        .delegateTask(
+          scope,
+          delegateInput({
+            handoff: {
+              contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
+              requiredRevision: 2,
+              implementsRevision: 2,
+              stage: "implementation",
+              owns: [],
+              reads: [],
+              forbidden: [],
+              acceptance: [],
+              outputs: [],
+              evidence: [],
+              predecessorRefs: [],
+            },
+          }),
+        )
+        .pipe(Effect.flip);
+      expect(handoffConflict.code).toBe("idempotency_conflict");
     }),
   );
 

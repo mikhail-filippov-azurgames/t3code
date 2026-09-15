@@ -15,7 +15,7 @@ import { ProviderOptionDescriptor, ProviderOptionSelection } from "./model.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
-export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 1 as const;
+export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 2 as const;
 export const ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 export const ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS = 30 * 60 * 1_000;
 export const ORCHESTRATOR_MCP_TOOL_NAMES = {
@@ -250,7 +250,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   }),
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   workspacePolicy: Schema.Literal("inherit-only"),
-  oclPolicy: Schema.Literal("optional-stable-ref-plus-materialized-handoff"),
+  oclPolicy: Schema.Literal("optional-stable-ref-plus-durable-handoff"),
 });
 export type OrchestratorMcpCapabilitiesResult = typeof OrchestratorMcpCapabilitiesResult.Type;
 

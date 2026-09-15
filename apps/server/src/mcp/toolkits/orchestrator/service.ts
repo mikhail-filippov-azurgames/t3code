@@ -92,6 +92,7 @@ interface DelegationCreatedPayload {
   readonly requested: OrchestratorMcpRequestedIdentity;
   readonly requestedAt: string;
   readonly role: OrchestratorMcpDelegateTaskInput["role"];
+  readonly handoff?: OrchestratorMcpHandoff;
   readonly stage: string | null;
   readonly evidenceRefs: ReadonlyArray<string>;
   readonly ocl: null | {
@@ -403,32 +404,6 @@ function validateOptions(
     }
   }
   return invalid;
-}
-
-function materializePrompt(
-  input: OrchestratorMcpDelegateTaskInput,
-  handoff: OrchestratorMcpHandoff | undefined,
-): string {
-  if (handoff === undefined) return input.prompt;
-  const section = (label: string, values: ReadonlyArray<string>) =>
-    `${label}:\n${values.length === 0 ? "- (none)" : values.map((value) => `- ${value}`).join("\n")}`;
-  return [
-    input.prompt,
-    "",
-    "---",
-    "OpenContext delegated-work handoff",
-    `Contract: ${handoff.contractRef}`,
-    `Required revision: ${handoff.requiredRevision}`,
-    `Implements revision: ${handoff.implementsRevision}`,
-    `Stage: ${handoff.stage}`,
-    section("Owns", handoff.owns),
-    section("Reads", handoff.reads),
-    section("Forbidden", handoff.forbidden),
-    section("Acceptance", handoff.acceptance),
-    section("Outputs", handoff.outputs),
-    section("Evidence", handoff.evidence),
-    section("Predecessors", handoff.predecessorRefs),
-  ].join("\n");
 }
 
 function providerUnavailableReason(provider: ServerProvider): string | null {
@@ -936,7 +911,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           message: {
             messageId: input.lineage.delegatedMessageId,
             role: "user",
-            text: materializePrompt(input.request, input.request.handoff),
+            text: input.request.prompt,
             attachments: [],
           },
           modelSelection: input.target.modelSelection,
@@ -1022,7 +997,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             providerCapability(scope, parent, settings, provider),
           ),
           workspacePolicy: "inherit-only",
-          oclPolicy: "optional-stable-ref-plus-materialized-handoff",
+          oclPolicy: "optional-stable-ref-plus-durable-handoff",
         } satisfies OrchestratorMcpCapabilitiesResult;
       }).pipe(
         Effect.mapError((error) =>
@@ -1192,6 +1167,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           requested: target.requested,
           requestedAt,
           role: input.role,
+          ...(input.handoff === undefined ? {} : { handoff: input.handoff }),
           stage: input.handoff?.stage ?? null,
           evidenceRefs: input.handoff?.evidence ?? [],
           ocl:
@@ -1403,6 +1379,5 @@ export const __testing = {
   makeService,
   deterministicId,
   findLineage,
-  materializePrompt,
   validateOptions,
 };

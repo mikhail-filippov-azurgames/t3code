@@ -36,7 +36,7 @@ export const OrchestratorCapabilitiesTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAME
 
 export const DelegateTaskTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.delegateTask, {
   description:
-    "Create one ordinary child T3 Code thread in this thread's project and inherited worktree, then start exactly one provider turn using the selected provider/model. An optional OCL handoff is materialized into the child prompt. Reuse the same idempotencyKey only for an exact retry.",
+    "Create one ordinary child T3 Code thread in this thread's project and inherited worktree, then start exactly one provider turn using the selected provider/model. An optional OCL handoff is stored in durable lineage and is not appended to the child message; put every child-facing instruction in prompt. Reuse the same idempotencyKey only for an exact retry.",
   parameters: OrchestratorMcpDelegateTaskInput,
   success: OrchestratorMcpDelegateTaskResult,
   failure: OrchestratorMcpFailure,
