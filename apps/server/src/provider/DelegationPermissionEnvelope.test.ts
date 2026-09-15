@@ -176,6 +176,31 @@ describe("normalizeDelegationPermissionEnvelope", () => {
 
       yield* fs.writeFileString(
         path.join(homePath, "config.toml"),
+        `[projects.'${worktreePath.toLowerCase().replaceAll("\\", "/")}']\ntrust_level = "trusted"\n`,
+      );
+      const trustedProject = yield* loadDelegationPermissionEnvelope(base);
+      expect(trustedProject.status).toBe("verified");
+
+      yield* fs.writeFileString(
+        path.join(homePath, "config.toml"),
+        `[projects.'${worktreePath.toLowerCase().replaceAll("\\", "/")}']\ntrust_level = "untrusted"\n`,
+      );
+      const untrustedProject = yield* loadDelegationPermissionEnvelope(base);
+      expect(untrustedProject).toMatchObject({ status: "unverifiable" });
+
+      yield* fs.writeFileString(path.join(homePath, "config.toml"), 'trust_level = "trusted"\n');
+      const topLevelTrust = yield* loadDelegationPermissionEnvelope(base);
+      expect(topLevelTrust).toMatchObject({ status: "unverifiable" });
+
+      yield* fs.writeFileString(
+        path.join(homePath, "config.toml"),
+        `[projects.'${worktreePath.toLowerCase().replaceAll("\\", "/")}']\ntrust_level = "trusted"\n[mcp_servers.remote]\nurl = "https://example.com"\n`,
+      );
+      const trustedProjectWithMcp = yield* loadDelegationPermissionEnvelope(base);
+      expect(trustedProjectWithMcp).toMatchObject({ status: "unverifiable" });
+
+      yield* fs.writeFileString(
+        path.join(homePath, "config.toml"),
         '[mcp_servers.remote]\nurl = "https://example.com"\n',
       );
       const unsafe = yield* loadDelegationPermissionEnvelope(base);

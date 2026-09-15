@@ -35,6 +35,10 @@ const FILESYSTEM_RANK: Readonly<
 const SECURITY_TERM =
   /(?:approv|browser|danger|external|feature|hook|mcp|network|permission|plugin|sandbox|search|shell|tool|trust|web|workspace|yolo|apply[_-]?patch|\bexec\b|\bread\b|\bwrite\b)/i;
 
+const CODEX_PROJECT_TABLE = /^\s*\[\s*projects\.(?:'[^'\r\n]+'|"[^"\r\n]+")\s*\]\s*(?:#.*)?$/i;
+const TOML_TABLE = /^\s*\[[^\]\r\n]+\]\s*(?:#.*)?$/;
+const CODEX_TRUSTED_PROJECT_SETTING = /^\s*trust_level\s*=\s*(?:"trusted"|'trusted')\s*(?:#.*)?$/i;
+
 const DRIVER_ENV_PREFIXES: Readonly<Record<string, ReadonlyArray<string>>> = {
   codex: ["CODEX_", "T3CODE_CODEX_"],
   claudeAgent: ["ANTHROPIC_", "CLAUDE_"],
@@ -173,6 +177,22 @@ function configurationFilePaths(
   }
 }
 
+/** Ignore only Codex's standard project-trusted marker; the raw file is still fingerprinted. */
+function codexComparableConfigurationContent(content: string): string {
+  let inProjectTable = false;
+  return content
+    .split(/\r?\n/)
+    .map((line) => {
+      if (CODEX_PROJECT_TABLE.test(line)) {
+        inProjectTable = true;
+        return "";
+      }
+      if (TOML_TABLE.test(line)) inProjectTable = false;
+      return inProjectTable && CODEX_TRUSTED_PROJECT_SETTING.test(line) ? "" : line;
+    })
+    .join("\n");
+}
+
 function providerConfigurationReason(input: DelegationPermissionEnvelopeInput): string | undefined {
   const files = input.providerConfigurationFiles;
   if ((input.driverKind === "codex" || input.driverKind === "claudeAgent") && files === undefined) {
@@ -188,7 +208,11 @@ function providerConfigurationReason(input: DelegationPermissionEnvelopeInput): 
         return `Provider configuration file ${file.path} is not valid JSON.`;
       }
     }
-    if (file.path.toLowerCase().endsWith(".mcp.json") || SECURITY_TERM.test(content)) {
+    const comparableContent =
+      input.driverKind === "codex" && file.path.toLowerCase().endsWith("config.toml")
+        ? codexComparableConfigurationContent(content)
+        : content;
+    if (file.path.toLowerCase().endsWith(".mcp.json") || SECURITY_TERM.test(comparableContent)) {
       return `Security-affecting provider configuration in ${file.path} is not comparable.`;
     }
   }
