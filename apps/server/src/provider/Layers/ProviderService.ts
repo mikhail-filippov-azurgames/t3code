@@ -87,6 +87,7 @@ import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { loadDelegationPermissionEnvelope } from "../DelegationPermissionEnvelope.ts";
+import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 const isModelSelection = Schema.is(ModelSelection);
 const encodePromptJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -953,7 +954,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         if (Option.isNone(projectOption)) return undefined;
         const project = projectOption.value;
         const settings = yield* serverSettings.getSettings;
-        const instanceConfig = settings.providerInstances[providerInstanceId];
+        const instanceConfig = deriveProviderInstanceConfigMap(settings)[providerInstanceId];
         if (instanceConfig === undefined) return undefined;
         capabilities.add("orchestration");
         const worktreePath = thread.worktreePath ?? project.workspaceRoot;

@@ -4950,11 +4950,14 @@ describe("agent browser access", () => {
     options?: {
       readonly withoutOrchestration?: boolean;
       readonly withOrchestrationScope?: boolean;
+      readonly withLegacyOrchestrationScope?: boolean;
     },
   ) =>
     Effect.gen(function* () {
       const enableAgentBrowserAccess = typeof access === "boolean" ? access : access.browser;
       const enableAgentDeviceAccess = typeof access === "boolean" ? access : access.device;
+      const withOrchestrationScope =
+        options?.withOrchestrationScope === true || options?.withLegacyOrchestrationScope === true;
       const workspaceRoot = fixtureCwd(`mcp-scope-${String(threadId)}`);
       const project = {
         id: projectId,
@@ -4998,7 +5001,7 @@ describe("agent browser access", () => {
         getProjectShellById: (requestedProjectId) =>
           Effect.sync(() => {
             assert.equal(requestedProjectId, projectId);
-            return options?.withOrchestrationScope ? Option.some(project) : Option.none();
+            return withOrchestrationScope ? Option.some(project) : Option.none();
           }),
         getFirstActiveThreadIdByProjectId: () => Effect.die("unused"),
         getThreadCheckpointContext: () => Effect.die("unused"),
@@ -5076,6 +5079,16 @@ describe("agent browser access", () => {
                         homePath: fixtureCwd(`mcp-config-${String(threadId)}`),
                         launchArgs: "",
                       },
+                    },
+                  },
+                }
+              : {}),
+            ...(options?.withLegacyOrchestrationScope
+              ? {
+                  providers: {
+                    codex: {
+                      homePath: fixtureCwd(`mcp-legacy-config-${String(threadId)}`),
+                      launchArgs: "",
                     },
                   },
                 }
@@ -5218,6 +5231,25 @@ describe("agent browser access", () => {
       if (orchestration.permissionEnvelope.status === "verified") {
         assert.match(orchestration.permissionEnvelope.fingerprint, /^[a-f0-9]{64}$/);
       }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("freezes orchestration scope for the legacy default provider instance", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-legacy-orchestration-scope");
+      const issued = yield* startSessionWith(
+        { browser: false, device: false },
+        threadId,
+        undefined,
+        { withLegacyOrchestrationScope: true },
+      );
+
+      assert.equal(issued.length, 1);
+      const credential = issued[0];
+      assert.ok(credential);
+      assert.deepEqual(credential.capabilities, ["orchestration", "pull-requests"]);
+      assert.ok(credential.orchestration);
+      assert.equal(credential.orchestration.permissionEnvelope.status, "verified");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
