@@ -667,6 +667,23 @@ describe("OrchestratorMcpService", () => {
             turnId: delegatedTurnId,
             createdAt: now,
           },
+          {
+            id: EventId.make("delegation-model-observed"),
+            tone: "info",
+            kind: "delegation.model-observed",
+            summary: "Delegated task model observed",
+            payload: {
+              version: 1,
+              taskId: delegated.taskId,
+              delegatedMessageId: delegated.lineage.delegatedMessageId,
+              delegatedTurnId,
+              model: "gpt-test-executed",
+              evidence: "provider-executed",
+              observedAt: now,
+            },
+            turnId: delegatedTurnId,
+            createdAt: now,
+          },
         ],
         checkpoints: [
           {
@@ -709,7 +726,10 @@ describe("OrchestratorMcpService", () => {
           driverKind,
           evidence: "runtime-session-bound",
         },
-        model: null,
+        model: {
+          model: "gpt-test-executed",
+          evidence: "provider-executed",
+        },
       });
       const dispatchCount = harness.dispatched.length;
       const cancelled = yield* harness.service.taskCancel(scope, delegated.taskId);

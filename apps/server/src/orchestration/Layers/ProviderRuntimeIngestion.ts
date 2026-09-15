@@ -58,6 +58,8 @@ import { canReplaceThreadTitle } from "../threadTitles.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
+const DELEGATION_CREATED_ACTIVITY = "delegation.created";
+const DELEGATION_MODEL_OBSERVED_ACTIVITY = "delegation.model-observed";
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -987,6 +989,64 @@ const make = Effect.gen(function* () {
       Effect.map((uuid) => CommandId.make(`provider:${event.eventId}:${tag}:${uuid}`)),
     );
 
+  const appendDelegationModelObserved = Effect.fnUntraced(function* (
+    event:
+      | Extract<ProviderRuntimeEvent, { readonly type: "turn.started" }>
+      | Extract<ProviderRuntimeEvent, { readonly type: "model.rerouted" }>,
+  ) {
+    const model = event.type === "turn.started" ? event.payload.model : event.payload.toModel;
+    const turnId = toTurnId(event.turnId);
+    if (!model || !turnId) return;
+
+    const turnOption = yield* projectionTurnRepository.getByTurnId({
+      threadId: event.threadId,
+      turnId,
+    });
+    if (Option.isNone(turnOption) || turnOption.value.pendingMessageId === null) return;
+    const delegatedMessageId = turnOption.value.pendingMessageId;
+
+    const lineageActivities = yield* projectionThreadActivityRepository.listByThreadId({
+      threadId: event.threadId,
+      activityKinds: [DELEGATION_CREATED_ACTIVITY],
+    });
+    const hasMatchingLineage = lineageActivities.some(
+      (activity) =>
+        Predicate.isObject(activity.payload) &&
+        activity.payload.taskId === event.threadId &&
+        activity.payload.childThreadId === event.threadId &&
+        activity.payload.delegatedMessageId === delegatedMessageId,
+    );
+    if (!hasMatchingLineage) return;
+
+    const id = `provider:delegation-model-observed:${event.eventId}`;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(id),
+      threadId: event.threadId,
+      activity: {
+        id: EventId.make(id),
+        tone: "info",
+        kind: DELEGATION_MODEL_OBSERVED_ACTIVITY,
+        summary:
+          event.type === "turn.started"
+            ? "Delegated task model observed"
+            : "Delegated task model rerouted",
+        payload: {
+          version: 1,
+          taskId: event.threadId,
+          delegatedMessageId,
+          delegatedTurnId: turnId,
+          model,
+          evidence: event.type === "turn.started" ? "provider-executed" : "provider-rerouted",
+          observedAt: event.createdAt,
+        },
+        turnId,
+        createdAt: event.createdAt,
+      },
+      createdAt: event.createdAt,
+    });
+  });
+
   const turnMessageIdsByTurnKey = yield* Cache.make<string, Set<MessageId>>({
     capacity: TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY,
     timeToLive: TURN_MESSAGE_IDS_BY_TURN_TTL,
@@ -1766,6 +1826,10 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      if (event.type === "turn.started" || event.type === "model.rerouted") {
+        yield* appendDelegationModelObserved(event);
       }
 
       const assistantDelta =

@@ -61,12 +61,14 @@ const DELEGATION_CREATED_ACTIVITY = "delegation.created";
 const DELEGATION_CANCEL_REQUESTED_ACTIVITY = "delegation.cancel-requested";
 const DELEGATION_CANCELLED_ACTIVITY = "delegation.cancelled";
 const DELEGATION_PROVIDER_BOUND_ACTIVITY = "delegation.provider-bound";
+const DELEGATION_MODEL_OBSERVED_ACTIVITY = "delegation.model-observed";
 const DELEGATION_ACTIVITY_VERSION = 1 as const;
 const TASK_ACTIVITY_KINDS = [
   DELEGATION_CREATED_ACTIVITY,
   DELEGATION_CANCEL_REQUESTED_ACTIVITY,
   DELEGATION_CANCELLED_ACTIVITY,
   DELEGATION_PROVIDER_BOUND_ACTIVITY,
+  DELEGATION_MODEL_OBSERVED_ACTIVITY,
   "provider.turn.start.failed",
   "provider.turn.interrupt.failed",
   "approval.requested",
@@ -116,6 +118,16 @@ interface DelegationProviderBoundPayload {
   readonly providerInstanceId: OrchestratorMcpRequestedIdentity["providerInstanceId"];
   readonly driverKind: OrchestratorMcpRequestedIdentity["driverKind"];
   readonly providerConfigFingerprint: string;
+  readonly observedAt: string;
+}
+
+interface DelegationModelObservedPayload {
+  readonly version: typeof DELEGATION_ACTIVITY_VERSION;
+  readonly taskId: ThreadId;
+  readonly delegatedMessageId: MessageId;
+  readonly delegatedTurnId: TurnId;
+  readonly model: string;
+  readonly evidence: "provider-executed" | "provider-rerouted";
   readonly observedAt: string;
 }
 
@@ -306,6 +318,35 @@ function findObservedProvider(
       typeof payload.observedAt === "string"
     ) {
       return payload as unknown as DelegationProviderBoundPayload;
+    }
+  }
+  return null;
+}
+
+function findObservedModel(
+  thread: OrchestrationThread,
+  lineage: DelegationCreatedPayload,
+  delegatedTurnId: TurnId,
+): DelegationModelObservedPayload | null {
+  for (let index = thread.activities.length - 1; index >= 0; index--) {
+    const activity = thread.activities[index]!;
+    if (
+      activity.kind !== DELEGATION_MODEL_OBSERVED_ACTIVITY ||
+      !Predicate.isObject(activity.payload)
+    ) {
+      continue;
+    }
+    const payload = activity.payload;
+    if (
+      payload.version === DELEGATION_ACTIVITY_VERSION &&
+      payload.taskId === lineage.taskId &&
+      payload.delegatedMessageId === lineage.delegatedMessageId &&
+      payload.delegatedTurnId === delegatedTurnId &&
+      typeof payload.model === "string" &&
+      (payload.evidence === "provider-executed" || payload.evidence === "provider-rerouted") &&
+      typeof payload.observedAt === "string"
+    ) {
+      return payload as unknown as DelegationModelObservedPayload;
     }
   }
   return null;
@@ -741,11 +782,21 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               evidence: "runtime-session-bound" as const,
               observedAt: providerEvidence.observedAt,
             };
+      const modelEvidence =
+        delegatedTurnId === null ? null : findObservedModel(thread, lineage, delegatedTurnId);
+      const observedModel =
+        observedProvider === null || modelEvidence === null
+          ? null
+          : {
+              model: modelEvidence.model,
+              evidence: modelEvidence.evidence,
+              observedAt: modelEvidence.observedAt,
+            };
       return {
         taskId,
         status,
         requested: lineage.requested,
-        observed: { provider: observedProvider, model: null },
+        observed: { provider: observedProvider, model: observedModel },
         lineage: {
           taskId,
           parentEnvironmentId: scope.environmentId,

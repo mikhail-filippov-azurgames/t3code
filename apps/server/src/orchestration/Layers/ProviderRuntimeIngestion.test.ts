@@ -464,6 +464,107 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBe("turn failed");
   });
 
+  it("persists provider-reported model evidence for the exact delegated turn", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("delegated-turn-1");
+    const messageId = asMessageId("delegated-message-1");
+    const providerInstanceId = ProviderInstanceId.make("opencode");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("cmd-delegation-lineage"),
+      threadId,
+      activity: {
+        id: asEventId("delegation-lineage"),
+        tone: "info",
+        kind: "delegation.created",
+        summary: "Delegated task created",
+        payload: {
+          version: 1,
+          taskId: threadId,
+          childThreadId: threadId,
+          delegatedMessageId: messageId,
+        },
+        turnId: null,
+        createdAt,
+      },
+      createdAt,
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("cmd-delegated-turn-start"),
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: "Reply with CHILD_OK",
+        attachments: [],
+      },
+      modelSelection: {
+        instanceId: providerInstanceId,
+        model: "opencode-go/deepseek-v4-flash",
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt,
+    });
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("evt-delegated-turn-started"),
+        provider: ProviderDriverKind.make("opencode"),
+        providerInstanceId,
+        threadId,
+        createdAt,
+        turnId,
+        payload: { model: "opencode-go/deepseek-v4-flash" },
+      },
+    ]);
+
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.find((activity) => activity.kind === "delegation.model-observed")?.payload,
+    ).toMatchObject({
+      taskId: threadId,
+      delegatedMessageId: messageId,
+      delegatedTurnId: turnId,
+      model: "opencode-go/deepseek-v4-flash",
+      evidence: "provider-executed",
+    });
+
+    await harness.emitAndDrain([
+      {
+        type: "model.rerouted",
+        eventId: asEventId("evt-delegated-model-rerouted"),
+        provider: ProviderDriverKind.make("opencode"),
+        providerInstanceId,
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId,
+        payload: {
+          fromModel: "opencode-go/deepseek-v4-flash",
+          toModel: "opencode-go/deepseek-v4-pro",
+          reason: "upstream reroute",
+        },
+      },
+    ]);
+
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.findLast((activity) => activity.kind === "delegation.model-observed")
+        ?.payload,
+    ).toMatchObject({
+      taskId: threadId,
+      delegatedMessageId: messageId,
+      delegatedTurnId: turnId,
+      model: "opencode-go/deepseek-v4-pro",
+      evidence: "provider-rerouted",
+    });
+  });
+
   it.each([
     { delivery: "buffered", responseStreamingMode: "paragraph" as const },
     { delivery: "streamed", responseStreamingMode: "token" as const },
