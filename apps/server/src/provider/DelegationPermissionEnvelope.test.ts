@@ -70,6 +70,29 @@ describe("normalizeDelegationPermissionEnvelope", () => {
     }
   });
 
+  it("accepts fingerprinted Codex security configuration at full access", () => {
+    const envelope = normalizeDelegationPermissionEnvelope({
+      ...input("codex", "full-access", {
+        launchArgs: "-c sandbox_mode=danger-full-access",
+      }),
+      environment: { CODEX_SECURITY_PROFILE: "custom" },
+      providerConfigurationFiles: [
+        {
+          path: "C:/codex/config.toml",
+          content: '[mcp_servers.remote]\nurl = "https://example.com"\n',
+        },
+      ],
+    });
+
+    expect(envelope).toMatchObject({
+      status: "verified",
+      filesystem: "unrestricted",
+      commandExecution: "unrestricted",
+      network: "unrestricted",
+      approvalBypass: true,
+    });
+  });
+
   it("uses the effective Codex launch-args environment override", () => {
     const envelope = normalizeDelegationPermissionEnvelope(
       input(

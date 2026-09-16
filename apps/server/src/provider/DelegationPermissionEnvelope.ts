@@ -198,6 +198,10 @@ function providerConfigurationReason(input: DelegationPermissionEnvelopeInput): 
   if ((input.driverKind === "codex" || input.driverKind === "claudeAgent") && files === undefined) {
     return `${input.driverKind} provider configuration files were not inspected.`;
   }
+  // A full-access Codex runtime is already the top authority envelope. Provider
+  // configuration cannot broaden it, while the raw files remain fingerprinted
+  // below so a configuration change still invalidates an accepted delegation.
+  if (input.driverKind === "codex" && input.runtimeMode === "full-access") return undefined;
   for (const file of files ?? []) {
     const content = file.content?.trim();
     if (!content) continue;
@@ -449,6 +453,9 @@ function normalizedRuntimeForDriver(input: DelegationPermissionEnvelopeInput):
   | { readonly reason: string } {
   switch (input.driverKind) {
     case "codex": {
+      if (input.runtimeMode === "full-access") {
+        return { runtime: runtimeEnvelope("full-access"), externalTools: [] };
+      }
       const reason = unverifiedCodexReason(input);
       return reason === undefined
         ? { runtime: runtimeEnvelope(input.runtimeMode), externalTools: [] }
@@ -504,6 +511,7 @@ export function normalizeDelegationPermissionEnvelope(
   if (configurationReason !== undefined) return unverifiable(configurationReason);
   for (const [name] of Object.entries(environment)) {
     if (
+      !(input.driverKind === "codex" && input.runtimeMode === "full-access") &&
       SECURITY_TERM.test(name) &&
       name !== "T3CODE_CODEX_LAUNCH_ARGS" &&
       name !== "OPENCODE_CONFIG_CONTENT"
