@@ -62,8 +62,8 @@ describe("DesktopAssets", () => {
 
       const icons = yield* assets.iconPaths;
 
-      assert.match(Option.getOrThrow(icons.ico), /assets\/dev\/blueprint-windows\.ico$/);
-      assert.match(Option.getOrThrow(icons.png), /assets\/dev\/blueprint-universal-1024\.png$/);
+      assert.match(Option.getOrThrow(icons.ico), /assets\/dev\/ft3-orchestration-windows\.ico$/);
+      assert.match(Option.getOrThrow(icons.png), /assets\/dev\/ft3-orchestration-1024\.png$/);
       assert.isTrue(Option.isNone(icons.icns));
     }),
   );
