@@ -7,6 +7,7 @@ import {
   ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
+  MuseCodeSettings,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
@@ -19,6 +20,7 @@ const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+const decodeMuseCodeSettings = Schema.decodeUnknownSync(MuseCodeSettings);
 
 describe("ServerSettings default permissions", () => {
   it("keeps full access for settings saved before a default was configured", () => {
@@ -662,7 +664,35 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.claudeAgent.enabled).toBe(true);
     expect(decoded.providers.cursor.enabled).toBe(false);
     expect(decoded.providers.grok.enabled).toBe(false);
+    expect(decoded.providers.museCode.enabled).toBe(false);
     expect(decoded.providers.opencode.enabled).toBe(false);
+  });
+
+  it("keeps Muse Code on the subscription-only WSL defaults", () => {
+    expect(decodeMuseCodeSettings({})).toMatchObject({
+      enabled: false,
+      binaryPath: "muse",
+      wslDistribution: "",
+      homePath: "",
+      customModels: [],
+    });
+    expect(
+      decodeServerSettingsPatch({
+        providers: {
+          museCode: {
+            enabled: true,
+            binaryPath: "/opt/muse/bin/muse",
+            wslDistribution: "Ubuntu-24.04",
+            homePath: "/home/muse",
+          },
+        },
+      }).providers?.museCode,
+    ).toMatchObject({
+      enabled: true,
+      binaryPath: "/opt/muse/bin/muse",
+      wslDistribution: "Ubuntu-24.04",
+      homePath: "/home/muse",
+    });
   });
 
   it("keeps Cursor enabled when an existing user explicitly opted in", () => {
