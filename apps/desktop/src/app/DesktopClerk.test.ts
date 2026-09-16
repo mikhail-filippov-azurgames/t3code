@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { beforeEach, vi } from "vite-plus/test";
 
 const { createClerkBridgeMock, storageAdapter, storageMock } = vi.hoisted(() => ({
@@ -29,10 +30,16 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 
-const makeDesktopClerkLayer = (isDevelopment = true, events: string[] = []) => {
+const makeDesktopClerkLayer = (
+  isDevelopment = true,
+  events: string[] = [],
+  protocolLauncherPath?: string,
+) => {
   const environment = DesktopEnvironment.DesktopEnvironment.of({
     stateDir: "/tmp/t3-state",
     isDevelopment,
+    platform: "win32",
+    protocolLauncherPath: Option.fromNullishOr(protocolLauncherPath),
     appDataDirectory: "/tmp/app-data",
     userDataDirName: isDevelopment ? "t3code-dev" : "t3code",
     legacyUserDataDirName: isDevelopment ? "T3 Code (Dev)" : "T3 Code (Alpha)",
@@ -43,6 +50,11 @@ const makeDesktopClerkLayer = (isDevelopment = true, events: string[] = []) => {
     setPath: (name: string, value: string) =>
       Effect.sync(() => {
         events.push(`setPath:${name}:${value}`);
+      }),
+    setAsDefaultProtocolClient: (protocol: string, path?: string) =>
+      Effect.sync(() => {
+        events.push(`setAsDefaultProtocolClient:${protocol}:${path ?? ""}`);
+        return true;
       }),
   } as unknown as ElectronApp.ElectronApp["Service"];
 
@@ -91,6 +103,26 @@ describe("DesktopClerk", () => {
       assert.deepEqual(events, ["setPath:userData:/tmp/app-data/t3code-dev", "createClerkBridge"]);
       storageMock.mockClear();
       createClerkBridgeMock.mockClear();
+    });
+  });
+
+  it.effect("restores a custom protocol launcher after Clerk registers Electron", () => {
+    const cleanup = vi.fn();
+    const events: string[] = [];
+    storageMock.mockReturnValue(storageAdapter);
+    createClerkBridgeMock.mockImplementation(() => {
+      events.push("createClerkBridge");
+      return { cleanup, isPrimaryInstance: true };
+    });
+
+    return Effect.gen(function* () {
+      yield* Effect.scoped(Layer.build(makeDesktopClerkLayer(true, events, "C:/ft3/ft3.exe")));
+
+      assert.deepEqual(events, [
+        "setPath:userData:/tmp/app-data/t3code-dev",
+        "createClerkBridge",
+        "setAsDefaultProtocolClient:t3code-dev:C:/ft3/ft3.exe",
+      ]);
     });
   });
 

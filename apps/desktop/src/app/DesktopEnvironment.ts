@@ -78,6 +78,7 @@ export class DesktopEnvironment extends Context.Service<
     readonly branding: DesktopAppBranding;
     readonly displayName: string;
     readonly appUserModelId: string;
+    readonly protocolLauncherPath: Option.Option<string>;
     readonly linuxDesktopEntryName: string;
     readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
@@ -235,6 +236,7 @@ const make = Effect.fn("desktop.environment.make")(function* (
     appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
       isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
     ),
+    protocolLauncherPath: config.protocolLauncherPathOverride,
     linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
     linuxWmClass: isDevelopment ? "t3code-dev" : "t3code",
     linuxApplicationsDir,

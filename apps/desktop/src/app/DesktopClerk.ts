@@ -119,6 +119,16 @@ export const make = Effect.gen(function* () {
       }).pipe(Effect.orDie),
   );
 
+  // Clerk registers its own Electron executable as the OAuth protocol handler
+  // while creating the bridge. Custom launchers need to restore themselves
+  // afterwards so deep links retain their isolated home and runtime settings.
+  if (environment.platform === "win32" && Option.isSome(environment.protocolLauncherPath)) {
+    yield* electronApp.setAsDefaultProtocolClient(
+      ElectronProtocol.getDesktopScheme(environment.isDevelopment),
+      environment.protocolLauncherPath.value,
+    );
+  }
+
   return DesktopClerk.of({
     configure: Effect.gen(function* () {
       const electronApp = yield* ElectronApp.ElectronApp;
