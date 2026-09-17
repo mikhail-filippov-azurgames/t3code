@@ -73,10 +73,18 @@ function configuredMcpToolAvailability(
   appServerArgs: ReadonlyArray<string> | undefined,
   mcpCapabilities: ReadonlySet<string> | undefined,
 ): T3CodeToolAvailability {
-  if (!hasConfiguredMcpServer(appServerArgs)) return { browser: false, device: false };
+  if (!hasConfiguredMcpServer(appServerArgs)) {
+    return { browser: false, device: false, orchestration: false };
+  }
   // Callers predating the capability set attached the browser toolkit only.
-  if (mcpCapabilities === undefined) return { browser: true, device: false };
-  return { browser: mcpCapabilities.has("preview"), device: mcpCapabilities.has("device") };
+  if (mcpCapabilities === undefined) {
+    return { browser: true, device: false, orchestration: false };
+  }
+  return {
+    browser: mcpCapabilities.has("preview"),
+    device: mcpCapabilities.has("device"),
+    orchestration: mcpCapabilities.has("orchestration"),
+  };
 }
 
 export const CodexResumeCursorSchema = Schema.Struct({

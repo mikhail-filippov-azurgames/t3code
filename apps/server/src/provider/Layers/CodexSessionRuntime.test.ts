@@ -634,6 +634,23 @@ describe("T3 browser developer instructions", () => {
       /preview_open/,
     );
   });
+
+  it("includes orchestration guidance only when that capability is attached", () => {
+    const enabled = buildCodexDeveloperInstructions("default", runtime, {
+      browser: false,
+      device: false,
+      orchestration: true,
+    });
+    const disabled = buildCodexDeveloperInstructions("default", runtime, {
+      browser: false,
+      device: false,
+      orchestration: false,
+    });
+
+    NodeAssert.match(enabled, /<orchestration>/);
+    NodeAssert.match(enabled, /orchestrator_capabilities/);
+    NodeAssert.doesNotMatch(disabled, /<orchestration>/);
+  });
 });
 
 describe("hasConfiguredMcpServer", () => {

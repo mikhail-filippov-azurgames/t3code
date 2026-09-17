@@ -1064,7 +1064,14 @@ export function makeCursorAdapter(
                 ...promptParts,
                 {
                   type: "text",
-                  text: buildRuntimeInstructions({ harness: "Cursor", model: resolvedModel }),
+                  text: buildRuntimeInstructions({
+                    harness: "Cursor",
+                    model: resolvedModel,
+                    orchestrationAvailable:
+                      McpProviderSession.readMcpProviderSession(input.threadId)?.capabilities.has(
+                        "orchestration",
+                      ) === true,
+                  }),
                 },
               ],
             })

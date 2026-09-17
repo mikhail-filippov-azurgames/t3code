@@ -3223,6 +3223,10 @@ export function makeOpenCodeAdapter(
                 system: buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: `${parsedModel.providerID}/${parsedModel.modelID}`,
+                  orchestrationAvailable:
+                    McpProviderSession.readMcpProviderSession(input.threadId)?.capabilities.has(
+                      "orchestration",
+                    ) === true,
                 }),
                 parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
               },

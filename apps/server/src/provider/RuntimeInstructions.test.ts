@@ -25,4 +25,18 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("through the Cursor harness.");
     expect(instructions).not.toContain("reasoning effort");
   });
+
+  it("describes durable delegation only when orchestration is available", () => {
+    const enabled = buildRuntimeInstructions({
+      harness: "Codex",
+      orchestrationAvailable: true,
+    });
+    const disabled = buildRuntimeInstructions({ harness: "Codex" });
+
+    expect(enabled).toContain("durable cross-provider child threads");
+    expect(enabled).toContain("call orchestrator_capabilities");
+    expect(enabled).toContain("For small single-owner tasks, work directly");
+    expect(disabled).not.toContain("<orchestration>");
+    expect(disabled).not.toContain("orchestrator_capabilities");
+  });
 });
