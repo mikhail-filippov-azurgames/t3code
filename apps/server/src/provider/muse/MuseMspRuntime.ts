@@ -61,6 +61,7 @@ export function resolveMuseServeBinary(input: {
   readonly binaryPath: string;
   readonly platform: NodeJS.Platform;
   readonly pinnedVersion?: string;
+  readonly pathEnv?: string;
 }): Effect.Effect<string, ProviderAdapterRequestError, FileSystem.FileSystem | Path.Path> {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -81,6 +82,18 @@ export function resolveMuseServeBinary(input: {
       if (resolved !== undefined) {
         return resolved;
       }
+      if (!input.binaryPath.includes("\\") && !input.binaryPath.includes("/")) {
+        const viaPath = yield* resolveWindowsMuseOnPath({
+          command: input.binaryPath,
+          pathEnv: input.pathEnv ?? process.env.PATH,
+          fileSystem,
+          path,
+          ...(input.pinnedVersion === undefined ? {} : { pinnedVersion: input.pinnedVersion }),
+        });
+        if (viaPath !== undefined) {
+          return viaPath;
+        }
+      }
     }
     return yield* new ProviderAdapterRequestError({
       provider: DRIVER,
@@ -89,6 +102,46 @@ export function resolveMuseServeBinary(input: {
         `No runnable Muse binary at '${input.binaryPath}'. ` +
         `Point binaryPath at the native muse .exe; launcher scripts are not spawnable.`,
     });
+  });
+}
+
+/** Resolve a bare command through PATH, then reuse the launcher scan. */
+function resolveWindowsMuseOnPath(input: {
+  readonly command: string;
+  readonly pathEnv: string | undefined;
+  readonly pinnedVersion?: string;
+  readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
+}): Effect.Effect<string | undefined, never, never> {
+  return Effect.gen(function* () {
+    if (input.pathEnv === undefined || input.pathEnv === "") {
+      return undefined;
+    }
+    for (const dir of input.pathEnv.split(";")) {
+      const trimmed = dir.trim().replace(/^"|"$/g, "");
+      if (trimmed === "") {
+        continue;
+      }
+      const direct = input.path.join(trimmed, `${input.command}.exe`);
+      if (yield* Effect.orElseSucceed(input.fileSystem.exists(direct), () => false)) {
+        return direct;
+      }
+      for (const extension of [".cmd", ".bat"]) {
+        const launcher = input.path.join(trimmed, `${input.command}${extension}`);
+        if (yield* Effect.orElseSucceed(input.fileSystem.exists(launcher), () => false)) {
+          const resolved = yield* resolveWindowsMuseExe({
+            binaryPath: launcher,
+            fileSystem: input.fileSystem,
+            path: input.path,
+            ...(input.pinnedVersion === undefined ? {} : { pinnedVersion: input.pinnedVersion }),
+          });
+          if (resolved !== undefined) {
+            return resolved;
+          }
+        }
+      }
+    }
+    return undefined;
   });
 }
 
@@ -129,7 +182,10 @@ export function readMuseVersionPin(input: {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const pinPath = path.join(path.dirname(input.binaryPath), ".muse-version");
-    const content = yield* Effect.orElseSucceed(fileSystem.readFileString(pinPath), () => undefined);
+    const content = yield* Effect.orElseSucceed(
+      fileSystem.readFileString(pinPath),
+      () => undefined,
+    );
     if (content === undefined) {
       return undefined;
     }

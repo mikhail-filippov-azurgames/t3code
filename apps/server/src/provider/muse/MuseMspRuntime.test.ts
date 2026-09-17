@@ -47,7 +47,12 @@ describe("decodeMuseModelRows", () => {
     expect(
       decodeMuseModelRows({
         models: [
-          { modelId: "muse-spark", displayLabel: "Muse Spark", isDefault: true, providerId: "meta" },
+          {
+            modelId: "muse-spark",
+            displayLabel: "Muse Spark",
+            isDefault: true,
+            providerId: "meta",
+          },
           { modelId: "", displayLabel: "blank" },
           { displayLabel: "no id" },
           "garbage",
@@ -120,7 +125,25 @@ describe("resolveMuseServeBinary", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it("fails closed on posix without launcher probing", () =>
+  it.effect("resolves a bare command through a fake PATH on win32", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-muse-path-" });
+      yield* fileSystem.writeFileString(path.join(dir, "muse.cmd"), "launcher");
+      yield* fileSystem.writeFileString(path.join(dir, "muse-bin-9.9.9.exe"), "binary");
+
+      const resolved = yield* resolveMuseServeBinary({
+        binaryPath: "muse",
+        platform: "win32",
+        pathEnv: `/nothing;${dir}`,
+      });
+
+      expect(resolved).toBe(path.join(dir, "muse-bin-9.9.9.exe"));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails closed on posix without launcher probing", () =>
     Effect.gen(function* () {
       const failure = yield* Effect.flip(
         resolveMuseServeBinary({ binaryPath: "/missing/muse", platform: "linux" }),

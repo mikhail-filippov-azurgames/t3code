@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 
 import { ProviderInstanceId, ProviderSetupError } from "@t3tools/contracts";
 
@@ -22,7 +23,7 @@ describe("makeMuseCodeAuth", () => {
       expect(state.phase).toBe("waiting");
       expect(state.flowId).toEqual(expect.any(String));
       expect(state.message).toContain("muse login");
-    }).pipe(Effect.provide(NodeServices.layer), Effect.provide(NodeCrypto.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("rejects completion for an unknown flow without spawning", () =>
@@ -33,7 +34,7 @@ describe("makeMuseCodeAuth", () => {
       );
 
       expect(failure).toBeInstanceOf(ProviderSetupError);
-    }).pipe(Effect.provide(NodeServices.layer), Effect.provide(NodeCrypto.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("cancels an opened flow", () =>
@@ -43,7 +44,7 @@ describe("makeMuseCodeAuth", () => {
       const cancelled = yield* auth.cancel("owner-1", opened.flowId as string);
 
       expect(cancelled.phase).toBe("cancelled");
-    }).pipe(Effect.provide(NodeServices.layer), Effect.provide(NodeCrypto.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
   it.effect("detects the logout prompt command", () =>
@@ -52,6 +53,6 @@ describe("makeMuseCodeAuth", () => {
 
       expect(auth.isLogoutPrompt?.("/logout", false)).toBe(true);
       expect(auth.isLogoutPrompt?.("/login", false)).toBe(false);
-    }).pipe(Effect.provide(NodeServices.layer), Effect.provide(NodeCrypto.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });
