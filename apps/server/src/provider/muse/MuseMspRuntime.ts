@@ -27,7 +27,7 @@ const DRIVER = "museCode";
 export const MUSE_API_KEY_ENV_VARS = ["META_API_KEY", "MODEL_API_KEY"] as const;
 
 /** Client identity forwarded into the MSP `initialize` handshake. */
-export const MUSE_CLIENT_INFO = { name: "t3-code-muse", version: "0.0.0" } as const;
+export const MUSE_CLIENT_INFO = { name: "t3_code_muse", version: "0.0.0" } as const;
 
 /**
  * Copy `base` without API-key entries. Reports stripped names so the driver

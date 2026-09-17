@@ -6,11 +6,18 @@ import * as Path from "effect/Path";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
+  MUSE_CLIENT_INFO,
   decodeMuseModelRows,
   readMuseVersionPin,
   resolveMuseServeBinary,
   stripMuseApiKeys,
 } from "./MuseMspRuntime.ts";
+
+describe("MUSE_CLIENT_INFO", () => {
+  it("uses a handshake-legal machine identifier", () => {
+    expect(MUSE_CLIENT_INFO.name).toMatch(/^[a-z0-9_]+$/);
+  });
+});
 
 describe("stripMuseApiKeys", () => {
   it("removes both API-key entries and reports them", () => {
