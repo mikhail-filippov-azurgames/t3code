@@ -371,6 +371,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         if (selected.raw !== undefined && selected.effort === undefined) {
           return yield* invalidEffortError(selected.raw);
         }
+        // SessionStartParams carries no effort: the tier is per-turn only.
         const session = yield* Effect.tryPromise({
           try: () =>
             resumeSessionId !== undefined
@@ -378,7 +379,6 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
               : host.client.startSession({
                   ...(input.cwd ? { workspaceRoot: input.cwd } : {}),
                   ...(input.modelSelection ? { modelId: input.modelSelection.model } : {}),
-                  ...(selected.effort ? { effort: selected.effort } : {}),
                 }),
           catch: (cause) =>
             new ProviderAdapterRequestError({
@@ -447,6 +447,17 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           return yield* invalidEffortError(turnSelected.raw);
         }
         const effort = turnSelected.effort ?? record.effort;
+        if (turnSelected.effort !== undefined) {
+          yield* Ref.update(sessionsRef, (sessions) => {
+            const current = sessions.get(input.threadId);
+            if (current === undefined) {
+              return sessions;
+            }
+            const next = new Map(sessions);
+            next.set(input.threadId, { ...current, effort: turnSelected.effort });
+            return next;
+          });
+        }
         const turn = yield* Effect.tryPromise({
           try: () =>
             record.session.sendUserTurn({
