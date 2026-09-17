@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
+  decodeMuseModelRows,
   readMuseVersionPin,
   resolveMuseServeBinary,
   stripMuseApiKeys,
@@ -31,6 +32,30 @@ describe("stripMuseApiKeys", () => {
 
     expect(env).toEqual({ PATH: "/bin", HOME: "/home/user" });
     expect(stripped).toEqual([]);
+  });
+});
+
+describe("decodeMuseModelRows", () => {
+  it("keeps well-formed rows and drops malformed ones", () => {
+    expect(
+      decodeMuseModelRows({
+        models: [
+          { modelId: "muse-spark", displayLabel: "Muse Spark", isDefault: true, providerId: "meta" },
+          { modelId: "", displayLabel: "blank" },
+          { displayLabel: "no id" },
+          "garbage",
+        ],
+        providerId: "meta",
+      }),
+    ).toEqual([
+      { modelId: "muse-spark", displayLabel: "Muse Spark", isDefault: true, providerId: "meta" },
+    ]);
+  });
+
+  it("returns empty for non-catalog payloads", () => {
+    expect(decodeMuseModelRows(undefined)).toEqual([]);
+    expect(decodeMuseModelRows({})).toEqual([]);
+    expect(decodeMuseModelRows({ models: "muse-spark" })).toEqual([]);
   });
 });
 

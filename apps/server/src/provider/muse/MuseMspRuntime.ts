@@ -8,7 +8,13 @@
  *
  * @module provider/muse/MuseMspRuntime
  */
-import { MuseClient } from "@muse-code/sdk";
+import {
+  MuseClient,
+  readSessionDurability,
+  spawnMspConnection,
+  type Connection,
+  type SpawnedMspConnection,
+} from "@muse-code/sdk";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -132,27 +138,98 @@ export function readMuseVersionPin(input: {
   });
 }
 
+/** One owned `muse serve` host with the raw command seam retained. */
+export interface MuseHost {
+  readonly client: MuseClient;
+  readonly connection: Connection;
+  readonly initializeResult: SpawnedMspConnection["initializeResult"];
+  readonly fingerprintWarning: SpawnedMspConnection["fingerprintWarning"];
+  readonly close: () => Promise<void>;
+}
+
 /** Spawn one owned `muse serve` host with a sanitized environment. */
-export function spawnMuseClient(input: {
+export function spawnMuseHost(input: {
   readonly museBin: string;
   readonly env: NodeJS.ProcessEnv;
   readonly clientInfo?: typeof MUSE_CLIENT_INFO;
   readonly onStderr?: (chunk: string) => void;
-}): Effect.Effect<MuseClient, ProviderAdapterRequestError> {
+}): Effect.Effect<MuseHost, ProviderAdapterRequestError> {
   return Effect.tryPromise({
-    try: () =>
-      MuseClient.spawn({
-        museBin: input.museBin,
+    try: async () => {
+      const handshake = spawnMspConnection({
+        command: input.museBin,
         args: ["serve"],
         env: input.env,
-        clientInfo: input.clientInfo ?? MUSE_CLIENT_INFO,
         ...(input.onStderr === undefined ? {} : { onStderr: input.onStderr }),
-      }),
+      });
+      const spawned = await handshake.initialize({
+        clientInfo: input.clientInfo ?? MUSE_CLIENT_INFO,
+      });
+      const client = new MuseClient(spawned.connection, {
+        durability: readSessionDurability(spawned.initializeResult),
+        host: spawned,
+      });
+      return {
+        client,
+        connection: spawned.connection,
+        initializeResult: spawned.initializeResult,
+        fingerprintWarning: spawned.fingerprintWarning,
+        close: () => spawned.close().then(() => undefined),
+      } satisfies MuseHost;
+    },
     catch: (cause) =>
       new ProviderAdapterRequestError({
         provider: DRIVER,
         method: "msp/spawn",
         detail: `Could not start 'muse serve': ${cause instanceof Error ? cause.message : String(cause)}`,
+        ...(cause instanceof Error ? { cause } : {}),
+      }),
+  });
+}
+
+/** Narrow catalog row composed from the wire shape, never restated. */
+export interface MuseModelRow {
+  readonly modelId: string;
+  readonly displayLabel: string;
+  readonly isDefault: boolean;
+  readonly providerId: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Keep well-formed catalog rows; malformed rows are dropped, not guessed. */
+export function decodeMuseModelRows(value: unknown): ReadonlyArray<MuseModelRow> {
+  if (!isRecord(value) || !Array.isArray(value.models)) {
+    return [];
+  }
+  const rows: Array<MuseModelRow> = [];
+  for (const entry of value.models) {
+    if (!isRecord(entry) || typeof entry.modelId !== "string" || entry.modelId === "") {
+      continue;
+    }
+    rows.push({
+      modelId: entry.modelId,
+      displayLabel: typeof entry.displayLabel === "string" ? entry.displayLabel : entry.modelId,
+      isDefault: entry.isDefault === true,
+      providerId: typeof entry.providerId === "string" ? entry.providerId : "",
+    });
+  }
+  return rows;
+}
+
+/** Raw `model/list` query proving the host's catalog identity. */
+export function listMuseModels(
+  host: Pick<MuseHost, "connection">,
+): Effect.Effect<ReadonlyArray<MuseModelRow>, ProviderAdapterRequestError> {
+  return Effect.tryPromise({
+    try: async () => decodeMuseModelRows(await host.connection.command("model/list", {})),
+    catch: (cause) =>
+      new ProviderAdapterRequestError({
+        provider: DRIVER,
+        method: "model/list",
+        detail: `Could not list Muse models: ${cause instanceof Error ? cause.message : String(cause)}`,
         ...(cause instanceof Error ? { cause } : {}),
       }),
   });
