@@ -668,11 +668,10 @@ describe("provider enabled defaults", () => {
     expect(decoded.providers.opencode.enabled).toBe(false);
   });
 
-  it("keeps Muse Code on the subscription-only WSL defaults", () => {
+  it("keeps Muse Code on the subscription-only native defaults", () => {
     expect(decodeMuseCodeSettings({})).toMatchObject({
       enabled: false,
       binaryPath: "muse",
-      wslDistribution: "",
       homePath: "",
       customModels: [],
     });
@@ -682,7 +681,6 @@ describe("provider enabled defaults", () => {
           museCode: {
             enabled: true,
             binaryPath: "/opt/muse/bin/muse",
-            wslDistribution: "Ubuntu-24.04",
             homePath: "/home/muse",
           },
         },
@@ -690,7 +688,6 @@ describe("provider enabled defaults", () => {
     ).toMatchObject({
       enabled: true,
       binaryPath: "/opt/muse/bin/muse",
-      wslDistribution: "Ubuntu-24.04",
       homePath: "/home/muse",
     });
   });

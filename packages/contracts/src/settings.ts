@@ -742,17 +742,8 @@ export const MuseCodeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Muse binary path",
         description:
-          "Path to Meta's Muse Code CLI. On Windows this path is resolved inside WSL.",
+          "Path to Meta's Muse Code CLI, resolved natively on the host OS.",
         providerSettingsForm: { placeholder: "muse", clearWhenEmpty: "omit" },
-      }),
-    ),
-    wslDistribution: TrimmedString.pipe(
-      Schema.withDecodingDefault(Effect.succeed("")),
-      Schema.annotateKey({
-        title: "WSL distribution",
-        description:
-          "Windows only. Leave blank to use the default WSL distribution where Muse Code is installed and signed in.",
-        providerSettingsForm: { placeholder: "Ubuntu", clearWhenEmpty: "omit" },
       }),
     ),
     homePath: TrimmedString.pipe(
@@ -760,7 +751,7 @@ export const MuseCodeSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Muse home",
         description:
-          "Optional Linux/macOS home directory containing the Muse Code subscription login. API-key profiles are rejected.",
+          "Optional home directory containing the Muse Code subscription login. API-key profiles are rejected.",
         providerSettingsForm: { placeholder: "/home/user", clearWhenEmpty: "omit" },
       }),
     ),
@@ -770,7 +761,7 @@ export const MuseCodeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "wslDistribution", "homePath"],
+    order: ["binaryPath", "homePath"],
   },
 );
 export type MuseCodeSettings = typeof MuseCodeSettings.Type;
@@ -1465,7 +1456,6 @@ export const ServerSettingsPatch = Schema.Struct({
         Schema.Struct({
           enabled: Schema.optionalKey(Schema.Boolean),
           binaryPath: Schema.optionalKey(TrimmedString),
-          wslDistribution: Schema.optionalKey(TrimmedString),
           homePath: Schema.optionalKey(TrimmedString),
           customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
         }),
