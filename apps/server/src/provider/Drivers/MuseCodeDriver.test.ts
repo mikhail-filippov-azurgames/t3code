@@ -14,9 +14,7 @@ describe("MuseCodeDriver", () => {
 
 describe("assertMuseSubscriptionEnv", () => {
   it.effect("passes a key-free environment", () =>
-    Effect.gen(function* () {
-      yield* assertMuseSubscriptionEnv({ instanceId: "muse", stripped: [] });
-    }),
+    assertMuseSubscriptionEnv({ instanceId: "muse", stripped: [] }),
   );
 
   it.effect("fails closed when API keys were stripped", () =>

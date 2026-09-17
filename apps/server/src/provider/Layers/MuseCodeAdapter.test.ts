@@ -1,6 +1,45 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { museChoiceForDecision } from "./MuseCodeAdapter.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
+
+import {
+  museChoiceForDecision,
+  museEffortForSelection,
+  parseMuseEffort,
+} from "./MuseCodeAdapter.ts";
+
+describe("parseMuseEffort", () => {
+  it("accepts the offered tiers and stays empty when absent", () => {
+    expect(parseMuseEffort(undefined)).toBeUndefined();
+    expect(parseMuseEffort("high")).toBe("high");
+    expect(parseMuseEffort("xhigh")).toBe("xhigh");
+  });
+
+  it("rejects tiers outside the offered set", () => {
+    expect(parseMuseEffort("ultra")).toBeUndefined();
+    expect(parseMuseEffort("")).toBeUndefined();
+  });
+});
+
+describe("museEffortForSelection", () => {
+  it("reads the reasoningEffort option", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("museCode"), "muse-spark-1.3", [
+      { id: "reasoningEffort", value: "low" },
+    ]);
+
+    expect(museEffortForSelection(selection)).toEqual({ raw: "low", effort: "low" });
+  });
+
+  it("reports unknown values for explicit rejection", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("museCode"), "muse-spark-1.3", [
+      { id: "reasoningEffort", value: "ultra" },
+    ]);
+
+    expect(museEffortForSelection(selection)).toEqual({ raw: "ultra", effort: undefined });
+    expect(museEffortForSelection(undefined)).toEqual({ raw: undefined, effort: undefined });
+  });
+});
 
 const CHOICES = [
   { choiceId: "approve", decision: "approved", scope: "once" },

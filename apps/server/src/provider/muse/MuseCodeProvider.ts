@@ -56,10 +56,30 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 
+/** Reasoning tiers the MSP host accepts per session and turn. */
+const MUSE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [
+    {
+      id: "reasoningEffort",
+      label: "Reasoning",
+      type: "select",
+      options: [
+        { id: "low", label: "Low" },
+        { id: "medium", label: "Medium", isDefault: true },
+        { id: "high", label: "High" },
+        { id: "xhigh", label: "Extra High" },
+      ],
+      currentValue: "medium",
+    },
+  ],
+});
+
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const CATALOG_PROBE_TIMEOUT_MS = 20_000;
 
-export function museModelsFromRows(rows: ReadonlyArray<MuseModelRow>): ReadonlyArray<ServerProviderModel> {
+export function museModelsFromRows(
+  rows: ReadonlyArray<MuseModelRow>,
+): ReadonlyArray<ServerProviderModel> {
   const seen = new Set<string>();
   const models: Array<ServerProviderModel> = [];
   for (const row of rows) {
@@ -72,7 +92,7 @@ export function museModelsFromRows(rows: ReadonlyArray<MuseModelRow>): ReadonlyA
       name: row.displayLabel || row.modelId,
       isCustom: false,
       ...(row.isDefault ? { isDefault: true } : {}),
-      capabilities: EMPTY_CAPABILITIES,
+      capabilities: MUSE_MODEL_CAPABILITIES,
     });
   }
   return models;
@@ -180,10 +200,11 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
     });
   }
 
-  const versionResult = yield* runMuseCliCommand(probeInput.binaryPath, ["--version"], environment).pipe(
-    Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS),
-    Effect.result,
-  );
+  const versionResult = yield* runMuseCliCommand(
+    probeInput.binaryPath,
+    ["--version"],
+    environment,
+  ).pipe(Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS), Effect.result);
 
   if (Result.isFailure(versionResult)) {
     const error = versionResult.failure;
@@ -255,12 +276,10 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
     const host = yield* spawnMuseHost({ museBin, env: hostEnv.env });
     yield* Effect.addFinalizer(() => Effect.promise(() => host.close()));
     return yield* listMuseModels(host);
-  }).pipe(
-    Effect.scoped,
-    Effect.timeoutOption(CATALOG_PROBE_TIMEOUT_MS),
-    Effect.exit,
-  );
-  const catalogRows = Exit.isSuccess(catalogExit) ? Option.getOrElse(catalogExit.value, () => []) : [];
+  }).pipe(Effect.scoped, Effect.timeoutOption(CATALOG_PROBE_TIMEOUT_MS), Effect.exit);
+  const catalogRows = Exit.isSuccess(catalogExit)
+    ? Option.getOrElse(catalogExit.value, () => [])
+    : [];
   const catalogFailed = Exit.isFailure(catalogExit) || Option.isNone(catalogExit.value);
   if (catalogFailed) {
     yield* Effect.logWarning("Muse MSP catalog probe failed or timed out.", {
@@ -271,7 +290,11 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
   const discoveredModels = museModelsFromRows(catalogRows);
   const models =
     discoveredModels.length > 0
-      ? providerModelsFromSettings(discoveredModels, museSettings.customModels ?? [], EMPTY_CAPABILITIES)
+      ? providerModelsFromSettings(
+          discoveredModels,
+          museSettings.customModels ?? [],
+          EMPTY_CAPABILITIES,
+        )
       : fallbackModels;
 
   if (hostEnv.hadApiKey) {
@@ -285,7 +308,8 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
         version,
         status: "error",
         auth: { status: "unknown" },
-        message: "Muse instance environment carries an API key; subscription provenance is unclear.",
+        message:
+          "Muse instance environment carries an API key; subscription provenance is unclear.",
       },
     });
   }
@@ -302,7 +326,8 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
         version,
         status: "error",
         auth,
-        message: "Muse CLI is installed but the subscription host did not answer. Run `muse login`.",
+        message:
+          "Muse CLI is installed but the subscription host did not answer. Run `muse login`.",
       },
     });
   }

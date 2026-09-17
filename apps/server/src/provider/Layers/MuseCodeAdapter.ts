@@ -11,6 +11,7 @@
  */
 import {
   EventId,
+  type ModelSelection,
   type ProviderApprovalDecision,
   ProviderDriverKind,
   type ProviderRuntimeEvent,
@@ -22,13 +23,9 @@ import {
   TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
-import type {
-  ApprovalDecisionInput,
-  Session,
-  Turn,
-  TurnOutcome,
-} from "@muse-code/sdk";
+import type { ApprovalDecisionInput, Session, Turn, TurnOutcome } from "@muse-code/sdk";
 import type { ApprovalRequestParams } from "@muse-code/sdk/dist/src/msp.js";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -56,10 +53,18 @@ interface MuseSessionRecord {
   readonly threadId: ThreadId;
   readonly cwd: string | undefined;
   readonly model: string | undefined;
+  readonly effort: MuseReasoningEffort | undefined;
   readonly createdAt: string;
   readonly turnIds: Array<string>;
   activeTurnId: string | undefined;
 }
+
+const invalidEffortError = (raw: string) =>
+  new ProviderAdapterValidationError({
+    provider: PROVIDER,
+    operation: "sendTurn",
+    issue: `Unsupported Muse reasoning effort: '${raw}'.`,
+  });
 
 interface PendingMuseApproval {
   readonly decision: Deferred.Deferred<ApprovalDecisionInput>;
@@ -85,13 +90,20 @@ function mspErrorText(cause: unknown): string {
 /** Map a T3 approval decision onto an offered MSP choice id. */
 export function museChoiceForDecision(
   decision: ProviderApprovalDecision,
-  choices: ReadonlyArray<{ readonly choiceId: string; readonly decision: string; readonly scope: string }>,
+  choices: ReadonlyArray<{
+    readonly choiceId: string;
+    readonly decision: string;
+    readonly scope: string;
+  }>,
 ): string | undefined {
   const first = (predicate: (choice: (typeof choices)[number]) => boolean) =>
     choices.find(predicate)?.choiceId;
   switch (decision) {
     case "accept":
-      return first((choice) => choice.decision === "approved") ?? first((choice) => choice.decision === "approvedForSession");
+      return (
+        first((choice) => choice.decision === "approved") ??
+        first((choice) => choice.decision === "approvedForSession")
+      );
     case "acceptForSession":
       return (
         first((choice) => choice.decision === "approvedForSession") ??
@@ -99,13 +111,17 @@ export function museChoiceForDecision(
       );
     case "acceptAlways":
       return (
-        first((choice) => choice.scope === "localPersistent" && choice.decision.startsWith("approved")) ??
-        first((choice) => choice.decision === "approved")
+        first(
+          (choice) => choice.scope === "localPersistent" && choice.decision.startsWith("approved"),
+        ) ?? first((choice) => choice.decision === "approved")
       );
     case "decline":
       return first((choice) => choice.decision.startsWith("denied"));
     case "cancel":
-      return first((choice) => choice.decision === "abort") ?? first((choice) => choice.decision.startsWith("denied"));
+      return (
+        first((choice) => choice.decision === "abort") ??
+        first((choice) => choice.decision.startsWith("denied"))
+      );
   }
 }
 
@@ -124,6 +140,31 @@ function turnStateFromTerminal(
   }
 }
 
+/** Reasoning tiers offered in the model capabilities and sent per turn. */
+export const MUSE_REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+export type MuseReasoningEffort = (typeof MUSE_REASONING_EFFORTS)[number];
+
+/** Read the selected tier; unknown values stay undefined for explicit rejection. */
+export function parseMuseEffort(raw: string | undefined): MuseReasoningEffort | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  return (MUSE_REASONING_EFFORTS as ReadonlyArray<string>).includes(raw)
+    ? (raw as MuseReasoningEffort)
+    : undefined;
+}
+
+export function museEffortForSelection(selection: ModelSelection | undefined): {
+  readonly raw: string | undefined;
+  readonly effort: MuseReasoningEffort | undefined;
+} {
+  const raw =
+    selection === undefined
+      ? undefined
+      : getModelSelectionStringOptionValue(selection, "reasoningEffort");
+  return { raw, effort: parseMuseEffort(raw) };
+}
+
 function streamKindFromDeltaField(
   field: string | undefined,
 ): "assistant_text" | "reasoning_text" | "unknown" {
@@ -137,6 +178,8 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
   return Effect.gen(function* () {
     const boundInstanceId = options.instanceId ?? ProviderInstanceId.make("museCode");
     const crypto = yield* Crypto.Crypto;
+    const runtimeContext = yield* Effect.context<never>();
+    const runPromise = Effect.runPromiseWith(runtimeContext);
     const sessionsRef = yield* Ref.make(new Map<ThreadId, MuseSessionRecord>());
     const approvalsRef = yield* Ref.make(new Map<string, PendingMuseApproval>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
@@ -167,15 +210,13 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
       Effect.flatMap(Ref.get(sessionsRef), (sessions) => {
         const record = sessions.get(threadId);
         return record === undefined
-          ? Effect.fail(
-              new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }),
-            )
+          ? Effect.fail(new ProviderAdapterSessionNotFoundError({ provider: PROVIDER, threadId }))
           : Effect.succeed(record);
       });
 
     const registerApprovalHandler = (record: MuseSessionRecord) => {
       record.session.onApproval((request: ApprovalRequestParams) =>
-        Effect.runPromise(
+        runPromise(
           Effect.gen(function* () {
             const gate = yield* Deferred.make<ApprovalDecisionInput>();
             yield* Ref.update(approvalsRef, (pending) =>
@@ -262,10 +303,9 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             }),
           ),
         );
-        const outcome: TurnOutcome = yield* Effect.tryPromise({
-          try: () => turn.completed,
-          catch: () => new Error("turn wait rejected"),
-        }).pipe(Effect.orElseSucceed(() => ({ kind: "terminalUnknown" }) as TurnOutcome));
+        const outcome: TurnOutcome = yield* Effect.promise(() => turn.completed).pipe(
+          Effect.catchCause(() => Effect.succeed({ kind: "terminalUnknown" } as TurnOutcome)),
+        );
         const completedStamp = yield* makeEventStamp();
         if (outcome.kind === "completed") {
           const state = turnStateFromTerminal(outcome.params.terminal);
@@ -294,7 +334,8 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             threadId: record.threadId,
             turnId,
             payload: {
-              reason: outcome.kind === "unqueued" ? "Turn unqueued by the host." : "Host died mid-turn.",
+              reason:
+                outcome.kind === "unqueued" ? "Turn unqueued by the host." : "Host died mid-turn.",
             },
             raw: { source: RAW_SOURCE, method: "turn/aborted", payload: { kind: outcome.kind } },
           });
@@ -326,6 +367,10 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           isRecord(input.resumeCursor) && typeof input.resumeCursor.sessionId === "string"
             ? input.resumeCursor.sessionId
             : undefined;
+        const selected = museEffortForSelection(input.modelSelection);
+        if (selected.raw !== undefined && selected.effort === undefined) {
+          return yield* invalidEffortError(selected.raw);
+        }
         const session = yield* Effect.tryPromise({
           try: () =>
             resumeSessionId !== undefined
@@ -333,6 +378,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
               : host.client.startSession({
                   ...(input.cwd ? { workspaceRoot: input.cwd } : {}),
                   ...(input.modelSelection ? { modelId: input.modelSelection.model } : {}),
+                  ...(selected.effort ? { effort: selected.effort } : {}),
                 }),
           catch: (cause) =>
             new ProviderAdapterRequestError({
@@ -349,6 +395,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           threadId: input.threadId,
           cwd: input.cwd,
           model: input.modelSelection?.model,
+          effort: selected.effort,
           createdAt: now,
           turnIds: [],
           activeTurnId: undefined,
@@ -362,8 +409,13 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: input.threadId,
-          payload: resumeSessionId !== undefined ? { resume: { sessionId: session.sessionId } } : {},
-          raw: { source: RAW_SOURCE, method: "session/start", payload: { sessionId: session.sessionId } },
+          payload:
+            resumeSessionId !== undefined ? { resume: { sessionId: session.sessionId } } : {},
+          raw: {
+            source: RAW_SOURCE,
+            method: "session/start",
+            payload: { sessionId: session.sessionId },
+          },
         });
         return {
           provider: PROVIDER,
@@ -390,11 +442,17 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             issue: "Muse turns require an explicit prompt; promptless continuation is unsupported.",
           });
         }
+        const turnSelected = museEffortForSelection(input.modelSelection);
+        if (turnSelected.raw !== undefined && turnSelected.effort === undefined) {
+          return yield* invalidEffortError(turnSelected.raw);
+        }
+        const effort = turnSelected.effort ?? record.effort;
         const turn = yield* Effect.tryPromise({
           try: () =>
             record.session.sendUserTurn({
               input: [{ type: "text", text: prompt }],
               displayText: prompt,
+              ...(effort === undefined ? {} : { reasoningEffort: effort }),
             }),
           catch: (cause) =>
             new ProviderAdapterRequestError({
@@ -442,7 +500,11 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         });
       });
 
-    const respondToRequest: MuseCodeAdapterShape["respondToRequest"] = (threadId, requestId, decision) =>
+    const respondToRequest: MuseCodeAdapterShape["respondToRequest"] = (
+      threadId,
+      requestId,
+      decision,
+    ) =>
       Effect.gen(function* () {
         const pending = (yield* Ref.get(approvalsRef)).get(String(requestId));
         if (pending === undefined || pending.threadId !== threadId) {
@@ -480,20 +542,32 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         });
       });
 
-    const respondToUserInput: MuseCodeAdapterShape["respondToUserInput"] = (threadId, requestId, answers) =>
+    const respondToUserInput: MuseCodeAdapterShape["respondToUserInput"] = (
+      threadId,
+      requestId,
+      answers,
+    ) =>
       Effect.gen(function* () {
         const record = yield* requireSession(threadId);
-        const mapped: Array<{ readonly questionId: string; readonly freeText?: string; readonly selectedLabels?: ReadonlyArray<string> }> = [];
+        const mapped: Array<{
+          readonly questionId: string;
+          readonly freeText?: string;
+          readonly selectedLabels?: ReadonlyArray<string>;
+        }> = [];
         for (const [questionId, value] of Object.entries(answers)) {
           if (typeof value === "string") {
             mapped.push({ questionId, freeText: value.slice(0, 500) });
-          } else if (Array.isArray(value) && value.every((entry): entry is string => typeof entry === "string")) {
+          } else if (
+            Array.isArray(value) &&
+            value.every((entry): entry is string => typeof entry === "string")
+          ) {
             mapped.push({ questionId, selectedLabels: value });
           } else {
             return yield* new ProviderAdapterValidationError({
               provider: PROVIDER,
               operation: "respondToUserInput",
-              issue: "Muse user-input answers accept strings (free text) or string arrays (multi-select) only.",
+              issue:
+                "Muse user-input answers accept strings (free text) or string arrays (multi-select) only.",
             });
           }
         }
@@ -521,7 +595,11 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           threadId: record.threadId,
           requestId: RuntimeRequestId.make(String(requestId)),
           payload: { answers },
-          raw: { source: RAW_SOURCE, method: "userInput/answer", payload: { userInputId: requestId } },
+          raw: {
+            source: RAW_SOURCE,
+            method: "userInput/answer",
+            payload: { userInputId: requestId },
+          },
         });
       });
 
@@ -541,7 +619,11 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           providerInstanceId: boundInstanceId,
           threadId,
           payload: { exitKind: "graceful" },
-          raw: { source: RAW_SOURCE, method: "session/stop", payload: { sessionId: record.mspSessionId } },
+          raw: {
+            source: RAW_SOURCE,
+            method: "session/stop",
+            payload: { sessionId: record.mspSessionId },
+          },
         });
       });
 
@@ -549,20 +631,18 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
       Effect.gen(function* () {
         const now = yield* nowIso;
         const sessions = yield* Ref.get(sessionsRef);
-        return [...sessions.values()].map(
-          (record): ProviderSession => ({
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
-            status: record.activeTurnId === undefined ? "ready" : "running",
-            runtimeMode: "approval-required",
-            ...(record.cwd ? { cwd: record.cwd } : {}),
-            ...(record.model ? { model: record.model } : {}),
-            threadId: record.threadId,
-            ...(record.activeTurnId ? { activeTurnId: TurnId.make(record.activeTurnId) } : {}),
-            createdAt: record.createdAt,
-            updatedAt: now,
-          }),
-        );
+        return [...sessions.values()].map((record): ProviderSession => ({
+          provider: PROVIDER,
+          providerInstanceId: boundInstanceId,
+          status: record.activeTurnId === undefined ? "ready" : "running",
+          runtimeMode: "approval-required",
+          ...(record.cwd ? { cwd: record.cwd } : {}),
+          ...(record.model ? { model: record.model } : {}),
+          threadId: record.threadId,
+          ...(record.activeTurnId ? { activeTurnId: TurnId.make(record.activeTurnId) } : {}),
+          createdAt: record.createdAt,
+          updatedAt: now,
+        }));
       });
 
     const hasSession: MuseCodeAdapterShape["hasSession"] = (threadId) =>
@@ -614,5 +694,3 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     } satisfies MuseCodeAdapterShape;
   });
 }
-
-
