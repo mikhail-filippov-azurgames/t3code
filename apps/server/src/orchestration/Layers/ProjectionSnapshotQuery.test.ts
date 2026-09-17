@@ -3600,14 +3600,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
 
       const shell = yield* query.getShellSnapshot();
       const byId = new Map(shell.threads.map((thread) => [thread.id, thread] as const));
-      assert.deepStrictEqual(byId.get("thread-child")?.delegationParent ?? null, {
+      const childId = ThreadId.make("thread-child");
+      assert.deepStrictEqual(byId.get(childId)?.delegationParent ?? null, {
         parentThreadId: "thread-parent",
         parentEnvironmentId: "env-1",
         role: "implementation",
       });
-      assert.strictEqual(byId.get("thread-parent")?.delegationParent ?? null, null);
-      assert.strictEqual(byId.get("thread-plain")?.delegationParent ?? null, null);
-      assert.strictEqual(byId.get("thread-broken")?.delegationParent ?? null, null);
+      assert.strictEqual(byId.get(ThreadId.make("thread-parent"))?.delegationParent ?? null, null);
+      assert.strictEqual(byId.get(ThreadId.make("thread-plain"))?.delegationParent ?? null, null);
+      assert.strictEqual(byId.get(ThreadId.make("thread-broken"))?.delegationParent ?? null, null);
 
       const child = yield* query.getThreadShellById(ThreadId.make("thread-child"));
       assert.strictEqual(Option.isSome(child), true);
