@@ -58,7 +58,7 @@ function shellQuote(value: string): string {
 }
 
 const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
-  options: { readonly config?: Partial<AntigravitySettings> } = {},
+  options: { readonly config?: Partial<AntigravitySettings>; readonly enabled?: boolean } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -113,6 +113,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   const signedOut = yield* makeExecutable("runtime signed-out", true);
   const controls = { selected: first, failResolution: false, beforeAcquire: Effect.void };
   const acquisitions: Array<{ binaryPath: string | undefined; path: string | undefined }> = [];
+  const resolutions: Array<string | undefined> = [];
   const releases: Array<string | null> = [];
   const launches: Array<{
     command: string;
@@ -129,6 +130,17 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
 
   const installation = Layer.mock(AntigravityInstallation)({
     managedDirectory: root,
+    resolve: (binaryPath) =>
+      Effect.gen(function* () {
+        resolutions.push(binaryPath);
+        if (controls.failResolution) {
+          return yield* new AntigravityInstallationError({
+            operation: "resolve",
+            detail: "Antigravity installation is missing.",
+          });
+        }
+        return controls.selected;
+      }),
     acquire: (binaryPath, environment) =>
       Effect.gen(function* () {
         acquisitions.push({ binaryPath, path: environment?.PATH });
@@ -174,7 +186,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
   const instance = yield* AntigravityDriver.create({
     instanceId,
     displayName: "Google test account",
-    enabled: false,
+    enabled: options.enabled ?? false,
     config: { ...AntigravityDriver.defaultConfig(), ...options.config },
     environment: [
       { name: "PATH", value: instancePath },
@@ -220,6 +232,7 @@ const makeHarness = Effect.fn("makeAntigravityDriverHarness")(function* (
     signedOut,
     controls,
     acquisitions,
+    resolutions,
     releases,
     launches,
     readRequests,
@@ -242,6 +255,37 @@ const testLayer = ServerConfig.layerTest(process.cwd(), {
 );
 
 it.layer(testLayer)("AntigravityDriver", (it) => {
+  it.effect("checks availability repeatedly without launching ACP and notices removed files", () =>
+    Effect.gen(function* () {
+      const h = yield* makeHarness({ enabled: true }).pipe(
+        Effect.provide([
+          Layer.mock(BackgroundPolicy.BackgroundPolicy)({
+            shouldRunScopeWork: () => Effect.succeed(true),
+          }),
+          ServerSettingsService.layerTest({ backgroundActivity: { profile: "performance" } }),
+        ]),
+      );
+      for (let check = 0; check < 3; check++) {
+        const snapshot = yield* h.instance.snapshot.refresh;
+        expect(snapshot.installed).toBe(true);
+        expect(snapshot.auth.status).toBe("unknown");
+      }
+      expect(h.acquisitions).toEqual([]);
+      expect(h.launches).toEqual([]);
+      expect(h.resolutions.length).toBeGreaterThanOrEqual(3);
+      const previousChecks = h.resolutions.length;
+      yield* TestClock.adjust("2 minutes");
+      expect(h.resolutions.length).toBeGreaterThan(previousChecks);
+      expect(h.acquisitions).toEqual([]);
+      expect(h.launches).toEqual([]);
+      expect(yield* h.fs.exists(h.profileDirectory)).toBe(false);
+      h.controls.failResolution = true;
+      const missing = yield* h.instance.snapshot.refresh;
+      expect(missing.installed).toBe(false);
+      expect(missing.status).toBe("error");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect.skipIf(windowsHost)("does not launch a process for a disabled instance", () =>
     Effect.gen(function* () {
       const h = yield* makeHarness();

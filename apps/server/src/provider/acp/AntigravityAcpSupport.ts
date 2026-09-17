@@ -57,11 +57,32 @@ export const makeAntigravityAcpRuntime = Effect.fn("makeAntigravityAcpRuntime")(
 ): Effect.fn.Return<
   AcpSessionRuntime.AcpSessionRuntime["Service"],
   EffectAcpErrors.AcpError,
-  Crypto.Crypto | Scope.Scope
+  Crypto.Crypto | FileSystem.FileSystem | Scope.Scope
 > {
+  const fs = yield* FileSystem.FileSystem;
+  // Register cleanup before the child process so scope closure first waits for
+  // its exit, then removes any extraction files the bootloader left behind.
+  const tempDirectory = yield* fs
+    .makeTempDirectoryScoped({ prefix: "t3-antigravity-runtime-" })
+    .pipe(
+      Effect.mapError(
+        (cause) =>
+          new EffectAcpErrors.AcpSpawnError({
+            command: input.spawn.command,
+            cause,
+          }),
+      ),
+    );
+  const environment = Object.fromEntries(
+    Object.entries(input.spawn.env ?? {}).filter(([key]) => !/^(TEMP|TMP|TMPDIR)$/iu.test(key)),
+  );
   const context = yield* Layer.build(
     AcpSessionRuntime.layer({
       ...input,
+      spawn: {
+        ...input.spawn,
+        env: { ...environment, TEMP: tempDirectory, TMP: tempDirectory, TMPDIR: tempDirectory },
+      },
       authMethodId: input.authMethod ?? "oauth-personal",
       resumeMethod: "resume",
       cancelBehavior: "wait-for-prompt",

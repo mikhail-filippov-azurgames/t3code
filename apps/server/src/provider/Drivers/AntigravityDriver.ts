@@ -166,7 +166,10 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
             baseEnv: withAgentDeviceEnvironment(processEnvironment, input),
             auth,
           }),
-        }).pipe(Effect.provideService(Crypto.Crypto, crypto));
+        }).pipe(
+          Effect.provideService(Crypto.Crypto, crypto),
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+        );
         return {
           ...runtime,
           start: () =>
@@ -260,22 +263,31 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       // Antigravity would keep classifying against a stale disk cache.
       const probe = Effect.gen(function* () {
         yield* modelManifest.refreshInBackground;
-        const processScope = yield* Scope.make();
-        yield* Effect.addFinalizer((exit) => Scope.close(processScope, exit));
-        return yield* authFlow
-          .withProcess(
-            Scope.close(processScope, Exit.void),
-            Effect.gen(function* () {
-              const runtime = yield* makeRuntime({
-                cwd: serverConfig.stateDir,
-                clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-                mcpServers: [],
-              });
-              return yield* runtime.initialize();
-            }),
-          )
-          .pipe(Effect.provideService(Scope.Scope, processScope));
-      }).pipe(Effect.scoped);
+        if (authConfigIssue !== null) {
+          return yield* new ProviderSetupError({
+            instanceId,
+            operation: "configure",
+            detail: authConfigIssue,
+          });
+        }
+        // The bundled runtime extracts a large payload on every launch. Status
+        // polling only resolves files; real sessions validate the ACP connection.
+        const executable = yield* installation
+          .resolve(settings.binaryPath, processEnvironment)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderSetupError({
+                  instanceId,
+                  operation: "resolve",
+                  detail: cause.detail,
+                }),
+            ),
+          );
+        return executable.version === null
+          ? {}
+          : { agentInfo: { name: "antigravity-acp", version: executable.version } };
+      });
 
       const provider = yield* makeAntigravityProvider(settings, {
         stampIdentity: classifyModels,

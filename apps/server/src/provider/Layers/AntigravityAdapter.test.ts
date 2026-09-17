@@ -339,7 +339,10 @@ it.layer(layer)("AntigravityAdapter", (it) => {
                 },
                 extendEnv: false,
               },
-            }).pipe(Effect.provideService(Crypto.Crypto, crypto)),
+            }).pipe(
+              Effect.provideService(Crypto.Crypto, crypto),
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+            ),
           onAvailableCommands: (available) =>
             Effect.sync(() => {
               commands.push(...available.map((command) => command.name));
