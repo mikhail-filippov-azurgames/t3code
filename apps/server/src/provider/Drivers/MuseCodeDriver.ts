@@ -35,6 +35,7 @@ import {
   makeProviderSnapshotSettingsSource,
   type ProviderSnapshotSettings,
 } from "../providerUpdateSettings.ts";
+import { makeMuseCodeAuth } from "../muse/MuseCodeAuth.ts";
 import {
   buildInitialMuseCodeProviderSnapshot,
   checkMuseCodeProviderStatus,
@@ -144,6 +145,14 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
         museBin,
         environment: subscriptionEnv,
       });
+      const auth = yield* makeMuseCodeAuth({
+        instanceId,
+        museBin,
+        env: subscriptionEnv,
+      }).pipe(
+        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      );
 
       const checkProvider = checkMuseCodeProviderStatus(
         effectiveConfig,
@@ -189,6 +198,7 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
         snapshotForCwd: () => snapshot.getSnapshot,
         adapter,
         textGeneration,
+        auth,
       } satisfies ProviderInstance;
     }),
 };
