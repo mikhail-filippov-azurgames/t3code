@@ -273,6 +273,23 @@ export const GrokIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+export const MuseCodeIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    className={cn("text-[#0866FF]", className)}
+  >
+    <path
+      d="M2.5 15.4C4.2 9.7 6.2 6.8 8.7 6.8c3.5 0 5.2 10.4 8.6 10.4 2.1 0 3.5-2.5 4.2-5.2C20 8.5 18.5 6.8 16.7 6.8c-3.5 0-5.2 10.4-8.6 10.4-2.1 0-3.8-1.4-5.6-1.8Z"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export const TraeIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 24 24" fill="currentColor">
     {/* Back rectangle: left strip + bottom strip drawn separately — empty bottom-left corner is the gap between them */}
