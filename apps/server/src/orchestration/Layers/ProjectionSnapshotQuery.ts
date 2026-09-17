@@ -26,6 +26,7 @@ import {
   type OrchestrationSession,
   type OrchestrationThreadActivity,
   type OrchestrationThreadShell,
+  type ThreadDelegationParent,
   ModelSelection,
   ProjectId,
   ThreadLinkedPullRequest,
@@ -478,6 +479,27 @@ function mapThreadActivityRow(
   };
 }
 
+const DELEGATION_CREATED_ACTIVITY_KIND = "delegation.created";
+// Must match DELEGATION_ACTIVITY_VERSION in mcp/toolkits/orchestrator/service.ts.
+const DELEGATION_ACTIVITY_VERSION = 1;
+// Latest delegation.created payload wins; malformed payloads never mark a row.
+function delegationParentFromPayload(payload: unknown): ThreadDelegationParent | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const record = payload as Record<string, unknown>;
+  if (
+    record.version !== DELEGATION_ACTIVITY_VERSION ||
+    typeof record.parentThreadId !== "string" ||
+    typeof record.parentEnvironmentId !== "string" ||
+    typeof record.role !== "string"
+  ) {
+    return null;
+  }
+  return {
+    parentThreadId: record.parentThreadId as ThreadId,
+    parentEnvironmentId: record.parentEnvironmentId,
+    role: record.role,
+  };
+}
 function toPersistenceSqlOrDecodeError(sqlOperation: string, decodeOperation: string) {
   return (cause: unknown): ProjectionRepositoryError =>
     Schema.isSchemaError(cause)
@@ -1483,6 +1505,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ),
     );
+
+  // One batched read for shell markers: latest delegation.created payload per
+  // non-deleted thread, archived included. Rows arrive oldest-first so the
+  // latest payload overwrites earlier ones in the by-thread map.
+  const listDelegationCreatedRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({
+      threadId: ThreadId,
+      payload: Schema.fromJsonString(Schema.Unknown),
+    }),
+    execute: () => sql`
+      SELECT
+        a.thread_id AS "threadId",
+        a.payload_json AS "payload"
+      FROM projection_thread_activities a
+      JOIN projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.kind = ${DELEGATION_CREATED_ACTIVITY_KIND}
+        AND t.deleted_at IS NULL
+      ORDER BY a.created_at ASC, a.activity_id ASC
+    `,
+  });
 
   const listThreadActivityIdsByThread = SqlSchema.findAll({
     Request: ThreadIdLookupInput,
@@ -2651,11 +2694,27 @@ pending_approval_requests AS (
               ),
             ),
           ),
+          listDelegationCreatedRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getShellSnapshot:listDelegationCreated:query",
+                "ProjectionSnapshotQuery.getShellSnapshot:listDelegationCreated:decodeRows",
+              ),
+            ),
+          ),
         ]),
       )
       .pipe(
         Effect.flatMap(
-          ([projectRows, threadRows, sessionRows, pullRequestRows, latestTurnRows, stateRows]) =>
+          ([
+            projectRows,
+            threadRows,
+            sessionRows,
+            pullRequestRows,
+            latestTurnRows,
+            stateRows,
+            delegationRows,
+          ]) =>
             Effect.gen(function* () {
               let updatedAt: string | null = null;
               for (const row of projectRows) {
@@ -2689,6 +2748,11 @@ pending_approval_requests AS (
                 sessionRows.map((row) => [row.threadId, mapSessionRow(row)] as const),
               );
               const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
+              const delegationParentByThread = new Map<string, ThreadDelegationParent>();
+              for (const row of delegationRows) {
+                const parent = delegationParentFromPayload(row.payload);
+                if (parent !== null) delegationParentByThread.set(row.threadId, parent);
+              }
 
               const snapshot = {
                 snapshotSequence: computeSnapshotSequence(stateRows),
@@ -2739,6 +2803,7 @@ pending_approval_requests AS (
                           row.threadId,
                         ),
                         planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
+                        delegationParent: delegationParentByThread.get(row.threadId) ?? null,
                       } satisfies OrchestrationThreadShell)
                     : Result.failVoid,
                 ),
@@ -2814,11 +2879,27 @@ pending_approval_requests AS (
               ),
             ),
           ),
+          listDelegationCreatedRows(undefined).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listDelegationCreated:query",
+                "ProjectionSnapshotQuery.getArchivedShellSnapshot:listDelegationCreated:decodeRows",
+              ),
+            ),
+          ),
         ]),
       )
       .pipe(
         Effect.flatMap(
-          ([projectRows, threadRows, sessionRows, pullRequestRows, latestTurnRows, stateRows]) =>
+          ([
+            projectRows,
+            threadRows,
+            sessionRows,
+            pullRequestRows,
+            latestTurnRows,
+            stateRows,
+            delegationRows,
+          ]) =>
             Effect.gen(function* () {
               let updatedAt: string | null = null;
               for (const row of projectRows) {
@@ -2844,6 +2925,11 @@ pending_approval_requests AS (
               }
 
               const pullRequestsByThread = groupPullRequestRowsByThread(pullRequestRows);
+              const delegationParentByThread = new Map<string, ThreadDelegationParent>();
+              for (const row of delegationRows) {
+                const parent = delegationParentFromPayload(row.payload);
+                if (parent !== null) delegationParentByThread.set(row.threadId, parent);
+              }
               const activeProjectIds = new Set(threadRows.map((row) => row.projectId));
               const repositoryIdentities = yield* resolveRepositoryIdentitiesForProjects(
                 projectRows.filter((row) => activeProjectIds.has(row.projectId)),
@@ -2902,6 +2988,7 @@ pending_approval_requests AS (
                     row.threadId,
                   ),
                   planProgress: threadPlanProgress.getThreadPlanProgress(row.threadId),
+                  delegationParent: delegationParentByThread.get(row.threadId) ?? null,
                 })),
                 updatedAt: updatedAt ?? "1970-01-01T00:00:00.000Z",
               };
@@ -3178,43 +3265,61 @@ pending_approval_requests AS (
 
   const getThreadShellById: ProjectionSnapshotQueryShape["getThreadShellById"] = (threadId) =>
     Effect.gen(function* () {
-      const [threadRow, latestTurnRow, sessionRow, pullRequestRows] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getThread:decodeRow",
+      const [threadRow, latestTurnRow, sessionRow, pullRequestRows, delegationRows] =
+        yield* Effect.all([
+          getActiveThreadRowById({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getThread:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getThread:decodeRow",
+              ),
             ),
           ),
-        ),
-        getLatestTurnRowByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:decodeRow",
+          getLatestTurnRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getLatestTurn:decodeRow",
+              ),
             ),
           ),
-        ),
-        getThreadSessionRowByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:getSession:query",
-              "ProjectionSnapshotQuery.getThreadShellById:getSession:decodeRow",
+          getThreadSessionRowByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:getSession:query",
+                "ProjectionSnapshotQuery.getThreadShellById:getSession:decodeRow",
+              ),
             ),
           ),
-        ),
-        listThreadPullRequestRowsByThread({ threadId }).pipe(
-          Effect.mapError(
-            toPersistenceSqlOrDecodeError(
-              "ProjectionSnapshotQuery.getThreadShellById:listPullRequests:query",
-              "ProjectionSnapshotQuery.getThreadShellById:listPullRequests:decodeRows",
+          listThreadPullRequestRowsByThread({ threadId }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:listPullRequests:query",
+                "ProjectionSnapshotQuery.getThreadShellById:listPullRequests:decodeRows",
+              ),
             ),
           ),
-        ),
-      ]);
+          listThreadActivityRowsByThreadAndKinds({
+            threadId,
+            activityKinds: [DELEGATION_CREATED_ACTIVITY_KIND],
+          }).pipe(
+            Effect.mapError(
+              toPersistenceSqlOrDecodeError(
+                "ProjectionSnapshotQuery.getThreadShellById:listDelegationCreated:query",
+                "ProjectionSnapshotQuery.getThreadShellById:listDelegationCreated:decodeRows",
+              ),
+            ),
+          ),
+        ]);
 
       if (Option.isNone(threadRow)) {
         return Option.none<OrchestrationThreadShell>();
+      }
+
+      let delegationParent: ThreadDelegationParent | null = null;
+      for (const row of delegationRows) {
+        const parent = delegationParentFromPayload(row.payload);
+        if (parent !== null) delegationParent = parent;
       }
 
       return Option.some({
@@ -3258,6 +3363,7 @@ pending_approval_requests AS (
           threadRow.value.threadId,
         ),
         planProgress: threadPlanProgress.getThreadPlanProgress(threadRow.value.threadId),
+        delegationParent,
       } satisfies OrchestrationThreadShell);
     });
 

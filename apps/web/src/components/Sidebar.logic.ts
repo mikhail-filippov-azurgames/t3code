@@ -135,7 +135,14 @@ export function sidebarMarkerId(marker: SidebarListMarker): string {
 }
 
 export type SidebarListItem =
-  | { readonly kind: "thread"; readonly key: string; readonly section: SidebarSection }
+  | {
+      readonly kind: "thread";
+      readonly key: string;
+      readonly section: SidebarSection;
+      // Section-local delegation forest attachment. Absent = top-level row.
+      readonly depth?: number;
+      readonly descendantCount?: number;
+    }
   | { readonly kind: "marker"; readonly marker: SidebarListMarker };
 
 export function sidebarListItemId(item: SidebarListItem): string {
@@ -1250,4 +1257,117 @@ export function sortScopedProjectsForSidebar<
       left.environmentId.localeCompare(right.environmentId) ||
       left.id.localeCompare(right.id),
   );
+}
+
+// Section-local delegation forest. Roots keep their incoming order; each
+// root is immediately followed by its descendants in incoming relative
+// order. Depth is capped so deeper chains render flat at the cap instead of
+// nesting forever. Cycles, self-parents, and parents outside the section
+// detach to top level: no input row is ever dropped.
+export type SidebarForestEntry<TThread> = {
+  readonly key: string;
+  readonly thread: TThread;
+  readonly depth: number;
+  readonly parentKey: string | null;
+  readonly descendantCount: number;
+};
+
+export function orderSidebarSectionForest<TThread>(input: {
+  readonly threads: readonly TThread[];
+  readonly getKey: (thread: TThread) => string;
+  readonly getParentKey: (thread: TThread) => string | null;
+  readonly maxDepth?: number;
+}): SidebarForestEntry<TThread>[] {
+  const { threads, getKey } = input;
+  const maxDepth = input.maxDepth ?? 2;
+  const byKey = new Map(threads.map((thread) => [getKey(thread), thread] as const));
+  const parentByKey = new Map<string, string | null>();
+  for (const thread of threads) {
+    const key = getKey(thread);
+    let parent = input.getParentKey(thread);
+    if (parent === key || (parent !== null && !byKey.has(parent))) parent = null;
+    if (parent !== null) {
+      // Walk the in-section chain with a visited set: a cycle anywhere
+      // above detaches this row instead of looping the render.
+      const seen = new Set([key]);
+      let cursor: string | null = parent;
+      while (cursor !== null && byKey.has(cursor) && !seen.has(cursor)) {
+        seen.add(cursor);
+        const next = input.getParentKey(byKey.get(cursor)!);
+        cursor = next === null || next === cursor || !byKey.has(next) ? null : next;
+      }
+      if (cursor !== null) parent = null;
+    }
+    parentByKey.set(key, parent);
+  }
+  const depthByKey = new Map<string, number>();
+  const depthOf = (key: string): number => {
+    const known = depthByKey.get(key);
+    if (known !== undefined) return known;
+    // Cycle-free by construction, but bound the walk anyway.
+    let depth = 0;
+    let cursor = parentByKey.get(key) ?? null;
+    for (let step = 0; step <= threads.length && cursor !== null; step += 1) {
+      depth += 1;
+      cursor = parentByKey.get(cursor) ?? null;
+    }
+    const capped = Math.min(depth, maxDepth);
+    depthByKey.set(key, capped);
+    return capped;
+  };
+  const childrenByKey = new Map<string, TThread[]>();
+  const roots: TThread[] = [];
+  for (const thread of threads) {
+    const parent = parentByKey.get(getKey(thread));
+    if (parent === null || parent === undefined) roots.push(thread);
+    else {
+      const siblings = childrenByKey.get(parent);
+      if (siblings) siblings.push(thread);
+      else childrenByKey.set(parent, [thread]);
+    }
+  }
+  const entries: SidebarForestEntry<TThread>[] = [];
+  const emit = (thread: TThread): void => {
+    const key = getKey(thread);
+    entries.push({
+      key,
+      thread,
+      depth: depthOf(key),
+      parentKey: parentByKey.get(key) ?? null,
+      descendantCount: 0,
+    });
+    for (const child of childrenByKey.get(key) ?? []) emit(child);
+  };
+  for (const root of roots) emit(root);
+  const counts = new Map<string, number>();
+  for (const entry of entries) {
+    let cursor = entry.parentKey;
+    const seen = new Set<string>();
+    while (cursor !== null && !seen.has(cursor)) {
+      seen.add(cursor);
+      counts.set(cursor, (counts.get(cursor) ?? 0) + 1);
+      cursor = parentByKey.get(cursor) ?? null;
+    }
+  }
+  return entries.map((entry) => ({ ...entry, descendantCount: counts.get(entry.key) ?? 0 }));
+}
+
+// Hide descendants of collapsed parents. Collapsed rows themselves stay
+// visible; selection expansion is the caller's job (it drops ancestor keys
+// from the collapsed set before calling this).
+export function filterCollapsedSidebarForest<TThread>(input: {
+  readonly entries: readonly SidebarForestEntry<TThread>[];
+  readonly collapsedKeys: ReadonlySet<string>;
+}): SidebarForestEntry<TThread>[] {
+  const parentByKey = new Map(input.entries.map((entry) => [entry.key, entry.parentKey] as const));
+  return input.entries.filter((entry) => {
+    let cursor = entry.parentKey;
+    const seen = new Set<string>();
+    while (cursor !== null && !seen.has(cursor)) {
+      if (input.collapsedKeys.has(cursor)) return false;
+      seen.add(cursor);
+      cursor = parentByKey.get(cursor) ?? null;
+    }
+    return true;
+  });
 }

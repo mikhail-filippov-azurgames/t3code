@@ -46,6 +46,7 @@ import {
   CircleCheckIcon,
   CircleDashedIcon,
   ClockIcon,
+  CornerDownRightIcon,
   EyeIcon,
   FolderIcon,
   GitBranchIcon,
@@ -172,6 +173,8 @@ import {
   shouldNavigateAfterThreadPark,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
+  filterCollapsedSidebarForest,
+  orderSidebarSectionForest,
   sidebarListItemId,
   sidebarMarkerId,
   sortLogicalProjectsForSidebar,
@@ -181,6 +184,7 @@ import {
   useRetainedValue,
   useSidebarRowSubscriptionLease,
   useThreadJumpHintVisibility,
+  type SidebarForestEntry,
   type SidebarListItem,
   type SidebarListMarker,
   type SidebarSection,
@@ -979,6 +983,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // rows. The marker can unpin the thread when the server supports pinning.
   pinningSupported: boolean;
   isPinned: boolean;
+  // Title of the delegating parent thread for the marker tooltip; null when
+  // the thread is not a delegated child or the parent is not visible.
+  delegationParentTitle: string | null;
+  // Section-local forest attachment: visual indent level.
+  depth: number;
+  // Non-null when this row parents visible descendants in its section:
+  // the key doubles as the session-only collapse toggle id.
+  forestToggleKey: string | null;
+  forestCollapsed: boolean;
+  forestDescendantCount: number;
+  onToggleForestCollapse: (key: string) => void;
   // Present on rows whose server supports every drop outcome: dnd-kit
   // sortable bag applied to the row root so the whole row drags (the
   // pointer sensor's distance constraint keeps plain clicks working).
@@ -1572,6 +1587,66 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       />
     )
   ) : null;
+  // Delegated child marker: muted, no row affordance beyond the tooltip.
+  // Provider-internal subagents never produce shell lineage, so they stay
+  // unmarked. A missing parent title falls back to a generic label.
+  const delegationLabel =
+    thread.delegationParent == null
+      ? null
+      : props.delegationParentTitle !== null
+        ? `Delegated from ${props.delegationParentTitle}`
+        : "Delegated subtask";
+  const delegationMarker =
+    delegationLabel !== null ? (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              aria-label={delegationLabel}
+              className="inline-flex shrink-0 items-center text-muted-foreground/65"
+            />
+          }
+        >
+          <CornerDownRightIcon aria-hidden className="size-3 shrink-0" />
+        </TooltipTrigger>
+        <TooltipPopup>{delegationLabel}</TooltipPopup>
+      </Tooltip>
+    ) : null;
+  // Forest collapse toggle for parent rows. Children indent; a collapsed
+  // parent keeps its own row and shows the hidden descendant count.
+  const forestToggleKey = props.forestToggleKey;
+  const forestToggle =
+    forestToggleKey !== null ? (
+      <button
+        type="button"
+        aria-label={
+          props.forestCollapsed
+            ? `Expand ${props.forestDescendantCount} subtasks`
+            : `Collapse ${props.forestDescendantCount} subtasks`
+        }
+        aria-expanded={!props.forestCollapsed}
+        onClick={(event) => {
+          event.stopPropagation();
+          props.onToggleForestCollapse(forestToggleKey);
+        }}
+        className="inline-flex shrink-0 cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <ChevronDownIcon
+          aria-hidden
+          className={cn(
+            "size-3 shrink-0 transition-transform",
+            props.forestCollapsed && "-rotate-90",
+          )}
+        />
+      </button>
+    ) : null;
+  const forestCollapsedCount =
+    forestToggleKey !== null && props.forestCollapsed && props.forestDescendantCount > 0 ? (
+      <span aria-hidden className="shrink-0 text-xs tabular-nums text-muted-foreground/65">
+        ·{props.forestDescendantCount}
+      </span>
+    ) : null;
+  const forestIndent = props.depth > 0 ? { marginLeft: props.depth * 12 } : undefined;
 
   if (variant === "slim") {
     return (
@@ -1595,6 +1670,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 data-testid="sidebar-row-slim"
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(rowSurfaceClassName, "flex h-9 items-center gap-2.5 px-2.5")}
+                style={forestIndent}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
                 onKeyDown={handleKeyDown}
@@ -1602,6 +1678,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               />
             }
           >
+            {forestToggle}
             {/* Settled history recedes: dimmed favicon at rest, restored on
               hover so the tail stays scannable when you're hunting. */}
             <span
@@ -1616,6 +1693,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {draftIndicator}
             {title}
             {pinIndicator}
+            {delegationMarker}
+            {forestCollapsedCount}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
               <span role="status" className="sr-only">
@@ -1748,6 +1827,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               data-testid="sidebar-row-card"
               aria-busy={isRegeneratingTitle || undefined}
               className={rowSurfaceClassName}
+              style={forestIndent}
               onClick={handleClick}
               onDoubleClick={handleDoubleClick}
               onKeyDown={handleKeyDown}
@@ -1757,6 +1837,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         >
           <div className="relative z-10 h-[4.875rem] px-[var(--sidebar-row-content-inset)] py-[var(--sidebar-content-inset)]">
             <div className="flex h-5 min-w-0 items-center gap-1.5">
+              {forestToggle}
               {draftIndicator}
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />
@@ -1774,6 +1855,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 <span className="flex-1" />
               )}
               {pinIndicator}
+              {delegationMarker}
+              {forestCollapsedCount}
               {/* The visible state owns this slot's width: status at rest,
                   actions on hover/keyboard focus or while the popover is open. Keeping
                   the hidden state out of flow lets the project label reclaim
@@ -2738,6 +2821,63 @@ export default function Sidebar() {
     return routeThread === undefined ? EMPTY_THREADS : [routeThread];
   }, [routeThreadKey, snoozedShelfExpanded, snoozedThreads]);
 
+  // Section-local delegation forests: children attach under their parent
+  // only inside the same section; cross-section children stay detached
+  // top-level rows with their marker. Collapse is session-only UI state.
+  const sectionForests = useMemo(() => {
+    const build = (list: readonly EnvironmentThreadShell[]) =>
+      orderSidebarSectionForest({
+        threads: list,
+        getKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        getParentKey: (thread) =>
+          thread.delegationParent == null
+            ? null
+            : scopedThreadKey(
+                scopeThreadRef(thread.environmentId, thread.delegationParent.parentThreadId),
+              ),
+      });
+    const pinned = build(pinnedThreads);
+    const active = build(activeThreads);
+    const snoozed = build(visibleSnoozedThreads);
+    const settled = build(renderedSettledThreads);
+    const parentByKey = new Map<string, string>();
+    for (const forest of [pinned, active, snoozed, settled]) {
+      for (const entry of forest) {
+        if (entry.parentKey !== null) parentByKey.set(entry.key, entry.parentKey);
+      }
+    }
+    return { pinned, active, snoozed, settled, parentByKey };
+  }, [activeThreads, pinnedThreads, renderedSettledThreads, visibleSnoozedThreads]);
+  const [collapsedForestKeys, setCollapsedForestKeys] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const toggleForestCollapsed = useCallback((key: string) => {
+    setCollapsedForestKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+  // A selected descendant temporarily expands its ancestor path.
+  useEffect(() => {
+    if (routeThreadKey === null) return;
+    const ancestors: string[] = [];
+    const seen = new Set([routeThreadKey]);
+    let cursor = sectionForests.parentByKey.get(routeThreadKey) ?? null;
+    while (cursor !== null && !seen.has(cursor)) {
+      seen.add(cursor);
+      ancestors.push(cursor);
+      cursor = sectionForests.parentByKey.get(cursor) ?? null;
+    }
+    if (ancestors.length === 0) return;
+    setCollapsedForestKeys((current) => {
+      if (ancestors.every((key) => !current.has(key))) return current;
+      const next = new Set(current);
+      for (const key of ancestors) next.delete(key);
+      return next;
+    });
+  }, [routeThreadKey, sectionForests]);
   const orderedThreads = useMemo(
     () => [...pinnedThreads, ...activeThreads, ...visibleSnoozedThreads, ...renderedSettledThreads],
     [pinnedThreads, activeThreads, visibleSnoozedThreads, renderedSettledThreads],
@@ -3323,13 +3463,18 @@ export default function Sidebar() {
   // pickup on their rows without changing where those rows render.
   const sidebarListItems = useMemo((): readonly SidebarListItem[] => {
     const rowsOf = (
-      list: readonly EnvironmentThreadShell[],
+      forest: readonly SidebarForestEntry<EnvironmentThreadShell>[],
       section: SidebarSection,
     ): SidebarListItem[] =>
-      list.map((thread) => {
-        const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-        return { kind: "thread", key, section };
-      });
+      filterCollapsedSidebarForest({ entries: forest, collapsedKeys: collapsedForestKeys }).map(
+        (entry) => ({
+          kind: "thread",
+          key: entry.key,
+          section,
+          depth: entry.depth,
+          descendantCount: entry.descendantCount,
+        }),
+      );
     if (
       pinnedThreads.length +
         activeThreads.length +
@@ -3340,25 +3485,27 @@ export default function Sidebar() {
       return [];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf(pinnedThreads, "pinned");
+    const pinnedRows = rowsOf(sectionForests.pinned, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
+    const activeRows = rowsOf(sectionForests.active, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
-      items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
+      items.push(...rowsOf(sectionForests.snoozed, "snoozed"));
     }
     items.push({ kind: "marker", marker: "settled-header" });
-    const settledRows = rowsOf(renderedSettledThreads, "settled");
+    const settledRows = rowsOf(sectionForests.settled, "settled");
     items.push({ kind: "marker", marker: "settled-placeholder" });
     items.push(...settledRows);
     return items;
   }, [
     activeThreads,
+    collapsedForestKeys,
     pinnedThreads,
     renderedSettledThreads,
+    sectionForests,
     settledThreads.length,
     snoozedThreads.length,
     visibleSnoozedThreads,
@@ -4624,6 +4771,7 @@ export default function Sidebar() {
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
                         sortable?: SortableThreadRowBag,
+                        forest?: { depth: number; descendantCount: number },
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -4634,6 +4782,19 @@ export default function Sidebar() {
                         // not from the sidebar second-guessing what still matters.
                         const isCard = section === "active" || section === "pinned";
                         const rowVariant = isCard ? "card" : "slim";
+                        // Parent title for the delegation tooltip. Same-environment
+                        // only: a cross-environment parent has no visible row here.
+                        const delegationParentTitle =
+                          thread.delegationParent == null
+                            ? null
+                            : (threadByKey.get(
+                                scopedThreadKey(
+                                  scopeThreadRef(
+                                    thread.environmentId,
+                                    thread.delegationParent.parentThreadId,
+                                  ),
+                                ),
+                              )?.title ?? null);
                         return (
                           <SidebarThreadRow
                             // Fade between card and compact rows while the outer
@@ -4662,6 +4823,12 @@ export default function Sidebar() {
                                 .threadPinning === true
                             }
                             isPinned={thread.pinnedAt != null}
+                            delegationParentTitle={delegationParentTitle}
+                            depth={forest?.depth ?? 0}
+                            forestToggleKey={(forest?.descendantCount ?? 0) > 0 ? threadKey : null}
+                            forestCollapsed={collapsedForestKeys.has(threadKey)}
+                            forestDescendantCount={forest?.descendantCount ?? 0}
+                            onToggleForestCollapse={toggleForestCollapsed}
                             sortable={sortable}
                             dropVerb={
                               dragState?.activeKey === threadKey
@@ -4730,11 +4897,9 @@ export default function Sidebar() {
                       };
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
-                        section: SidebarSection,
+                        item: Extract<SidebarListItem, { kind: "thread" }>,
                       ) => {
-                        const threadKey = scopedThreadKey(
-                          scopeThreadRef(thread.environmentId, thread.id),
-                        );
+                        const threadKey = item.key;
                         return (
                           <SortableThreadRow
                             key={threadKey}
@@ -4743,7 +4908,12 @@ export default function Sidebar() {
                               !draggableThreadKeys.has(threadKey) || optimisticDrop !== null
                             }
                           >
-                            {(bag) => renderThreadRowInner(thread, section, bag)}
+                            {(bag) =>
+                              renderThreadRowInner(thread, item.section, bag, {
+                                depth: item.depth ?? 0,
+                                descendantCount: item.descendantCount ?? 0,
+                              })
+                            }
                           </SortableThreadRow>
                         );
                       };
@@ -4760,7 +4930,7 @@ export default function Sidebar() {
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          items.push(renderThreadRow(threadByKey.get(item.key)!, item));
                           continue;
                         }
                         switch (item.marker) {

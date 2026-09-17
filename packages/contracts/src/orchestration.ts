@@ -803,6 +803,18 @@ export const OrchestrationProjectShell = Schema.Struct({
 });
 export type OrchestrationProjectShell = typeof OrchestrationProjectShell.Type;
 
+/**
+ * Durable delegation lineage for a shell row. Derived from the latest
+ * `delegation.created` activity on the thread; provider-internal subagents
+ * never produce one, so they stay unmarked. Optional so old servers/clients
+ * interop; absent = not a delegated child.
+ */
+export const ThreadDelegationParent = Schema.Struct({
+  parentThreadId: ThreadId,
+  parentEnvironmentId: Schema.String,
+  role: Schema.String,
+});
+export type ThreadDelegationParent = typeof ThreadDelegationParent.Type;
 export const OrchestrationThreadShell = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -861,6 +873,7 @@ export const OrchestrationThreadShell = Schema.Struct({
       }),
     ),
   ),
+  delegationParent: Schema.optional(Schema.NullOr(ThreadDelegationParent)),
 });
 export type OrchestrationThreadShell = typeof OrchestrationThreadShell.Type;
 

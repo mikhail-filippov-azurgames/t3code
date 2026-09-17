@@ -628,6 +628,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           hasActionableProposedPlan: false,
           backgroundLiveness: null,
           planProgress: null,
+          delegationParent: null,
         },
       ]);
 
@@ -3548,6 +3549,123 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
         [["setup-live", "worktree-setup", { phase: "running" }]],
       );
       assert.deepEqual(yield* query.listActivitiesByKind("nope"), []);
+    }),
+  );
+
+  it.effect("marks delegated child shells from the latest delegation.created activity", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-03-03T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-delegation', 'Project', '/tmp/project-delegation', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, linked_pull_request_json, branch_pull_request_json,
+          latest_turn_id, latest_user_message_at, pending_approval_count,
+          pending_user_input_count, has_actionable_proposed_plan, pinned_at,
+          pin_order_key, active_order_key, created_at, updated_at, deleted_at
+        ) VALUES
+          ('thread-parent', 'project-delegation', 'Parent', '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access', 'default', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0,
+            NULL, NULL, NULL, ${timestamp}, ${timestamp}, NULL),
+          ('thread-child', 'project-delegation', 'Child', '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access', 'default', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0,
+            NULL, NULL, NULL, ${timestamp}, ${timestamp}, NULL),
+          ('thread-plain', 'project-delegation', 'Plain', '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access', 'default', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0,
+            NULL, NULL, NULL, ${timestamp}, ${timestamp}, NULL),
+          ('thread-broken', 'project-delegation', 'Broken', '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access', 'default', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0,
+            NULL, NULL, NULL, ${timestamp}, ${timestamp}, NULL)
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES
+          ('delegation-old', 'thread-child', NULL, 'info', 'delegation.created', 'Delegated task created',
+            '{"version":1,"taskId":"thread-child","parentEnvironmentId":"env-1","parentThreadId":"thread-stale","parentTurnId":"turn-0","projectId":"project-delegation","childThreadId":"thread-child","delegatedMessageId":"msg-0","callerRequestFingerprint":"a","requestFingerprint":"b","requestedAt":"2026-03-03T00:00:00.000Z","role":"research","workspaceRoot":"/tmp","worktreePath":"/tmp","requested":{"providerInstanceId":"codex","driverKind":"native","model":"gpt-5-codex"}}',
+            '2026-03-03T00:00:00.000Z'),
+          ('delegation-new', 'thread-child', NULL, 'info', 'delegation.created', 'Delegated task created',
+            '{"version":1,"taskId":"thread-child","parentEnvironmentId":"env-1","parentThreadId":"thread-parent","parentTurnId":"turn-1","projectId":"project-delegation","childThreadId":"thread-child","delegatedMessageId":"msg-1","callerRequestFingerprint":"c","requestFingerprint":"d","requestedAt":"2026-03-03T00:01:00.000Z","role":"implementation","workspaceRoot":"/tmp","worktreePath":"/tmp","requested":{"providerInstanceId":"codex","driverKind":"native","model":"gpt-5-codex"}}',
+            '2026-03-03T00:01:00.000Z'),
+          ('delegation-broken', 'thread-broken', NULL, 'info', 'delegation.created', 'Delegated task created',
+            '{"version":1,"parentThreadId":"thread-parent","parentEnvironmentId":"env-1"}',
+            '2026-03-03T00:01:00.000Z')
+      `;
+
+      const shell = yield* query.getShellSnapshot();
+      const byId = new Map(shell.threads.map((thread) => [thread.id, thread] as const));
+      assert.deepStrictEqual(byId.get("thread-child")?.delegationParent ?? null, {
+        parentThreadId: "thread-parent",
+        parentEnvironmentId: "env-1",
+        role: "implementation",
+      });
+      assert.strictEqual(byId.get("thread-parent")?.delegationParent ?? null, null);
+      assert.strictEqual(byId.get("thread-plain")?.delegationParent ?? null, null);
+      assert.strictEqual(byId.get("thread-broken")?.delegationParent ?? null, null);
+
+      const child = yield* query.getThreadShellById(ThreadId.make("thread-child"));
+      assert.strictEqual(Option.isSome(child), true);
+      if (Option.isSome(child)) {
+        assert.deepStrictEqual(child.value.delegationParent ?? null, {
+          parentThreadId: "thread-parent",
+          parentEnvironmentId: "env-1",
+          role: "implementation",
+        });
+      }
+      const plain = yield* query.getThreadShellById(ThreadId.make("thread-plain"));
+      assert.strictEqual(Option.isSome(plain), true);
+      if (Option.isSome(plain)) {
+        assert.strictEqual(plain.value.delegationParent ?? null, null);
+      }
+    }),
+  );
+
+  it.effect("keeps delegation markers on archived shells", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-03-04T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('project-archived', 'Project', '/tmp/project-archived', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, linked_pull_request_json, branch_pull_request_json,
+          latest_turn_id, latest_user_message_at, pending_approval_count,
+          pending_user_input_count, has_actionable_proposed_plan, pinned_at,
+          pin_order_key, active_order_key, created_at, updated_at, deleted_at
+        ) VALUES
+          ('thread-archived-child', 'project-archived', 'Child', '{"provider":"codex","model":"gpt-5-codex"}',
+            'full-access', 'default', NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0,
+            NULL, NULL, NULL, ${timestamp}, ${timestamp}, NULL)
+      `;
+      yield* sql`UPDATE projection_threads SET archived_at = ${timestamp} WHERE thread_id = 'thread-archived-child'`;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, created_at
+        ) VALUES
+          ('delegation-archived', 'thread-archived-child', NULL, 'info', 'delegation.created',
+            'Delegated task created',
+            '{"version":1,"taskId":"thread-archived-child","parentEnvironmentId":"env-1","parentThreadId":"thread-parent","parentTurnId":"turn-1","projectId":"project-archived","childThreadId":"thread-archived-child","delegatedMessageId":"msg-1","callerRequestFingerprint":"c","requestFingerprint":"d","requestedAt":"2026-03-04T00:00:00.000Z","role":"review","workspaceRoot":"/tmp","worktreePath":"/tmp","requested":{"providerInstanceId":"codex","driverKind":"native","model":"gpt-5-codex"}}',
+            ${timestamp})
+      `;
+
+      const archived = yield* query.getArchivedShellSnapshot();
+      const child = archived.threads.find((thread) => thread.id === "thread-archived-child");
+      assert.deepStrictEqual(child?.delegationParent ?? null, {
+        parentThreadId: "thread-parent",
+        parentEnvironmentId: "env-1",
+        role: "review",
+      });
     }),
   );
 });

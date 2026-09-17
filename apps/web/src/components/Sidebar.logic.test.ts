@@ -34,6 +34,8 @@ import {
   sortLogicalProjectsForSidebar,
   sortSettledThreadsForSidebar,
   resolveSidebarDropTarget,
+  filterCollapsedSidebarForest,
+  orderSidebarSectionForest,
   pinOrderKeyBetween,
   planPinnedReorder,
   planSidebarThreadDrop,
@@ -2541,4 +2543,100 @@ describe("navigation after parking a thread", () => {
       ).toBe(expected);
     },
   );
+});
+
+describe("orderSidebarSectionForest", () => {
+  type ForestThread = { readonly id: string; readonly parent: string | null };
+  const order = (
+    threads: readonly ForestThread[],
+    maxDepth?: number,
+  ): ReturnType<typeof orderSidebarSectionForest<ForestThread>> =>
+    orderSidebarSectionForest({
+      threads,
+      getKey: (thread) => thread.id,
+      getParentKey: (thread) => thread.parent,
+      ...(maxDepth === undefined ? {} : { maxDepth }),
+    });
+
+  it("nests children under parents in incoming order with depths", () => {
+    const entries = order([
+      { id: "root-b", parent: null },
+      { id: "root-a", parent: null },
+      { id: "child-a2", parent: "root-a" },
+      { id: "child-a1", parent: "root-a" },
+      { id: "grandchild", parent: "child-a1" },
+    ]);
+    expect(entries.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
+      ["root-b", 0, null],
+      ["root-a", 0, null],
+      ["child-a2", 1, "root-a"],
+      ["child-a1", 1, "root-a"],
+      ["grandchild", 2, "child-a1"],
+    ]);
+    expect(entries.find((entry) => entry.key === "root-a")?.descendantCount).toBe(3);
+    expect(entries.find((entry) => entry.key === "child-a1")?.descendantCount).toBe(1);
+    expect(entries.find((entry) => entry.key === "grandchild")?.descendantCount).toBe(0);
+  });
+
+  it("detaches orphans, self-parents, and cycles without dropping rows", () => {
+    const entries = order([
+      { id: "orphan", parent: "missing" },
+      { id: "self", parent: "self" },
+      { id: "cycle-a", parent: "cycle-b" },
+      { id: "cycle-b", parent: "cycle-a" },
+      { id: "root", parent: null },
+    ]);
+    expect(entries.map((entry) => entry.key).toSorted()).toEqual(
+      ["cycle-a", "cycle-b", "orphan", "root", "self"].toSorted(),
+    );
+    for (const entry of entries) {
+      expect(entry.depth).toBe(0);
+      expect(entry.parentKey).toBeNull();
+    }
+  });
+
+  it("caps depth instead of nesting deeper chains", () => {
+    const entries = order(
+      [
+        { id: "l0", parent: null },
+        { id: "l1", parent: "l0" },
+        { id: "l2", parent: "l1" },
+        { id: "l3", parent: "l2" },
+      ],
+      2,
+    );
+    expect(entries.map((entry) => [entry.key, entry.depth])).toEqual([
+      ["l0", 0],
+      ["l1", 1],
+      ["l2", 2],
+      ["l3", 2],
+    ]);
+    expect(entries.find((entry) => entry.key === "l0")?.descendantCount).toBe(3);
+  });
+});
+
+describe("filterCollapsedSidebarForest", () => {
+  const entries = orderSidebarSectionForest({
+    threads: [
+      { id: "root", parent: null },
+      { id: "child", parent: "root" },
+      { id: "grandchild", parent: "child" },
+      { id: "other", parent: null },
+    ],
+    getKey: (thread: { readonly id: string }) => thread.id,
+    getParentKey: (thread: { readonly parent: string | null }) => thread.parent,
+  });
+
+  it("hides descendants of collapsed parents but keeps the parent row", () => {
+    const visible = filterCollapsedSidebarForest({
+      entries,
+      collapsedKeys: new Set(["root"]),
+    });
+    expect(visible.map((entry) => entry.key)).toEqual(["root", "other"]);
+  });
+
+  it("keeps everything visible without collapsed keys", () => {
+    const visible = filterCollapsedSidebarForest({ entries, collapsedKeys: new Set() });
+    expect(visible.map((entry) => entry.key)).toEqual(["root", "child", "grandchild", "other"]);
+  });
 });
