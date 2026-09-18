@@ -17,6 +17,8 @@ import {
   effectiveSnoozed,
   type ThreadSnoozeShell,
 } from "@t3tools/client-runtime/state/thread-settled";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import {
   getThreadSortTimestamp,
   resolveSettledThreadTimestamp,
@@ -1276,6 +1278,26 @@ export type SidebarForestEntry<TThread> = {
   readonly descendantCount: number;
 };
 
+/**
+ * Delegation parent key for the section forest. Cross-provider children live
+ * in a different environment than their parent, so the key must use the
+ * PARENT environment id: scoping it to the child environment produces a key
+ * no row carries, the forest detaches the child as a top-level row, and the
+ * pin/unpin cascade collects an empty subtree.
+ */
+export function sidebarDelegationParentKey(thread: {
+  readonly delegationParent?:
+    | { readonly parentThreadId: ThreadId; readonly parentEnvironmentId: string }
+    | null
+    | undefined;
+}): string | null {
+  const parent = thread.delegationParent;
+  if (parent == null) return null;
+  return scopedThreadKey(
+    scopeThreadRef(parent.parentEnvironmentId as EnvironmentId, parent.parentThreadId),
+  );
+}
+
 export function orderSidebarSectionForest<TThread>(input: {
   readonly threads: readonly TThread[];
   readonly getKey: (thread: TThread) => string;
@@ -1400,6 +1422,32 @@ export type DelegatedCascadeDescendant = {
     not shrink the subtree — a folded-away child is still part of the
     delegation and moves with its parent. Ancestry walks the resolved
     parentKey chain (not depth numbers) so depth-capped chains stay intact. */
+/**
+ * Run a parent pin/unpin with its delegated cascade over a pre-mutation subtree.
+ *
+ * The subtree MUST be captured before the parent mutation lands: pinning (or
+ * unpinning) moves the parent out of its section, and the section-local
+ * forest detaches the children of an absent parent — collecting after the
+ * mutation always yields an empty subtree and the cascade silently no-ops
+ * (live repro: parent Connection Check pinned five times, zero child pin
+ * events, while the pre-mutation active forest held three same-section
+ * delegated children). False (or a throw) from the parent write skips the
+ * cascade; the boolean reports whether the mutation landed.
+ */
+export async function mutateParentWithDelegatedCascade<TThread>(input: {
+  /** Visible delegated subtree, read from the current (pre-mutation) entries. */
+  readonly captureSubtree: () => readonly SidebarForestEntry<TThread>[];
+  /** The parent pin/unpin write. A false result skips the cascade. */
+  readonly mutateParent: () => Promise<boolean>;
+  /** The cascade over the captured subtree. */
+  readonly runCascade: (subtree: readonly SidebarForestEntry<TThread>[]) => Promise<void>;
+}): Promise<boolean> {
+  const subtree = input.captureSubtree();
+  if (!(await input.mutateParent())) return false;
+  await input.runCascade(subtree);
+  return true;
+}
+
 export function collectVisibleDelegatedSubtree<TThread>(
   entries: readonly SidebarForestEntry<TThread>[],
   parentKey: string,

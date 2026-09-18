@@ -162,6 +162,7 @@ import {
   hasUnseenCompletion,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
+  mutateParentWithDelegatedCascade,
   orderItemsByPreferredIds,
   planDelegatedPinCascade,
   planSidebarThreadDrop,
@@ -179,6 +180,7 @@ import {
   resolveWorkingStartedAt,
   filterCollapsedSidebarForest,
   orderSidebarSectionForest,
+  sidebarDelegationParentKey,
   sidebarListItemId,
   sidebarMarkerId,
   sortLogicalProjectsForSidebar,
@@ -2838,12 +2840,7 @@ export default function Sidebar() {
       orderSidebarSectionForest({
         threads: list,
         getKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        getParentKey: (thread) =>
-          thread.delegationParent == null
-            ? null
-            : scopedThreadKey(
-                scopeThreadRef(thread.environmentId, thread.delegationParent.parentThreadId),
-              ),
+        getParentKey: (thread) => sidebarDelegationParentKey(thread),
       });
     const pinned = build(pinnedThreads);
     const active = build(activeThreads);
@@ -3457,7 +3454,9 @@ export default function Sidebar() {
   const runDelegatedPinCascade = useCallback(
     async (input: {
       readonly parentKey: string;
-      readonly sourceSection: SidebarSection;
+      /** Visible delegated subtree captured BEFORE the parent pin moved it
+          out of its section (see mutateParentWithDelegatedCascade). */
+      readonly subtree: readonly SidebarForestEntry<EnvironmentThreadShell>[];
       /** Visible pinned order with the parent at its post-action slot,
           descendants not yet included. */
       readonly pinnedOrder: readonly string[];
@@ -3465,7 +3464,7 @@ export default function Sidebar() {
           then needs a reorder write (a fresh pin carries its key itself). */
       readonly parentPinnedBefore: boolean;
     }): Promise<void> => {
-      const subtree = collectCascadeEntries(input.parentKey, input.sourceSection);
+      const { subtree } = input;
       if (subtree.length === 0) return;
       const shells = readThreadShells();
       const shellByKey = new Map(
@@ -3522,13 +3521,7 @@ export default function Sidebar() {
         }
       }
     },
-    [
-      collectCascadeEntries,
-      pinThread,
-      readCascadeSupportsPinning,
-      reorderPinnedThread,
-      reportCascadeFailure,
-    ],
+    [pinThread, readCascadeSupportsPinning, reorderPinnedThread, reportCascadeFailure],
   );
   /** Unpin every pinned capable descendant alongside an unpinned parent. No
       confirmation per child: the parent's own confirmation covers the
@@ -3536,9 +3529,11 @@ export default function Sidebar() {
   const runDelegatedUnpinCascade = useCallback(
     async (input: {
       readonly parentKey: string;
-      readonly sourceSection: SidebarSection;
+      /** Visible delegated subtree captured BEFORE the parent unpin moved it
+          out of its section (see mutateParentWithDelegatedCascade). */
+      readonly subtree: readonly SidebarForestEntry<EnvironmentThreadShell>[];
     }): Promise<void> => {
-      const subtree = collectCascadeEntries(input.parentKey, input.sourceSection);
+      const { subtree } = input;
       if (subtree.length === 0) return;
       const plan = planDelegatedPinCascade({
         action: "unpin",
@@ -3569,46 +3564,67 @@ export default function Sidebar() {
         const parentKey = scopedThreadKey(threadRef);
         const sourceSection = sectionByThreadKeyRef.current.get(parentKey);
         const parentPinnedBefore = threadByKeyRef.current.get(parentKey)?.pinnedAt != null;
-        // Fresh pins take the top of the arranged run: pinThread computes a
-        // key before the smallest key across ALL pinned shells — including
-        // snoozed pins hidden from this list, whose keys are still part of
-        // the run — so the new pin can't land beneath a hidden head.
-        const result = await pinThread(threadRef);
-        if (result._tag === "Failure") {
-          reportCascadeFailure("Failed to pin thread", result);
-          return;
-        }
-        if (sourceSection === undefined) return;
-        // The cascade reads the parent's landed key, so descendants chain
-        // right after it however the pin placed it.
-        await runDelegatedPinCascade({
-          parentKey,
-          sourceSection,
-          pinnedOrder: [parentKey, ...pinnedKeysRef.current.filter((key) => key !== parentKey)],
-          parentPinnedBefore,
+        // Capture BEFORE the pin moves the parent out of its section: after
+        // the mutation the section forest no longer contains the parent, so
+        // collecting then would yield an empty subtree and skip the cascade.
+        const captureSubtree = () =>
+          sourceSection === undefined ? [] : collectCascadeEntries(parentKey, sourceSection);
+        await mutateParentWithDelegatedCascade({
+          captureSubtree,
+          mutateParent: async () => {
+            // Fresh pins take the top of the arranged run: pinThread computes
+            // a key before the smallest key across ALL pinned shells —
+            // including snoozed pins hidden from this list, whose keys are
+            // still part of the run — so the new pin can't land beneath a
+            // hidden head.
+            const result = await pinThread(threadRef);
+            if (result._tag === "Failure") {
+              reportCascadeFailure("Failed to pin thread", result);
+              return false;
+            }
+            return true;
+          },
+          // The cascade reads the parent's landed key, so descendants chain
+          // right after it however the pin placed it.
+          runCascade: (subtree) =>
+            runDelegatedPinCascade({
+              parentKey,
+              subtree,
+              pinnedOrder: [parentKey, ...pinnedKeysRef.current.filter((key) => key !== parentKey)],
+              parentPinnedBefore,
+            }),
         });
       })();
     },
-    [pinThread, reportCascadeFailure, runDelegatedPinCascade],
+    [collectCascadeEntries, pinThread, reportCascadeFailure, runDelegatedPinCascade],
   );
   const attemptUnpin = useCallback(
     (threadRef: ScopedThreadRef) => {
       void (async () => {
         const parentKey = scopedThreadKey(threadRef);
         const sourceSection = sectionByThreadKeyRef.current.get(parentKey);
-        const result = await confirmAndUnpinThread(threadRef);
-        if (result._tag === "Failure") {
-          reportCascadeFailure("Failed to unpin thread", result);
-          return;
-        }
-        // A dismissed confirmation resolves Success without touching the
-        // thread: only cascade when the parent actually left the pinned set.
-        if (readThreadShell(threadRef)?.pinnedAt != null) return;
-        if (sourceSection === undefined) return;
-        await runDelegatedUnpinCascade({ parentKey, sourceSection });
+        // Capture BEFORE the unpin moves the parent out of its section (see
+        // attemptPin).
+        const captureSubtree = () =>
+          sourceSection === undefined ? [] : collectCascadeEntries(parentKey, sourceSection);
+        await mutateParentWithDelegatedCascade({
+          captureSubtree,
+          mutateParent: async () => {
+            const result = await confirmAndUnpinThread(threadRef);
+            if (result._tag === "Failure") {
+              reportCascadeFailure("Failed to unpin thread", result);
+              return false;
+            }
+            // A dismissed confirmation resolves Success without touching the
+            // thread: only cascade when the parent actually left the pinned set.
+            if (readThreadShell(threadRef)?.pinnedAt != null) return false;
+            return true;
+          },
+          runCascade: (subtree) => runDelegatedUnpinCascade({ parentKey, subtree }),
+        });
       })();
     },
-    [confirmAndUnpinThread, reportCascadeFailure, runDelegatedUnpinCascade],
+    [collectCascadeEntries, confirmAndUnpinThread, reportCascadeFailure, runDelegatedUnpinCascade],
   );
 
   const handleThreadDragStart = useCallback(
@@ -3934,12 +3950,16 @@ export default function Sidebar() {
           case "move-active":
             // The drag expresses unpin intent; button/menu confirmation is unchanged.
             if (plan.unpin) {
-              if (!(await run(unpinThread(threadRef), "Failed to unpin thread"))) return;
-              // The visible subtree leaves the pinned set with its parent.
-              await runDelegatedUnpinCascade({
-                parentKey: activeKey,
-                sourceSection: activeSection,
+              // Capture BEFORE the unpin moves the parent out of its section.
+              const captureSubtree = () => collectCascadeEntries(activeKey, activeSection);
+              const unpinned = await mutateParentWithDelegatedCascade({
+                captureSubtree,
+                mutateParent: () => run(unpinThread(threadRef), "Failed to unpin thread"),
+                // The visible subtree leaves the pinned set with its parent.
+                runCascade: (subtree) =>
+                  runDelegatedUnpinCascade({ parentKey: activeKey, subtree }),
               });
+              if (!unpinned) return;
             }
             if (
               plan.unsettle &&
@@ -3949,29 +3969,36 @@ export default function Sidebar() {
             if (plan.unsnooze && !(await run(unsnoozeThread(threadRef), "Failed to wake thread")))
               return;
             break;
-          case "pin":
-            if (
-              !(await run(
-                pinThread(
-                  threadRef,
-                  plan.orderKey === undefined ? {} : { orderKey: plan.orderKey },
+          case "pin": {
+            // Capture BEFORE the pin moves the parent out of its section.
+            const captureSubtree = () => collectCascadeEntries(activeKey, activeSection);
+            const pinned = await mutateParentWithDelegatedCascade({
+              captureSubtree,
+              mutateParent: () =>
+                run(
+                  pinThread(
+                    threadRef,
+                    plan.orderKey === undefined ? {} : { orderKey: plan.orderKey },
+                  ),
+                  "Failed to pin thread",
                 ),
-                "Failed to pin thread",
-              ))
-            )
-              return;
-            // The visible delegated subtree pins with its parent, each child
-            // chaining its own key right after the parent's landed key. The
-            // section reorders below only touch rows the drop planner placed;
-            // cascade keys avoid every known key, and a same-row clash falls
-            // back to the id tiebreak until the next reorder re-spreads.
-            await runDelegatedPinCascade({
-              parentKey: activeKey,
-              sourceSection: activeSection,
-              pinnedOrder: plan.order,
-              parentPinnedBefore: activeThread.pinnedAt != null,
+              // The visible delegated subtree pins with its parent, each
+              // child chaining its own key right after the parent's landed
+              // key. The section reorders below only touch rows the drop
+              // planner placed; cascade keys avoid every known key, and a
+              // same-row clash falls back to the id tiebreak until the next
+              // reorder re-spreads.
+              runCascade: (subtree) =>
+                runDelegatedPinCascade({
+                  parentKey: activeKey,
+                  subtree,
+                  pinnedOrder: plan.order,
+                  parentPinnedBefore: activeThread.pinnedAt != null,
+                }),
             });
+            if (!pinned) return;
             break;
+          }
           case "reorder-pinned":
             break;
         }
@@ -4001,6 +4028,7 @@ export default function Sidebar() {
       serverConfigs,
       activeKeys,
       activeReorderableThreadKeys,
+      collectCascadeEntries,
       draggableThreadKeys,
       pinThread,
       pinnedKeys,
@@ -4981,19 +5009,14 @@ export default function Sidebar() {
                         // not from the sidebar second-guessing what still matters.
                         const isCard = section === "active" || section === "pinned";
                         const rowVariant = isCard ? "card" : "slim";
-                        // Parent title for the delegation tooltip. Same-environment
-                        // only: a cross-environment parent has no visible row here.
+                        // Parent title for the delegation tooltip. The parent key is
+                        // scoped to the parent environment so cross-provider
+                        // children resolve their parent row too.
+                        const delegationParentKey = sidebarDelegationParentKey(thread);
                         const delegationParentTitle =
-                          thread.delegationParent == null
+                          delegationParentKey == null
                             ? null
-                            : (threadByKey.get(
-                                scopedThreadKey(
-                                  scopeThreadRef(
-                                    thread.environmentId,
-                                    thread.delegationParent.parentThreadId,
-                                  ),
-                                ),
-                              )?.title ?? null);
+                            : (threadByKey.get(delegationParentKey)?.title ?? null);
                         return (
                           <SidebarThreadRow
                             // Fade between card and compact rows while the outer

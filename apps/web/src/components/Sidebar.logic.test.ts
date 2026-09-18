@@ -36,11 +36,13 @@ import {
   sortSettledThreadsForSidebar,
   resolveSidebarDropTarget,
   filterCollapsedSidebarForest,
+  mutateParentWithDelegatedCascade,
   orderSidebarSectionForest,
   pinOrderKeyBetween,
   planDelegatedPinCascade,
   planPinnedReorder,
   planSidebarThreadDrop,
+  sidebarDelegationParentKey,
   sidebarMarkerId,
   sidebarListItemId,
   sortPinnedThreadsForSidebar,
@@ -63,6 +65,7 @@ import {
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 
 import {
   DEFAULT_INTERACTION_MODE,
@@ -2713,6 +2716,80 @@ describe("collectVisibleDelegatedSubtree", () => {
   });
 });
 
+describe("sidebarDelegationParentKey", () => {
+  const parentEnv = EnvironmentId.make("env-parent");
+  const childEnv = EnvironmentId.make("env-child");
+  const parentId = ThreadId.make("thread-parent");
+  const childId = ThreadId.make("thread-child");
+  type DelegationThread = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly delegationParent: {
+      readonly parentThreadId: ThreadId;
+      readonly parentEnvironmentId: string;
+      readonly role: string;
+    } | null;
+  };
+  const parentThread: DelegationThread = {
+    environmentId: parentEnv,
+    id: parentId,
+    delegationParent: null,
+  };
+  const childThread: DelegationThread = {
+    environmentId: childEnv,
+    id: childId,
+    delegationParent: {
+      parentThreadId: parentId,
+      parentEnvironmentId: parentEnv,
+      role: "implementation",
+    },
+  };
+  const threadKey = (thread: DelegationThread) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+
+  it("returns null for threads without a delegation parent", () => {
+    expect(sidebarDelegationParentKey(parentThread)).toBeNull();
+  });
+
+  it("scopes the parent key to the parent environment, not the child one", () => {
+    expect(sidebarDelegationParentKey(childThread)).toBe(threadKey(parentThread));
+  });
+
+  it("attaches cross-environment children so the pin cascade collects them", () => {
+    const forest = orderSidebarSectionForest({
+      threads: [parentThread, childThread],
+      getKey: threadKey,
+      getParentKey: (thread) => sidebarDelegationParentKey(thread),
+    });
+    expect(forest.find((entry) => entry.key === threadKey(childThread))?.parentKey).toBe(
+      threadKey(parentThread),
+    );
+    expect(
+      collectVisibleDelegatedSubtree(forest, threadKey(parentThread)).map((entry) => entry.key),
+    ).toEqual([threadKey(childThread)]);
+  });
+
+  it("keeps same-environment nesting intact", () => {
+    const sibling: DelegationThread = {
+      environmentId: parentEnv,
+      id: ThreadId.make("thread-sibling"),
+      delegationParent: {
+        parentThreadId: parentId,
+        parentEnvironmentId: parentEnv,
+        role: "review",
+      },
+    };
+    const forest = orderSidebarSectionForest({
+      threads: [parentThread, sibling],
+      getKey: threadKey,
+      getParentKey: (thread) => sidebarDelegationParentKey(thread),
+    });
+    expect(
+      collectVisibleDelegatedSubtree(forest, threadKey(parentThread)).map((entry) => entry.key),
+    ).toEqual([threadKey(sibling)]);
+  });
+});
+
 describe("planDelegatedPinCascade", () => {
   const descendant = (
     key: string,
@@ -2964,5 +3041,188 @@ describe("delegated pin cascade end to end", () => {
       supportsPinning: (environmentId) => environmentId !== "env-old",
     });
     expect(plan.unpins).toEqual(["env-a:child"]);
+  });
+});
+
+describe("mutateParentWithDelegatedCascade", () => {
+  // Live repro shape (state.sqlite copy): parent Connection Check with three
+  // same-environment delegated children, all unpinned in the active section.
+  // The delegation payloads carry one parentEnvironmentId for the whole
+  // desktop server, so the parent-scoped key attaches every child.
+  const liveEnv = EnvironmentId.make("ed1b70d0-d277-40eb-8415-a34f4c23f084");
+  const liveParentId = ThreadId.make("1d0d69fb-52ab-4e3f-bafb-62e163b3da20");
+  type LiveShell = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly delegationParent: {
+      readonly parentThreadId: ThreadId;
+      readonly parentEnvironmentId: string;
+      readonly role: string;
+    } | null;
+  };
+  const liveParent: LiveShell = {
+    environmentId: liveEnv,
+    id: liveParentId,
+    delegationParent: null,
+  };
+  const liveChild = (suffix: string): LiveShell => ({
+    environmentId: liveEnv,
+    id: ThreadId.make(`delegated-task:${suffix}`),
+    delegationParent: {
+      parentThreadId: liveParentId,
+      parentEnvironmentId: liveEnv,
+      role: "implementation",
+    },
+  });
+  const liveChildren = [liveChild("52eae014"), liveChild("656f6550"), liveChild("37741e3e")];
+  const liveKey = (shell: LiveShell) =>
+    scopedThreadKey(scopeThreadRef(shell.environmentId, shell.id));
+  const liveParentKey = liveKey(liveParent);
+  const liveChildKeys = liveChildren.map(liveKey);
+  const liveForest = (shells: readonly LiveShell[]) =>
+    orderSidebarSectionForest({
+      threads: shells,
+      getKey: liveKey,
+      getParentKey: (shell) => sidebarDelegationParentKey(shell),
+    });
+
+  it("captures the visible subtree before the parent mutation leaves its section", async () => {
+    const preMutation = liveForest([liveParent, ...liveChildren]);
+    expect(
+      collectVisibleDelegatedSubtree(preMutation, liveParentKey).map((entry) => entry.key),
+    ).toEqual(liveChildKeys);
+    // After the parent pin lands, the parent row lives in the pinned section:
+    // the rebuilt active entries no longer contain it, so its former children
+    // detach to top level — collecting at this point misses everything.
+    const postMutation = liveForest(liveChildren);
+    expect(collectVisibleDelegatedSubtree(postMutation, liveParentKey)).toEqual([]);
+
+    let current = preMutation;
+    const cascaded: string[][] = [];
+    const mutated = await mutateParentWithDelegatedCascade({
+      captureSubtree: () => collectVisibleDelegatedSubtree(current, liveParentKey),
+      mutateParent: async () => {
+        current = postMutation;
+        return true;
+      },
+      runCascade: async (subtree) => {
+        cascaded.push(subtree.map((entry) => entry.key));
+      },
+    });
+
+    expect(mutated).toBe(true);
+    expect(cascaded).toEqual([liveChildKeys]);
+  });
+
+  it("skips the cascade when the parent mutation fails or is dismissed", async () => {
+    let cascaded = 0;
+    const mutated = await mutateParentWithDelegatedCascade({
+      captureSubtree: () => liveForest([liveParent, ...liveChildren]),
+      mutateParent: async () => false,
+      runCascade: async () => {
+        cascaded += 1;
+      },
+    });
+    expect(mutated).toBe(false);
+    expect(cascaded).toBe(0);
+  });
+});
+
+describe("delegated cascade live repro", () => {
+  const liveEnv = EnvironmentId.make("ed1b70d0-d277-40eb-8415-a34f4c23f084");
+  const liveParentId = ThreadId.make("1d0d69fb-52ab-4e3f-bafb-62e163b3da20");
+  type LiveShell = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly pinnedAt: string | null;
+    readonly delegationParent: {
+      readonly parentThreadId: ThreadId;
+      readonly parentEnvironmentId: string;
+      readonly role: string;
+    } | null;
+  };
+  const shell = (id: ThreadId, delegationParent: LiveShell["delegationParent"]): LiveShell => ({
+    environmentId: liveEnv,
+    id,
+    pinnedAt: null,
+    delegationParent,
+  });
+  const keyOf = (shell: LiveShell) =>
+    scopedThreadKey(scopeThreadRef(shell.environmentId, shell.id));
+  const parentKey = scopedThreadKey(scopeThreadRef(liveEnv, liveParentId));
+  const child = (suffix: string) =>
+    shell(ThreadId.make(`delegated-task:${suffix}`), {
+      parentThreadId: liveParentId,
+      parentEnvironmentId: liveEnv,
+      role: "implementation",
+    });
+
+  it("pins every same-environment delegated child of the live parent", () => {
+    const active = [
+      shell(liveParentId, null),
+      child("52eae014"),
+      child("656f6550"),
+      child("37741e3e"),
+    ];
+    const forest = orderSidebarSectionForest({
+      threads: active,
+      getKey: keyOf,
+      getParentKey: (entry) => sidebarDelegationParentKey(entry),
+    });
+    const descendants = collectVisibleDelegatedSubtree(forest, parentKey).map((entry) => ({
+      key: entry.key,
+      environmentId: entry.thread.environmentId,
+      pinned: entry.thread.pinnedAt != null,
+    }));
+    expect(descendants.map((descendant) => descendant.key)).toEqual([
+      keyOf(child("52eae014")),
+      keyOf(child("656f6550")),
+      keyOf(child("37741e3e")),
+    ]);
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey,
+      descendants,
+      supportsPinning: () => true,
+      parentOrderKey: "n",
+      pinnedOrder: [parentKey],
+      pinnedKeysById: new Map([[parentKey, null]]),
+    });
+    expect(plan.pins.map((pin) => pin.key)).toEqual(descendants.map((d) => d.key));
+  });
+
+  it("pinning a duplicate parent without children plans no child pins", () => {
+    // The three older Connection Check rows (1a69915e, b84256fa, 3c3e4442)
+    // have no delegation.created children: pinning one must stay a silent
+    // single-row pin instead of touching unrelated threads.
+    const duplicateKey = scopedThreadKey(
+      scopeThreadRef(liveEnv, ThreadId.make("1a69915e-561d-4af7-8502-1b5bd941f814")),
+    );
+    const active = [
+      shell(liveParentId, null),
+      shell(ThreadId.make("1a69915e-561d-4af7-8502-1b5bd941f814"), null),
+      child("52eae014"),
+    ];
+    const forest = orderSidebarSectionForest({
+      threads: active,
+      getKey: keyOf,
+      getParentKey: (entry) => sidebarDelegationParentKey(entry),
+    });
+    expect(collectVisibleDelegatedSubtree(forest, duplicateKey)).toEqual([]);
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey: duplicateKey,
+      descendants: [],
+      supportsPinning: () => true,
+      parentOrderKey: "n",
+      pinnedOrder: [duplicateKey],
+      pinnedKeysById: new Map([[duplicateKey, null]]),
+    });
+    expect(plan.pins).toEqual([]);
+    expect(plan.reorders).toEqual([]);
+  });
+
+  it("leaves shells without a delegation parent at top level", () => {
+    expect(sidebarDelegationParentKey(shell(liveParentId, null))).toBeNull();
   });
 });
