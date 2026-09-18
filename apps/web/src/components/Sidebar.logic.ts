@@ -8,7 +8,11 @@ import {
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
-import { planPinnedReorder } from "@t3tools/client-runtime/state/thread-sort";
+import {
+  generateSpreadPinOrderKeys,
+  pinOrderKeyBetween,
+  planPinnedReorder,
+} from "@t3tools/client-runtime/state/thread-sort";
 import {
   effectiveSnoozed,
   type ThreadSnoozeShell,
@@ -1370,4 +1374,189 @@ export function filterCollapsedSidebarForest<TThread>(input: {
     }
     return true;
   });
+}
+
+// ── Delegated pin/unpin cascade ──────────────────────────────────────
+// Pinning writes lifecycle fields to one thread only, and the section
+// forest attaches children strictly inside their own section — so pinning
+// a delegation parent strands its active children as detached top-level
+// rows. The cascade below gives every visible delegated descendant its own
+// pin/unpin record: pins chain immediately after the parent's own key,
+// unpins clear the subtree back alongside the parent.
+
+/** One visible delegated descendant considered for a pin/unpin cascade. */
+export type DelegatedCascadeDescendant = {
+  readonly key: string;
+  readonly environmentId: string;
+  /** True when the row already carries a pin (pinned section, or beneath a snooze). */
+  readonly pinned: boolean;
+};
+
+/** Visible delegated subtree of a parent inside one section's forest, in
+    render order, parent excluded. The forest is section-local by
+    construction, so cross-section children never appear here: a child in
+    another section stays a detached top-level row with its marker and the
+    cascade must not touch it. Collapse is session-only UI state and does
+    not shrink the subtree — a folded-away child is still part of the
+    delegation and moves with its parent. Ancestry walks the resolved
+    parentKey chain (not depth numbers) so depth-capped chains stay intact. */
+export function collectVisibleDelegatedSubtree<TThread>(
+  entries: readonly SidebarForestEntry<TThread>[],
+  parentKey: string,
+): SidebarForestEntry<TThread>[] {
+  if (!entries.some((entry) => entry.key === parentKey)) return [];
+  const parentByKey = new Map(entries.map((entry) => [entry.key, entry.parentKey] as const));
+  return entries.filter((entry) => {
+    if (entry.key === parentKey) return false;
+    let cursor = entry.parentKey;
+    const seen = new Set<string>([entry.key]);
+    while (cursor !== null && !seen.has(cursor)) {
+      if (cursor === parentKey) return true;
+      seen.add(cursor);
+      cursor = parentByKey.get(cursor) ?? null;
+    }
+    return false;
+  });
+}
+
+export type DelegatedPinCascadePlan = {
+  /** Key the parent pin must use: the provisional key, or the re-spread key when the gap runs out. */
+  readonly parentOrderKey: string | undefined;
+  /** Fresh pins for unpinned capable descendants, in render order. An
+      undefined orderKey pins without an explicit key (keyless-parent
+      fallback); the pinned-section forest still nests the row under its
+      parent. */
+  readonly pins: ReadonlyArray<{ readonly key: string; readonly orderKey: string | undefined }>;
+  /** Reorders for already-pinned rows whose keys move. Only non-empty when
+      the gap after the parent runs out and the whole section is re-spread;
+      supersedes any narrower reorder plan covering the same drop. */
+  readonly reorders: ReadonlyArray<{ readonly key: string; readonly orderKey: string }>;
+  /** Unpin records for pinned capable descendants, in render order. */
+  readonly unpins: ReadonlyArray<string>;
+};
+
+export function planDelegatedPinCascade(input: {
+  readonly action: "pin" | "unpin";
+  readonly parentKey: string;
+  /** Visible subtree in render order (see collectVisibleDelegatedSubtree). */
+  readonly descendants: readonly DelegatedCascadeDescendant[];
+  readonly supportsPinning: (environmentId: string) => boolean;
+  /** Pin only: the parent's own pinned key (provisional drop/top key, or the
+      kept key when re-pinning). Null/undefined when the parent stays keyless. */
+  readonly parentOrderKey?: string | null | undefined;
+  /** Pin only: visible pinned order with the parent at its slot and
+      descendants not yet spliced in. Pinnable descendants land as one block
+      right after the parent. */
+  readonly pinnedOrder?: readonly string[];
+  /** Pin only: every known pinned key, visible and hidden — hidden rows
+      reserve their slots without receiving writes. */
+  readonly pinnedKeysById?: ReadonlyMap<string, string | null | undefined>;
+  /** Pin only, rebuild fallback: true when the parent row is already pinned,
+      so a changed parent key also needs a reorder write (a fresh pin carries
+      its key on the pin command instead). */
+  readonly parentPinned?: boolean;
+}): DelegatedPinCascadePlan {
+  const capable = (descendant: DelegatedCascadeDescendant) =>
+    input.supportsPinning(descendant.environmentId);
+  if (input.action === "unpin") {
+    return {
+      parentOrderKey: undefined,
+      pins: [],
+      reorders: [],
+      unpins: input.descendants
+        .filter((descendant) => descendant.pinned && capable(descendant))
+        .map((descendant) => descendant.key),
+    };
+  }
+  const targets = input.descendants.filter(
+    (descendant) => !descendant.pinned && capable(descendant),
+  );
+  if (targets.length === 0) {
+    return {
+      parentOrderKey: input.parentOrderKey ?? undefined,
+      pins: [],
+      reorders: [],
+      unpins: [],
+    };
+  }
+  const pinnedKeysById = input.pinnedKeysById ?? new Map<string, string | null | undefined>();
+  const cursor = input.parentOrderKey ?? pinnedKeysById.get(input.parentKey) ?? null;
+  if (cursor === null) {
+    return {
+      parentOrderKey: undefined,
+      pins: targets.map((target) => ({ key: target.key, orderKey: undefined })),
+      reorders: [],
+      unpins: [],
+    };
+  }
+  const pinnedOrder = input.pinnedOrder ?? [];
+  const targetSet = new Set(targets.map((target) => target.key));
+  // Desired section order: the subtree lands as one block right after the parent.
+  const parentIndex = pinnedOrder.indexOf(input.parentKey);
+  const desiredOrder =
+    parentIndex === -1
+      ? [
+          input.parentKey,
+          ...targets.map((target) => target.key),
+          ...pinnedOrder.filter((key) => key !== input.parentKey && !targetSet.has(key)),
+        ]
+      : [
+          ...pinnedOrder.slice(0, parentIndex + 1),
+          ...targets.map((target) => target.key),
+          ...pinnedOrder.slice(parentIndex + 1).filter((key) => !targetSet.has(key)),
+        ];
+  // Keyless rows sort below the keyed run, so only keyed rows bound the gap.
+  const blockEnd = (parentIndex === -1 ? 1 : parentIndex + 1) + targets.length;
+  let afterKey: string | null = null;
+  for (let index = blockEnd; index < desiredOrder.length; index += 1) {
+    const key = pinnedKeysById.get(desiredOrder[index]!) ?? null;
+    if (key !== null) {
+      afterKey = key;
+      break;
+    }
+  }
+  const taken = new Set([...pinnedKeysById.values()].filter((key): key is string => key != null));
+  const pins: { readonly key: string; readonly orderKey: string }[] = [];
+  let before = cursor;
+  let exhausted = false;
+  for (const target of targets) {
+    let key = pinOrderKeyBetween(before, afterKey);
+    while (key !== null && taken.has(key)) key = pinOrderKeyBetween(key, afterKey);
+    if (key === null) {
+      exhausted = true;
+      break;
+    }
+    taken.add(key);
+    pins.push({ key: target.key, orderKey: key });
+    before = key;
+  }
+  if (!exhausted) return { parentOrderKey: cursor, pins, reorders: [], unpins: [] };
+  // No room between the parent and its successor (or corrupt keys): re-spread
+  // the whole desired section so the subtree still lands as one block.
+  const desiredSet = new Set(desiredOrder);
+  const reserved = new Set(
+    [...pinnedKeysById].flatMap(([id, key]) => (!desiredSet.has(id) && key != null ? [key] : [])),
+  );
+  const spread = generateSpreadPinOrderKeys(desiredOrder.length + reserved.size)
+    .filter((key) => !reserved.has(key))
+    .slice(0, desiredOrder.length);
+  const fallbackPins: { readonly key: string; readonly orderKey: string }[] = [];
+  const reorders: { readonly key: string; readonly orderKey: string }[] = [];
+  let parentOrderKey = cursor;
+  desiredOrder.forEach((id, index) => {
+    const orderKey = spread[index]!;
+    if (id === input.parentKey) {
+      parentOrderKey = orderKey;
+      if (input.parentPinned === true && (pinnedKeysById.get(id) ?? null) !== orderKey) {
+        reorders.push({ key: id, orderKey });
+      }
+      return;
+    }
+    if (targetSet.has(id)) {
+      fallbackPins.push({ key: id, orderKey });
+      return;
+    }
+    if ((pinnedKeysById.get(id) ?? null) !== orderKey) reorders.push({ key: id, orderKey });
+  });
+  return { parentOrderKey, pins: fallbackPins, reorders, unpins: [] };
 }

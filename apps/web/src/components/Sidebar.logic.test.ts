@@ -9,6 +9,7 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
+  collectVisibleDelegatedSubtree,
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
@@ -37,6 +38,7 @@ import {
   filterCollapsedSidebarForest,
   orderSidebarSectionForest,
   pinOrderKeyBetween,
+  planDelegatedPinCascade,
   planPinnedReorder,
   planSidebarThreadDrop,
   sidebarMarkerId,
@@ -48,6 +50,7 @@ import {
   shouldCreateNewThreadInCurrentProject,
   shouldNavigateAfterThreadPark,
   THREAD_JUMP_HINT_SHOW_DELAY_MS,
+  type DelegatedCascadeDescendant,
   type SidebarListItem,
   type SidebarListMarker,
   type SidebarSection,
@@ -2638,5 +2641,328 @@ describe("filterCollapsedSidebarForest", () => {
   it("keeps everything visible without collapsed keys", () => {
     const visible = filterCollapsedSidebarForest({ entries, collapsedKeys: new Set() });
     expect(visible.map((entry) => entry.key)).toEqual(["root", "child", "grandchild", "other"]);
+  });
+});
+
+describe("collectVisibleDelegatedSubtree", () => {
+  type ForestThread = { readonly id: string; readonly parent: string | null };
+  const build = (threads: readonly ForestThread[], maxDepth?: number) =>
+    orderSidebarSectionForest({
+      threads,
+      getKey: (thread) => thread.id,
+      getParentKey: (thread) => thread.parent,
+      ...(maxDepth === undefined ? {} : { maxDepth }),
+    });
+
+  it("collects nested descendants in render order, parent excluded", () => {
+    const entries = build([
+      { id: "root-b", parent: null },
+      { id: "root-a", parent: null },
+      { id: "child-a2", parent: "root-a" },
+      { id: "child-a1", parent: "root-a" },
+      { id: "grandchild", parent: "child-a1" },
+    ]);
+    expect(collectVisibleDelegatedSubtree(entries, "root-a").map((entry) => entry.key)).toEqual([
+      "child-a2",
+      "child-a1",
+      "grandchild",
+    ]);
+  });
+
+  it("returns an empty subtree for unknown parents and childless rows", () => {
+    const entries = build([
+      { id: "root", parent: null },
+      { id: "child", parent: "root" },
+    ]);
+    expect(collectVisibleDelegatedSubtree(entries, "missing")).toEqual([]);
+    expect(collectVisibleDelegatedSubtree(entries, "child")).toEqual([]);
+  });
+
+  it("excludes detached rows: orphans, cycles, and cross-section children", () => {
+    const entries = build([
+      { id: "root", parent: null },
+      { id: "child", parent: "root" },
+      { id: "orphan", parent: "elsewhere" },
+      { id: "cycle-a", parent: "cycle-b" },
+      { id: "cycle-b", parent: "cycle-a" },
+    ]);
+    // Detached rows render top-level (parentKey null), so they never join a subtree.
+    expect(entries.find((entry) => entry.key === "orphan")?.parentKey).toBeNull();
+    expect(collectVisibleDelegatedSubtree(entries, "root").map((entry) => entry.key)).toEqual([
+      "child",
+    ]);
+    expect(collectVisibleDelegatedSubtree(entries, "cycle-a")).toEqual([]);
+  });
+
+  it("keeps depth-capped chains intact via the parentKey chain", () => {
+    const entries = build(
+      [
+        { id: "l0", parent: null },
+        { id: "l1", parent: "l0" },
+        { id: "l2", parent: "l1" },
+      ],
+      1,
+    );
+    expect(entries.map((entry) => [entry.key, entry.depth])).toEqual([
+      ["l0", 0],
+      ["l1", 1],
+      ["l2", 1],
+    ]);
+    // A depth comparison would stop at l2 (same depth as its parent l1).
+    expect(collectVisibleDelegatedSubtree(entries, "l1").map((entry) => entry.key)).toEqual(["l2"]);
+  });
+});
+
+describe("planDelegatedPinCascade", () => {
+  const descendant = (
+    key: string,
+    overrides: Partial<DelegatedCascadeDescendant> = {},
+  ): DelegatedCascadeDescendant => ({
+    key,
+    environmentId: "env-a",
+    pinned: false,
+    ...overrides,
+  });
+
+  it("chains each descendant key right after the parent key", () => {
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey: "parent",
+      descendants: [descendant("child"), descendant("grandchild")],
+      supportsPinning: () => true,
+      parentOrderKey: "m",
+      pinnedOrder: ["parent", "next"],
+      pinnedKeysById: new Map([
+        ["parent", null],
+        ["next", "p"],
+      ]),
+    });
+    expect(plan.parentOrderKey).toBe("m");
+    expect(plan.reorders).toEqual([]);
+    expect(plan.unpins).toEqual([]);
+    expect(plan.pins.map((pin) => pin.key)).toEqual(["child", "grandchild"]);
+    const first = plan.pins[0]!.orderKey!;
+    const second = plan.pins[1]!.orderKey!;
+    expect(first).toBe(pinOrderKeyBetween("m", "p"));
+    expect(second).toBe(pinOrderKeyBetween(first, "p"));
+    expect("m" < first && first < second && second < "p").toBe(true);
+  });
+
+  it("skips already-pinned descendants and servers without pinning", () => {
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey: "parent",
+      descendants: [
+        descendant("pinned-child", { pinned: true }),
+        descendant("legacy-child", { environmentId: "env-old" }),
+        descendant("child"),
+      ],
+      supportsPinning: (environmentId) => environmentId !== "env-old",
+      parentOrderKey: "m",
+      pinnedOrder: ["parent"],
+      pinnedKeysById: new Map(),
+    });
+    expect(plan.pins.map((pin) => pin.key)).toEqual(["child"]);
+    expect(plan.reorders).toEqual([]);
+  });
+
+  it("pins without explicit keys when the parent stays keyless", () => {
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey: "parent",
+      descendants: [descendant("child")],
+      supportsPinning: () => true,
+      parentOrderKey: null,
+      pinnedOrder: ["parent"],
+      pinnedKeysById: new Map(),
+    });
+    expect(plan.parentOrderKey).toBeUndefined();
+    expect(plan.pins).toEqual([{ key: "child", orderKey: undefined }]);
+    expect(plan.reorders).toEqual([]);
+  });
+
+  it("re-spreads the section when the gap after the parent runs out", () => {
+    // "next" sorts at the parent key, so no key fits between them.
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey: "parent",
+      descendants: [descendant("child"), descendant("grandchild")],
+      supportsPinning: () => true,
+      parentOrderKey: "m",
+      pinnedOrder: ["parent", "next"],
+      pinnedKeysById: new Map([
+        ["parent", null],
+        ["next", "m"],
+      ]),
+    });
+    expect(plan.unpins).toEqual([]);
+    expect(plan.pins.map((pin) => pin.key)).toEqual(["child", "grandchild"]);
+    // One spread layout covers parent, subtree, and the moved neighbor.
+    const assigned = new Map<string, string>([
+      ["parent", plan.parentOrderKey!],
+      ...plan.pins.map((pin) => [pin.key, pin.orderKey!] as const),
+      ...plan.reorders.map((reorder) => [reorder.key, reorder.orderKey] as const),
+    ]);
+    const ordered = ["parent", "child", "grandchild", "next"].map((id) => assigned.get(id)!);
+    expect(assigned.size).toBe(4);
+    for (const key of ordered) {
+      expect(key).toMatch(/^[a-z]+$/);
+      expect(key.endsWith("a")).toBe(false);
+    }
+    expect(new Set(ordered).size).toBe(4);
+    expect([...ordered].sort()).toEqual(ordered);
+  });
+
+  it("returns a reorder for an already-pinned parent moved by the re-spread", () => {
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey: "parent",
+      descendants: [descendant("child")],
+      supportsPinning: () => true,
+      parentOrderKey: "m",
+      parentPinned: true,
+      pinnedOrder: ["parent", "next"],
+      pinnedKeysById: new Map([
+        ["parent", "m"],
+        ["next", "m"],
+      ]),
+    });
+    expect(plan.parentOrderKey).not.toBe("m");
+    expect(plan.reorders.map((reorder) => reorder.key)).toContain("parent");
+  });
+
+  it("unpins the pinned capable subtree and skips the rest", () => {
+    const plan = planDelegatedPinCascade({
+      action: "unpin",
+      parentKey: "parent",
+      descendants: [
+        descendant("child", { pinned: true }),
+        descendant("grandchild", { pinned: true }),
+        descendant("legacy", { pinned: true, environmentId: "env-old" }),
+        descendant("active-cousin"),
+      ],
+      supportsPinning: (environmentId) => environmentId !== "env-old",
+    });
+    expect(plan.unpins).toEqual(["child", "grandchild"]);
+    expect(plan.pins).toEqual([]);
+    expect(plan.reorders).toEqual([]);
+  });
+});
+
+describe("delegated pin cascade end to end", () => {
+  type CascadeShell = {
+    readonly id: string;
+    readonly environmentId: string;
+    readonly createdAt: string;
+    readonly pinnedAt: string | null;
+    readonly pinOrderKey: string | null;
+    readonly parent: string | null;
+  };
+  const keyOf = (shell: CascadeShell) => `${shell.environmentId}:${shell.id}`;
+  const parentKeyOf = (shell: CascadeShell) =>
+    shell.parent === null ? null : `${shell.environmentId}:${shell.parent}`;
+  const shell = (overrides: Partial<CascadeShell> & { id: string }): CascadeShell => ({
+    environmentId: "env-a",
+    createdAt: "2026-09-17T10:00:00.000Z",
+    pinnedAt: null,
+    pinOrderKey: null,
+    parent: null,
+    ...overrides,
+  });
+
+  it("pinning a parent moves its visible subtree into the pinned section under it", () => {
+    const active: CascadeShell[] = [
+      shell({ id: "parent" }),
+      shell({ id: "child", parent: "parent" }),
+      shell({ id: "grandchild", parent: "child" }),
+      shell({ id: "stranger" }),
+    ];
+    const activeForest = orderSidebarSectionForest({
+      threads: active,
+      getKey: keyOf,
+      getParentKey: parentKeyOf,
+    });
+    const parentKey = "env-a:parent";
+    const subtree = collectVisibleDelegatedSubtree(activeForest, parentKey);
+    expect(subtree.map((entry) => entry.key)).toEqual(["env-a:child", "env-a:grandchild"]);
+
+    // The parent takes the top of the run; descendants chain right after it.
+    const parentOrderKey = pinOrderKeyBetween(null, "m")!;
+    const plan = planDelegatedPinCascade({
+      action: "pin",
+      parentKey,
+      descendants: subtree.map((entry) => ({
+        key: entry.key,
+        environmentId: entry.thread.environmentId,
+        pinned: entry.thread.pinnedAt != null,
+      })),
+      supportsPinning: () => true,
+      parentOrderKey,
+      pinnedOrder: [parentKey, "env-a:other"],
+      pinnedKeysById: new Map([
+        [parentKey, null],
+        ["env-a:other", "m"],
+      ]),
+    });
+    expect(plan.pins.map((pin) => pin.key)).toEqual(["env-a:child", "env-a:grandchild"]);
+
+    const pinned: CascadeShell[] = [
+      {
+        ...shell({ id: "parent" }),
+        pinnedAt: "2026-09-17T12:00:00.000Z",
+        pinOrderKey: parentOrderKey,
+      },
+      ...plan.pins.map((pin, index) => ({
+        ...shell({ id: active[index + 1]!.id, parent: active[index + 1]!.parent }),
+        pinnedAt: "2026-09-17T12:00:00.000Z",
+        pinOrderKey: pin.orderKey!,
+      })),
+      { ...shell({ id: "other" }), pinnedAt: "2026-09-17T11:00:00.000Z", pinOrderKey: "m" },
+    ];
+    const rendered = orderSidebarSectionForest({
+      threads: sortPinnedThreadsForSidebar(pinned),
+      getKey: keyOf,
+      getParentKey: parentKeyOf,
+    });
+    expect(rendered.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
+      [parentKey, 0, null],
+      ["env-a:child", 1, parentKey],
+      ["env-a:grandchild", 2, "env-a:child"],
+      ["env-a:other", 0, null],
+    ]);
+  });
+
+  it("unpinning a parent returns its pinned subtree", () => {
+    const pinned: CascadeShell[] = [
+      { ...shell({ id: "parent" }), pinnedAt: "2026-09-17T12:00:00.000Z", pinOrderKey: "m" },
+      {
+        ...shell({ id: "child", parent: "parent" }),
+        pinnedAt: "2026-09-17T12:00:00.000Z",
+        pinOrderKey: "n",
+      },
+      {
+        // Cross-environment child: same-env scoping detaches it to top level,
+        // so the subtree never contains it (capability skip is covered above).
+        ...shell({ id: "legacy", parent: "parent", environmentId: "env-old" }),
+        pinnedAt: "2026-09-17T12:00:00.000Z",
+        pinOrderKey: "o",
+      },
+    ];
+    const forest = orderSidebarSectionForest({
+      threads: sortPinnedThreadsForSidebar(pinned),
+      getKey: keyOf,
+      getParentKey: parentKeyOf,
+    });
+    const plan = planDelegatedPinCascade({
+      action: "unpin",
+      parentKey: "env-a:parent",
+      descendants: collectVisibleDelegatedSubtree(forest, "env-a:parent").map((entry) => ({
+        key: entry.key,
+        environmentId: entry.thread.environmentId,
+        pinned: entry.thread.pinnedAt != null,
+      })),
+      supportsPinning: (environmentId) => environmentId !== "env-old",
+    });
+    expect(plan.unpins).toEqual(["env-a:child"]);
   });
 });
