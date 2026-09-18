@@ -13,6 +13,7 @@ import {
   readSessionDurability,
   spawnMspConnection,
   type Connection,
+  type NotificationHandler,
   type SpawnedMspConnection,
 } from "@muse-code/sdk";
 import * as Effect from "effect/Effect";
@@ -22,6 +23,17 @@ import * as Path from "effect/Path";
 import { ProviderAdapterRequestError } from "../Errors.ts";
 
 const DRIVER = "museCode";
+
+/**
+ * Serve args for the full-access posture. Sandbox and trust are fixed for
+ * the host's lifetime and are not negotiable over the wire, so a session
+ * that needs them must live on a host started with these flags.
+ */
+export const MUSE_FULL_ACCESS_SERVE_ARGS = [
+  "serve",
+  "--disable-sandbox",
+  "--trust-workspace",
+] as const;
 
 /** Env names that switch the CLI from subscription login to API-key billing. */
 export const MUSE_API_KEY_ENV_VARS = ["META_API_KEY", "MODEL_API_KEY"] as const;
@@ -200,13 +212,39 @@ export interface MuseHost {
   readonly connection: Connection;
   readonly initializeResult: SpawnedMspConnection["initializeResult"];
   readonly fingerprintWarning: SpawnedMspConnection["fingerprintWarning"];
+  /** Extra notification listeners. The connection owns a single handler
+   * slot that the facade router occupies, so listeners must fan out here
+   * instead of calling connection.onNotification directly. */
+  readonly addNotificationHandler: (handler: NotificationHandler) => void;
   readonly close: () => Promise<void>;
+}
+
+/**
+ * Share one single-slot connection across listeners. The SDK router and any
+ * adapter bridges all receive every notification; late listeners still get
+ * everything from the moment they subscribe.
+ */
+export function installNotificationFanout(target: {
+  onNotification(handler: NotificationHandler): void;
+}): (handler: NotificationHandler) => void {
+  const handlers = new Set<NotificationHandler>();
+  const original = target.onNotification.bind(target);
+  target.onNotification = (handler: NotificationHandler) => {
+    handlers.add(handler);
+  };
+  original((notification) => {
+    for (const handler of [...handlers]) handler(notification);
+  });
+  return (handler: NotificationHandler) => {
+    handlers.add(handler);
+  };
 }
 
 /** Spawn one owned `muse serve` host with a sanitized environment. */
 export function spawnMuseHost(input: {
   readonly museBin: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly args?: ReadonlyArray<string>;
   readonly clientInfo?: typeof MUSE_CLIENT_INFO;
   readonly onStderr?: (chunk: string) => void;
 }): Effect.Effect<MuseHost, ProviderAdapterRequestError> {
@@ -214,13 +252,14 @@ export function spawnMuseHost(input: {
     try: async () => {
       const handshake = spawnMspConnection({
         command: input.museBin,
-        args: ["serve"],
+        args: [...(input.args ?? ["serve"])],
         env: input.env,
         ...(input.onStderr === undefined ? {} : { onStderr: input.onStderr }),
       });
       const spawned = await handshake.initialize({
         clientInfo: input.clientInfo ?? MUSE_CLIENT_INFO,
       });
+      const addNotificationHandler = installNotificationFanout(spawned.connection);
       const client = new MuseClient(spawned.connection, {
         durability: readSessionDurability(spawned.initializeResult),
         host: spawned,
@@ -230,6 +269,7 @@ export function spawnMuseHost(input: {
         connection: spawned.connection,
         initializeResult: spawned.initializeResult,
         fingerprintWarning: spawned.fingerprintWarning,
+        addNotificationHandler,
         close: () => spawned.close().then(() => undefined),
       } satisfies MuseHost;
     },
@@ -241,6 +281,54 @@ export function spawnMuseHost(input: {
         ...(cause instanceof Error ? { cause } : {}),
       }),
   });
+}
+
+/**
+ * Resolve the user's muse config dir: $XDG_CONFIG_HOME/muse, else
+ * $HOME/.config/muse (the host's own convention, verified against 1.3.0).
+ */
+export function resolveMuseConfigDir(input: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly homeDir: string;
+}): string {
+  const xdg = input.env["XDG_CONFIG_HOME"]?.trim();
+  return xdg ? `${xdg}/muse` : `${input.homeDir}/.config/muse`;
+}
+
+/**
+ * Scoped settings document: the user's own settings with the t3-code MCP
+ * entry added. Merging (not rewriting) keeps provider/model selection, so a
+ * scoped host behaves like the user's normal host. Written to
+ * `<scopeDir>/muse/settings.json` with `XDG_CONFIG_HOME=<scopeDir>` so the
+ * credential never touches the user's global muse config.
+ */
+export function museScopedMcpSettingsDocument(input: {
+  readonly existingSettingsJson: string | undefined;
+  readonly endpoint: string;
+  readonly authorizationHeader: string;
+}): string {
+  const entry = {
+    url: input.endpoint,
+    headers: { Authorization: input.authorizationHeader },
+  };
+  try {
+    const parsed: unknown =
+      input.existingSettingsJson === undefined ? {} : JSON.parse(input.existingSettingsJson);
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const servers: Record<string, unknown> =
+        "mcpServers" in parsed &&
+        parsed.mcpServers !== null &&
+        typeof parsed.mcpServers === "object" &&
+        !Array.isArray(parsed.mcpServers)
+          ? { ...(parsed.mcpServers as Record<string, unknown>) }
+          : {};
+      servers["t3-code"] = entry;
+      return JSON.stringify({ schema_version: 1, ...parsed, mcpServers: servers });
+    }
+  } catch {
+    // Corrupt user settings fall through to the minimal document below.
+  }
+  return JSON.stringify({ schema_version: 1, mcpServers: { "t3-code": entry } });
 }
 
 /** Narrow catalog row composed from the wire shape, never restated. */

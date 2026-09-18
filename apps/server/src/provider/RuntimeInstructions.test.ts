@@ -39,4 +39,15 @@ describe("buildRuntimeInstructions", () => {
     expect(disabled).not.toContain("<orchestration>");
     expect(disabled).not.toContain("orchestrator_capabilities");
   });
+
+  it("teaches the parent_not_active reason token instead of guesswork", () => {
+    const enabled = buildRuntimeInstructions({
+      harness: "Muse",
+      orchestrationAvailable: true,
+    });
+    expect(enabled).toContain("[reason=...]");
+    expect(enabled).toContain("parent_turn_mismatch");
+    expect(enabled).toContain("parent_session_instance_changed");
+    expect(enabled).toContain("never invent an explanation");
+  });
 });

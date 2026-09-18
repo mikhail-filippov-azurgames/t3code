@@ -5,10 +5,15 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
+import type { NotificationHandler } from "@muse-code/sdk";
+
 import {
   MUSE_CLIENT_INFO,
   decodeMuseModelRows,
+  installNotificationFanout,
+  museScopedMcpSettingsDocument,
   readMuseVersionPin,
+  resolveMuseConfigDir,
   resolveMuseServeBinary,
   stripMuseApiKeys,
 } from "./MuseMspRuntime.ts";
@@ -39,6 +44,91 @@ describe("stripMuseApiKeys", () => {
 
     expect(env).toEqual({ PATH: "/bin", HOME: "/home/user" });
     expect(stripped).toEqual([]);
+  });
+});
+
+describe("museScopedMcpSettingsDocument", () => {
+  it("merges the t3-code entry into the user settings, keeping provider/model", () => {
+    const document = museScopedMcpSettingsDocument({
+      existingSettingsJson: JSON.stringify({
+        schema_version: 1,
+        provider: "meta",
+        model: "muse-spark-1.3",
+        mcpServers: { other: { url: "http://localhost:1/" } },
+      }),
+      endpoint: "http://127.0.0.1:4242/mcp",
+      authorizationHeader: "Bearer thread-token",
+    });
+
+    expect(JSON.parse(document)).toEqual({
+      schema_version: 1,
+      provider: "meta",
+      model: "muse-spark-1.3",
+      mcpServers: {
+        other: { url: "http://localhost:1/" },
+        "t3-code": {
+          url: "http://127.0.0.1:4242/mcp",
+          headers: { Authorization: "Bearer thread-token" },
+        },
+      },
+    });
+  });
+
+  it("falls back to a minimal document without usable settings", () => {
+    for (const existingSettingsJson of [undefined, "{oops", "[1,2]"]) {
+      expect(
+        JSON.parse(
+          museScopedMcpSettingsDocument({
+            existingSettingsJson,
+            endpoint: "http://127.0.0.1:4242/mcp",
+            authorizationHeader: "Bearer thread-token",
+          }),
+        ),
+      ).toEqual({
+        schema_version: 1,
+        mcpServers: {
+          "t3-code": {
+            url: "http://127.0.0.1:4242/mcp",
+            headers: { Authorization: "Bearer thread-token" },
+          },
+        },
+      });
+    }
+  });
+});
+
+describe("resolveMuseConfigDir", () => {
+  it("prefers XDG_CONFIG_HOME and falls back to home .config", () => {
+    expect(
+      resolveMuseConfigDir({ env: { XDG_CONFIG_HOME: "C:\\scoped" }, homeDir: "C:\\home" }),
+    ).toBe("C:\\scoped/muse");
+    expect(resolveMuseConfigDir({ env: {}, homeDir: "C:\\home" })).toBe("C:\\home/.config/muse");
+  });
+});
+
+describe("installNotificationFanout", () => {
+  it("delivers every notification to the facade router and late bridges", () => {
+    const seen: Array<{ slot: string; method: string }> = [];
+    let slot: NotificationHandler | undefined;
+    const target: { onNotification(handler: NotificationHandler): void } = {
+      onNotification(handler) {
+        slot = handler;
+      },
+    };
+    const add = installNotificationFanout(target);
+    // The facade registers through the overridden slot during client setup.
+    target.onNotification((notification) => {
+      seen.push({ slot: "facade", method: notification.method });
+    });
+    add((notification) => {
+      seen.push({ slot: "bridge", method: notification.method });
+    });
+    slot?.({ jsonrpc: "2.0", method: "turn/started" });
+
+    expect(seen).toEqual([
+      { slot: "facade", method: "turn/started" },
+      { slot: "bridge", method: "turn/started" },
+    ]);
   });
 });
 
