@@ -10,6 +10,7 @@ import {
 } from "./baseSchemas.ts";
 import {
   ChatAttachment,
+  FollowUpBehavior,
   ModelSelection,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -66,8 +67,16 @@ export const ProviderSessionStartInput = Schema.Struct({
 });
 export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
+/**
+ * What a mid-turn send does while the provider is still answering.
+ * Canonical definition lives in ./orchestration.ts (this module already
+ * depends on it — a local duplicate would collide in the package index).
+ */
+export { FollowUpBehavior };
+
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
+  followUpBehavior: Schema.optional(FollowUpBehavior),
   /** Internal recovery signal. Allows an empty turn only for adapters that
       explicitly support promptless continuation. */
   continuation: Schema.optional(Schema.Boolean),
@@ -86,6 +95,8 @@ export const ProviderTurnStartResult = Schema.Struct({
   threadId: ThreadId,
   turnId: TurnId,
   resumeCursor: Schema.optional(Schema.Unknown),
+  /** Set when `followUpBehavior: "steer"` interrupted an active turn first. */
+  supersededTurnId: Schema.optional(TurnId),
 });
 export type ProviderTurnStartResult = typeof ProviderTurnStartResult.Type;
 

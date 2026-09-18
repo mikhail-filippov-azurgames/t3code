@@ -7,6 +7,7 @@ import {
   ProviderSendTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
+  ProviderTurnStartResult,
   ProviderUploadFeedbackError,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
@@ -156,6 +157,37 @@ describe("ProviderSendTurnInput", () => {
     expect(parsed.modelSelection?.instanceId).toBe("claudeAgent");
     expect(getOptionValue(parsed.modelSelection?.options, "effort")).toBe("ultrathink");
     expect(getOptionValue(parsed.modelSelection?.options, "fastMode")).toBe(true);
+  });
+
+  it("leaves followUpBehavior absent by default and accepts queue|steer", () => {
+    expect(decodeProviderSendTurnInput({ threadId: "thread-1" }).followUpBehavior).toBeUndefined();
+    expect(
+      decodeProviderSendTurnInput({ threadId: "thread-1", followUpBehavior: "queue" })
+        .followUpBehavior,
+    ).toBe("queue");
+    expect(
+      decodeProviderSendTurnInput({ threadId: "thread-1", followUpBehavior: "steer" })
+        .followUpBehavior,
+    ).toBe("steer");
+  });
+
+  it("rejects an unknown followUpBehavior", () => {
+    expect(() =>
+      decodeProviderSendTurnInput({ threadId: "thread-1", followUpBehavior: "interrupt" }),
+    ).toThrow();
+  });
+});
+
+describe("ProviderTurnStartResult", () => {
+  it("carries the steered turn lineage when present and stays absent otherwise", () => {
+    const decodeResult = Schema.decodeUnknownSync(ProviderTurnStartResult);
+    expect(decodeResult({ threadId: "thread-1", turnId: "turn-2" })).toEqual({
+      threadId: "thread-1",
+      turnId: "turn-2",
+    });
+    expect(
+      decodeResult({ threadId: "thread-1", turnId: "turn-2", supersededTurnId: "turn-1" }),
+    ).toEqual({ threadId: "thread-1", turnId: "turn-2", supersededTurnId: "turn-1" });
   });
 });
 

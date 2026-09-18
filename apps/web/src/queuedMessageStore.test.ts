@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   isQueuedMessageDue,
   latestCompletedToolActivityId,
+  shouldEnqueueFollowUp,
   useQueuedMessageStore,
   type QueuedComposerMessage,
 } from "./queuedMessageStore";
@@ -139,5 +140,24 @@ describe("queued message dispatch timing", () => {
     expect(isQueuedMessageDue({ message, phase: "connecting", latestToolActivityId: "a4" })).toBe(
       false,
     );
+  });
+});
+
+describe("shouldEnqueueFollowUp", () => {
+  it("queues mid-turn sends by default and on explicit queue", () => {
+    expect(shouldEnqueueFollowUp({ phase: "running", followUpBehavior: undefined })).toBe(true);
+    expect(shouldEnqueueFollowUp({ phase: "running", followUpBehavior: "queue" })).toBe(true);
+  });
+
+  it("dispatches a steer immediately instead of queueing", () => {
+    expect(shouldEnqueueFollowUp({ phase: "running", followUpBehavior: "steer" })).toBe(false);
+  });
+
+  it("never queues outside a running turn, whatever the behavior", () => {
+    for (const phase of ["connecting", "ready", "disconnected"] as const) {
+      expect(shouldEnqueueFollowUp({ phase, followUpBehavior: undefined })).toBe(false);
+      expect(shouldEnqueueFollowUp({ phase, followUpBehavior: "queue" })).toBe(false);
+      expect(shouldEnqueueFollowUp({ phase, followUpBehavior: "steer" })).toBe(false);
+    }
   });
 });

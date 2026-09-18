@@ -1,4 +1,4 @@
-import type { PreviewAnnotationPayload } from "@t3tools/contracts";
+import type { FollowUpBehavior, PreviewAnnotationPayload } from "@t3tools/contracts";
 import { create } from "zustand";
 
 import type { ComposerSubmissionIntent } from "./composer-logic";
@@ -198,4 +198,18 @@ export function isQueuedMessageDue(input: {
 
 export function useQueuedMessages(threadKey: string): QueuedComposerMessage[] {
   return useQueuedMessageStore((state) => state.queuesByThreadKey[threadKey] ?? EMPTY_QUEUE);
+}
+
+/**
+ * Whether a send during a running turn waits in the queue. `steer` cuts in:
+ * it dispatches immediately so the provider interrupts the active turn and
+ * starts fresh with the new message. Anything else (including an absent
+ * behavior, which means the default) queues exactly as before.
+ */
+export function shouldEnqueueFollowUp(input: {
+  phase: "connecting" | "running" | "ready" | "disconnected";
+  followUpBehavior: FollowUpBehavior | undefined;
+}): boolean {
+  if (input.phase !== "running") return false;
+  return input.followUpBehavior !== "steer";
 }

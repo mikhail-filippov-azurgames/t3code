@@ -1,7 +1,9 @@
 import {
   type ChatAttachment,
   CommandId,
+  DEFAULT_FOLLOW_UP_BEHAVIOR,
   EventId,
+  type FollowUpBehavior,
   MessageId,
   type ModelSelection,
   type OrchestrationEvent,
@@ -1021,6 +1023,7 @@ const make = Effect.gen(function* () {
     readonly modelSelection?: ModelSelection;
     readonly interactionMode?: "default" | "plan";
     readonly delegationConfigFingerprint?: string;
+    readonly followUpBehavior?: FollowUpBehavior;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThreadShell(input.threadId);
@@ -1085,6 +1088,7 @@ const make = Effect.gen(function* () {
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.followUpBehavior !== undefined ? { followUpBehavior: input.followUpBehavior } : {}),
     };
   });
 
@@ -1472,6 +1476,19 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+    // Resolve how a follow-up sent while a turn is still running is
+    // delivered. The adapter executes the steer (interrupt first, then send);
+    // the reactor only resolves and forwards the behavior. Muse sessions
+    // cannot overlap turns on one MSP session at all, so an explicit "queue"
+    // would wedge the thread in "thinking" — default those to "steer".
+    const requestedFollowUp = event.payload.followUpBehavior ?? DEFAULT_FOLLOW_UP_BEHAVIOR;
+    const effectiveFollowUp: FollowUpBehavior =
+      requestedFollowUp === "queue" &&
+      thread.session?.status === "running" &&
+      thread.session?.activeTurnId != null &&
+      thread.session?.providerName === ProviderDriverKind.make("museCode")
+        ? "steer"
+        : requestedFollowUp;
 
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {
@@ -1716,6 +1733,7 @@ const make = Effect.gen(function* () {
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
+      followUpBehavior: effectiveFollowUp,
       messageText: projectComposerContextForProvider({
         text: message.text,
         records: message.context?.records ?? [],
