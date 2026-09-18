@@ -46,6 +46,7 @@ const DRIVER_ENV_PREFIXES: Readonly<Record<string, ReadonlyArray<string>>> = {
   grok: ["GROK_", "XAI_"],
   antigravity: ["ANTIGRAVITY_", "GOOGLE_", "GEMINI_"],
   cursor: ["CURSOR_"],
+  museCode: ["MUSE_", "META_"],
 };
 
 export interface DelegationPermissionEnvelopeInput {
@@ -484,6 +485,16 @@ function normalizedRuntimeForDriver(input: DelegationPermissionEnvelopeInput):
     }
     case "grok":
       return { runtime: runtimeEnvelope(input.runtimeMode), externalTools: [] };
+    case "museCode": {
+      // A full-access Muse runtime is the top authority envelope: the
+      // elevated host disables the shell sandbox and trusts the workspace
+      // while the wire carries allowAll, so provider configuration cannot
+      // broaden it further.
+      if (input.runtimeMode === "full-access") {
+        return { runtime: runtimeEnvelope("full-access"), externalTools: [] };
+      }
+      return { runtime: runtimeEnvelope(input.runtimeMode), externalTools: [] };
+    }
     case "antigravity":
       return {
         runtime: runtimeEnvelope(

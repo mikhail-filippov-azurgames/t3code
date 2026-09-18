@@ -460,6 +460,13 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ),
         );
 
+  // Every parent_not_active refusal carries a stable [reason=...] token.
+  // The code stays a single literal for contract compatibility, but agents
+  // can no longer mistake a transient projection lag for a dead session:
+  // "settle" reasons deserve one retry after the turn settles, "stale"
+  // reasons mean the credential no longer matches this thread.
+  const parentNotActive = (reason: string, message: string, hint: string) =>
+    failure("parent_not_active", `${message} [reason=${reason}] ${hint}`);
   const requireActiveParent = (
     scope: McpInvocationScope,
   ): Effect.Effect<ParentContext, OrchestratorMcpFailure> =>
@@ -467,25 +474,49 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       const frozen = yield* requireCapability(scope);
       const threadOption = yield* loadThreadShell(scope.threadId);
       if (Option.isNone(threadOption)) {
-        return yield* failure("parent_not_active", "The parent thread no longer exists.");
+        return yield* parentNotActive(
+          "parent_thread_gone",
+          "The parent thread no longer exists.",
+          "Do not retry delegation; report reason parent_thread_gone.",
+        );
       }
       const thread = threadOption.value;
       const projectOption = yield* loadProjectShell(thread.projectId);
       if (Option.isNone(projectOption)) {
-        return yield* failure("parent_not_active", "The parent project no longer exists.");
+        return yield* parentNotActive(
+          "parent_project_gone",
+          "The parent project no longer exists.",
+          "Do not retry delegation; report reason parent_project_gone.",
+        );
       }
       const project = projectOption.value;
       const activeTurnId = thread.session?.activeTurnId;
-      if (
-        activeTurnId === null ||
-        activeTurnId === undefined ||
-        thread.latestTurn?.turnId !== activeTurnId ||
-        thread.latestTurn.state !== "running" ||
-        thread.session?.providerInstanceId !== scope.providerInstanceId
-      ) {
-        return yield* failure(
-          "parent_not_active",
+      if (activeTurnId === null || activeTurnId === undefined) {
+        return yield* parentNotActive(
+          "parent_no_active_turn",
           "Delegation requires an active parent turn owned by this provider session.",
+          "The parent turn is not running right now. Retry once after the turn state settles; if the reason repeats, report it instead of retrying in a loop.",
+        );
+      }
+      if (thread.latestTurn?.turnId !== activeTurnId) {
+        return yield* parentNotActive(
+          "parent_turn_mismatch",
+          "Delegation requires an active parent turn owned by this provider session.",
+          "The latest turn is not the session's active turn (a steered message may still be settling). Retry once after the turn state settles; if the reason repeats, report it instead of retrying in a loop.",
+        );
+      }
+      if (thread.latestTurn.state !== "running") {
+        return yield* parentNotActive(
+          "parent_turn_not_running",
+          "Delegation requires an active parent turn owned by this provider session.",
+          "The active parent turn is not running. Retry once after the turn state settles; if the reason repeats, report it instead of retrying in a loop.",
+        );
+      }
+      if (thread.session?.providerInstanceId !== scope.providerInstanceId) {
+        return yield* parentNotActive(
+          "parent_session_instance_changed",
+          "Delegation requires an active parent turn owned by this provider session.",
+          "The thread moved to another provider instance, so this credential is stale. Do not retry in a loop; report reason parent_session_instance_changed.",
         );
       }
       const worktreePath = thread.worktreePath ?? project.workspaceRoot;
@@ -497,9 +528,10 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         frozen.workspaceRoot !== project.workspaceRoot ||
         frozen.worktreePath !== worktreePath
       ) {
-        return yield* failure(
-          "parent_not_active",
+        return yield* parentNotActive(
+          "parent_scope_drift",
           "The active parent no longer matches the permission scope frozen for this MCP session.",
+          "The thread moved project, mode, branch, or worktree after this credential was issued. Do not retry in a loop; report reason parent_scope_drift.",
         );
       }
       return { thread, project, activeTurnId, scope: frozen };

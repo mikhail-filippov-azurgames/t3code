@@ -247,6 +247,7 @@ interface HarnessOptions {
   readonly parentRuntimeMode?: RuntimeMode;
   readonly interruptOutcomes?: ReadonlyArray<"failure" | "success">;
   readonly failAfterOnce?: "thread.create" | "thread.activity.append";
+  readonly patchParentShell?: (shell: OrchestrationThreadShell) => OrchestrationThreadShell;
 }
 
 function makeHarness(options: HarnessOptions = {}): {
@@ -399,14 +400,20 @@ function makeHarness(options: HarnessOptions = {}): {
     getThreadShellById: (threadId) => {
       const shell = parentShell();
       const runtimeMode = options.parentRuntimeMode ?? shell.runtimeMode;
-      return Effect.succeed(
+      const patched =
         threadId === parentThreadId
-          ? Option.some({
+          ? {
               ...shell,
               runtimeMode,
               session: shell.session === null ? null : { ...shell.session, runtimeMode },
-            })
-          : Option.none(),
+            }
+          : null;
+      return Effect.succeed(
+        patched === null
+          ? Option.none()
+          : Option.some(
+              options.patchParentShell === undefined ? patched : options.patchParentShell(patched),
+            ),
       );
     },
     getProjectShellById: (requestedProjectId) =>
@@ -529,6 +536,58 @@ describe("OrchestratorMcpService", () => {
         "thread.activity.append",
         "thread.turn.start",
       ]);
+    }),
+  );
+
+  it.effect("tags every parent_not_active refusal with a distinct reason token", () =>
+    Effect.gen(function* () {
+      const scope = makeScope();
+      const staleInstance = ProviderInstanceId.make("codex_stale");
+      const cases = [
+        {
+          reason: "parent_no_active_turn",
+          patch: (shell: OrchestrationThreadShell): OrchestrationThreadShell => ({
+            ...shell,
+            session: shell.session === null ? null : { ...shell.session, activeTurnId: null },
+          }),
+        },
+        {
+          reason: "parent_turn_mismatch",
+          patch: (shell: OrchestrationThreadShell): OrchestrationThreadShell => ({
+            ...shell,
+            latestTurn:
+              shell.latestTurn === null
+                ? null
+                : { ...shell.latestTurn, turnId: TurnId.make("newer-turn") },
+          }),
+        },
+        {
+          reason: "parent_turn_not_running",
+          patch: (shell: OrchestrationThreadShell): OrchestrationThreadShell => ({
+            ...shell,
+            latestTurn:
+              shell.latestTurn === null
+                ? null
+                : { ...shell.latestTurn, state: "completed" as const },
+          }),
+        },
+        {
+          reason: "parent_session_instance_changed",
+          patch: (shell: OrchestrationThreadShell): OrchestrationThreadShell => ({
+            ...shell,
+            session:
+              shell.session === null
+                ? null
+                : { ...shell.session, providerInstanceId: staleInstance },
+          }),
+        },
+      ] as const;
+      for (const { reason, patch } of cases) {
+        const harness = makeHarness({ patchParentShell: patch });
+        const refusal = yield* harness.service.capabilities(scope).pipe(Effect.flip);
+        expect(refusal.code).toBe("parent_not_active");
+        expect(refusal.message).toContain(`[reason=${reason}]`);
+      }
     }),
   );
 

@@ -1734,6 +1734,25 @@ const make = Effect.gen(function* () {
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
 
+      // Lifecycle rejections are silent by design (stale provider echoes),
+      // but a dropped turn.started/turn.completed is exactly what strands a
+      // client in "thinking" and desyncs the orchestration parent gate, so
+      // leave a debug trace with both turn ids for post-mortem.
+      if (
+        !shouldApplyThreadLifecycle &&
+        (event.type === "turn.started" ||
+          event.type === "turn.completed" ||
+          event.type === "turn.aborted")
+      ) {
+        yield* Effect.logDebug("provider runtime ingestion rejected turn lifecycle event", {
+          eventType: event.type,
+          threadId: thread.id,
+          eventTurnId: eventTurnId ?? null,
+          sessionActiveTurnId: activeTurnId,
+          provider: event.provider,
+        });
+      }
+
       if (
         event.type === "session.started" ||
         event.type === "session.state.changed" ||

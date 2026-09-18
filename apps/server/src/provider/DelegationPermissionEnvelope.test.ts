@@ -150,6 +150,23 @@ describe("normalizeDelegationPermissionEnvelope", () => {
     ).toMatchObject({ status: "unverifiable" });
   });
 
+  it("normalizes the Muse mapping onto the posture-selected host", () => {
+    expect(normalizeDelegationPermissionEnvelope(input("museCode", "full-access"))).toMatchObject({
+      status: "verified",
+      filesystem: "unrestricted",
+      commandExecution: "unrestricted",
+      approvalBypass: true,
+    });
+    expect(
+      normalizeDelegationPermissionEnvelope(input("museCode", "approval-required")),
+    ).toMatchObject({
+      status: "verified",
+      filesystem: "read-only",
+      commandExecution: "approval-required",
+      approvalBypass: false,
+    });
+  });
+
   it("normalizes Grok and Antigravity mappings and denies dynamic Cursor", () => {
     expect(normalizeDelegationPermissionEnvelope(input("grok", "full-access"))).toMatchObject({
       status: "verified",
