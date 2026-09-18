@@ -1,5 +1,6 @@
 import {
   USAGE_CONTRACT_VERSION,
+  USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
   type UsageDay,
@@ -158,7 +159,10 @@ describe("mergeUsage", () => {
           summary(
             [bucket()],
             [{ provider: "claude", hostId: "linux", homePath: "/b" }],
-            USAGE_CONTRACT_VERSION - 2,
+            // Below USAGE_MERGE_COMPATIBLE_SINCE: v4 and v5 summaries still
+            // merge after the v6 muse expansion, so the stale fixture must sit
+            // under the window, not at a fixed offset from the current version.
+            USAGE_MERGE_COMPATIBLE_SINCE - 1,
           ),
         ),
       ],

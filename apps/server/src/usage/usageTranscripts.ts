@@ -70,6 +70,11 @@ export function totalTokens(totals: UsageTokenTotals): number {
 export function mightCarryUsage(line: string, provider: UsageProviderKind): boolean {
   if (provider === "claude") return line.includes('"usage"');
   if (provider === "grok") return line.includes('"turn_completed"');
+  if (provider === "muse") {
+    // `retained_frame` envelopes wrap durable records as escaped JSON; a
+    // future envelope may wrap a usage record, so those lines parse too.
+    return line.includes('"model_completed"') || line.includes('"retained_frame"');
+  }
   return line.includes('"token_count"');
 }
 
@@ -481,6 +486,135 @@ export function parseGrokLine(line: string): readonly UsageRecord[] {
       reportedCostUsd,
       dedupeKey: promptId === null ? null : `${sessionId}:${promptId}:${entry.model}`,
     });
+  }
+  return results;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Muse Code                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `recorded_at` is microseconds since the Unix epoch in 1.3.0 logs. Accepts a
+ * numeric string too, so a future schema spelling does not silently drop
+ * every record.
+ */
+function parseMuseTimestampMs(value: unknown): number | null {
+  const micros =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value)
+        ? Number(value)
+        : null;
+  if (micros === null || !Number.isFinite(micros) || micros <= 0) return null;
+  return Math.floor(micros / 1000);
+}
+
+function parseMuseRecord(value: unknown): UsageRecord | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record["payload_type"] !== "runtime.session") return null;
+
+  const payload = record["payload"];
+  if (typeof payload !== "object" || payload === null) return null;
+  const payloadRecord = payload as Record<string, unknown>;
+  if (payloadRecord["kind"] !== "run") return null;
+
+  const event = payloadRecord["event"];
+  if (typeof event !== "object" || event === null) return null;
+  const eventRecord = event as Record<string, unknown>;
+  if (eventRecord["kind"] !== "model_completed") return null;
+
+  const usage = eventRecord["usage"];
+  if (typeof usage !== "object" || usage === null) return null;
+  const usageRecord = usage as Record<string, unknown>;
+
+  const timestampMs = parseMuseTimestampMs(record["recorded_at"]);
+  if (timestampMs === null) return null;
+
+  const id = record["id"];
+  if (typeof id !== "string" || id.length === 0) return null;
+
+  const stream = record["stream"];
+  const streamRecord =
+    typeof stream === "object" && stream !== null ? (stream as Record<string, unknown>) : null;
+  const streamId = streamRecord?.["id"];
+  const sessionId = typeof streamId === "string" ? streamId : "";
+
+  const inputTokens = int(usageRecord["input_tokens"]);
+  const cachedInputTokens = int(usageRecord["cache_read_tokens"]);
+  const cacheCreationTokens = int(usageRecord["cache_write_tokens"]);
+  const outputTokens = int(usageRecord["output_tokens"]);
+
+  const totals: UsageTokenTotals = {
+    // `input_tokens` arrives inclusive of the cached portion (OpenAI-family
+    // convention, as with Codex and Grok): 2,296 observed completions all
+    // satisfy read + write <= input with `cached_tokens == cache_read_tokens`.
+    uncachedInputTokens: Math.max(0, inputTokens - cachedInputTokens - cacheCreationTokens),
+    cachedInputTokens,
+    cacheCreationTokens,
+    outputTokens,
+    // Reasoning is folded into output, surfaced separately for the token mix.
+    reasoningTokens: Math.min(outputTokens, int(usageRecord["reasoning_tokens"])),
+  };
+
+  if (totalTokens(totals) === 0) return null;
+
+  const model = eventRecord["model"];
+  return {
+    provider: "muse",
+    timestampMs,
+    model: typeof model === "string" && model.length > 0 ? model : "muse",
+    sessionId,
+    totals,
+    // The log carries no cost figure. `muse-spark` models price through the
+    // rate table (or a user override) and report as unpriced until then.
+    reportedCostUsd: null,
+    // Record ids are unique per completion, so one namespaced key dedupes
+    // within and across files without a message/request pair.
+    dedupeKey: `muse:${id}`,
+  };
+}
+
+/**
+ * Parses one line of a Muse Code `session.jsonl` session log.
+ *
+ * Usage lands on durable `run/model_completed` records, one per model
+ * completion with the provider's raw counters verbatim. Lines may be wrapped
+ * in a `retained_frame` envelope (observed wrapping permission transactions);
+ * wrapped records are unwrapped and parsed the same way.
+ *
+ * Returns every record for the line (0 or more). Callers stream line-by-line
+ * and flatten.
+ */
+export function parseMuseLine(line: string): readonly UsageRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+
+  const candidates: unknown[] = [parsed];
+  const record = parsed as Record<string, unknown>;
+  if (typeof record["retained_frame"] === "string" && Array.isArray(record["children"])) {
+    for (const child of record["children"]) {
+      if (typeof child !== "object" || child === null) continue;
+      const childJson = (child as Record<string, unknown>)["record_json"];
+      if (typeof childJson !== "string") continue;
+      try {
+        candidates.push(JSON.parse(childJson));
+      } catch {
+        // A half-written child is skipped like any other malformed line.
+      }
+    }
+  }
+
+  const results: UsageRecord[] = [];
+  for (const candidate of candidates) {
+    const result = parseMuseRecord(candidate);
+    if (result !== null) results.push(result);
   }
   return results;
 }

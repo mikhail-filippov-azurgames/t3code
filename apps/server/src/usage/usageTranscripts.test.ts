@@ -3,9 +3,11 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   GROK_COST_USD_TICKS_PER_DOLLAR,
   initialCodexScanState,
+  mightCarryUsage,
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseMuseLine,
   totalTokens,
 } from "./usageTranscripts.ts";
 
@@ -562,5 +564,173 @@ describe("parseGrokLine", () => {
 
     const records = parseGrokLine(line);
     expect(records[0]?.timestampMs).toBe(1_786_372_566_000);
+  });
+});
+
+describe("parseMuseLine", () => {
+  /** Shaped after a real Muse Code `run/model_completed` durable record. */
+  function modelCompleted(overrides?: {
+    id?: string;
+    sessionId?: string;
+    recordedAt?: unknown;
+    model?: unknown;
+    usage?: Record<string, unknown>;
+  }): string {
+    return JSON.stringify({
+      schema_version: 1,
+      id: overrides?.id ?? "5cd3ef83-46b1-449c-bab7-6c46e66f10f9",
+      stream: {
+        kind: "session",
+        id: overrides?.sessionId ?? "01a0af4d-705c-76e2-803c-0e4d78c1090b",
+      },
+      sequence: 51,
+      recorded_at:
+        overrides && "recordedAt" in overrides ? overrides.recordedAt : 1_785_578_400_000_000,
+      record_type: "event",
+      durability: "durable",
+      causation_id: null,
+      payload_type: "runtime.session",
+      payload_schema_version: 1,
+      payload: {
+        kind: "run",
+        run_id: "64ebd8bc-87cf-464e-aaa6-a0c4b0e9346f",
+        event: {
+          kind: "model_completed",
+          usage: {
+            input_tokens: 24_320,
+            output_tokens: 1142,
+            cached_tokens: 10_481,
+            cache_write_tokens: 0,
+            cache_read_tokens: 10_481,
+            reasoning_tokens: 912,
+            ...overrides?.usage,
+          },
+          duration_ms: 13_291,
+          finish_reason: "tool_calls",
+          model: overrides && "model" in overrides ? overrides.model : "muse-spark-1.3",
+        },
+      },
+    });
+  }
+
+  it("extracts token totals from a model_completed record", () => {
+    const records = parseMuseLine(modelCompleted());
+
+    expect(records).toHaveLength(1);
+    const [record] = records;
+    expect(record?.provider).toBe("muse");
+    expect(record?.model).toBe("muse-spark-1.3");
+    expect(record?.sessionId).toBe("01a0af4d-705c-76e2-803c-0e4d78c1090b");
+    // recorded_at is microseconds; the bucket clock wants milliseconds.
+    expect(record?.timestampMs).toBe(1_785_578_400_000);
+    // input_tokens arrives inclusive of the cached portion, as with Codex.
+    expect(record?.totals).toEqual({
+      uncachedInputTokens: 24_320 - 10_481,
+      cachedInputTokens: 10_481,
+      cacheCreationTokens: 0,
+      outputTokens: 1142,
+      reasoningTokens: 912,
+    });
+    expect(record?.reportedCostUsd).toBeNull();
+    expect(record?.dedupeKey).toBe("muse:5cd3ef83-46b1-449c-bab7-6c46e66f10f9");
+  });
+
+  it("unwraps records carried in a retained_frame envelope", () => {
+    const line = JSON.stringify({
+      retained_frame: "session_permission_transaction",
+      frame_schema_version: 1,
+      outer_log_ordinal: 1,
+      transaction_id: "7dfa5cb3-ff58-4dd7-ad0d-d809c551ed27",
+      children: [
+        {
+          child_index: 0,
+          record_json: modelCompleted({ id: "wrapped-record" }),
+        },
+      ],
+    });
+
+    const records = parseMuseLine(line);
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.dedupeKey).toBe("muse:wrapped-record");
+    expect(records[0]?.totals.outputTokens).toBe(1142);
+  });
+
+  it("falls back to a generic muse model when the event model is missing", () => {
+    const records = parseMuseLine(modelCompleted({ model: undefined }));
+
+    expect(records).toHaveLength(1);
+    expect(records[0]?.model).toBe("muse");
+  });
+
+  it("clamps reasoning to output and drops zero-token completions", () => {
+    const overReasoning = parseMuseLine(
+      modelCompleted({
+        id: "over-reasoning",
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          cached_tokens: 0,
+          cache_write_tokens: 0,
+          cache_read_tokens: 0,
+          reasoning_tokens: 50,
+        },
+      }),
+    );
+    expect(overReasoning[0]?.totals.reasoningTokens).toBe(5);
+
+    expect(
+      parseMuseLine(
+        modelCompleted({
+          id: "empty",
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_tokens: 0,
+            cache_write_tokens: 0,
+            cache_read_tokens: 0,
+            reasoning_tokens: 0,
+          },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores non-usage lines and malformed records", () => {
+    // A run lifecycle event from the same log carries no usage.
+    expect(
+      parseMuseLine(
+        JSON.stringify({
+          schema_version: 1,
+          id: "9b9572f7-b19b-4eb7-a409-3df22fc78dfd",
+          stream: { kind: "session", id: "s1" },
+          sequence: 26,
+          recorded_at: 1_785_578_400_000_000,
+          record_type: "event",
+          payload_type: "runtime.session",
+          payload: { kind: "run", run_id: "r1", event: { kind: "started" } },
+        }),
+      ),
+    ).toEqual([]);
+    expect(parseMuseLine("not json")).toEqual([]);
+    // Permission-only envelopes carry no usage either.
+    expect(
+      parseMuseLine(
+        JSON.stringify({ retained_frame: "session_permission_transaction", children: [] }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("gates lines on model_completed or the retained envelope", () => {
+    expect(mightCarryUsage(modelCompleted(), "muse")).toBe(true);
+    expect(
+      mightCarryUsage(
+        JSON.stringify({ retained_frame: "session_permission_transaction", children: [] }),
+        "muse",
+      ),
+    ).toBe(true);
+    expect(
+      mightCarryUsage(JSON.stringify({ payload_type: "tool_batch.effect.started" }), "muse"),
+    ).toBe(false);
   });
 });

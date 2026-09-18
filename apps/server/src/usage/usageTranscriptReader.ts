@@ -26,6 +26,7 @@ import {
   parseClaudeLine,
   parseCodexLine,
   parseGrokLine,
+  parseMuseLine,
   type CodexScanState,
   type UsageRecord,
 } from "./usageTranscripts.ts";
@@ -93,9 +94,11 @@ function fnv1a(buffer: Buffer): number {
  * removed while the walk is in flight, and a partial listing is far better than
  * failing the page.
  *
- * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`).
- * Grok sessions also ship multi-megabyte `chat_history` and `events` logs that
- * never carry usage, so the basename filter keeps a cold scan off those files.
+ * `fileName` restricts the walk to a single basename (Grok's `updates.jsonl`,
+ * Muse's `session.jsonl`). Grok sessions also ship multi-megabyte
+ * `chat_history` and `events` logs that never carry usage, and Muse sessions
+ * sit beside CLI logs and sqlite sidecars, so the basename filter keeps a
+ * cold scan off those files.
  */
 export async function listTranscriptFiles(
   root: string,
@@ -233,6 +236,10 @@ export async function readTranscriptRecords(
       if (!mightCarryUsage(line, provider)) return;
       if (provider === "grok") {
         for (const grokRecord of parseGrokLine(line)) out.push(grokRecord);
+        return;
+      }
+      if (provider === "muse") {
+        for (const museRecord of parseMuseLine(line)) out.push(museRecord);
         return;
       }
       const record = parseClaudeLine(line);

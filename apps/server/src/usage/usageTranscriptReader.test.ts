@@ -60,6 +60,27 @@ function codexUsageLine(outputTokens: number, secondsOffset: number): string {
   })}\n`;
 }
 
+function museLine(id: string, outputTokens: number): string {
+  return `${JSON.stringify({
+    schema_version: 1,
+    id,
+    stream: { kind: "session", id: "muse-session-1" },
+    sequence: 51,
+    recorded_at: 1_785_578_400_000_000,
+    record_type: "event",
+    payload_type: "runtime.session",
+    payload: {
+      kind: "run",
+      run_id: "run-1",
+      event: {
+        kind: "model_completed",
+        usage: { input_tokens: 100, output_tokens: outputTokens },
+        model: "muse-spark-1.3",
+      },
+    },
+  })}\n`;
+}
+
 describe("readTranscriptRecords resume", () => {
   it("parses only appended lines when resuming a grown file", async () => {
     const path = NodePath.join(dir, "claude.jsonl");
@@ -206,5 +227,22 @@ describe("readTranscriptRecords resume", () => {
 
   it("returns null for an unreadable file", async () => {
     assert.isNull(await readTranscriptRecords(NodePath.join(dir, "missing.jsonl"), "claude"));
+  });
+});
+
+describe("readTranscriptRecords muse", () => {
+  it("dispatches session.jsonl lines through the muse parser", async () => {
+    const path = NodePath.join(dir, "session.jsonl");
+    await NodeFSP.writeFile(path, museLine("rec-1", 9) + museLine("rec-2", 21));
+
+    const parsed = await readTranscriptRecords(path, "muse");
+    assert.isNotNull(parsed);
+    assert.strictEqual(parsed.records.length, 2);
+    assert.deepStrictEqual(
+      parsed.records.map((record) => record.totals.outputTokens),
+      [9, 21],
+    );
+    assert.isTrue(parsed.records.every((record) => record.provider === "muse"));
+    assert.strictEqual(parsed.records[0]?.dedupeKey, "muse:rec-1");
   });
 });

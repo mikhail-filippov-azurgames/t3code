@@ -51,6 +51,35 @@ const WINDOW: UsageSummaryInput = {
   untilDay: UsageDay.make("2026-08-02"),
 };
 
+/** Shaped after a real Muse Code `run/model_completed` durable record. */
+function museLine(id: string, sessionId: string, outputTokens: number): string {
+  return `${JSON.stringify({
+    schema_version: 1,
+    id,
+    stream: { kind: "session", id: sessionId },
+    sequence: 51,
+    recorded_at: 1_785_578_400_000_000,
+    record_type: "event",
+    payload_type: "runtime.session",
+    payload: {
+      kind: "run",
+      run_id: "run-1",
+      event: {
+        kind: "model_completed",
+        usage: {
+          input_tokens: 100,
+          output_tokens: outputTokens,
+          cached_tokens: 0,
+          cache_write_tokens: 0,
+          cache_read_tokens: 0,
+          reasoning_tokens: 0,
+        },
+        model: "muse-spark-1.3",
+      },
+    },
+  })}\n`;
+}
+
 const setup = Effect.gen(function* () {
   const home = yield* Effect.promise(() =>
     NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "usage-service-test-")),
@@ -67,6 +96,7 @@ const setup = Effect.gen(function* () {
       providers: {
         claudeAgent: { homePath: NodePath.join(home, "claude") },
         codex: { homePath: NodePath.join(home, "codex") },
+        museCode: { homePath: NodePath.join(home, "muse") },
       },
     },
   };
@@ -209,6 +239,96 @@ describe("UsageService", () => {
         sources.filter((source) => source.fingerprint.provider === "codex").length,
         1,
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.live("scans muse session logs under the XDG data home", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      // Default leg: $HOME/.local/share/muse/sessions.
+      const defaultSessionDir = NodePath.join(
+        home,
+        ".local",
+        "share",
+        "muse",
+        "sessions",
+        "2026",
+        "08",
+        "01",
+        "default-session",
+      );
+      // Override leg: $XDG_DATA_HOME/muse/sessions.
+      const xdgData = NodePath.join(home, "xdg-data");
+      const xdgSessionDir = NodePath.join(
+        xdgData,
+        "muse",
+        "sessions",
+        "2026",
+        "08",
+        "01",
+        "xdg-session",
+      );
+      yield* Effect.promise(async () => {
+        await NodeFSP.mkdir(defaultSessionDir, { recursive: true });
+        await NodeFSP.mkdir(xdgSessionDir, { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(defaultSessionDir, "session.jsonl"),
+          museLine("m1", "muse-session-default", 5) + museLine("m2", "muse-session-default", 7),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(xdgSessionDir, "session.jsonl"),
+          museLine("m3", "muse-session-xdg", 11),
+        );
+        // A CLI sidecar beside the log must not be walked as a transcript.
+        await NodeFSP.writeFile(
+          NodePath.join(defaultSessionDir, "cli-1.log"),
+          museLine("ghost", "muse-session-default", 1000),
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-muse-test",
+            home,
+            settings: {
+              ...settings,
+              providers: {
+                ...settings.providers,
+                museCode: { homePath: home },
+              },
+              providerInstances: {
+                [ProviderInstanceId.make("muse-xdg")]: {
+                  driver: ProviderDriverKind.make("museCode"),
+                  config: {},
+                  environment: [{ name: "XDG_DATA_HOME", value: xdgData, sensitive: false }],
+                },
+              },
+            },
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const museBuckets = summary.buckets.filter((bucket) => bucket.provider === "muse");
+      assert.strictEqual(museBuckets.length, 1);
+      assert.strictEqual(museBuckets[0]?.model, "muse-spark-1.3");
+      assert.strictEqual(museBuckets[0]?.totals.outputTokens, 23);
+      assert.strictEqual(museBuckets[0]?.totals.uncachedInputTokens, 300);
+      assert.strictEqual(museBuckets[0]?.sessions, 2);
+      // The log carries no cost figure and muse-spark has no rate-table entry.
+      assert.strictEqual(museBuckets[0]?.costSource, "unpriced");
+      const museSources = summary.sources.filter(
+        (source) => source.fingerprint.provider === "muse",
+      );
+      assert.strictEqual(museSources.length, 2);
+      assert.include(
+        museSources.map((source) => source.fingerprint.resolvedHomePath),
+        NodePath.join(home, ".local", "share", "muse", "sessions"),
+      );
+      assert.include(
+        museSources.map((source) => source.fingerprint.resolvedHomePath),
+        NodePath.join(xdgData, "muse", "sessions"),
+      );
+      assert.isTrue(museSources.every((source) => source.scannedFiles === 1));
     }).pipe(Effect.scoped),
   );
 

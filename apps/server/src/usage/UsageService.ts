@@ -1,8 +1,8 @@
 /**
  * UsageService - scans provider transcripts and returns priced usage buckets.
  *
- * The scan reads the provider CLIs' own session files (Claude Code, Codex, and
- * Grok Build) rather than T3 Code's orchestration projections, so usage covers
+ * The scan reads the provider CLIs' own session files (Claude Code, Codex,
+ * Grok Build, and Muse Code) rather than T3 Code's orchestration projections, so usage covers
  * turns driven outside T3 Code too. This is the approach `ccusage` takes.
  *
  * Transcripts are append-only, so parsed records are memoised per file by
@@ -17,6 +17,7 @@ import * as NodeOS from "node:os";
 import {
   ClaudeSettings,
   CodexSettings,
+  MuseCodeSettings,
   type ProviderInstanceConfig,
   USAGE_CONTRACT_VERSION,
   type ServerSettings as ServerSettingsValue,
@@ -84,6 +85,7 @@ const CACHE_RETENTION_DAYS = 90;
 
 const decodeCodexSettings = Schema.decodeOption(CodexSettings);
 const decodeClaudeSettings = Schema.decodeOption(ClaudeSettings);
+const decodeMuseCodeSettings = Schema.decodeOption(MuseCodeSettings);
 
 /** On-disk shape of the rate snapshot. */
 const RatesCacheFile = Schema.Struct({
@@ -244,7 +246,7 @@ export const make = Effect.gen(function* () {
   ) {
     const dirs: Array<{ provider: UsageProviderKind; dir: string; fileName?: string }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok", "museCode"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
@@ -254,7 +256,8 @@ export const make = Effect.gen(function* () {
       }
       for (const instance of instances) {
         const environment = mergeProviderInstanceEnvironment(instance.environment, hostEnvironment);
-        const provider = driver === "claudeAgent" ? "claude" : driver;
+        const provider =
+          driver === "claudeAgent" ? "claude" : driver === "museCode" ? "muse" : driver;
         let home: string;
         if (driver === "codex") {
           const decoded = decodeCodexSettings(instance.config ?? {});
@@ -274,6 +277,19 @@ export const make = Effect.gen(function* () {
           home = configured
             ? expandHomePath(configured)
             : environment.CLAUDE_CONFIG_DIR?.trim() || path.join(NodeOS.homedir(), ".claude");
+        } else if (driver === "museCode") {
+          const decoded = decodeMuseCodeSettings(instance.config ?? {});
+          if (Option.isNone(decoded)) continue;
+          const configured = decoded.value.homePath.trim();
+          const osHome = configured ? expandHomePath(configured) : NodeOS.homedir();
+          // Session logs live under the XDG data dir, not the config dir:
+          // `$XDG_DATA_HOME/muse` else `$HOME/.local/share/muse` (the data
+          // half of the `resolveMuseConfigDir` convention, verified against
+          // muse 1.3.0).
+          const dataHome = environment.XDG_DATA_HOME?.trim();
+          home = dataHome
+            ? path.join(dataHome, "muse")
+            : path.join(osHome, ".local", "share", "muse");
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
@@ -287,7 +303,15 @@ export const make = Effect.gen(function* () {
         const key = `${provider}\0${dir}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        dirs.push({ provider, dir, ...(provider === "grok" ? { fileName: "updates.jsonl" } : {}) });
+        dirs.push({
+          provider,
+          dir,
+          ...(provider === "grok"
+            ? { fileName: "updates.jsonl" }
+            : provider === "muse"
+              ? { fileName: "session.jsonl" }
+              : {}),
+        });
       }
     }
     return dirs;
