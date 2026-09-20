@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useEnvironments } from "../state/environments";
 import { environmentShell } from "../state/shell";
+import { useCalendarStore } from "../state/calendar";
 import {
   hasDesktopNotifications,
   hasNotificationSound,
@@ -14,6 +15,7 @@ import {
   setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
+import { describeCalendarRunNotice, noticeKey } from "./calendar/calendar.logic";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
@@ -72,13 +74,95 @@ export function ThreadNotificationCoordinator() {
 
   if (mode === "off" && !inAppNotificationsEnabled) return null;
 
-  return environments.map((environment) => (
-    <EnvironmentNotifications
-      key={environment.environmentId}
-      environmentId={environment.environmentId}
-      onNotification={onNotification}
-    />
-  ));
+  return (
+    <>
+      <CalendarStartNotifications onNotification={onNotification} />
+      {environments.map((environment) => (
+        <EnvironmentNotifications
+          key={environment.environmentId}
+          environmentId={environment.environmentId}
+          onNotification={onNotification}
+        />
+      ))}
+    </>
+  );
+}
+
+/**
+ * Scheduled-run notices are not derived from a thread shell snapshot, so they
+ * have their own subscription to the calendar store. The store is a seam: the
+ * server-side calendar wiring will be what pushes notices into it.
+ */
+function CalendarStartNotifications({
+  onNotification,
+}: {
+  onNotification: (environmentId: EnvironmentId, notification: Notification) => void;
+}) {
+  const notices = useCalendarStore((state) => state.notices);
+  const dismissNotice = useCalendarStore((state) => state.dismissNotice);
+  const mode = useClientSettings((settings) => settings.notificationMode);
+  const inAppNotificationsEnabled = useClientSettings(
+    (settings) => settings.inAppNotificationsEnabled,
+  );
+  const navigate = useNavigate();
+  const handled = useRef(new Set<string>());
+
+  useEffect(() => {
+    for (const { environmentId, notice } of notices) {
+      const key = noticeKey(notice);
+      if (handled.current.has(key)) continue;
+      handled.current.add(key);
+      const { title, body, tone } = describeCalendarRunNotice(notice);
+      if (hasNotificationSound(mode)) {
+        void playNotificationSound(tone === "success" ? "completion" : "input", () =>
+          hasNotificationSound(getClientSettings().notificationMode),
+        );
+      }
+      const focused = document.visibilityState === "visible" && document.hasFocus();
+      if (inAppNotificationsEnabled && focused) {
+        const toastId = toastManager.add({
+          type: tone,
+          title,
+          description: body,
+          data: { hideCopyButton: true },
+          actionProps: {
+            children: "Open calendar",
+            onClick: () => {
+              toastManager.close(toastId);
+              void navigate({ to: "/calendar" });
+            },
+          },
+        });
+        dismissNotice(key);
+        continue;
+      }
+      if (
+        hasDesktopNotifications(mode) &&
+        !focused &&
+        typeof Notification !== "undefined" &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          const notification = new Notification(title, {
+            body,
+            tag: `${environmentId}:calendar:${notice.eventId}`,
+            silent: true,
+          });
+          onNotification(environmentId, notification);
+          notification.addEventListener("click", () => {
+            notification.close();
+            window.focus();
+            void navigate({ to: "/calendar" });
+          });
+        } catch {
+          // Some browsers expose Notification but reject desktop presentation.
+        }
+      }
+      dismissNotice(key);
+    }
+  }, [dismissNotice, inAppNotificationsEnabled, mode, navigate, notices, onNotification]);
+
+  return null;
 }
 
 function EnvironmentNotifications({
