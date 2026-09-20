@@ -429,6 +429,17 @@ function readPersistedCwd(
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function readPersistedActiveTurnId(
+  runtimePayload: ProviderSessionDirectory.ProviderRuntimeBinding["runtimePayload"],
+): TurnId | undefined {
+  if (!runtimePayload || typeof runtimePayload !== "object" || Array.isArray(runtimePayload)) {
+    return undefined;
+  }
+  const raw = "activeTurnId" in runtimePayload ? runtimePayload.activeTurnId : undefined;
+  if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
+  return TurnId.make(raw);
+}
+
 const dieOnMissingBindingInstanceId = (
   operation: string,
   payload: {
@@ -820,6 +831,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           : {}),
         ...(tokenUsage?.reasoningTokens !== undefined
           ? { reasoningTokens: tokenUsage.reasoningTokens }
+          : {}),
+        ...(event.payload.modelUsage !== undefined ? { modelUsage: event.payload.modelUsage } : {}),
+        ...(event.payload.totalCostUsd !== undefined
+          ? { totalCostUsd: event.payload.totalCostUsd }
           : {}),
       },
     };
@@ -1988,7 +2003,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
           "provider.thread_id": input.threadId,
           "provider.turn_id": input.turnId,
         });
-        yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+        // The reactor interrupts by session (orchestration turn ids are not
+        // provider turn ids in general), so input.turnId is usually absent.
+        // For Muse the persisted active turn id IS the provider (MSP) turn
+        // id end to end, and after a restart the fresh adapter record no
+        // longer knows it — forward it so a zombie turn can be named and
+        // settled instead of failing the Stop with missing_run. Other
+        // providers keep the session-level interrupt unchanged.
+        const bindingOption = yield* directory.getBinding(input.threadId);
+        const persistedActiveTurnId = readPersistedActiveTurnId(
+          Option.getOrUndefined(bindingOption)?.runtimePayload,
+        );
+        yield* routed.adapter.interruptTurn(
+          routed.threadId,
+          input.turnId ??
+            (routed.adapter.provider === "museCode" ? persistedActiveTurnId : undefined),
+        );
         yield* analytics.record("provider.turn.interrupted", {
           provider: routed.adapter.provider,
         });

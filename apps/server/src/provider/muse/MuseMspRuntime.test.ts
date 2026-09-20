@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -9,13 +10,19 @@ import type { NotificationHandler } from "@muse-code/sdk";
 
 import {
   MUSE_CLIENT_INFO,
+  closeMspHostWithTimeout,
   decodeMuseModelRows,
   installNotificationFanout,
+  interruptMspTurn,
+  isMspInterruptTimeoutText,
+  isMspMissingRunText,
+  isMspSessionInUseText,
   museScopedMcpSettingsDocument,
   readMuseVersionPin,
   resolveMuseConfigDir,
   resolveMuseServeBinary,
   stripMuseApiKeys,
+  type MuseHost,
 } from "./MuseMspRuntime.ts";
 
 describe("MUSE_CLIENT_INFO", () => {
@@ -242,4 +249,125 @@ describe("resolveMuseServeBinary", () => {
       expect(failure).toBeInstanceOf(ProviderAdapterRequestError);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+});
+
+describe("interruptMspTurn", () => {
+  const mockHost = (
+    command: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  ) => ({ connection: { command } }) as unknown as Pick<MuseHost, "connection">;
+
+  it.effect("sends turn/interrupt with the session and turn ids", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const host = mockHost(async (method, params) => {
+        calls.push({ method, params });
+        return {};
+      });
+
+      yield* interruptMspTurn(host, { sessionId: "session-1", turnId: "turn-1" });
+
+      expect(calls).toEqual([
+        { method: "turn/interrupt", params: { sessionId: "session-1", turnId: "turn-1" } },
+      ]);
+    }),
+  );
+
+  it.effect("omits the turn id when interrupting the whole session", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+      const host = mockHost(async (method, params) => {
+        calls.push({ method, params });
+        return {};
+      });
+
+      yield* interruptMspTurn(host, { sessionId: "session-1" });
+
+      expect(calls).toEqual([{ method: "turn/interrupt", params: { sessionId: "session-1" } }]);
+    }),
+  );
+
+  it.effect("fails with the turn/interrupt failure code when the host rejects", () =>
+    Effect.gen(function* () {
+      const host = mockHost(async () => {
+        throw new Error("host gone");
+      });
+
+      const failure = yield* Effect.flip(
+        interruptMspTurn(host, { sessionId: "session-1", turnId: "turn-1" }),
+      );
+
+      expect(failure).toBeInstanceOf(ProviderAdapterRequestError);
+      expect(failure.method).toBe("turn/interrupt");
+      expect(failure.detail).toContain("turn-1");
+    }),
+  );
+
+  it.live("fails with msp_interrupt_timeout instead of hanging on a silent host", () =>
+    Effect.gen(function* () {
+      const host = mockHost(() => new Promise<Record<string, unknown>>(() => {}));
+      const start = yield* Clock.currentTimeMillis;
+
+      const failure = yield* Effect.flip(
+        interruptMspTurn(host, { sessionId: "session-1", turnId: "turn-1" }, "100 millis"),
+      );
+
+      expect(failure).toBeInstanceOf(ProviderAdapterRequestError);
+      expect(failure.detail).toContain("msp_interrupt_timeout");
+      expect((yield* Clock.currentTimeMillis) - start).toBeLessThan(10_000);
+    }),
+  );
+});
+
+describe("closeMspHostWithTimeout", () => {
+  it.effect("reports true when close settles", () =>
+    Effect.gen(function* () {
+      const closed = yield* closeMspHostWithTimeout({ close: async () => {} });
+      expect(closed).toBe(true);
+    }),
+  );
+
+  it.live("reports false instead of hanging when close never settles", () =>
+    Effect.gen(function* () {
+      const start = yield* Clock.currentTimeMillis;
+      const closed = yield* closeMspHostWithTimeout(
+        { close: () => new Promise<void>(() => {}) },
+        "100 millis",
+      );
+      expect(closed).toBe(false);
+      expect((yield* Clock.currentTimeMillis) - start).toBeLessThan(10_000);
+    }),
+  );
+});
+
+describe("host rejection classifiers", () => {
+  it("detects a run the host never knew", () => {
+    expect(
+      isMspMissingRunText(
+        "turn/interrupt command 01a0b499-6561-7000-be0c-ad942ee921b0 rejected: missing_run",
+      ),
+    ).toBe(true);
+    expect(isMspMissingRunText("host gone")).toBe(false);
+    expect(isMspMissingRunText("")).toBe(false);
+  });
+
+  it("detects a session attached to another host, case-insensitively", () => {
+    expect(
+      isMspSessionInUseText("session 01a0b45b-9a76-7f30-83bf-bf901df1c48e is already in use"),
+    ).toBe(true);
+    expect(isMspSessionInUseText("Session Already In Use by pid 123")).toBe(true);
+    expect(isMspSessionInUseText("host gone")).toBe(false);
+    expect(isMspSessionInUseText("")).toBe(false);
+  });
+
+  it("detects an interrupt that outlived its deadline", () => {
+    expect(
+      isMspInterruptTimeoutText(
+        "Muse host did not answer turn/interrupt in time (msp_interrupt_timeout).",
+      ),
+    ).toBe(true);
+    expect(isMspInterruptTimeoutText("turn/interrupt command abc rejected: missing_run")).toBe(
+      false,
+    );
+    expect(isMspInterruptTimeoutText("")).toBe(false);
+  });
 });

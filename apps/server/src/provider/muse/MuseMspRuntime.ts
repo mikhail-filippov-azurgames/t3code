@@ -16,8 +16,10 @@ import {
   type NotificationHandler,
   type SpawnedMspConnection,
 } from "@muse-code/sdk";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
@@ -361,6 +363,96 @@ export function decodeMuseModelRows(value: unknown): ReadonlyArray<MuseModelRow>
     });
   }
   return rows;
+}
+
+/**
+ * A host that answers nothing — neither rejection nor terminal — wedges Stop,
+ * steer, and the turn forever: the SDK `command()` has no timeout of its own.
+ * Control commands therefore carry their own deadlines; on expiry callers
+ * settle locally instead of parking forever.
+ */
+export const MSP_INTERRUPT_TIMEOUT = "30 seconds" as const;
+export const MSP_RESUME_TIMEOUT = "60 seconds" as const;
+export const MSP_HOST_CLOSE_TIMEOUT = "10 seconds" as const;
+
+/** Stable token marking an interrupt that outlived its deadline. */
+export function isMspInterruptTimeoutText(text: string): boolean {
+  return text.includes("msp_interrupt_timeout");
+}
+
+/**
+ * Interrupt a turn on the host. Partial output stays where it streamed;
+ * the host settles the turn with its own terminal, which the adapter folds
+ * into `turn.completed`. Used by manual Stop and by follow-up steers.
+ * A silent host fails with `msp_interrupt_timeout` instead of hanging.
+ */
+export function interruptMspTurn(
+  host: Pick<MuseHost, "connection">,
+  input: { readonly sessionId: string; readonly turnId?: string | undefined },
+  timeout: Duration.Input = MSP_INTERRUPT_TIMEOUT,
+): Effect.Effect<void, ProviderAdapterRequestError> {
+  const command = Effect.tryPromise({
+    try: () =>
+      host.connection.command("turn/interrupt", {
+        sessionId: input.sessionId,
+        ...(input.turnId !== undefined ? { turnId: input.turnId } : {}),
+      }),
+    catch: (cause) =>
+      new ProviderAdapterRequestError({
+        provider: DRIVER,
+        method: "turn/interrupt",
+        detail: `Could not interrupt Muse turn${input.turnId ? ` ${input.turnId}` : ""}: ${
+          cause instanceof Error ? cause.message : String(cause)
+        }`,
+        ...(cause instanceof Error ? { cause } : {}),
+      }),
+  }).pipe(Effect.asVoid);
+  return Effect.gen(function* () {
+    const answered = yield* Effect.timeoutOption(command, timeout);
+    if (Option.isSome(answered)) {
+      return;
+    }
+    return yield* new ProviderAdapterRequestError({
+      provider: DRIVER,
+      method: "turn/interrupt",
+      detail: `Muse host did not answer turn/interrupt in time (msp_interrupt_timeout).`,
+    });
+  });
+}
+
+/**
+ * Close a host, abandoning it when even teardown hangs. A wedged host must
+ * not wedge shutdown, respawn, or the stop path with it — the OS process may
+ * linger as an orphan, but the thread moves on.
+ */
+export function closeMspHostWithTimeout(
+  host: Pick<MuseHost, "close">,
+  timeout: Duration.Input = MSP_HOST_CLOSE_TIMEOUT,
+): Effect.Effect<boolean> {
+  return Effect.timeoutOption(
+    Effect.promise(() => host.close()),
+    timeout,
+  ).pipe(Effect.map(Option.isSome));
+}
+
+/**
+ * The host answers `turn/interrupt` for a run it never knew with a
+ * `missing_run` rejection. The run is gone host-side, so callers must settle
+ * the turn locally instead of failing: keeping it "running" wedges Stop,
+ * steer, and every later turn on the thread.
+ */
+export function isMspMissingRunText(text: string): boolean {
+  return text.includes("missing_run");
+}
+
+/**
+ * `session/resume` against a session still attached to another (usually
+ * orphaned, pre-restart) host fails with "already in use". Resuming is
+ * impossible, so callers must start a fresh host session rather than fail
+ * the thread into an infinite thinking state.
+ */
+export function isMspSessionInUseText(text: string): boolean {
+  return text.toLowerCase().includes("already in use");
 }
 
 /** Raw `model/list` query proving the host's catalog identity. */

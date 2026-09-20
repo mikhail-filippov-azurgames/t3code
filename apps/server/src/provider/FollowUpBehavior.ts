@@ -17,6 +17,7 @@
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import type { FollowUpBehavior } from "@t3tools/contracts";
 
@@ -123,19 +124,26 @@ export interface TurnTerminalWatcher {
 }
 
 export const makeTurnTerminalWatcher: Effect.Effect<TurnTerminalWatcher> = Effect.map(
-  Ref.make(new Map<string, Deferred.Deferred<void>>()),
-  (watchers) => {
+  Effect.all({
+    lock: Semaphore.make(1),
+    watchers: Ref.make(new Map<string, Deferred.Deferred<void>>()),
+  }),
+  ({ lock, watchers }) => {
     const gateFor = (turnId: string) =>
-      Ref.get(watchers).pipe(
-        Effect.flatMap((entries) => {
-          const existing = entries.get(turnId);
-          if (existing !== undefined) {
-            return Effect.succeed(existing);
-          }
-          return Deferred.make<void>().pipe(
-            Effect.tap((fresh) => Ref.update(watchers, (next) => new Map(next).set(turnId, fresh))),
-          );
-        }),
+      lock.withPermits(1)(
+        Ref.get(watchers).pipe(
+          Effect.flatMap((entries) => {
+            const existing = entries.get(turnId);
+            if (existing !== undefined) {
+              return Effect.succeed(existing);
+            }
+            return Deferred.make<void>().pipe(
+              Effect.tap((fresh) =>
+                Ref.update(watchers, (next) => new Map(next).set(turnId, fresh)),
+              ),
+            );
+          }),
+        ),
       );
     return {
       awaitTerminal: (turnId: string) =>

@@ -2,6 +2,7 @@ import {
   ApprovalRequestId,
   DEFAULT_MODEL,
   EventId,
+  type FollowUpBehavior,
   ProviderDriverKind,
   ProviderItemId,
   type ProviderInstanceId,
@@ -26,8 +27,10 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -36,6 +39,11 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
+import {
+  STEER_TERMINAL_TIMEOUT,
+  makeTurnTerminalWatcher,
+  resolveFollowUpAction,
+} from "../FollowUpBehavior.ts";
 import { buildCodexInitializeParams } from "./CodexProvider.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
@@ -192,6 +200,7 @@ export interface CodexSessionRuntimeOptions {
 }
 
 export interface CodexSessionRuntimeSendTurnInput {
+  readonly followUpBehavior?: FollowUpBehavior;
   readonly input?: string;
   readonly attachments?: ReadonlyArray<{
     readonly type: "image";
@@ -1383,6 +1392,11 @@ export const makeCodexSessionRuntime = (
       updatedAt: sessionCreatedAt,
     } satisfies ProviderSession;
     const sessionRef = yield* Ref.make<ProviderSession>(initialSession);
+    // A runtime session has one provider conversation. Serialize sends and
+    // interrupts so two concurrent steers cannot interrupt the same turn and
+    // then race two turn/start requests.
+    const turnSendLock = yield* Semaphore.make(1);
+    const terminals = yield* makeTurnTerminalWatcher;
     const offerEvent = (event: ProviderEvent) => Queue.offer(events, event).pipe(Effect.asVoid);
 
     const emitEvent = (event: Omit<ProviderEvent, "id" | "provider" | "createdAt">) =>
@@ -1990,6 +2004,13 @@ export const makeCodexSessionRuntime = (
             : {}),
           ...(payload !== undefined ? { payload } : {}),
         });
+        // The terminal gate is released only after the provider event has
+        // entered the runtime queue. That preserves terminal-before-start
+        // ordering for a steer; releasing it from the typed client callback
+        // would let the replacement request race the queued old terminal.
+        if (notification.method === "turn/completed" && turnId !== undefined) {
+          yield* terminals.noteTerminal(String(turnId));
+        }
       });
 
     const currentSessionProviderThreadId = Effect.map(Ref.get(sessionRef), currentProviderThreadId);
@@ -2031,10 +2052,19 @@ export const makeCodexSessionRuntime = (
             payload.turn.status === "failed" && "error" in payload.turn && payload.turn.error
               ? payload.turn.error.message
               : undefined;
-          return updateSession(sessionRef, {
-            status: payload.turn.status === "failed" ? "error" : "ready",
-            activeTurnId: undefined,
-            ...(lastError ? { lastError } : {}),
+          const completedTurnId = TurnId.make(payload.turn.id);
+          return Effect.gen(function* () {
+            const session = yield* Ref.get(sessionRef);
+            // A superseded turn can complete after the replacement has
+            // started. Its terminal settles its own watcher but must not
+            // clear the replacement's active slot or overwrite its status.
+            if (session.activeTurnId === completedTurnId) {
+              yield* updateSession(sessionRef, {
+                status: payload.turn.status === "failed" ? "error" : "ready",
+                activeTurnId: undefined,
+                ...(lastError ? { lastError } : {}),
+              });
+            }
           });
         }),
       ),
@@ -2411,6 +2441,68 @@ export const makeCodexSessionRuntime = (
       return providerThreadId;
     });
 
+    const emitSteerTimeoutTerminal = (turnId: string) =>
+      Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        const typedTurnId = TurnId.make(turnId);
+        // Keep the event on the same provider-event queue as real Codex
+        // notifications. This preserves terminal-before-new-start ordering
+        // for ingestion even when the app-server stopped answering.
+        yield* emitEvent({
+          kind: "notification",
+          threadId: options.threadId,
+          turnId: typedTurnId,
+          method: "turn/completed",
+          payload: {
+            threadId: providerThreadId,
+            turn: {
+              id: turnId,
+              status: "interrupted",
+              items: [],
+            },
+          },
+          message: "Codex steer terminal timed out; settled locally.",
+        });
+        yield* terminals.noteTerminal(turnId);
+        yield* updateSession(sessionRef, (session) =>
+          session.activeTurnId === typedTurnId ? { status: "ready", activeTurnId: undefined } : {},
+        );
+      });
+
+    // Shared by interruptTurn and follow-up steers. Stop-everything:
+    // children are full threads with their own turns; interrupting only the
+    // parent leaves the fleet running. Interrupt each live child turn first,
+    // best-effort per child, BOUNDED: the transport awaits an unbounded
+    // Deferred per request, so a wedged child would otherwise block the
+    // parent interrupt forever — exactly during the runaway fleet where Stop
+    // matters most (review finding). Per-child and overall deadlines
+    // guarantee the parent interrupt below always runs.
+    const interruptSessionTurn = (turnId?: TurnId) =>
+      Effect.gen(function* () {
+        const providerThreadId = yield* readProviderThreadId;
+        const session = yield* Ref.get(sessionRef);
+        const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
+        yield* Effect.forEach(
+          Array.from(liveChildTurns.entries()),
+          ([childThreadId, childTurnId]) =>
+            client
+              .request("turn/interrupt", {
+                threadId: childThreadId,
+                turnId: childTurnId,
+              })
+              .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
+          { concurrency: 8, discard: true },
+        ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
+        const effectiveTurnId = turnId ?? session.activeTurnId;
+        if (!effectiveTurnId) {
+          return;
+        }
+        yield* client.request("turn/interrupt", {
+          threadId: providerThreadId,
+          turnId: effectiveTurnId,
+        });
+      });
+
     const close = Effect.gen(function* () {
       const alreadyClosed = yield* Ref.getAndSet(closedRef, true);
       if (alreadyClosed) {
@@ -2440,98 +2532,101 @@ export const makeCodexSessionRuntime = (
         yield* client.request("thread/compact/start", { threadId: providerThreadId });
       }),
       sendTurn: (input) =>
-        Effect.gen(function* () {
-          const providerThreadId = yield* readProviderThreadId;
-          if (hasConfiguredMcpServer(options.appServerArgs)) {
-            yield* client.request("config/mcpServer/reload", undefined).pipe(
-              Effect.catch((cause) =>
-                Effect.logWarning("Failed to refresh Codex MCP tool catalog before turn.", {
-                  cause,
-                }),
+        turnSendLock.withPermits(1)(
+          Effect.gen(function* () {
+            const providerThreadId = yield* readProviderThreadId;
+            // A mid-turn send either queues behind the live turn (the
+            // historical behavior) or cuts in (steer: interrupt first, then
+            // start fresh with the new message).
+            const followUp = resolveFollowUpAction({
+              followUpBehavior: input.followUpBehavior,
+              activeTurnId: (yield* Ref.get(sessionRef)).activeTurnId,
+              supportsSteer: true,
+            });
+            if (followUp.action === "reject") {
+              return yield* Effect.die(
+                new Error(`Codex steer rejected unexpectedly: ${followUp.message}`),
+              );
+            }
+            const supersededTurnId =
+              followUp.action === "steer" ? followUp.supersededTurnId : undefined;
+            if (supersededTurnId !== undefined) {
+              // Steer cuts in: interrupt the live turn (partial output stays on
+              // the timeline), then start fresh below with the new message. A
+              // failed interrupt fails the send loudly instead of queueing
+              // behind a turn that may never settle.
+              yield* interruptSessionTurn(TurnId.make(supersededTurnId));
+              const terminal = yield* terminals
+                .awaitTerminal(supersededTurnId)
+                .pipe(Effect.timeoutOption(STEER_TERMINAL_TIMEOUT));
+              if (Option.isNone(terminal)) {
+                yield* emitSteerTimeoutTerminal(supersededTurnId);
+              }
+            }
+            if (hasConfiguredMcpServer(options.appServerArgs)) {
+              yield* client.request("config/mcpServer/reload", undefined).pipe(
+                Effect.catch((cause) =>
+                  Effect.logWarning("Failed to refresh Codex MCP tool catalog before turn.", {
+                    cause,
+                  }),
+                ),
+              );
+            }
+            const normalizedModel = normalizeCodexModelSlug(
+              input.model ?? (yield* Ref.get(sessionRef)).model,
+            );
+            const params = yield* buildTurnStartParams({
+              threadId: providerThreadId,
+              runtimeMode: options.runtimeMode,
+              ...(input.input ? { prompt: input.input } : {}),
+              ...(input.attachments ? { attachments: input.attachments } : {}),
+              ...(normalizedModel ? { model: normalizedModel } : {}),
+              ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
+              ...(input.effort ? { effort: input.effort } : {}),
+              ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+              // Derived from the session's own credential rather than the
+              // setting, so the prompt describes the tools this turn actually
+              // has even if the setting changed after the session started.
+              browserToolsAvailable: configuredMcpToolAvailability(
+                options.appServerArgs,
+                options.mcpCapabilities,
+              ),
+            });
+            const rawResponse = yield* client.raw.request("turn/start", params);
+            const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
+              Effect.mapError((error) =>
+                CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
+                  "decode-response-payload",
+                  error,
+                  { method: "turn/start" },
+                ),
               ),
             );
-          }
-          const normalizedModel = normalizeCodexModelSlug(
-            input.model ?? (yield* Ref.get(sessionRef)).model,
-          );
-          const params = yield* buildTurnStartParams({
-            threadId: providerThreadId,
-            runtimeMode: options.runtimeMode,
-            ...(input.input ? { prompt: input.input } : {}),
-            ...(input.attachments ? { attachments: input.attachments } : {}),
-            ...(normalizedModel ? { model: normalizedModel } : {}),
-            ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
-            ...(input.effort ? { effort: input.effort } : {}),
-            ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
-            // Derived from the session's own credential rather than the
-            // setting, so the prompt describes the tools this turn actually
-            // has even if the setting changed after the session started.
-            browserToolsAvailable: configuredMcpToolAvailability(
-              options.appServerArgs,
-              options.mcpCapabilities,
-            ),
-          });
-          const rawResponse = yield* client.raw.request("turn/start", params);
-          const response = yield* decodeV2TurnStartResponse(rawResponse).pipe(
-            Effect.mapError((error) =>
-              CodexErrors.CodexAppServerProtocolParseError.fromSchemaError(
-                "decode-response-payload",
-                error,
-                { method: "turn/start" },
-              ),
-            ),
-          );
-          const turnId = TurnId.make(response.turn.id);
-          yield* updateSession(sessionRef, (session) => ({
-            status: "running",
-            // Codex accepts follow-ups while the current turn is still
-            // running. The response contains the queued turn id, but
-            // turn/interrupt only accepts the id that is active now.
-            activeTurnId: session.activeTurnId ?? turnId,
-            ...(normalizedModel ? { model: normalizedModel } : {}),
-          }));
-          const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
-          return {
-            threadId: options.threadId,
-            turnId,
-            ...(resumedProviderThreadId
-              ? { resumeCursor: { threadId: resumedProviderThreadId } }
-              : {}),
-          } satisfies ProviderTurnStartResult;
-        }),
-      interruptTurn: (turnId) =>
-        Effect.gen(function* () {
-          const providerThreadId = yield* readProviderThreadId;
-          const session = yield* Ref.get(sessionRef);
-          // Stop-everything: children are full threads with their own turns;
-          // interrupting only the parent leaves the fleet running. Interrupt
-          // each live child turn first, best-effort per child, BOUNDED: the
-          // transport awaits an unbounded Deferred per request, so a wedged
-          // child would otherwise block the parent interrupt forever —
-          // exactly during the runaway fleet where Stop matters most
-          // (review finding). Per-child and overall deadlines guarantee the
-          // parent interrupt below always runs.
-          const liveChildTurns = yield* Ref.get(collabChildLiveTurnsRef);
-          yield* Effect.forEach(
-            Array.from(liveChildTurns.entries()),
-            ([childThreadId, childTurnId]) =>
-              client
-                .request("turn/interrupt", {
-                  threadId: childThreadId,
-                  turnId: childTurnId,
-                })
-                .pipe(Effect.timeoutOption("3 seconds"), Effect.ignore),
-            { concurrency: 8, discard: true },
-          ).pipe(Effect.timeoutOption("10 seconds"), Effect.ignore);
-          const effectiveTurnId = turnId ?? session.activeTurnId;
-          if (!effectiveTurnId) {
-            return;
-          }
-          yield* client.request("turn/interrupt", {
-            threadId: providerThreadId,
-            turnId: effectiveTurnId,
-          });
-        }),
+            const turnId = TurnId.make(response.turn.id);
+            yield* updateSession(sessionRef, (session) => ({
+              status: "running",
+              // Codex accepts follow-ups while the current turn is still
+              // running. The response contains the queued turn id, but
+              // turn/interrupt only accepts the id that is active now. A steer
+              // interrupted the previous turn, so the new turn takes over.
+              activeTurnId:
+                supersededTurnId !== undefined ? turnId : (session.activeTurnId ?? turnId),
+              ...(normalizedModel ? { model: normalizedModel } : {}),
+            }));
+            const resumedProviderThreadId = currentProviderThreadId(yield* Ref.get(sessionRef));
+            return {
+              threadId: options.threadId,
+              turnId,
+              ...(supersededTurnId !== undefined
+                ? { supersededTurnId: TurnId.make(supersededTurnId) }
+                : {}),
+              ...(resumedProviderThreadId
+                ? { resumeCursor: { threadId: resumedProviderThreadId } }
+                : {}),
+            } satisfies ProviderTurnStartResult;
+          }),
+        ),
+      interruptTurn: (turnId) => turnSendLock.withPermits(1)(interruptSessionTurn(turnId)),
       readThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
         return yield* readCodexThread(client, providerThreadId);

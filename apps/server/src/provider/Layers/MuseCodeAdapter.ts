@@ -55,11 +55,26 @@ import {
 } from "../Errors.ts";
 import {
   MUSE_FULL_ACCESS_SERVE_ARGS,
+  MSP_RESUME_TIMEOUT,
+  closeMspHostWithTimeout,
+  interruptMspTurn,
+  isMspInterruptTimeoutText,
+  isMspMissingRunText,
+  isMspSessionInUseText,
   museScopedMcpSettingsDocument,
   resolveMuseConfigDir,
   spawnMuseHost,
   type MuseHost,
 } from "../muse/MuseMspRuntime.ts";
+import {
+  STEER_TERMINAL_TIMEOUT,
+  applyTurnSettled,
+  applyTurnStarted,
+  isTurnSettled,
+  makeTurnTerminalWatcher,
+  resolveFollowUpAction,
+  type TurnTerminalWatcher,
+} from "../FollowUpBehavior.ts";
 import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import type { MuseCodeAdapterShape } from "../Services/MuseCodeAdapter.ts";
@@ -91,6 +106,16 @@ interface MuseSessionRecord {
   readonly createdAt: string;
   readonly turnIds: Array<string>;
   activeTurnId: string | undefined;
+  /** Turns with an emitted terminal, including synthetic steer terminals. A
+   * late host terminal for a settled turn is suppressed, never re-emitted. */
+  readonly settledTurnIds: ReadonlySet<string>;
+  /** Terminal gates, one per turn. A steer awaits the superseded turn's gate
+   * so its `turn.completed` is published before the new turn's
+   * `turn.started`: the ingestion guards only let the active turn close the
+   * lifecycle, and that order is what keeps a steered turn from hanging. */
+  readonly terminals: TurnTerminalWatcher;
+  /** Serialize send/interrupt pairs for one Muse session. */
+  readonly turnLock: Semaphore.Semaphore;
 }
 
 const invalidEffortError = (raw: string) =>
@@ -593,6 +618,11 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     // The elevated host spawns lazily on the first full-access session; the
     // semaphore keeps concurrent starts from spawning it twice.
     const elevatedLock = yield* Semaphore.make(1);
+    // Session starts are serialized per adapter: two concurrent starts for
+    // one thread (restart continuation racing a user send) would spawn two
+    // hosts, and the loser's resume fails with "already in use" while its
+    // host leaks as an orphan. Starts are rare; the contention cost is nil.
+    const sessionStartLock = yield* Semaphore.make(1);
     const elevatedHostRef = yield* Ref.make(Option.none<MuseHost>());
     yield* Effect.addFinalizer(() =>
       Ref.get(elevatedHostRef).pipe(
@@ -634,7 +664,15 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     const closeDedicatedHost = (entry: { host: MuseHost; scopeDir: string }) =>
       Effect.all(
         [
-          Effect.promise(() => entry.host.close()).pipe(Effect.ignore),
+          closeMspHostWithTimeout(entry.host).pipe(
+            Effect.flatMap((closed) =>
+              closed
+                ? Effect.void
+                : Effect.logWarning("Muse host did not close in time; abandoning it.", {
+                    scopeDir: entry.scopeDir,
+                  }),
+            ),
+          ),
           removeScopeDir(entry.scopeDir),
         ],
         { discard: true },
@@ -793,6 +831,10 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
       record: MuseSessionRecord,
       turn: Turn,
       turnId: TurnId,
+      turnSelection: {
+        readonly model: string | undefined;
+        readonly effort: MuseReasoningEffort | undefined;
+      },
     ): Effect.Effect<void, never> =>
       Effect.gen(function* () {
         const stamp = yield* makeEventStamp();
@@ -803,10 +845,16 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           providerInstanceId: boundInstanceId,
           threadId: record.threadId,
           turnId,
-          payload: {},
+          // Delegation ingestion reads `payload.model` to record the observed
+          // model; an empty payload leaves it null.
+          payload: {
+            ...(turnSelection.model !== undefined ? { model: turnSelection.model } : {}),
+            ...(turnSelection.effort !== undefined ? { effort: turnSelection.effort } : {}),
+          },
           raw: { source: RAW_SOURCE, method: "turn/started", payload: { turnId: turn.turnId } },
         });
-        yield* Stream.fromAsyncIterable(
+        const idleWatchdog = yield* makeMuseTurnIdleWatchdog(MUSE_TURN_IDLE_TIMEOUT_MS);
+        const drainDeltas = Stream.fromAsyncIterable(
           turn.deltas(),
           (cause) =>
             new ProviderAdapterRequestError({
@@ -818,6 +866,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         ).pipe(
           Stream.runForEach((delta) =>
             Effect.gen(function* () {
+              yield* idleWatchdog.markActivity;
               // Output deltas of items that already have a tool card live in
               // the card detail; streaming them into chat too is the wall of
               // unreadable text. Anything else keeps flowing.
@@ -846,262 +895,674 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             }),
           ),
         );
-        const outcome: TurnOutcome = yield* Effect.promise(() => turn.completed).pipe(
-          Effect.catchCause(() => Effect.succeed({ kind: "terminalUnknown" } as TurnOutcome)),
+        // The SDK never settles a turn on its own (facade/turn-handle.js,
+        // INV-006), so race the real terminal against an idle deadline: a host
+        // that goes silent would otherwise park the turn forever. `raceFirst`
+        // interrupts the loser, so a fired watchdog also stops the delta drain
+        // instead of leaking its fiber.
+        const awaited = yield* Effect.raceFirst(
+          Effect.gen(function* () {
+            yield* drainDeltas;
+            const terminal = yield* Effect.promise(() => turn.completed).pipe(
+              Effect.catchCause(() => Effect.succeed({ kind: "terminalUnknown" } as TurnOutcome)),
+            );
+            return { source: "terminal" as const, terminal };
+          }),
+          idleWatchdog.awaitIdle.pipe(Effect.as({ source: "idle" as const })),
         );
-        const completedStamp = yield* makeEventStamp();
-        if (outcome.kind === "completed") {
-          const state = turnStateFromTerminal(outcome.params.terminal);
-          yield* offerRuntimeEvent({
-            type: "turn.completed",
-            ...completedStamp,
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
-            threadId: record.threadId,
-            turnId,
-            payload: {
-              state,
-              ...(outcome.params.reason ? { stopReason: outcome.params.reason } : {}),
-              ...(state === "failed" && outcome.params.error
-                ? { errorMessage: mspErrorText(outcome.params.error) }
-                : {}),
-            },
-            raw: { source: RAW_SOURCE, method: "turn/completed", payload: outcome.params },
-          });
-        } else {
-          yield* offerRuntimeEvent({
-            type: "turn.aborted",
-            ...completedStamp,
-            provider: PROVIDER,
-            providerInstanceId: boundInstanceId,
-            threadId: record.threadId,
-            turnId,
-            payload: {
-              reason:
-                outcome.kind === "unqueued" ? "Turn unqueued by the host." : "Host died mid-turn.",
-            },
-            raw: { source: RAW_SOURCE, method: "turn/aborted", payload: { kind: outcome.kind } },
-          });
+        if (awaited.source === "idle") {
+          yield* settleIdleTurn(record, turn.turnId);
         }
+        const outcome: TurnOutcome =
+          awaited.source === "terminal"
+            ? awaited.terminal
+            : ({ kind: "terminalUnknown" } as TurnOutcome);
+        // A steer that timed out waiting for this terminal already settled it
+        // synthetically: re-emitting would double-close the turn downstream.
+        const live = (yield* Ref.get(sessionsRef)).get(record.threadId);
+        const settledBeforeTerminal =
+          live !== undefined &&
+          isTurnSettled(
+            {
+              activeTurnId: live.activeTurnId,
+              turnIds: live.turnIds,
+              settledTurnIds: live.settledTurnIds,
+            },
+            turn.turnId,
+          );
+        const completedStamp = yield* makeEventStamp();
+        if (!settledBeforeTerminal) {
+          if (outcome.kind === "completed") {
+            const state = turnStateFromTerminal(outcome.params.terminal);
+            yield* offerRuntimeEvent({
+              type: "turn.completed",
+              ...completedStamp,
+              provider: PROVIDER,
+              providerInstanceId: boundInstanceId,
+              threadId: record.threadId,
+              turnId,
+              payload: {
+                state,
+                ...(outcome.params.reason ? { stopReason: outcome.params.reason } : {}),
+                ...(state === "failed" && outcome.params.error
+                  ? { errorMessage: mspErrorText(outcome.params.error) }
+                  : {}),
+              },
+              raw: { source: RAW_SOURCE, method: "turn/completed", payload: outcome.params },
+            });
+          } else {
+            yield* offerRuntimeEvent({
+              type: "turn.aborted",
+              ...completedStamp,
+              provider: PROVIDER,
+              providerInstanceId: boundInstanceId,
+              threadId: record.threadId,
+              turnId,
+              payload: {
+                reason:
+                  outcome.kind === "unqueued"
+                    ? "Turn unqueued by the host."
+                    : "Host died mid-turn.",
+              },
+              raw: {
+                source: RAW_SOURCE,
+                method: "turn/aborted",
+                payload: { kind: outcome.kind },
+              },
+            });
+          }
+        }
+        // Published after the terminal above: a steer awaiting this gate is
+        // guaranteed the `turn.completed` went out before the new turn's
+        // `turn.started`, which is what the lifecycle guards need to accept it.
+        yield* record.terminals.noteTerminal(turn.turnId);
         yield* Ref.update(sessionsRef, (sessions) => {
           const current = sessions.get(record.threadId);
           if (current === undefined) {
             return sessions;
           }
+          // Only the active turn clears the slot: a superseded turn's late
+          // terminal settles that turn without stranding the new one.
+          const settled = applyTurnSettled(
+            {
+              activeTurnId: current.activeTurnId,
+              turnIds: current.turnIds,
+              settledTurnIds: current.settledTurnIds,
+            },
+            turn.turnId,
+          );
           const next = new Map(sessions);
           next.set(record.threadId, {
             ...current,
-            activeTurnId: current.activeTurnId === turn.turnId ? undefined : current.activeTurnId,
+            turnIds: [...settled.turnIds],
+            activeTurnId: settled.activeTurnId,
+            settledTurnIds: settled.settledTurnIds,
           });
           return next;
         });
       }).pipe(Effect.ignore);
 
     const startSession: MuseCodeAdapterShape["startSession"] = (input) =>
-      Effect.gen(function* () {
-        if (input.provider !== undefined && input.provider !== PROVIDER) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "startSession",
-            issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
-          });
-        }
-        const resumeSessionId =
-          isRecord(input.resumeCursor) && typeof input.resumeCursor.sessionId === "string"
-            ? input.resumeCursor.sessionId
-            : undefined;
-        const selected = museEffortForSelection(input.modelSelection);
-        if (selected.raw !== undefined && selected.effort === undefined) {
-          return yield* invalidEffortError(selected.raw);
-        }
-        // SessionStartParams carries no effort: the tier is per-turn only.
-        // The thread runtime mode selects the session approval mode, and for
-        // full-access also the elevated host: sandbox and trust are host-fixed.
-        // resumeSession takes no mode, so a resumed session is re-enforced
-        // explicitly like Codex re-applies its thread config on resume.
-        const approvalMode = museApprovalModeForRuntimeMode(input.runtimeMode);
-        const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-        let sessionHost: MuseHost;
-        if (mcpSession !== undefined && mcpSession.capabilities.has("orchestration")) {
-          sessionHost = yield* spawnDedicatedOrchestrationHost(
-            input.threadId,
-            mcpSession,
-            input.runtimeMode,
-          );
-        } else {
-          sessionHost = museNeedsElevatedHost(input.runtimeMode) ? yield* elevatedHost : host;
-        }
-        const session = yield* Effect.tryPromise({
-          try: () =>
-            resumeSessionId !== undefined
-              ? sessionHost.client.resumeSession({ sessionId: resumeSessionId })
-              : sessionHost.client.startSession({
+      sessionStartLock.withPermits(1)(
+        Effect.gen(function* () {
+          if (input.provider !== undefined && input.provider !== PROVIDER) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "startSession",
+              issue: `Expected provider '${PROVIDER}' but received '${input.provider}'.`,
+            });
+          }
+          const resumeSessionId =
+            isRecord(input.resumeCursor) && typeof input.resumeCursor.sessionId === "string"
+              ? input.resumeCursor.sessionId
+              : undefined;
+          const selected = museEffortForSelection(input.modelSelection);
+          if (selected.raw !== undefined && selected.effort === undefined) {
+            return yield* invalidEffortError(selected.raw);
+          }
+          // SessionStartParams carries no effort: the tier is per-turn only.
+          // The thread runtime mode selects the session approval mode, and for
+          // full-access also the elevated host: sandbox and trust are host-fixed.
+          // resumeSession takes no mode, so a resumed session is re-enforced
+          // explicitly like Codex re-applies its thread config on resume.
+          const approvalMode = museApprovalModeForRuntimeMode(input.runtimeMode);
+          const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
+          let sessionHost: MuseHost;
+          let dedicatedMcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+          if (mcpSession !== undefined && mcpSession.capabilities.has("orchestration")) {
+            // Respawn replaces the previous dedicated host instead of
+            // overwriting its registry entry: an overwrite leaks the old host
+            // as an orphan that keeps holding the thread's MSP session (the
+            // next resume then fails with "already in use").
+            yield* cleanupDedicatedHost(input.threadId);
+            sessionHost = yield* spawnDedicatedOrchestrationHost(
+              input.threadId,
+              mcpSession,
+              input.runtimeMode,
+            );
+            dedicatedMcpSession = mcpSession;
+          } else {
+            sessionHost = museNeedsElevatedHost(input.runtimeMode) ? yield* elevatedHost : host;
+          }
+          const startFreshSession = () =>
+            Effect.tryPromise({
+              try: () =>
+                sessionHost.client.startSession({
                   ...(input.cwd ? { workspaceRoot: input.cwd } : {}),
                   ...(input.modelSelection ? { modelId: input.modelSelection.model } : {}),
                   ...(approvalMode === undefined ? {} : { approvalMode }),
                 }),
-          catch: (cause) =>
-            new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method: resumeSessionId !== undefined ? "session/resume" : "session/start",
-              detail: mspErrorText(cause),
-              ...(cause instanceof Error ? { cause } : {}),
-            }),
-        }).pipe(Effect.onError(() => cleanupDedicatedHost(input.threadId)));
-        if (resumeSessionId !== undefined && approvalMode !== undefined) {
-          yield* Effect.tryPromise({
-            try: () =>
-              sessionHost.connection.command("session/setApprovalMode", {
-                sessionId: session.sessionId,
-                mode: approvalMode,
+              catch: (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/start",
+                  detail: mspErrorText(cause),
+                  ...(cause instanceof Error ? { cause } : {}),
+                }),
+            });
+          const resumeOnHost = (target: MuseHost, sessionId: string) =>
+            Effect.tryPromise({
+              try: () => target.client.resumeSession({ sessionId }),
+              catch: (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/resume",
+                  detail: mspErrorText(cause),
+                  ...(cause instanceof Error ? { cause } : {}),
+                }),
+            });
+          // A host that answers nothing wedges the start behind it forever.
+          // A dedicated host is ours alone: abandon it and respawn. A shared
+          // host belongs to other threads too, so fail fast instead — the
+          // failure surfaces as a visible turn error, never silent thinking.
+          const replaceHungDedicatedHost = Effect.gen(function* () {
+            yield* Effect.logWarning(
+              "Muse host did not answer session/resume in time; replacing it.",
+              { threadId: input.threadId, sessionId: resumeSessionId },
+            );
+            yield* cleanupDedicatedHost(input.threadId);
+            if (dedicatedMcpSession === undefined) {
+              return yield* Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/resume",
+                  detail: "Muse host did not answer session/resume in time (msp_resume_timeout).",
+                }),
+              );
+            }
+            const fresh = yield* spawnDedicatedOrchestrationHost(
+              input.threadId,
+              dedicatedMcpSession,
+              input.runtimeMode,
+            );
+            sessionHost = fresh;
+            return yield* startFreshSession();
+          });
+          const openSession =
+            resumeSessionId === undefined
+              ? startFreshSession()
+              : Effect.matchEffect(
+                  Effect.timeoutOption(
+                    resumeOnHost(sessionHost, resumeSessionId),
+                    MSP_RESUME_TIMEOUT,
+                  ),
+                  {
+                    onSuccess: (maybeResumed) => {
+                      if (Option.isSome(maybeResumed)) {
+                        return Effect.succeed(maybeResumed.value);
+                      }
+                      return dedicatedMcpSession !== undefined
+                        ? replaceHungDedicatedHost
+                        : Effect.fail(
+                            new ProviderAdapterRequestError({
+                              provider: PROVIDER,
+                              method: "session/resume",
+                              detail:
+                                "Muse host did not answer session/resume in time (msp_resume_timeout).",
+                            }),
+                          );
+                    },
+                    // The session is still attached to a previous (usually
+                    // orphaned, pre-restart) host: resuming is impossible, so
+                    // start a fresh host session instead of failing the thread
+                    // into an infinite thinking state. Host-side model context
+                    // restarts; the thread's persisted messages stay intact.
+                    onFailure: (resumeError) =>
+                      isMspSessionInUseText(resumeError.detail)
+                        ? Effect.logWarning(
+                            "Muse session is still attached to a previous host; starting a fresh host session.",
+                            { threadId: input.threadId, sessionId: resumeSessionId },
+                          ).pipe(Effect.andThen(startFreshSession()))
+                        : Effect.fail(resumeError),
+                  },
+                );
+          const session = yield* openSession.pipe(
+            Effect.onError(() => cleanupDedicatedHost(input.threadId)),
+          );
+          if (resumeSessionId !== undefined && approvalMode !== undefined) {
+            const applied = yield* Effect.timeoutOption(
+              Effect.tryPromise({
+                try: () =>
+                  sessionHost.connection.command("session/setApprovalMode", {
+                    sessionId: session.sessionId,
+                    mode: approvalMode,
+                  }),
+                catch: (cause) =>
+                  new ProviderAdapterRequestError({
+                    provider: PROVIDER,
+                    method: "session/setApprovalMode",
+                    detail: mspErrorText(cause),
+                    ...(cause instanceof Error ? { cause } : {}),
+                  }),
               }),
-            catch: (cause) =>
-              new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: "session/setApprovalMode",
-                detail: mspErrorText(cause),
-                ...(cause instanceof Error ? { cause } : {}),
-              }),
-          }).pipe(Effect.onError(() => cleanupDedicatedHost(input.threadId)));
+              MSP_RESUME_TIMEOUT,
+            ).pipe(Effect.onError(() => cleanupDedicatedHost(input.threadId)));
+            if (Option.isNone(applied)) {
+              yield* cleanupDedicatedHost(input.threadId);
+              return yield* Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "session/setApprovalMode",
+                  detail: "Muse host did not answer session/setApprovalMode in time.",
+                }),
+              );
+            }
+          }
+          const now = yield* nowIso;
+          const terminals = yield* makeTurnTerminalWatcher;
+          const turnLock = yield* Semaphore.make(1);
+          const record: MuseSessionRecord = {
+            session,
+            host: sessionHost,
+            mspSessionId: session.sessionId,
+            threadId: input.threadId,
+            runtimeMode: input.runtimeMode,
+            cwd: input.cwd,
+            model: input.modelSelection?.model,
+            effort: selected.effort,
+            createdAt: now,
+            turnIds: [],
+            activeTurnId: undefined,
+            settledTurnIds: new Set(),
+            terminals,
+            turnLock,
+          };
+          registerApprovalHandler(record);
+          yield* Ref.update(sessionsRef, (sessions) =>
+            new Map(sessions).set(input.threadId, record),
+          );
+          const stamp = yield* makeEventStamp();
+          yield* offerRuntimeEvent({
+            type: "session.started",
+            ...stamp,
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            threadId: input.threadId,
+            payload:
+              resumeSessionId !== undefined ? { resume: { sessionId: session.sessionId } } : {},
+            raw: {
+              source: RAW_SOURCE,
+              method: "session/start",
+              payload: { sessionId: session.sessionId },
+            },
+          });
+          return {
+            provider: PROVIDER,
+            providerInstanceId: boundInstanceId,
+            status: "ready",
+            runtimeMode: input.runtimeMode,
+            ...(input.cwd ? { cwd: input.cwd } : {}),
+            ...(record.model ? { model: record.model } : {}),
+            threadId: input.threadId,
+            resumeCursor: { schemaVersion: MUSE_RESUME_VERSION, sessionId: session.sessionId },
+            createdAt: now,
+            updatedAt: now,
+          } satisfies ProviderSession;
+        }),
+      );
+
+    // Settle a superseded turn when its host terminal never arrives (bounded
+    // steer wait timed out). Emitted before the new turn starts, so the
+    // lifecycle guards still accept it: only the active turn may close.
+    const emitSteerTimeoutTerminal = (record: MuseSessionRecord, supersededTurnId: string) =>
+      Effect.gen(function* () {
+        const live = (yield* Ref.get(sessionsRef)).get(record.threadId);
+        const settledAlready =
+          live !== undefined &&
+          isTurnSettled(
+            {
+              activeTurnId: live.activeTurnId,
+              turnIds: live.turnIds,
+              settledTurnIds: live.settledTurnIds,
+            },
+            supersededTurnId,
+          );
+        if (settledAlready) {
+          return;
         }
-        const now = yield* nowIso;
-        const record: MuseSessionRecord = {
-          session,
-          host: sessionHost,
-          mspSessionId: session.sessionId,
-          threadId: input.threadId,
-          runtimeMode: input.runtimeMode,
-          cwd: input.cwd,
-          model: input.modelSelection?.model,
-          effort: selected.effort,
-          createdAt: now,
-          turnIds: [],
-          activeTurnId: undefined,
-        };
-        registerApprovalHandler(record);
-        yield* Ref.update(sessionsRef, (sessions) => new Map(sessions).set(input.threadId, record));
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
-          type: "session.started",
+          type: "turn.completed",
           ...stamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          threadId: input.threadId,
-          payload:
-            resumeSessionId !== undefined ? { resume: { sessionId: session.sessionId } } : {},
+          threadId: record.threadId,
+          turnId: TurnId.make(supersededTurnId),
+          payload: { state: "interrupted" },
           raw: {
             source: RAW_SOURCE,
-            method: "session/start",
-            payload: { sessionId: session.sessionId },
+            method: "turn/interrupt",
+            payload: { turnId: supersededTurnId, steerTimeout: true },
           },
         });
-        return {
+        yield* record.terminals.noteTerminal(supersededTurnId);
+        yield* Ref.update(sessionsRef, (sessions) => {
+          const current = sessions.get(record.threadId);
+          if (current === undefined) {
+            return sessions;
+          }
+          const settled = applyTurnSettled(
+            {
+              activeTurnId: current.activeTurnId,
+              turnIds: current.turnIds,
+              settledTurnIds: current.settledTurnIds,
+            },
+            supersededTurnId,
+          );
+          const next = new Map(sessions);
+          next.set(record.threadId, {
+            ...current,
+            turnIds: [...settled.turnIds],
+            activeTurnId: settled.activeTurnId,
+            settledTurnIds: settled.settledTurnIds,
+          });
+          return next;
+        });
+      });
+
+    // Settle a turn the host never knew (`missing_run` on interrupt) or
+    // stopped answering about (`msp_interrupt_timeout`): the run is gone or
+    // unreachable host-side, so the adapter closes it locally with an
+    // interrupted terminal instead of failing. Without this, Stop on a
+    // zombie turn throws and the turn stays "running" forever — every later
+    // send, steer, and orchestration gate wedges behind it.
+    const emitHostUnknownRunTerminal = (
+      record: MuseSessionRecord,
+      unknownTurnId: string,
+      hostDetail: string,
+      stopReason?: string,
+    ) =>
+      Effect.gen(function* () {
+        const stamp = yield* makeEventStamp();
+        yield* offerRuntimeEvent({
+          type: "turn.completed",
+          ...stamp,
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
-          status: "ready",
-          runtimeMode: input.runtimeMode,
-          ...(input.cwd ? { cwd: input.cwd } : {}),
-          ...(record.model ? { model: record.model } : {}),
-          threadId: input.threadId,
-          resumeCursor: { schemaVersion: MUSE_RESUME_VERSION, sessionId: session.sessionId },
-          createdAt: now,
-          updatedAt: now,
-        } satisfies ProviderSession;
+          threadId: record.threadId,
+          turnId: TurnId.make(unknownTurnId),
+          payload: {
+            state: "interrupted",
+            ...(stopReason === undefined ? {} : { stopReason }),
+          },
+          raw: {
+            source: RAW_SOURCE,
+            method: "turn/interrupt",
+            payload: {
+              turnId: unknownTurnId,
+              hostUnknownRun: true,
+              hostDetail,
+            },
+          },
+        });
+        yield* record.terminals.noteTerminal(unknownTurnId);
+        yield* Ref.update(sessionsRef, (sessions) => {
+          const current = sessions.get(record.threadId);
+          if (current === undefined) {
+            return sessions;
+          }
+          const settled = applyTurnSettled(
+            {
+              activeTurnId: current.activeTurnId,
+              turnIds: current.turnIds,
+              settledTurnIds: current.settledTurnIds,
+            },
+            unknownTurnId,
+          );
+          const next = new Map(sessions);
+          next.set(record.threadId, {
+            ...current,
+            turnIds: [...settled.turnIds],
+            activeTurnId: settled.activeTurnId,
+            settledTurnIds: settled.settledTurnIds,
+          });
+          return next;
+        });
+      });
+
+    // A turn whose host went quiet (no delta, no terminal) is wedged. Try the
+    // bounded interrupt first so a merely-slow host settles itself, then close
+    // the turn locally: the turn must not stay "running" forever behind a dead
+    // host, which is what wedges every later send, steer, and gate.
+    const settleIdleTurn = (record: MuseSessionRecord, mspTurnId: string) =>
+      Effect.gen(function* () {
+        yield* Effect.logWarning("Muse turn idle without events; settling it locally.", {
+          threadId: record.threadId,
+          turnId: mspTurnId,
+          idleTimeoutMs: MUSE_TURN_IDLE_TIMEOUT_MS,
+        });
+        yield* interruptMspTurn(record.host, {
+          sessionId: record.mspSessionId,
+          turnId: mspTurnId,
+        }).pipe(
+          Effect.catchCause((cause) => {
+            const detail = mspErrorText(cause);
+            return Effect.logWarning(
+              isMspInterruptTimeoutText(detail)
+                ? "Muse host did not answer the idle-turn interrupt; settling locally."
+                : "Muse host rejected the idle-turn interrupt; settling locally.",
+              { threadId: record.threadId, turnId: mspTurnId, detail },
+            );
+          }),
+        );
+        yield* emitHostUnknownRunTerminal(
+          record,
+          mspTurnId,
+          `Muse turn idle for ${MUSE_TURN_IDLE_TIMEOUT_MS}ms without events or terminal.`,
+          `Turn stalled: no Muse host activity for ${MUSE_TURN_IDLE_TIMEOUT_MS}ms.`,
+        );
       });
 
     const sendTurn: MuseCodeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const record = yield* requireSession(input.threadId);
-        const prompt = input.input?.trim() || undefined;
-        if (prompt === undefined) {
-          return yield* new ProviderAdapterValidationError({
-            provider: PROVIDER,
-            operation: "sendTurn",
-            issue: "Muse turns require an explicit prompt; promptless continuation is unsupported.",
-          });
-        }
-        const turnSelected = museEffortForSelection(input.modelSelection);
-        if (turnSelected.raw !== undefined && turnSelected.effort === undefined) {
-          return yield* invalidEffortError(turnSelected.raw);
-        }
-        const effort = turnSelected.effort ?? record.effort;
-        if (turnSelected.effort !== undefined) {
-          yield* Ref.update(sessionsRef, (sessions) => {
-            const current = sessions.get(input.threadId);
-            if (current === undefined) {
-              return sessions;
+        return yield* record.turnLock.withPermits(1)(
+          Effect.gen(function* () {
+            const prompt = input.input?.trim() || undefined;
+            if (prompt === undefined) {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue:
+                  "Muse turns require an explicit prompt; promptless continuation is unsupported.",
+              });
             }
-            const next = new Map(sessions);
-            next.set(input.threadId, { ...current, effort: turnSelected.effort });
-            return next;
-          });
-        }
-        const orchestrationAvailable =
-          McpProviderSession.readMcpProviderSession(input.threadId)?.capabilities.has(
-            "orchestration",
-          ) === true;
-        const turn = yield* Effect.tryPromise({
-          try: () =>
-            record.session.sendUserTurn({
-              input: orchestrationAvailable
-                ? [
-                    {
-                      type: "text",
-                      text: buildRuntimeInstructions({
-                        harness: "Muse",
-                        orchestrationAvailable: true,
+            const turnSelected = museEffortForSelection(input.modelSelection);
+            if (turnSelected.raw !== undefined && turnSelected.effort === undefined) {
+              return yield* invalidEffortError(turnSelected.raw);
+            }
+            const effort = turnSelected.effort ?? record.effort;
+            if (turnSelected.effort !== undefined) {
+              yield* Ref.update(sessionsRef, (sessions) => {
+                const current = sessions.get(input.threadId);
+                if (current === undefined) {
+                  return sessions;
+                }
+                const next = new Map(sessions);
+                next.set(input.threadId, { ...current, effort: turnSelected.effort });
+                return next;
+              });
+            }
+            const orchestrationAvailable =
+              McpProviderSession.readMcpProviderSession(input.threadId)?.capabilities.has(
+                "orchestration",
+              ) === true;
+            // A mid-turn send either overlaps the live turn (queue, the
+            // historical behavior) or cuts in (steer: interrupt first, then start
+            // fresh with the new message). Read the live slot, not the stale
+            // record above: a concurrent send may have moved it.
+            const followUp = resolveFollowUpAction({
+              followUpBehavior: input.followUpBehavior,
+              activeTurnId: (yield* Ref.get(sessionsRef)).get(input.threadId)?.activeTurnId,
+              supportsSteer: true,
+            });
+            if (followUp.action === "reject") {
+              return yield* new ProviderAdapterValidationError({
+                provider: PROVIDER,
+                operation: "sendTurn",
+                issue: followUp.message,
+              });
+            }
+            // Steer cuts in on the still-active turn: interrupt it (partial output
+            // already streamed stays on the timeline), await its terminal so the
+            // lifecycle guards accept it before the new turn starts, then send
+            // through the normal path below.
+            let supersededTurnId: TurnId | undefined;
+            if (followUp.action === "steer") {
+              const superseded = followUp.supersededTurnId;
+              // Interrupt first: partial output already streamed stays on the
+              // timeline with the old turn, and the host settles it with its own
+              // terminal. A failed interrupt fails the send loudly — silently
+              // overlapping a live turn is the hang this replaces. The one
+              // exception is a run the host never knew (`missing_run`): it is
+              // already dead, so settle it locally and start fresh instead of
+              // failing the new turn behind a zombie.
+              yield* Effect.matchEffect(
+                interruptMspTurn(record.host, {
+                  sessionId: record.mspSessionId,
+                  turnId: superseded,
+                }),
+                {
+                  onFailure: (cause) => {
+                    const detail = mspErrorText(cause);
+                    if (isMspMissingRunText(detail) || isMspInterruptTimeoutText(detail)) {
+                      return emitHostUnknownRunTerminal(record, superseded, detail);
+                    }
+                    return Effect.fail(
+                      new ProviderAdapterRequestError({
+                        provider: PROVIDER,
+                        method: "turn/interrupt",
+                        detail: `Steer could not interrupt turn '${superseded}': ${detail}`,
+                        cause,
                       }),
-                    },
-                    { type: "text", text: prompt },
-                  ]
-                : [{ type: "text", text: prompt }],
-              displayText: prompt,
-              ...(effort === undefined ? {} : { reasoningEffort: effort }),
-            }),
-          catch: (cause) =>
-            new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method: "turn/start",
-              detail: mspErrorText(cause),
-              ...(cause instanceof Error ? { cause } : {}),
-            }),
-        });
-        const turnId = TurnId.make(turn.turnId);
-        yield* Ref.update(sessionsRef, (sessions) => {
-          const current = sessions.get(input.threadId);
-          if (current === undefined) {
-            return sessions;
-          }
-          const next = new Map(sessions);
-          next.set(input.threadId, {
-            ...current,
-            turnIds: [...current.turnIds, turn.turnId],
-            activeTurnId: turn.turnId,
-          });
-          return next;
-        });
-        yield* Effect.forkDetach(pumpTurn(record, turn, turnId));
-        const result: ProviderTurnStartResult = { threadId: input.threadId, turnId };
-        return result;
+                    );
+                  },
+                  onSuccess: () => Effect.void,
+                },
+              );
+              // Await the superseded terminal so it is published before the new
+              // turn's turn.started. Bounded: a wedged host settles synthetically
+              // instead of hanging the new turn.
+              const terminal = yield* record.terminals
+                .awaitTerminal(superseded)
+                .pipe(Effect.timeoutOption(STEER_TERMINAL_TIMEOUT));
+              if (Option.isNone(terminal)) {
+                yield* emitSteerTimeoutTerminal(record, superseded);
+              }
+              supersededTurnId = TurnId.make(superseded);
+            }
+            const turn = yield* Effect.tryPromise({
+              try: () =>
+                record.session.sendUserTurn({
+                  input: orchestrationAvailable
+                    ? [
+                        {
+                          type: "text",
+                          text: buildRuntimeInstructions({
+                            harness: "Muse",
+                            orchestrationAvailable: true,
+                          }),
+                        },
+                        { type: "text", text: prompt },
+                      ]
+                    : [{ type: "text", text: prompt }],
+                  displayText: prompt,
+                  ...(effort === undefined ? {} : { reasoningEffort: effort }),
+                }),
+              catch: (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "turn/start",
+                  detail: mspErrorText(cause),
+                  ...(cause instanceof Error ? { cause } : {}),
+                }),
+            });
+            const turnId = TurnId.make(turn.turnId);
+            yield* Ref.update(sessionsRef, (sessions) => {
+              const current = sessions.get(input.threadId);
+              if (current === undefined) {
+                return sessions;
+              }
+              const started = applyTurnStarted(
+                {
+                  activeTurnId: current.activeTurnId,
+                  turnIds: current.turnIds,
+                  settledTurnIds: current.settledTurnIds,
+                },
+                turn.turnId,
+              );
+              const next = new Map(sessions);
+              next.set(input.threadId, {
+                ...current,
+                turnIds: [...started.turnIds],
+                activeTurnId: started.activeTurnId,
+                settledTurnIds: started.settledTurnIds,
+              });
+              return next;
+            });
+            yield* Effect.forkDetach(
+              pumpTurn(record, turn, turnId, { model: record.model, effort }),
+            );
+            const result: ProviderTurnStartResult = {
+              threadId: input.threadId,
+              turnId,
+              // Lineage for the turn this steer superseded, if any.
+              ...(supersededTurnId !== undefined ? { supersededTurnId } : {}),
+            };
+            return result;
+          }),
+        );
       });
 
     const interruptTurn: MuseCodeAdapterShape["interruptTurn"] = (threadId, turnId) =>
       Effect.gen(function* () {
         const record = yield* requireSession(threadId);
-        yield* Effect.tryPromise({
-          try: () =>
-            record.host.connection.command("turn/interrupt", {
+        yield* record.turnLock.withPermits(1)(
+          Effect.matchEffect(
+            interruptMspTurn(record.host, {
               sessionId: record.mspSessionId,
               ...(turnId ? { turnId } : {}),
             }),
-          catch: (cause) =>
-            new ProviderAdapterRequestError({
-              provider: PROVIDER,
-              method: "turn/interrupt",
-              detail: mspErrorText(cause),
-              ...(cause instanceof Error ? { cause } : {}),
-            }),
-        });
+            {
+              // The host never knew this run (restart desync, already-settled
+              // zombie) or stopped answering entirely (wedged host): settle it
+              // locally so Stop actually stops instead of throwing and
+              // stranding the turn "running" forever.
+              onFailure: (cause) => {
+                const target = turnId !== undefined ? String(turnId) : record.activeTurnId;
+                const detail = mspErrorText(cause);
+                if (
+                  target === undefined ||
+                  (!isMspMissingRunText(detail) && !isMspInterruptTimeoutText(detail))
+                ) {
+                  return Effect.fail(cause);
+                }
+                return emitHostUnknownRunTerminal(record, target, detail);
+              },
+              onSuccess: () => Effect.void,
+            },
+          ),
+        );
       });
 
     const respondToRequest: MuseCodeAdapterShape["respondToRequest"] = (

@@ -136,6 +136,9 @@ export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
+export const FollowUpBehavior = Schema.Literals(["queue", "steer"]);
+export type FollowUpBehavior = typeof FollowUpBehavior.Type;
+export const DEFAULT_FOLLOW_UP_BEHAVIOR: FollowUpBehavior = "queue";
 export const ProviderRequestKind = Schema.Literals([
   "command",
   "file-read",
@@ -1289,6 +1292,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  followUpBehavior: Schema.optional(FollowUpBehavior),
   // Internal delegated starts carry the accepted provider configuration to
   // the reactor. Client turn-start commands cannot set this field.
   delegationConfigFingerprint: Schema.optional(TrimmedNonEmptyString),
@@ -1312,6 +1316,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  followUpBehavior: Schema.optional(FollowUpBehavior),
   createdAt: IsoDateTime,
 });
 
@@ -1876,6 +1881,10 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   ),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   delegationConfigFingerprint: Schema.optional(TrimmedNonEmptyString),
+  // Absent means DEFAULT_FOLLOW_UP_BEHAVIOR ("queue"): a message sent while a
+  // turn runs is delivered through the provider's native follow-up path.
+  // "steer" interrupts the running turn first, then sends.
+  followUpBehavior: Schema.optional(FollowUpBehavior),
   createdAt: IsoDateTime,
 });
 

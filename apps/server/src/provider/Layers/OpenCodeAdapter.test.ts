@@ -61,6 +61,9 @@ type MessageEntry = {
   info: {
     id: string;
     role: "user" | "assistant";
+    parentID?: string;
+    providerID?: string;
+    modelID?: string;
   };
   parts: Array<unknown>;
 };
@@ -2993,6 +2996,233 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
         });
       }
 
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("reports OpenCode token usage and cost by model", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-model-usage");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const busy = promiseWithResolvers<unknown>();
+      const modelAMessage = promiseWithResolvers<unknown>();
+      const modelAStep = promiseWithResolvers<unknown>();
+      const modelBMessage = promiseWithResolvers<unknown>();
+      const modelBStep = promiseWithResolvers<unknown>();
+      const idle = promiseWithResolvers<unknown>();
+      runtimeMock.state.subscribedEvents = [
+        busy.promise,
+        modelAMessage.promise,
+        modelAStep.promise,
+        modelBMessage.promise,
+        modelBStep.promise,
+        idle.promise,
+      ];
+
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Use two models",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("opencode"),
+            "provider-a/model-a",
+          ),
+        })
+        .pipe(Effect.forkChild);
+      busy.resolve({
+        type: "session.status",
+        properties: { sessionID, status: { type: "busy" } },
+      });
+      yield* Fiber.join(sendFiber);
+      const promptMessageId = (runtimeMock.state.promptCalls.at(-1) as { messageID: string })
+        .messageID;
+
+      modelAMessage.resolve({
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            id: "assistant-model-a",
+            role: "assistant",
+            parentID: promptMessageId,
+            providerID: "provider-a",
+            modelID: "model-a",
+          },
+        },
+      });
+      modelAStep.resolve({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "step-model-a",
+            messageID: "assistant-model-a",
+            sessionID,
+            type: "step-finish",
+            reason: "tool-calls",
+            cost: 1.25,
+            tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 40, write: 10 } },
+          },
+        },
+      });
+      modelBMessage.resolve({
+        type: "message.updated",
+        properties: {
+          sessionID,
+          info: {
+            id: "assistant-model-b",
+            role: "assistant",
+            parentID: promptMessageId,
+            providerID: "provider-b",
+            modelID: "model-b",
+          },
+        },
+      });
+      modelBStep.resolve({
+        type: "message.part.updated",
+        properties: {
+          sessionID,
+          part: {
+            id: "step-model-b",
+            messageID: "assistant-model-b",
+            sessionID,
+            type: "step-finish",
+            reason: "stop",
+            cost: 0.5,
+            tokens: { input: 50, output: 10, reasoning: 2, cache: { read: 5, write: 1 } },
+          },
+        },
+      });
+      idle.resolve({
+        type: "session.status",
+        properties: { sessionID, status: { type: "idle" } },
+      });
+
+      const completed = yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(completed._tag, "Some");
+      if (completed._tag === "Some" && completed.value.type === "turn.completed") {
+        NodeAssert.deepStrictEqual(completed.value.payload.tokenUsage, {
+          usageStatus: "complete",
+          usageScope: "main_agent",
+          inputTokens: 206,
+          cachedInputTokens: 45,
+          cacheCreationTokens: 11,
+          outputTokens: 37,
+          reasoningTokens: 7,
+          hasSubagents: false,
+        });
+        NodeAssert.deepStrictEqual(completed.value.payload.modelUsage, {
+          "provider-a/model-a": {
+            inputTokens: 150,
+            cachedInputTokens: 40,
+            cacheCreationTokens: 10,
+            outputTokens: 25,
+            reasoningTokens: 5,
+            costUsd: 1.25,
+          },
+          "provider-b/model-b": {
+            inputTokens: 56,
+            cachedInputTokens: 5,
+            cacheCreationTokens: 1,
+            outputTokens: 12,
+            reasoningTokens: 2,
+            costUsd: 0.5,
+          },
+        });
+        NodeAssert.equal(completed.value.payload.totalCostUsd, 1.75);
+      }
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("reconciles model usage from OpenCode history after a missed SSE part", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-model-usage-reconcile");
+      const sessionID = "http://127.0.0.1:9999/session";
+      const busy = promiseWithResolvers<unknown>();
+      const idle = promiseWithResolvers<unknown>();
+      runtimeMock.state.subscribedEvents = [busy.promise, idle.promise];
+
+      const completedFiber = yield* adapter.streamEvents.pipe(
+        Stream.filter((event) => event.threadId === threadId && event.type === "turn.completed"),
+        Stream.runHead,
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const sendFiber = yield* adapter
+        .sendTurn({
+          threadId,
+          input: "Recover usage",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("opencode"),
+            "provider-history/model-history",
+          ),
+        })
+        .pipe(Effect.forkChild);
+      busy.resolve({
+        type: "session.status",
+        properties: { sessionID, status: { type: "busy" } },
+      });
+      yield* Fiber.join(sendFiber);
+      const promptMessageId = (runtimeMock.state.promptCalls.at(-1) as { messageID: string })
+        .messageID;
+
+      runtimeMock.state.messages.push({
+        info: {
+          id: "assistant-history",
+          role: "assistant",
+          parentID: promptMessageId,
+          providerID: "provider-history",
+          modelID: "model-history",
+        },
+        parts: [
+          {
+            id: "step-history",
+            messageID: "assistant-history",
+            sessionID,
+            type: "step-finish",
+            reason: "stop",
+            cost: 0.75,
+            tokens: { input: 7, output: 3, reasoning: 1, cache: { read: 2, write: 1 } },
+          },
+        ],
+      });
+      idle.resolve({
+        type: "session.status",
+        properties: { sessionID, status: { type: "idle" } },
+      });
+
+      const completed = yield* Fiber.join(completedFiber).pipe(Effect.timeout("1 second"));
+      NodeAssert.equal(completed._tag, "Some");
+      if (completed._tag === "Some" && completed.value.type === "turn.completed") {
+        NodeAssert.deepStrictEqual(completed.value.payload.modelUsage, {
+          "provider-history/model-history": {
+            inputTokens: 10,
+            cachedInputTokens: 2,
+            cacheCreationTokens: 1,
+            outputTokens: 4,
+            reasoningTokens: 1,
+            costUsd: 0.75,
+          },
+        });
+        NodeAssert.equal(completed.value.payload.totalCostUsd, 0.75);
+      }
       yield* adapter.stopSession(threadId);
     }),
   );
