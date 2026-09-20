@@ -62,6 +62,7 @@ import {
   pruneScanCache,
   type ScanCache,
 } from "./usageScanCache.ts";
+import { readOpenCodeDatabase, type OpenCodeScanResult } from "./usageOpenCodeReader.ts";
 import type { UsageRecord } from "./usageTranscripts.ts";
 
 const LITELLM_RATES_URL =
@@ -244,9 +245,14 @@ export const make = Effect.gen(function* () {
   const resolveTranscriptDirs = Effect.fn("UsageService.resolveTranscriptDirs")(function* (
     settings: ServerSettingsValue,
   ) {
-    const dirs: Array<{ provider: UsageProviderKind; dir: string; fileName?: string }> = [];
+    const dirs: Array<{
+      provider: UsageProviderKind;
+      dir: string;
+      fileName?: string;
+      databasePath?: string;
+    }> = [];
     const seen = new Set<string>();
-    for (const driver of ["claudeAgent", "codex", "grok", "museCode"] as const) {
+    for (const driver of ["claudeAgent", "codex", "grok", "museCode", "opencode"] as const) {
       // Disabled accounts still have history. Explicit default slots replace
       // the legacy settings, just as they do in the provider registry.
       const instances: Array<Pick<ProviderInstanceConfig, "config" | "environment">> =
@@ -290,12 +296,18 @@ export const make = Effect.gen(function* () {
           home = dataHome
             ? path.join(dataHome, "muse")
             : path.join(osHome, ".local", "share", "muse");
+        } else if (driver === "opencode") {
+          home =
+            environment.XDG_DATA_HOME?.trim() || path.join(NodeOS.homedir(), ".local", "share");
         } else {
           home = expandHomePath(
             environment.GROK_HOME?.trim() || path.join(NodeOS.homedir(), ".grok"),
           );
         }
-        const directory = path.resolve(home, provider === "claude" ? "projects" : "sessions");
+        const directory = path.resolve(
+          home,
+          provider === "claude" ? "projects" : provider === "opencode" ? "opencode" : "sessions",
+        );
         // Account aliases and Codex auth overlays can share the same history.
         const dir = yield* fileSystem
           .realPath(directory)
@@ -306,6 +318,7 @@ export const make = Effect.gen(function* () {
         dirs.push({
           provider,
           dir,
+          ...(provider === "opencode" ? { databasePath: path.join(dir, "opencode.db") } : {}),
           ...(provider === "grok"
             ? { fileName: "updates.jsonl" }
             : provider === "muse"
@@ -422,6 +435,7 @@ export const make = Effect.gen(function* () {
     readonly files:
       | readonly { readonly path: string; readonly records: readonly UsageRecord[] }[]
       | null;
+    readonly openCode: OpenCodeScanResult | null;
   }
 
   const collectDirs = Effect.fn("UsageService.collectDirs")(function* (
@@ -434,13 +448,20 @@ export const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
     );
     const scanned: ScannedDir[] = [];
-    for (const { provider, dir, fileName } of dirs) {
+    for (const { provider, dir, fileName, databasePath } of dirs) {
       const volumeId = yield* Effect.promise(() => readDirectoryVolumeId(dir));
+      if (databasePath !== undefined) {
+        const openCode = yield* Effect.promise(() =>
+          readOpenCodeDatabase(databasePath, windowStartMs),
+        );
+        scanned.push({ provider, dir, volumeId, files: null, openCode });
+        continue;
+      }
       const exists = yield* fileSystem
         .exists(dir)
         .pipe(Effect.catchCause(() => Effect.succeed(false)));
       if (!exists) {
-        scanned.push({ provider, dir, volumeId, files: null });
+        scanned.push({ provider, dir, volumeId, files: null, openCode: null });
         continue;
       }
       const files = yield* Effect.promise(() =>
@@ -451,7 +472,7 @@ export const make = Effect.gen(function* () {
         const records = yield* readFileRecords(file.path, file.size, file.mtimeMs, provider);
         parsedFiles.push({ path: file.path, records });
       }
-      scanned.push({ provider, dir, volumeId, files: parsedFiles });
+      scanned.push({ provider, dir, volumeId, files: parsedFiles, openCode: null });
     }
     return scanned;
   });
@@ -527,7 +548,25 @@ export const make = Effect.gen(function* () {
     const livePaths = new Set<string>();
     const walkedRoots: string[] = [];
 
-    for (const { provider, dir, volumeId, files } of scannedDirs) {
+    for (const { provider, dir, volumeId, files, openCode } of scannedDirs) {
+      if (openCode !== null) {
+        const sessionIds = new Set<string>();
+        for (const record of openCode.records) {
+          if (aggregator.add(record) && record.sessionId.length > 0) {
+            sessionIds.add(record.sessionId);
+          }
+        }
+        sources.push({
+          fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
+          status: openCode.status,
+          scannedFiles: openCode.scannedFiles,
+          skippedFiles: openCode.skippedFiles,
+          malformedRecords: openCode.malformedRecords,
+          distinctSessions: sessionIds.size,
+          message: openCode.message,
+        });
+        continue;
+      }
       if (files === null) {
         sources.push({
           fingerprint: { hostId, provider, resolvedHomePath: dir, volumeId },
@@ -595,6 +634,7 @@ export const make = Effect.gen(function* () {
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
       buckets: aggregated.buckets,
+      modelSessions: aggregated.modelSessions,
       sources,
       pricing: pricing(),
       scanDurationMs: Math.max(0, finishedAtMs - startedAtMs),

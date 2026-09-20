@@ -4,7 +4,8 @@
  * Each environment scans the provider CLIs' own on-disk session transcripts
  * (`~/.claude/projects/**\/*.jsonl`, `~/.codex/sessions/**\/*.jsonl`,
  * `~/.grok/sessions/**\/updates.jsonl`,
- * `<muse-data-dir>/sessions/**\/session.jsonl`) rather than relying on T3
+ * `<muse-data-dir>/sessions/**\/session.jsonl`, and
+ * `<opencode-data-dir>/opencode.db`) rather than relying on T3
  * Code's own orchestration projections, so usage stays complete even for turns
  * that were never driven through T3 Code. This mirrors the approach `ccusage`
  * takes.
@@ -23,18 +24,19 @@ import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
  * client renders partial coverage when an environment reports an older version
  * rather than failing the whole page.
  */
-export const USAGE_CONTRACT_VERSION = 6 as const;
+export const USAGE_CONTRACT_VERSION = 7 as const;
 
 /**
  * Oldest {@link UsageSummary} version a current client will still merge.
  *
- * v5 adds `grok` and v6 adds `muse` to {@link UsageProviderKind}; v4
+ * v5 adds `grok`, v6 adds `muse`, and v7 adds `opencode` to
+ * {@link UsageProviderKind}; v4
  * Claude/Codex buckets remain valid, so mixed-version environments keep those
  * totals instead of treating every older server as stale.
  */
 export const USAGE_MERGE_COMPATIBLE_SINCE = 4 as const;
 
-export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "muse"]);
+export const UsageProviderKind = Schema.Literals(["claude", "codex", "grok", "muse", "opencode"]);
 export type UsageProviderKind = typeof UsageProviderKind.Type;
 
 /**
@@ -139,6 +141,21 @@ export type UsageSourceFingerprint = typeof UsageSourceFingerprint.Type;
 export const UsageSourceStatus = Schema.Literals(["ok", "missing", "partial", "failed"]);
 export type UsageSourceStatus = typeof UsageSourceStatus.Type;
 
+/**
+ * Distinct transcript sessions that used one `(provider, model)` pair across the
+ * whole window.
+ *
+ * A session that used several models counts once under each, so these figures
+ * never sum to a provider or source session total and must not be added up as
+ * if they did.
+ */
+export const UsageModelSessions = Schema.Struct({
+  provider: UsageProviderKind,
+  model: TrimmedNonEmptyString,
+  sessions: NonNegativeInt,
+});
+export type UsageModelSessions = typeof UsageModelSessions.Type;
+
 export const UsageSource = Schema.Struct({
   fingerprint: UsageSourceFingerprint,
   status: UsageSourceStatus,
@@ -198,6 +215,11 @@ export const UsageSummary = Schema.Struct({
   untilDay: UsageDay,
   buckets: Schema.Array(UsageBucket),
   sources: Schema.Array(UsageSource),
+  /**
+   * Optional so environments running older server builds still merge. Absent
+   * means per-model session counts are unknown, not zero.
+   */
+  modelSessions: Schema.optional(Schema.Array(UsageModelSessions)),
   pricing: UsagePricing,
   /** Wall-clock cost of the scan, surfaced in diagnostics. */
   scanDurationMs: NonNegativeInt,

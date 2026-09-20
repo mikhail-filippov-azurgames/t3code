@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
+import { OpenCodeIcon } from "../Icons";
 import { buildPeriodColumns, niceScale } from "./UsageProviderChart";
-import { providersWithUsage } from "./usageProviders";
+import { PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
+
+const OPEN_CODE_PROVIDER = "opencode" as const;
 
 describe("niceScale", () => {
   it("never puts the peak above the top of the scale", () => {
@@ -83,8 +86,8 @@ describe("buildPeriodColumns", () => {
   it("keeps band values absolute rather than cumulative", () => {
     // Regression: the bands were once stack offsets, which drew Claude Code
     // permanently above Codex regardless of which provider spent more.
-    // Every supported provider gets a band (zero when idle), so muse joins
-    // the list with 0 here.
+    // Every supported provider gets a band (zero when idle), so muse and
+    // OpenCode join the list with 0 here.
     const [first] = buildPeriodColumns(days, byDay, "cost");
 
     expect(first?.bands).toEqual([
@@ -92,6 +95,7 @@ describe("buildPeriodColumns", () => {
       { provider: "claude", value: 20 },
       { provider: "grok", value: 0 },
       { provider: "muse", value: 0 },
+      { provider: OPEN_CODE_PROVIDER, value: 0 },
     ]);
   });
 
@@ -111,6 +115,22 @@ describe("providersWithUsage", () => {
         { provider: "claude", costUsd: 0, totalTokens: 200 },
       ]),
     ).toEqual(["claude"]);
+  });
+
+  it("includes OpenCode when it has activity", () => {
+    expect(
+      providersWithUsage([{ provider: OPEN_CODE_PROVIDER, costUsd: 1, totalTokens: 100 }]),
+    ).toEqual([OPEN_CODE_PROVIDER]);
+  });
+});
+
+describe("provider presentation", () => {
+  it("defines the OpenCode label, mark, and stable series color", () => {
+    expect(PROVIDER_PRESENTATION.opencode).toEqual({
+      label: "OpenCode",
+      color: "#7c3aed",
+      mark: OpenCodeIcon,
+    });
   });
 });
 

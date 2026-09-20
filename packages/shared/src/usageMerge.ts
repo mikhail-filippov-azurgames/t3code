@@ -10,6 +10,7 @@ import {
   USAGE_MERGE_COMPATIBLE_SINCE,
   type EnvironmentId,
   type UsageBucket,
+  type UsageModelSessions,
   type UsageProviderKind,
   type UsageSourceFingerprint,
   type UsageSummary,
@@ -42,6 +43,12 @@ export interface ModelTotals {
    * `costUsd`. When it equals `records` the cost is unknown, not zero.
    */
   readonly unpricedRecords: number;
+  /**
+   * Distinct transcript sessions that used this `(provider, model)` pair.
+   * A session using several models counts under each, so this never sums to a
+   * provider total. Zero when the summary predates per-model session counts.
+   */
+  readonly sessions: number;
   readonly costShare: number;
 }
 
@@ -153,6 +160,7 @@ function ownedContribution(
 ): {
   readonly buckets: readonly UsageBucket[];
   readonly sessionsByProvider: ReadonlyMap<UsageProviderKind, number>;
+  readonly modelSessions: readonly UsageModelSessions[];
 } {
   const ownedProviders = new Set<UsageProviderKind>();
   const sessionsByProvider = new Map<UsageProviderKind, number>();
@@ -173,6 +181,10 @@ function ownedContribution(
   return {
     buckets: environment.summary.buckets.filter((bucket) => ownedProviders.has(bucket.provider)),
     sessionsByProvider,
+    // Absent on summaries from older servers; those models keep zero sessions.
+    modelSessions: (environment.summary.modelSessions ?? []).filter((entry) =>
+      ownedProviders.has(entry.provider),
+    ),
   };
 }
 
@@ -268,6 +280,7 @@ export function mergeUsage(
       totalTokens: number;
       records: number;
       unpricedRecords: number;
+      sessions: number;
     }
   >();
   const dailyAccumulator = new Map<
@@ -291,7 +304,10 @@ export function mergeUsage(
   const contributingEnvironments: EnvironmentId[] = [];
 
   for (const environment of current) {
-    const { buckets, sessionsByProvider } = ownedContribution(environment, ownerByFingerprint);
+    const { buckets, sessionsByProvider, modelSessions } = ownedContribution(
+      environment,
+      ownerByFingerprint,
+    );
     if (buckets.length > 0) contributingEnvironments.push(environment.environmentId);
 
     for (const [providerKind, providerSessions] of sessionsByProvider) {
@@ -305,6 +321,22 @@ export function mergeUsage(
       };
       provider.sessions += providerSessions;
       providerAccumulator.set(providerKind, provider);
+    }
+
+    // Per-model sessions sum across owned environments for the same pair, like
+    // buckets do. Entries for unowned providers were already filtered out.
+    for (const entry of modelSessions) {
+      const modelKey = `${entry.provider} ${entry.model}`;
+      const model = modelAccumulator.get(modelKey) ?? {
+        provider: entry.provider,
+        costUsd: 0,
+        totalTokens: 0,
+        records: 0,
+        unpricedRecords: 0,
+        sessions: 0,
+      };
+      model.sessions += entry.sessions;
+      modelAccumulator.set(modelKey, model);
     }
 
     for (const bucket of buckets) {
@@ -339,6 +371,7 @@ export function mergeUsage(
         totalTokens: 0,
         records: 0,
         unpricedRecords: 0,
+        sessions: 0,
       };
       model.costUsd += bucket.costUsd;
       model.totalTokens += tokens;
@@ -403,6 +436,7 @@ export function mergeUsage(
       totalTokens: totals.totalTokens,
       records: totals.records,
       unpricedRecords: totals.unpricedRecords,
+      sessions: totals.sessions,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
     }))
     .sort((a, b) => b.costUsd - a.costUsd || b.totalTokens - a.totalTokens);

@@ -9,13 +9,15 @@ const testState = vi.hoisted(() => ({
   breakdown: "time" as "model" | "time",
 }));
 
+const OPEN_CODE_PROVIDER = "opencode" as const;
+
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
     useState: vi.fn((initial: unknown) => [
       initial === readUsagePagePreferences
-        ? { metric: testState.metric, windowDays: 30 }
+        ? { metric: testState.metric, windowDays: 30, modelColumns: [...DEFAULT_MODEL_COLUMNS] }
         : typeof initial === "function"
           ? {
               days: 1,
@@ -67,17 +69,20 @@ vi.mock("./usageProviders", async (importOriginal) => {
     PROVIDER_PRESENTATION: {
       codex: { color: "white", label: "Codex", mark: "span" },
       claude: { color: "orange", label: "Claude Code", mark: "span" },
+      opencode: { color: "violet", label: "OpenCode", mark: "span" },
     },
   };
 });
 
 import { UsagePage } from "./UsagePage";
+import { DEFAULT_MODEL_COLUMNS } from "./usageModelColumns";
 import { readUsagePagePreferences } from "./usagePagePreferences";
 
-const providerTotals = (codex: number, claude: number) =>
+const providerTotals = (codex: number, claude: number, opencode = 0) =>
   new Map([
     ["codex", { costUsd: codex, totalTokens: codex * 1_000 }],
     ["claude", { costUsd: claude, totalTokens: claude * 1_000 }],
+    [OPEN_CODE_PROVIDER, { costUsd: opencode, totalTokens: opencode * 1_000 }],
   ] as const);
 
 const modelTotals = Object.freeze([
@@ -88,6 +93,7 @@ const modelTotals = Object.freeze([
     totalTokens: 100,
     records: 1,
     unpricedRecords: 0,
+    sessions: 4,
     costShare: 10 / 16,
   },
   {
@@ -97,6 +103,7 @@ const modelTotals = Object.freeze([
     totalTokens: 1_000,
     records: 1,
     unpricedRecords: 0,
+    sessions: 42,
     costShare: 5 / 16,
   },
   {
@@ -106,6 +113,7 @@ const modelTotals = Object.freeze([
     totalTokens: 1_000,
     records: 1,
     unpricedRecords: 0,
+    sessions: 2,
     costShare: 1 / 16,
   },
   {
@@ -115,9 +123,32 @@ const modelTotals = Object.freeze([
     totalTokens: 500,
     records: 2,
     unpricedRecords: 2,
+    sessions: 1,
     costShare: 0,
   },
 ]);
+
+const openCodeModel = {
+  model: "opencode/gpt-5.6-luna",
+  provider: OPEN_CODE_PROVIDER,
+  costUsd: 3,
+  totalTokens: 300,
+  records: 1,
+  unpricedRecords: 0,
+  sessions: 3,
+  costShare: 1,
+};
+
+const zeroTokenModel = {
+  model: "zero-token-model",
+  provider: "codex" as const,
+  costUsd: 1,
+  totalTokens: 0,
+  records: 1,
+  unpricedRecords: 0,
+  sessions: 1,
+  costShare: 1,
+};
 
 const environments = [
   {
@@ -171,6 +202,56 @@ beforeEach(() => {
   });
 });
 
+function usageResultWithOpenCode() {
+  return {
+    merged: {
+      ...mergeUsage([], USAGE_CONTRACT_VERSION),
+      providers: [
+        {
+          provider: OPEN_CODE_PROVIDER,
+          costUsd: openCodeModel.costUsd,
+          totalTokens: openCodeModel.totalTokens,
+          records: openCodeModel.records,
+          sessions: 1,
+          costShare: 1,
+          tokenShare: 1,
+        },
+      ],
+      models: [openCodeModel],
+      hourly: [
+        {
+          day: "2026-08-11",
+          hourStart: "2026-08-11T11:37:00.000Z",
+          costUsd: openCodeModel.costUsd,
+          totalTokens: openCodeModel.totalTokens,
+          byProvider: providerTotals(0, 0, openCodeModel.costUsd),
+        },
+      ],
+    },
+    environments,
+    selectedEnvironments: environments,
+    isPending: false,
+    isPartial: false,
+    refresh: vi.fn(),
+  };
+}
+
+function usageResultWithModels(models: readonly (typeof modelTotals)[number][]) {
+  return {
+    merged: {
+      ...mergeUsage([], USAGE_CONTRACT_VERSION),
+      models,
+      hourly: [],
+      daily: [],
+    },
+    environments,
+    selectedEnvironments: environments,
+    isPending: false,
+    isPartial: false,
+    refresh: vi.fn(),
+  };
+}
+
 describe("UsagePage hourly breakdown", () => {
   it("keeps recent activity visible first without empty hourly rows", () => {
     const markup = renderToStaticMarkup(<UsagePage />);
@@ -192,7 +273,116 @@ describe("UsagePage hourly breakdown", () => {
   });
 });
 
+describe("UsagePage average cost per session", () => {
+  beforeEach(() => {
+    testState.useUsage.mockReturnValue({
+      merged: {
+        ...mergeUsage([], USAGE_CONTRACT_VERSION),
+        costUsd: 10,
+        sessions: 4,
+        providers: [
+          {
+            provider: "codex",
+            costUsd: 6,
+            totalTokens: 600,
+            records: 2,
+            sessions: 2,
+            costShare: 0.6,
+            tokenShare: 0.6,
+          },
+          {
+            provider: "claude",
+            costUsd: 4,
+            totalTokens: 400,
+            records: 2,
+            sessions: 2,
+            costShare: 0.4,
+            tokenShare: 0.4,
+          },
+        ],
+      },
+      environments,
+      selectedEnvironments: environments,
+      isPending: false,
+      isPartial: false,
+      refresh: vi.fn(),
+    });
+  });
+
+  it("shows the window average and each provider's average", () => {
+    const markup = renderToStaticMarkup(<UsagePage />);
+
+    expect(markup).toContain("Avg cost / session");
+    expect(markup).toContain("$2.50");
+    expect(markup).toContain("$3.00/session");
+    expect(markup).toContain("$2.00/session");
+  });
+
+  it("renders an unknown average instead of a misleading zero", () => {
+    testState.useUsage.mockReturnValue({
+      merged: {
+        ...mergeUsage([], USAGE_CONTRACT_VERSION),
+        providers: [
+          {
+            provider: "codex",
+            costUsd: 0,
+            totalTokens: 600,
+            records: 2,
+            sessions: 2,
+            costShare: 0,
+            tokenShare: 1,
+          },
+        ],
+      },
+      environments,
+      selectedEnvironments: environments,
+      isPending: false,
+      isPartial: false,
+      refresh: vi.fn(),
+    });
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+    const totalsTile = markup.split("Avg cost / session")[1] ?? "";
+
+    expect(totalsTile).toContain("—");
+    expect(totalsTile).not.toContain("$0.00");
+  });
+});
+
 describe("UsagePage model breakdown", () => {
+  it("renders an OpenCode provider total and model row", () => {
+    testState.breakdown = "model";
+    testState.useUsage.mockReturnValue(usageResultWithOpenCode());
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+    const body = markup.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? "";
+
+    expect(markup).toContain("OpenCode");
+    expect(body).toContain("opencode/gpt-5.6-luna");
+  });
+
+  it("shows cost per million tokens for priced models", () => {
+    testState.breakdown = "model";
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+    const body = markup.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? "";
+
+    expect(markup).toContain("$/1M tokens");
+    expect(body).toContain("$100,000.00");
+  });
+
+  it("shows per-model session counts in a toggleable Sessions column", () => {
+    testState.breakdown = "model";
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+    const body = markup.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? "";
+    const tokenHeavyRow = body.split("<tr").find((row) => row.includes("token-heavy-model")) ?? "";
+
+    expect(markup).toContain("Sessions");
+    expect(markup).toContain('aria-label="Model columns"');
+    expect(tokenHeavyRow).toContain(">42<");
+  });
+
   it("sorts models by cost when the cost metric is selected", () => {
     testState.breakdown = "model";
 
@@ -211,6 +401,19 @@ describe("UsagePage model breakdown", () => {
 
     expect(unpricedRow).toContain("Unpriced");
     expect(unpricedRow).not.toContain("$0.00");
+  });
+
+  it("does not produce a price for a zero-token model", () => {
+    testState.breakdown = "model";
+    testState.useUsage.mockReturnValue(usageResultWithModels([...modelTotals, zeroTokenModel]));
+
+    const markup = renderToStaticMarkup(<UsagePage />);
+    const body = markup.match(/<tbody>(.*?)<\/tbody>/)?.[1] ?? "";
+    const zeroTokenRow = body.split("<tr").find((row) => row.includes("zero-token-model")) ?? "";
+
+    expect(zeroTokenRow).toContain("—");
+    expect(zeroTokenRow).not.toContain("Infinity");
+    expect(zeroTokenRow).not.toContain("NaN");
   });
 
   it("sorts models by token usage when the token metric is selected", () => {

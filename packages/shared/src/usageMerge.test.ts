@@ -43,6 +43,7 @@ function summary(
     distinctSessions?: number;
   }[],
   contractVersion: number = USAGE_CONTRACT_VERSION,
+  modelSessions?: UsageSummary["modelSessions"],
 ): UsageSummary {
   return {
     contractVersion,
@@ -65,6 +66,9 @@ function summary(
       distinctSessions: source.distinctSessions ?? 1,
       message: null,
     })),
+    // Omitted entirely unless the test passes it, so the absent case exercises
+    // the older-server path rather than an explicit empty list.
+    ...(modelSessions === undefined ? {} : { modelSessions }),
     pricing: { status: "fresh", source: "litellm", fetchedAt: null, knownModels: 10 },
     scanDurationMs: 1,
   };
@@ -317,6 +321,129 @@ describe("mergeUsage", () => {
 
     expect(merged.sessions).toBe(1);
     expect(merged.providers[0]?.sessions).toBe(1);
+  });
+
+  it("sums per-model sessions across environments for the same provider and model", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [bucket()],
+            [{ provider: "claude", hostId: "mac", homePath: "/a/.claude" }],
+            USAGE_CONTRACT_VERSION,
+            [{ provider: "claude", model: "claude-fable-5", sessions: 2 }],
+          ),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket()],
+            [{ provider: "claude", hostId: "linux", homePath: "/b/.claude" }],
+            USAGE_CONTRACT_VERSION,
+            [{ provider: "claude", model: "claude-fable-5", sessions: 3 }],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.models).toHaveLength(1);
+    expect(merged.models[0]?.sessions).toBe(5);
+  });
+
+  it("keeps per-model sessions separate per provider and model", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary(
+            [
+              bucket(),
+              bucket({ provider: "codex", model: "claude-fable-5", costUsd: 4 }),
+              bucket({ provider: "codex", model: "gpt-5.6-sol", costUsd: 4 }),
+            ],
+            [
+              { provider: "claude", hostId: "mac", homePath: "/a/.claude" },
+              { provider: "codex", hostId: "mac", homePath: "/a/.codex" },
+            ],
+            USAGE_CONTRACT_VERSION,
+            [
+              { provider: "claude", model: "claude-fable-5", sessions: 2 },
+              { provider: "codex", model: "claude-fable-5", sessions: 7 },
+              { provider: "codex", model: "gpt-5.6-sol", sessions: 11 },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(
+      Object.fromEntries(
+        merged.models.map((model) => [`${model.provider} ${model.model}`, model.sessions]),
+      ),
+    ).toEqual({
+      "claude claude-fable-5": 2,
+      "codex claude-fable-5": 7,
+      "codex gpt-5.6-sol": 11,
+    });
+  });
+
+  it("drops per-model sessions for providers the environment does not own", () => {
+    const sharedClaude = {
+      provider: "claude" as const,
+      hostId: "mac",
+      homePath: "/home/theo/.claude",
+    };
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary([bucket()], [sharedClaude], USAGE_CONTRACT_VERSION, [
+            { provider: "claude", model: "claude-fable-5", sessions: 2 },
+          ]),
+        ),
+        environment(
+          "env-b",
+          summary(
+            [bucket(), bucket({ provider: "codex", model: "gpt-5.6-sol", costUsd: 4 })],
+            [sharedClaude, { provider: "codex", hostId: "mac", homePath: "/home/theo/.codex" }],
+            USAGE_CONTRACT_VERSION,
+            [
+              { provider: "claude", model: "claude-fable-5", sessions: 100 },
+              { provider: "codex", model: "gpt-5.6-sol", sessions: 3 },
+            ],
+          ),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    // env-b's claude entry is dropped with its buckets; its codex entry survives.
+    expect(
+      Object.fromEntries(
+        merged.models.map((model) => [`${model.provider} ${model.model}`, model.sessions]),
+      ),
+    ).toEqual({
+      "claude claude-fable-5": 2,
+      "codex gpt-5.6-sol": 3,
+    });
+  });
+
+  it("defaults per-model sessions to zero when the summary predates modelSessions", () => {
+    const merged = mergeUsage(
+      [
+        environment(
+          "env-a",
+          summary([bucket()], [{ provider: "claude", hostId: "mac", homePath: "/a/.claude" }]),
+        ),
+      ],
+      USAGE_CONTRACT_VERSION,
+    );
+
+    expect(merged.models).toHaveLength(1);
+    expect(merged.models[0]?.sessions).toBe(0);
   });
 
   it("returns empty totals with no environments", () => {

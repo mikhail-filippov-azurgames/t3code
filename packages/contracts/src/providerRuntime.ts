@@ -411,6 +411,8 @@ export type TurnCompletedPayload = typeof TurnCompletedPayload.Type;
 
 const TurnAbortedPayload = Schema.Struct({
   reason: TrimmedNonEmptyStringSchema,
+  modelUsage: Schema.optional(UnknownRecordSchema),
+  totalCostUsd: Schema.optional(Schema.Number),
   tokenUsage: Schema.optional(TurnTokenUsage),
 });
 export type TurnAbortedPayload = typeof TurnAbortedPayload.Type;

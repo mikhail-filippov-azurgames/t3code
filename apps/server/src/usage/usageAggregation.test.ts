@@ -201,4 +201,69 @@ describe("UsageAggregator", () => {
 
     expect(result.buckets).toHaveLength(3);
   });
+
+  it("counts a session once for a model used on two days", () => {
+    const result = aggregate([
+      record({ timestampMs: Date.parse("2026-08-07T04:05:13.944Z") }),
+      record({ timestampMs: Date.parse("2026-08-08T04:05:13.944Z") }),
+    ]);
+
+    expect(result.modelSessions).toEqual([
+      { provider: "claude", model: "claude-fable-5", sessions: 1 },
+    ]);
+  });
+
+  it("counts distinct sessions per provider and model, sorted stably", () => {
+    const result = aggregate([
+      record({ sessionId: "session-a" }),
+      record({ sessionId: "session-b" }),
+      record({ provider: "codex", model: "gpt-5.6-sol", sessionId: "session-c" }),
+    ]);
+
+    expect(result.modelSessions).toEqual([
+      { provider: "claude", model: "claude-fable-5", sessions: 2 },
+      { provider: "codex", model: "gpt-5.6-sol", sessions: 1 },
+    ]);
+  });
+
+  it("counts one session under every model it used", () => {
+    const result = aggregate([record(), record({ model: "claude-opus-5" })]);
+
+    expect(result.modelSessions).toEqual([
+      { provider: "claude", model: "claude-fable-5", sessions: 1 },
+      { provider: "claude", model: "claude-opus-5", sessions: 1 },
+    ]);
+  });
+
+  it("ignores records without a session id", () => {
+    const result = aggregate([record({ sessionId: "" })]);
+
+    expect(result.buckets[0]?.sessions).toBe(0);
+    expect(result.modelSessions).toEqual([]);
+  });
+
+  it("splits a cross-day session's models into their own counts", () => {
+    const result = aggregate([
+      record({
+        sessionId: "session-a",
+        model: "claude-fable-5",
+        timestampMs: Date.parse("2026-08-07T04:05:13.944Z"),
+      }),
+      record({
+        sessionId: "session-a",
+        model: "claude-opus-5",
+        timestampMs: Date.parse("2026-08-08T04:05:13.944Z"),
+      }),
+      record({
+        sessionId: "session-b",
+        model: "claude-opus-5",
+        timestampMs: Date.parse("2026-08-08T05:05:13.944Z"),
+      }),
+    ]);
+
+    expect(result.modelSessions).toEqual([
+      { provider: "claude", model: "claude-fable-5", sessions: 1 },
+      { provider: "claude", model: "claude-opus-5", sessions: 2 },
+    ]);
+  });
 });

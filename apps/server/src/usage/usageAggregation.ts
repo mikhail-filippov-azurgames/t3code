@@ -12,7 +12,13 @@
  *
  * @module usageAggregation
  */
-import type { UsageBucket, UsageDay, UsageResolution, UsageTokenTotals } from "@t3tools/contracts";
+import type {
+  UsageBucket,
+  UsageDay,
+  UsageModelSessions,
+  UsageResolution,
+  UsageTokenTotals,
+} from "@t3tools/contracts";
 
 import { addTotals, EMPTY_TOTALS, type UsageRecord } from "./usageTranscripts.ts";
 import { cacheSavingsUsd, priceUsage, type RateTable } from "./usagePricing.ts";
@@ -69,6 +75,8 @@ export interface AggregateOptions {
 
 export interface AggregateResult {
   readonly buckets: readonly UsageBucket[];
+  /** Distinct sessions per `(provider, model)` across the whole window. */
+  readonly modelSessions: readonly UsageModelSessions[];
   /** Records dropped because an earlier record carried the same dedupe key. */
   readonly duplicatesDropped: number;
   /** Records whose day fell outside the requested window. */
@@ -85,6 +93,13 @@ export interface AggregateResult {
 export class UsageAggregator {
   readonly #buckets = new Map<string, MutableBucket>();
   readonly #seen = new Set<string>();
+  /**
+   * Distinct sessions per `(provider, model)`, keyed `${provider}\u0000${model}`.
+   *
+   * A session that used several models lives in several sets, so these figures
+   * deliberately do not sum to the per-source session totals.
+   */
+  readonly #modelSessions = new Map<string, Set<string>>();
   readonly #toDay: (timestampMs: number) => string;
   readonly #hourlyWindow: { readonly sinceTimeMs: number; readonly untilTimeMs: number } | null;
   readonly #options: AggregateOptions;
@@ -180,7 +195,16 @@ export class UsageAggregator {
     bucket.records += 1;
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
     if (priced.costSource === "providerReported") bucket.providerReportedRecords += 1;
-    if (record.sessionId.length > 0) bucket.sessions.add(record.sessionId);
+    if (record.sessionId.length > 0) {
+      bucket.sessions.add(record.sessionId);
+      const modelKey = `${record.provider}\u0000${record.model}`;
+      let sessions = this.#modelSessions.get(modelKey);
+      if (sessions === undefined) {
+        sessions = new Set<string>();
+        this.#modelSessions.set(modelKey, sessions);
+      }
+      sessions.add(record.sessionId);
+    }
     return true;
   }
 
@@ -211,8 +235,22 @@ export class UsageAggregator {
         a.model.localeCompare(b.model),
     );
 
+    const modelSessions: UsageModelSessions[] = [];
+    for (const [key, sessions] of this.#modelSessions) {
+      const [provider = "", model = ""] = key.split("\u0000");
+      modelSessions.push({
+        provider: provider as UsageModelSessions["provider"],
+        model,
+        sessions: sessions.size,
+      });
+    }
+    modelSessions.sort(
+      (a, b) => a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
+    );
+
     return {
       buckets,
+      modelSessions,
       duplicatesDropped: this.#duplicatesDropped,
       outOfWindow: this.#outOfWindow,
     };

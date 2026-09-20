@@ -6,6 +6,9 @@ import {
   type UsageProviderKind,
 } from "@t3tools/contracts";
 import {
+  ArrowDownIcon,
+  ArrowUpDownIcon,
+  ArrowUpIcon,
   CircleAlertIcon,
   ChevronDownIcon,
   CircleDashedIcon,
@@ -18,6 +21,7 @@ import {
   isModelCostUnknown,
   type DailyTotals,
   type HourlyTotals,
+  type ModelTotals,
 } from "@t3tools/shared/usageMerge";
 
 import { isElectron } from "../../env";
@@ -63,6 +67,8 @@ import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart, type UsageChartMetric } from "./UsageProviderChart";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
+import { sortModels, type ModelSortDirection, type ModelSortKey } from "./usageModelSort";
+import { DEFAULT_MODEL_COLUMNS, isModelColumnId, type ModelColumnId } from "./usageModelColumns";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
@@ -91,6 +97,44 @@ function isUsageWindowDays(value: number): value is UsagePagePreferences["window
   return WINDOW_OPTIONS.some((option) => option.days === value);
 }
 
+/** Toggleable model-breakdown data columns, in display order. Every id doubles as a sort key. */
+const MODEL_COLUMN_DEFINITIONS = [
+  { id: "cost", label: "Cost" },
+  { id: "share", label: "Share" },
+  { id: "tokens", label: "Tokens" },
+  { id: "pricePerMillion", label: "$/1M tokens" },
+  { id: "sessions", label: "Sessions" },
+] as const satisfies readonly { id: ModelColumnId; label: string }[];
+
+function formatUsdPerMillionTokens(
+  costUsd: number,
+  totalTokens: number,
+  costUnknown: boolean,
+): string {
+  if (
+    costUnknown ||
+    !Number.isFinite(costUsd) ||
+    costUsd < 0 ||
+    !Number.isFinite(totalTokens) ||
+    totalTokens <= 0
+  ) {
+    return "—";
+  }
+  return formatUsd((costUsd / totalTokens) * 1_000_000);
+}
+
+/**
+ * Average API-equivalent cost of one transcript session. A zero cost with
+ * sessions present means the provider's rates are unknown, not that the work
+ * was free, so it renders as unknown rather than `$0.00`.
+ */
+function formatUsdPerSession(costUsd: number, sessions: number): string {
+  if (!Number.isFinite(costUsd) || costUsd <= 0 || !Number.isFinite(sessions) || sessions <= 0) {
+    return "—";
+  }
+  return formatUsd(costUsd / sessions);
+}
+
 export function UsagePage() {
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
   const [windowSelection, setWindowSelection] = useState(() => ({
@@ -103,10 +147,22 @@ export function UsagePage() {
   }));
   const metric = preferences.metric;
   const showingLimits = metric === "limits";
+  // Legacy in-memory preferences predate the column picker; the persisted
+  // schema already defaults them, this only covers hand-built objects.
+  const visibleModelColumns: readonly ModelColumnId[] =
+    preferences.modelColumns ?? DEFAULT_MODEL_COLUMNS;
+  const visibleModelColumnDefinitions = MODEL_COLUMN_DEFINITIONS.filter((column) =>
+    visibleModelColumns.includes(column.id),
+  );
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
   const [breakdown, setBreakdown] = useState<"model" | "time">("model");
+  // Null follows the metric: cost for the cost view, tokens otherwise.
+  const [modelSort, setModelSort] = useState<{
+    key: ModelSortKey;
+    direction: ModelSortDirection;
+  } | null>(null);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const { days: windowDays, window } = windowSelection;
@@ -137,21 +193,23 @@ export function UsagePage() {
     () => (isPast24Hours ? merged.hourly : merged.daily).toReversed(),
     [isPast24Hours, merged.daily, merged.hourly],
   );
+  const activeModelSort = useMemo<{ key: ModelSortKey; direction: ModelSortDirection }>(
+    () => modelSort ?? { key: metric === "tokens" ? "tokens" : "cost", direction: "desc" },
+    [metric, modelSort],
+  );
   const breakdownModels = useMemo(
     () =>
-      breakdown === "model" && metric === "tokens"
-        ? merged.models.toSorted(
-            (left, right) => right.totalTokens - left.totalTokens || right.costUsd - left.costUsd,
-          )
+      breakdown === "model"
+        ? sortModels(merged.models, activeModelSort.key, activeModelSort.direction)
         : merged.models,
-    [breakdown, merged.models, metric],
+    [activeModelSort, breakdown, merged.models],
   );
   const activeProviders = useMemo(() => providersWithUsage(merged.providers), [merged.providers]);
   const timeValueColumnWidth = `${60 / (activeProviders.length + 2)}%`;
 
   const selectWindow = (days: number) => {
     if (!isUsageWindowDays(days)) return;
-    const nextPreferences = { metric, windowDays: days };
+    const nextPreferences = { metric, windowDays: days, modelColumns: [...visibleModelColumns] };
     setPreferences(nextPreferences);
     saveUsagePagePreferences(nextPreferences);
     setWindowSelection({
@@ -161,9 +219,25 @@ export function UsagePage() {
   };
   const selectMetric = (nextMetric: UsageMetric) => {
     if (nextMetric === "limits") setLimitsNow(Date.now());
-    const nextPreferences = { metric: nextMetric, windowDays };
+    const nextPreferences = {
+      metric: nextMetric,
+      windowDays,
+      modelColumns: [...visibleModelColumns],
+    };
     setPreferences(nextPreferences);
     saveUsagePagePreferences(nextPreferences);
+  };
+  const applyModelColumns = (columns: readonly ModelColumnId[]) => {
+    const nextPreferences = { metric, windowDays, modelColumns: [...columns] };
+    setPreferences(nextPreferences);
+    saveUsagePagePreferences(nextPreferences);
+  };
+  const toggleModelSort = (key: ModelSortKey) => {
+    setModelSort((current) =>
+      current?.key === key
+        ? { key, direction: current.direction === "desc" ? "asc" : "desc" }
+        : { key, direction: "desc" },
+    );
   };
   const refreshWindow = () => {
     if (refreshingRef.current) return;
@@ -384,6 +458,10 @@ export function UsagePage() {
                       const providerSessions = totals?.sessions ?? 0;
                       const sessionLabel = `${formatCount(providerSessions)} ${
                         providerSessions === 1 ? "session" : "sessions"
+                      }${
+                        providerSessions > 0
+                          ? ` · ${formatUsdPerSession(totals?.costUsd ?? 0, providerSessions)}/session`
+                          : ""
                       }`;
                       return (
                         <div key={provider} className="flex flex-col gap-1">
@@ -443,7 +521,7 @@ export function UsagePage() {
 
                 <section className="flex flex-col gap-2">
                   <h2 className="text-sm font-medium text-foreground">Totals</h2>
-                  <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+                  <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-6">
                     <Metric label="Processed tokens" value={formatTokens(merged.totalTokens)} />
                     <Metric label="Cached input" value={formatTokens(merged.cachedInputTokens)} />
                     <Metric
@@ -454,6 +532,10 @@ export function UsagePage() {
                     <Metric
                       label="Cache savings"
                       value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+                    />
+                    <Metric
+                      label="Avg cost / session"
+                      value={formatUsdPerSession(merged.costUsd, merged.sessions)}
                     />
                   </div>
                 </section>
@@ -484,58 +566,76 @@ export function UsagePage() {
                   </div>
 
                   {breakdown === "model" ? (
-                    <table className="w-full table-fixed text-sm">
-                      <colgroup>
-                        <col className="w-2/5" />
-                        <col className="w-1/5" />
-                        <col className="w-1/5" />
-                        <col className="w-1/5" />
-                      </colgroup>
-                      <thead>
-                        <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                          <th className="py-2 font-normal">Model</th>
-                          <th className="py-2 text-right font-normal">Cost</th>
-                          <th className="py-2 text-right font-normal">Share</th>
-                          <th className="py-2 text-right font-normal">Tokens</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {breakdownModels.length === 0 ? (
-                          <tr>
-                            <td colSpan={4} className="py-6 text-center text-muted-foreground">
-                              No activity in this window.
-                            </td>
+                    <div className="flex flex-col gap-2">
+                      <ToggleGroup
+                        aria-label="Model columns"
+                        variant="segmented"
+                        multiple
+                        value={[...visibleModelColumns]}
+                        onValueChange={(next) => applyModelColumns(next.filter(isModelColumnId))}
+                      >
+                        {MODEL_COLUMN_DEFINITIONS.map((column) => (
+                          <Toggle key={column.id} value={column.id}>
+                            {column.label}
+                          </Toggle>
+                        ))}
+                      </ToggleGroup>
+                      <table className="w-full table-fixed text-sm">
+                        <colgroup>
+                          <col className="w-2/5" />
+                          {visibleModelColumnDefinitions.map((column) => (
+                            <col key={column.id} className="w-[12%]" />
+                          ))}
+                        </colgroup>
+                        <thead>
+                          <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                            <th className="py-2 font-normal">Model</th>
+                            {visibleModelColumnDefinitions.map((column) => (
+                              <ModelSortHeader
+                                key={column.id}
+                                label={column.label}
+                                sortKey={column.id}
+                                activeSort={activeModelSort}
+                                onToggle={toggleModelSort}
+                              />
+                            ))}
                           </tr>
-                        ) : (
-                          breakdownModels.map((model) => (
-                            <tr
-                              key={`${model.provider}:${model.model}`}
-                              className="border-b border-border/50 transition-colors hover:bg-muted/50"
-                            >
-                              <td className="py-2 text-foreground">
-                                <span className="flex items-center gap-2">
-                                  <ProviderMark provider={model.provider} className="size-3.5" />
-                                  {model.model}
-                                </span>
-                              </td>
-                              <td className="py-2 text-right text-foreground tabular-nums">
-                                {isModelCostUnknown(model) ? (
-                                  <span className="text-muted-foreground">Unpriced</span>
-                                ) : (
-                                  formatUsd(model.costUsd)
-                                )}
-                              </td>
-                              <td className="py-2 text-right text-muted-foreground tabular-nums">
-                                {isModelCostUnknown(model) ? "—" : formatPercent(model.costShare)}
-                              </td>
-                              <td className="py-2 text-right text-muted-foreground tabular-nums">
-                                {formatTokens(model.totalTokens)}
+                        </thead>
+                        <tbody>
+                          {breakdownModels.length === 0 ? (
+                            <tr>
+                              <td
+                                colSpan={visibleModelColumnDefinitions.length + 1}
+                                className="py-6 text-center text-muted-foreground"
+                              >
+                                No activity in this window.
                               </td>
                             </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
+                          ) : (
+                            breakdownModels.map((model) => (
+                              <tr
+                                key={`${model.provider}:${model.model}`}
+                                className="border-b border-border/50 transition-colors hover:bg-muted/50"
+                              >
+                                <td className="py-2 text-foreground">
+                                  <span className="flex items-center gap-2">
+                                    <ProviderMark provider={model.provider} className="size-3.5" />
+                                    {model.model}
+                                  </span>
+                                </td>
+                                {visibleModelColumnDefinitions.map((column) => (
+                                  <ModelBreakdownCell
+                                    key={column.id}
+                                    columnId={column.id}
+                                    model={model}
+                                  />
+                                ))}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   ) : (
                     <table className="w-full table-fixed text-sm">
                       <colgroup>
@@ -619,6 +719,90 @@ function ProviderMark({
 }) {
   const Mark = PROVIDER_PRESENTATION[provider].mark;
   return <Mark className={cn("shrink-0", className)} aria-hidden />;
+}
+
+/** Clickable model-table header; clicking toggles direction, first click sorts descending. */
+function ModelSortHeader({
+  label,
+  sortKey,
+  activeSort,
+  onToggle,
+}: {
+  readonly label: string;
+  readonly sortKey: ModelSortKey;
+  readonly activeSort: { key: ModelSortKey; direction: ModelSortDirection };
+  readonly onToggle: (key: ModelSortKey) => void;
+}) {
+  const active = activeSort.key === sortKey;
+  const Icon = active
+    ? activeSort.direction === "asc"
+      ? ArrowUpIcon
+      : ArrowDownIcon
+    : ArrowUpDownIcon;
+  return (
+    <th
+      className="py-2 text-right font-normal"
+      aria-sort={active ? (activeSort.direction === "asc" ? "ascending" : "descending") : "none"}
+    >
+      <button
+        type="button"
+        onClick={() => onToggle(sortKey)}
+        className={cn(
+          "inline-flex cursor-pointer items-center justify-end gap-1 font-normal",
+          active ? "text-foreground" : "text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <span>{label}</span>
+        <Icon className={cn("size-3 shrink-0", !active && "opacity-40")} aria-hidden />
+      </button>
+    </th>
+  );
+}
+
+/** One model-breakdown data cell; the Model cell stays inline in the row. */
+function ModelBreakdownCell({
+  columnId,
+  model,
+}: {
+  readonly columnId: ModelColumnId;
+  readonly model: ModelTotals;
+}) {
+  switch (columnId) {
+    case "cost":
+      return (
+        <td className="py-2 text-right text-foreground tabular-nums">
+          {isModelCostUnknown(model) ? (
+            <span className="text-muted-foreground">Unpriced</span>
+          ) : (
+            formatUsd(model.costUsd)
+          )}
+        </td>
+      );
+    case "share":
+      return (
+        <td className="py-2 text-right text-muted-foreground tabular-nums">
+          {isModelCostUnknown(model) ? "—" : formatPercent(model.costShare)}
+        </td>
+      );
+    case "tokens":
+      return (
+        <td className="py-2 text-right text-muted-foreground tabular-nums">
+          {formatTokens(model.totalTokens)}
+        </td>
+      );
+    case "pricePerMillion":
+      return (
+        <td className="py-2 text-right text-muted-foreground tabular-nums">
+          {formatUsdPerMillionTokens(model.costUsd, model.totalTokens, isModelCostUnknown(model))}
+        </td>
+      );
+    case "sessions":
+      return (
+        <td className="py-2 text-right text-muted-foreground tabular-nums">
+          {formatCount(model.sessions)}
+        </td>
+      );
+  }
 }
 
 function Metric({ label, value }: { readonly label: string; readonly value: string }) {

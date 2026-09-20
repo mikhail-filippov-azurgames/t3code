@@ -110,10 +110,28 @@ const serviceLayers = (input: {
   /** Defaults to an unparsable document so every scan retries the fetch. */
   readonly ratesDocument?: unknown;
   readonly environment?: NodeJS.ProcessEnv;
-}) =>
-  ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
+}) => {
+  const settings = {
+    ...input.settings,
+    providerInstances: {
+      [ProviderInstanceId.make("opencode")]: {
+        driver: ProviderDriverKind.make("opencode"),
+        config: {},
+        environment: [
+          {
+            name: "XDG_DATA_HOME",
+            value: NodePath.join(input.home, "opencode-xdg-data"),
+            sensitive: false,
+          },
+        ],
+      },
+      ...(input.settings?.providerInstances ?? {}),
+    },
+  };
+
+  return ServerConfig.layerTest(process.cwd(), { prefix: input.prefix }).pipe(
     Layer.provideMerge(NodeServices.layer),
-    Layer.provideMerge(ServerSettings.layerTest(input.settings)),
+    Layer.provideMerge(ServerSettings.layerTest(settings)),
     Layer.provideMerge(
       Layer.succeed(
         HttpClient.HttpClient,
@@ -134,6 +152,7 @@ const serviceLayers = (input: {
       }),
     ),
   );
+};
 
 function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens: number } }[] }) {
   return summary.buckets.reduce((sum, bucket) => sum + bucket.totals.outputTokens, 0);
@@ -314,6 +333,9 @@ describe("UsageService", () => {
       assert.strictEqual(museBuckets[0]?.totals.outputTokens, 23);
       assert.strictEqual(museBuckets[0]?.totals.uncachedInputTokens, 300);
       assert.strictEqual(museBuckets[0]?.sessions, 2);
+      assert.deepStrictEqual(summary.modelSessions, [
+        { provider: "muse", model: "muse-spark-1.3", sessions: 2 },
+      ]);
       // The log carries no cost figure and muse-spark has no rate-table entry.
       assert.strictEqual(museBuckets[0]?.costSource, "unpriced");
       const museSources = summary.sources.filter(

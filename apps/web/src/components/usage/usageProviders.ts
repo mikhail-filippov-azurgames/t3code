@@ -1,6 +1,6 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { ClaudeAI, GrokIcon, type Icon, MuseCodeIcon, OpenAI } from "../Icons";
+import { ClaudeAI, GrokIcon, MuseCodeIcon, OpenAI, OpenCodeIcon, type Icon } from "../Icons";
 
 type UsageProviderPresentation = {
   readonly label: string;
@@ -35,6 +35,11 @@ export const PROVIDER_PRESENTATION = {
     // Meta blue reads on both themes and stays clear of Claude orange.
     color: "#0082fb",
     mark: MuseCodeIcon,
+  },
+  opencode: {
+    label: "OpenCode",
+    color: "#7c3aed",
+    mark: OpenCodeIcon,
   },
 } satisfies Record<UsageProviderKind, UsageProviderPresentation>;
 
