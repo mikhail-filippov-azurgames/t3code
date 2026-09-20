@@ -72,6 +72,7 @@ import {
   type SidebarProjectSortOrder,
   type SidebarThreadPreviewCount,
   type SidebarThreadSortOrder,
+  type ThreadChildrenAction,
 } from "@t3tools/contracts/settings";
 import { isDesktopLocalConnectionTarget, isWslConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
@@ -85,6 +86,7 @@ import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import {
   readThreadShell,
+  readThreadShells,
   useProjects,
   useThreadShells,
   useThreadShellsForProjectRefs,
@@ -124,6 +126,7 @@ import {
   resolveActiveThreadRouteRef,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
+import { requestThreadChildrenDialog } from "../threadChildrenDialog";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { Kbd } from "./ui/kbd";
@@ -195,6 +198,12 @@ import {
   ThreadStatusPill,
 } from "./Sidebar.logic";
 import { sortThreads } from "../lib/threadSort";
+import {
+  collectDelegatedChildRefs,
+  collectDelegatedChildRefsForParents,
+  resolveDelegatedChildrenBulkCascade,
+  runDelegatedChildrenAction,
+} from "./threadActionMenu.logic";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
@@ -1177,6 +1186,12 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const appSettingsConfirmThreadArchive = useClientSettings<boolean>(
     (settings) => settings.confirmThreadArchive,
   );
+  const appSettingsDeleteThreadChildren = useClientSettings<ThreadChildrenAction>(
+    (settings) => settings.deleteThreadChildren,
+  );
+  const appSettingsArchiveThreadChildren = useClientSettings<ThreadChildrenAction>(
+    (settings) => settings.archiveThreadChildren,
+  );
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const deleteProject = useAtomCommand(projectEnvironment.delete, {
     reportFailure: false,
@@ -1917,9 +1932,35 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           if (!confirmed) return;
         }
 
+        // Delegated children resolve before the batch starts: a dismissed
+        // dialog cancels everything, and the decisions replay per entry below.
+        const childrenByParentKey = collectDelegatedChildRefsForParents({
+          parents: selectedThreadEntries.map(({ threadRef }) => threadRef),
+          threads: readThreadShells(),
+          excludeKeys: new Set(selectedThreadEntries.map(({ threadKey }) => threadKey)),
+        });
+        const cascadeKeys = await resolveDelegatedChildrenBulkCascade({
+          action: "archive",
+          mode: appSettingsArchiveThreadChildren,
+          childrenByParentKey,
+          ask: (request) => requestThreadChildrenDialog(request),
+        });
+        if (cascadeKeys === null) return;
+
         const archiveOutcome = await archiveSelectedThreadEntries({
           entries: selectedThreadEntries,
-          archive: ({ threadRef }, onArchived) => archiveThread(threadRef, { onArchived }),
+          archive: async ({ threadKey, threadRef }, onArchived) => {
+            const cascadeChildren = cascadeKeys.has(threadKey)
+              ? (childrenByParentKey.get(threadKey) ?? [])
+              : [];
+            for (const childRef of cascadeChildren) {
+              const childResult = await archiveThread(childRef);
+              if (childResult._tag === "Failure" && !isAtomCommandInterrupted(childResult)) {
+                return childResult;
+              }
+            }
+            return archiveThread(threadRef, { onArchived });
+          },
         });
         for (const failure of archiveOutcome.followupFailures) {
           if (isAtomCommandInterrupted(failure)) continue;
@@ -1963,10 +2004,37 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         if (!confirmed) return;
       }
 
+      const childrenByParentKey = collectDelegatedChildRefsForParents({
+        parents: selectedThreadEntries.map(({ threadRef }) => threadRef),
+        threads: readThreadShells(),
+        excludeKeys: new Set(selectedThreadEntries.map(({ threadKey }) => threadKey)),
+      });
+      const cascadeKeys = await resolveDelegatedChildrenBulkCascade({
+        action: "delete",
+        mode: appSettingsDeleteThreadChildren,
+        childrenByParentKey,
+        ask: (request) => requestThreadChildrenDialog(request),
+      });
+      if (cascadeKeys === null) return;
+
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: selectedThreadEntries,
-        delete: ({ threadRef }, deletedThreadKeys) =>
-          deleteThread(threadRef, { deletedThreadKeys }),
+        delete: async ({ threadKey, threadRef }, deletedThreadKeys) => {
+          if (cascadeKeys.has(threadKey)) {
+            for (const childRef of childrenByParentKey.get(threadKey) ?? []) {
+              const childResult = await deleteThread(childRef, { deletedThreadKeys });
+              if (
+                childResult._tag === "Failure" &&
+                !isAtomCommandInterrupted(childResult) &&
+                readThreadShell(childRef) !== null
+              ) {
+                // Stop before this parent; the rest of the batch continues.
+                return childResult;
+              }
+            }
+          }
+          return deleteThread(threadRef, { deletedThreadKeys });
+        },
       });
       if (firstFailure !== null) {
         const firstError = squashAtomCommandFailure(firstFailure);
@@ -1986,8 +2054,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       );
     },
     [
+      appSettingsArchiveThreadChildren,
       appSettingsConfirmThreadArchive,
       appSettingsConfirmThreadDelete,
+      appSettingsDeleteThreadChildren,
       archiveThread,
       clearSelection,
       deleteThread,
@@ -2078,19 +2148,50 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
   const attemptArchiveThread = useCallback(
     async (threadRef: ScopedThreadRef) => {
-      const result = await archiveThread(threadRef);
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
+      const children = collectDelegatedChildRefs({
+        parent: threadRef,
+        threads: readThreadShells(),
+      });
+      const outcome = await runDelegatedChildrenAction({
+        children,
+        mode: appSettingsArchiveThreadChildren,
+        ask: () => requestThreadChildrenDialog({ action: "archive", childCount: children.length }),
+        runChild: async (childRef) => {
+          const result = await archiveThread(childRef);
+          return result._tag === "Success"
+            ? { ok: true }
+            : { ok: false, error: squashAtomCommandFailure(result) };
+        },
+        // The row's inline two-click confirmation (when enabled) already ran;
+        // the children dialog is the only additional question.
+        runParent: async () => {
+          const result = await archiveThread(threadRef);
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to archive thread",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+            return { ok: false };
+          }
+          return { ok: true };
+        },
+      });
+      if (outcome.kind === "child-failed") {
+        const error = outcome.error;
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to archive thread",
+            title: "Failed to archive delegated subtask",
             description: error instanceof Error ? error.message : "An error occurred.",
           }),
         );
       }
     },
-    [archiveThread],
+    [appSettingsArchiveThreadChildren, archiveThread],
   );
 
   const cancelRename = useCallback(() => {
@@ -2314,25 +2415,63 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         return;
       }
       if (clicked !== "delete") return;
-      if (appSettingsConfirmThreadDelete) {
-        const confirmed = await api.dialogs.confirm(
-          [
-            `Delete thread "${thread.title}"?`,
-            "This permanently clears conversation history for this thread.",
-          ].join("\n"),
-          { variant: "destructive" },
-        );
-        if (!confirmed) {
-          return;
-        }
-      }
-      const result = await deleteThread(threadRef);
-      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-        const error = squashAtomCommandFailure(result);
+      const children = collectDelegatedChildRefs({
+        parent: threadRef,
+        threads: readThreadShells(),
+      });
+      const outcome = await runDelegatedChildrenAction({
+        children,
+        mode: appSettingsDeleteThreadChildren,
+        ask: () => requestThreadChildrenDialog({ action: "delete", childCount: children.length }),
+        runChild: async (childRef) => {
+          const result = await deleteThread(childRef);
+          if (
+            result._tag === "Failure" &&
+            !isAtomCommandInterrupted(result) &&
+            readThreadShell(childRef) !== null
+          ) {
+            return { ok: false, error: squashAtomCommandFailure(result) };
+          }
+          return { ok: true };
+        },
+        runParent: async ({ cascadeConfirmed }) => {
+          if (!cascadeConfirmed && appSettingsConfirmThreadDelete) {
+            const confirmed = await api.dialogs.confirm(
+              [
+                `Delete thread "${thread.title}"?`,
+                "This permanently clears conversation history for this thread.",
+              ].join("\n"),
+              { variant: "destructive" },
+            );
+            if (!confirmed) {
+              return { ok: false };
+            }
+          }
+          const result = await deleteThread(threadRef);
+          if (
+            result._tag === "Failure" &&
+            !isAtomCommandInterrupted(result) &&
+            readThreadShell(threadRef) !== null
+          ) {
+            const error = squashAtomCommandFailure(result);
+            toastManager.add(
+              stackedThreadToast({
+                type: "error",
+                title: "Failed to delete thread",
+                description: error instanceof Error ? error.message : "An error occurred.",
+              }),
+            );
+            return { ok: false };
+          }
+          return { ok: true };
+        },
+      });
+      if (outcome.kind === "child-failed") {
+        const error = outcome.error;
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to delete thread",
+            title: "Failed to delete delegated subtask",
             description: error instanceof Error ? error.message : "An error occurred.",
           }),
         );
@@ -2340,6 +2479,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     },
     [
       appSettingsConfirmThreadDelete,
+      appSettingsDeleteThreadChildren,
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,

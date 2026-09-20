@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "./ui/alert-dialog";
 import { Button } from "./ui/button";
+import { ThreadChildrenDialogHost } from "./ThreadChildrenDialogHost";
 
 type ConfirmationCopy = {
   readonly title: string;
@@ -66,31 +67,34 @@ export function ConfirmDialogHost() {
   const onConfirm = () => respondToConfirmDialog(true);
 
   return (
-    <AlertDialog
-      open={state.status === "confirming"}
-      onOpenChange={(open) => {
-        if (!open) onCancel();
-      }}
-      onOpenChangeComplete={(open) => {
-        if (!open) completeConfirmDialogClose();
-      }}
-    >
-      <AlertDialogPopup className="max-w-lg">
-        <AlertDialogHeader>
-          <AlertDialogTitle>{copy.title}</AlertDialogTitle>
-          {copy.description ? (
-            <AlertDialogDescription className="whitespace-pre-line">
-              {copy.description}
-            </AlertDialogDescription>
-          ) : null}
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-          <Button variant={confirmVariant} onClick={onConfirm}>
-            Confirm
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+    <>
+      <AlertDialog
+        open={state.status === "confirming"}
+        onOpenChange={(open) => {
+          if (!open) onCancel();
+        }}
+        onOpenChangeComplete={(open) => {
+          if (!open) completeConfirmDialogClose();
+        }}
+      >
+        <AlertDialogPopup className="max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{copy.title}</AlertDialogTitle>
+            {copy.description ? (
+              <AlertDialogDescription className="whitespace-pre-line">
+                {copy.description}
+              </AlertDialogDescription>
+            ) : null}
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button variant={confirmVariant} onClick={onConfirm}>
+              Confirm
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <ThreadChildrenDialogHost />
+    </>
   );
 }

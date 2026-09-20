@@ -1083,6 +1083,8 @@ export function threadShellHasStarted(
 
 // Imported history has no session until its first prompt. Resolve its instance
 // through the environment's provider catalog before locking to a driver.
+// An ordinary thread with a provider session is never locked: picking
+// another provider switches the thread in place through the engine.
 export function deriveLockedProvider(input: {
   thread: Thread | null | undefined;
   selectedProvider: string | null;
@@ -1092,9 +1094,8 @@ export function deriveLockedProvider(input: {
   if (!threadHasStarted(input.thread)) {
     return null;
   }
-  const sessionProvider = input.thread?.session?.providerName ?? null;
-  if (sessionProvider && isProviderDriverKind(sessionProvider)) {
-    return sessionProvider;
+  if (input.thread?.session != null) {
+    return null;
   }
   // Preserve the existing lock while an instance is missing from the catalog;
   // a started thread must not silently fall back to a different driver.
@@ -1109,6 +1110,28 @@ export function deriveLockedProvider(input: {
   const narrowedSelectedProvider =
     selectedProvider && isProviderDriverKind(selectedProvider) ? selectedProvider : null;
   return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
+}
+
+/**
+ * Whether picking a provider in the composer picker switches the current
+ * thread in place (engine `thread.switch-provider`) instead of staging a
+ * draft model selection. True only where the picker is unlocked for a
+ * started thread with a session and the choice actually moves to another
+ * provider instance — same-instance model changes stay drafts, and
+ * everything the engine cannot switch (locked, session-less, unstarted)
+ * keeps the legacy behavior.
+ */
+export function shouldSwitchProviderInPlace(input: {
+  lockedProvider: ProviderDriverKind | null;
+  hasSession: boolean;
+  threadStarted: boolean;
+  currentInstanceId: ProviderInstanceId | null | undefined;
+  nextInstanceId: ProviderInstanceId;
+}): boolean {
+  if (input.lockedProvider !== null) return false;
+  if (!input.hasSession || !input.threadStarted) return false;
+  if (input.currentInstanceId == null) return false;
+  return input.nextInstanceId !== input.currentInstanceId;
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {

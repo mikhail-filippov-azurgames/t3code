@@ -84,6 +84,7 @@ import {
   shouldRetargetThreadPullRequestPanel,
   shouldOpenProactiveTurnDiff,
   shouldRenderPreviewMiniPlayer,
+  shouldSwitchProviderInPlace,
   shouldShowBranchMismatchBanner,
   shouldShowPlanFollowUpPrompt,
   shouldWriteThreadErrorToCurrentServerThread,
@@ -1269,7 +1270,9 @@ describe("resolveComposerProviderSelection", () => {
     ).toBe(importedEntry.instanceId);
   });
 
-  it("keeps the session driver authoritative over instance and draft selections", () => {
+  it("leaves an ordinary thread with a session unlocked for in-place provider switch", () => {
+    // Ordinary threads with a session switch providers through the engine,
+    // so the picker no longer locks them to the session driver.
     const selected = entry("claudeAgent", "claude_work");
     const sessionEntry = entry("ollama", "local_models");
     const thread = importedThread(selected.instanceId);
@@ -1288,7 +1291,43 @@ describe("resolveComposerProviderSelection", () => {
         threadProvider: thread.modelSelection.instanceId,
         providers: [selected.snapshot, sessionEntry.snapshot],
       }),
-    ).toBe(sessionEntry.driverKind);
+    ).toBeNull();
+  });
+
+  it("leaves a delegated thread with a session unlocked for in-place provider switch", () => {
+    // Delegated switches are authorized through the parent scope, but the
+    // engine still switches the child thread itself.
+    const selected = entry("claudeAgent", "claude_work");
+    const sessionEntry = entry("ollama", "local_models");
+    const thread = importedThread(selected.instanceId);
+
+    expect(
+      deriveLockedProvider({
+        thread: {
+          ...thread,
+          session: {
+            ...readySession,
+            providerName: sessionEntry.driverKind,
+            providerInstanceId: sessionEntry.instanceId,
+          },
+        },
+        selectedProvider: selected.instanceId,
+        threadProvider: thread.modelSelection.instanceId,
+        providers: [selected.snapshot, sessionEntry.snapshot],
+      }),
+    ).toBeNull();
+  });
+
+  it("allows a delegated thread with a session to switch providers in place", () => {
+    expect(
+      shouldSwitchProviderInPlace({
+        lockedProvider: null,
+        hasSession: true,
+        threadStarted: true,
+        currentInstanceId: ProviderInstanceId.make("codex_work"),
+        nextInstanceId: ProviderInstanceId.make("ollama_work"),
+      }),
+    ).toBe(true);
   });
 
   it.each(["missing", "disabled"] as const)(

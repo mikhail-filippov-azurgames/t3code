@@ -9,7 +9,9 @@ import {
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
   buildMultiSelectThreadContextMenuItems,
+  collectUnseenDelegatedChildCounts,
   collectVisibleDelegatedSubtree,
+  collectWorkingDelegatedChildCounts,
   createThreadJumpHintVisibilityController,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
@@ -3224,5 +3226,300 @@ describe("delegated cascade live repro", () => {
 
   it("leaves shells without a delegation parent at top level", () => {
     expect(sidebarDelegationParentKey(shell(liveParentId, null))).toBeNull();
+  });
+});
+
+describe("collectUnseenDelegatedChildCounts", () => {
+  const env = EnvironmentId.make("environment-delegate");
+  const parentId = ThreadId.make("thread-parent");
+  type DelegateShell = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly delegationParent: {
+      readonly parentThreadId: ThreadId;
+      readonly parentEnvironmentId: string;
+      readonly role: string;
+    } | null;
+    readonly latestTurn: OrchestrationLatestTurn | null;
+    readonly hasActionableProposedPlan: boolean;
+    readonly hasPendingApprovals: boolean;
+    readonly hasPendingUserInput: boolean;
+    readonly interactionMode: "default";
+    readonly session: null;
+    readonly backgroundLiveness: null;
+  };
+  const shell = (input: {
+    readonly id: ThreadId;
+    readonly delegationParent: DelegateShell["delegationParent"];
+    readonly latestTurn: OrchestrationLatestTurn | null;
+  }): DelegateShell => ({
+    environmentId: env,
+    id: input.id,
+    delegationParent: input.delegationParent,
+    latestTurn: input.latestTurn,
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default",
+    session: null,
+    backgroundLiveness: null,
+  });
+  const keyOf = (entry: DelegateShell) =>
+    scopedThreadKey(scopeThreadRef(entry.environmentId, entry.id));
+  const parent = shell({ id: parentId, delegationParent: null, latestTurn: null });
+  const parentKey = keyOf(parent);
+  const child = (suffix: string, latestTurn: OrchestrationLatestTurn | null) =>
+    shell({
+      id: ThreadId.make(`thread-${suffix}`),
+      delegationParent: {
+        parentThreadId: parentId,
+        parentEnvironmentId: env,
+        role: "implementation",
+      },
+      latestTurn,
+    });
+
+  it("marks the parent while a finished child is unvisited", () => {
+    const finished = child("child", makeLatestTurn({ completedAt: "2026-03-09T10:05:00.000Z" }));
+    const counts = collectUnseenDelegatedChildCounts({
+      threads: [parent, finished],
+      getKey: keyOf,
+      lastVisitedAtByKey: { [keyOf(finished)]: "2026-03-09T10:04:00.000Z" },
+    });
+    expect(counts.get(parentKey)).toBe(1);
+  });
+
+  it("clears once the child's own visit predicate is satisfied", () => {
+    const finished = child("child", makeLatestTurn({ completedAt: "2026-03-09T10:05:00.000Z" }));
+    const counts = collectUnseenDelegatedChildCounts({
+      threads: [parent, finished],
+      getKey: keyOf,
+      lastVisitedAtByKey: { [keyOf(finished)]: "2026-03-09T10:05:00.000Z" },
+    });
+    expect(counts.get(parentKey)).toBeUndefined();
+  });
+
+  it("ignores a child that is still running", () => {
+    const running: OrchestrationLatestTurn = {
+      ...makeLatestTurn({ completedAt: null }),
+      state: "running",
+    };
+    const runningChild = child("child", running);
+    const counts = collectUnseenDelegatedChildCounts({
+      threads: [parent, runningChild],
+      getKey: keyOf,
+      lastVisitedAtByKey: { [keyOf(runningChild)]: "2026-03-09T10:04:00.000Z" },
+    });
+    expect(counts.get(parentKey)).toBeUndefined();
+  });
+
+  it("keeps the parent's own completion distinct from the child signal", () => {
+    const parentVisit = "2026-03-09T10:04:00.000Z";
+    const completedParent = shell({
+      id: parentId,
+      delegationParent: null,
+      latestTurn: makeLatestTurn({ completedAt: "2026-03-09T10:05:00.000Z" }),
+    });
+    const finished = child("child", makeLatestTurn({ completedAt: "2026-03-09T10:07:00.000Z" }));
+    const counts = collectUnseenDelegatedChildCounts({
+      threads: [completedParent, finished],
+      getKey: keyOf,
+      lastVisitedAtByKey: {
+        [keyOf(completedParent)]: parentVisit,
+        [keyOf(finished)]: "2026-03-09T10:06:00.000Z",
+      },
+    });
+    // The child signal is on the parent row, and the parent's own unseen
+    // completion predicate is untouched: both can render at once.
+    expect(counts.get(parentKey)).toBe(1);
+    expect(hasUnseenCompletion({ ...completedParent, lastVisitedAt: parentVisit })).toBe(true);
+  });
+
+  it("returns no badge for a parent with zero delegated children", () => {
+    expect(
+      collectUnseenDelegatedChildCounts({
+        threads: [parent],
+        getKey: keyOf,
+        lastVisitedAtByKey: {},
+      }).size,
+    ).toBe(0);
+    expect(
+      collectUnseenDelegatedChildCounts({
+        threads: [],
+        getKey: keyOf,
+        lastVisitedAtByKey: {},
+      }).size,
+    ).toBe(0);
+  });
+
+  it("counts only direct children, not grandchildren", () => {
+    const childId = ThreadId.make("thread-child");
+    const middle = shell({
+      id: childId,
+      delegationParent: {
+        parentThreadId: parentId,
+        parentEnvironmentId: env,
+        role: "implementation",
+      },
+      latestTurn: makeLatestTurn({ completedAt: null }),
+    });
+    const grandchild = shell({
+      id: ThreadId.make("thread-grandchild"),
+      delegationParent: {
+        parentThreadId: childId,
+        parentEnvironmentId: env,
+        role: "implementation",
+      },
+      latestTurn: makeLatestTurn({ completedAt: "2026-03-09T10:05:00.000Z" }),
+    });
+    const counts = collectUnseenDelegatedChildCounts({
+      threads: [parent, middle, grandchild],
+      getKey: keyOf,
+      lastVisitedAtByKey: { [keyOf(grandchild)]: "2026-03-09T10:04:00.000Z" },
+    });
+    expect(counts.get(parentKey)).toBeUndefined();
+    expect(counts.get(keyOf(middle))).toBe(1);
+  });
+});
+
+describe("collectWorkingDelegatedChildCounts", () => {
+  const env = EnvironmentId.make("environment-delegate");
+  const parentId = ThreadId.make("thread-parent");
+  type WorkingShell = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly delegationParent: {
+      readonly parentThreadId: ThreadId;
+      readonly parentEnvironmentId: string;
+      readonly role: string;
+    } | null;
+    readonly latestTurn: OrchestrationLatestTurn | null;
+    readonly hasActionableProposedPlan: boolean;
+    readonly hasPendingApprovals: boolean;
+    readonly hasPendingUserInput: boolean;
+    readonly interactionMode: "default";
+    readonly session: SidebarThreadSummary["session"];
+    readonly backgroundLiveness: null;
+  };
+  const parentShell = (latestTurn: OrchestrationLatestTurn | null): WorkingShell => ({
+    environmentId: env,
+    id: parentId,
+    delegationParent: null,
+    latestTurn,
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default",
+    session: null,
+    backgroundLiveness: null,
+  });
+  const childShell = (
+    suffix: string,
+    latestTurn: OrchestrationLatestTurn | null,
+    session: WorkingShell["session"] = null,
+    parentThreadId: ThreadId = parentId,
+  ): WorkingShell => ({
+    environmentId: env,
+    id: ThreadId.make(`thread-${suffix}`),
+    delegationParent: {
+      parentThreadId,
+      parentEnvironmentId: env,
+      role: "implementation",
+    },
+    latestTurn,
+    hasActionableProposedPlan: false,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    interactionMode: "default",
+    session,
+    backgroundLiveness: null,
+  });
+  const keyOf = (entry: WorkingShell) =>
+    scopedThreadKey(scopeThreadRef(entry.environmentId, entry.id));
+  const runningTurn = (): OrchestrationLatestTurn => ({
+    ...makeLatestTurn({ completedAt: null }),
+    state: "running",
+  });
+
+  it("marks the parent while a direct child's turn is running", () => {
+    const parent = parentShell(null);
+    const running = childShell("child", runningTurn());
+    const counts = collectWorkingDelegatedChildCounts({ threads: [parent, running] });
+    expect(counts.get(keyOf(parent))).toBe(1);
+  });
+
+  it("clears when every child's turn is terminal", () => {
+    const parent = parentShell(null);
+    const interrupted: OrchestrationLatestTurn = {
+      ...makeLatestTurn({ completedAt: "2026-03-09T10:05:00.000Z" }),
+      state: "interrupted",
+    };
+    const counts = collectWorkingDelegatedChildCounts({
+      threads: [parent, childShell("child", interrupted)],
+    });
+    expect(counts.get(keyOf(parent))).toBeUndefined();
+  });
+
+  it("keeps the returned badge while dropping the working marker", () => {
+    const parent = parentShell(null);
+    const finished = childShell(
+      "child",
+      makeLatestTurn({ completedAt: "2026-03-09T10:05:00.000Z" }),
+    );
+    expect(
+      collectWorkingDelegatedChildCounts({ threads: [parent, finished] }).get(keyOf(parent)),
+    ).toBeUndefined();
+    expect(
+      collectUnseenDelegatedChildCounts({
+        threads: [parent, finished],
+        getKey: keyOf,
+        lastVisitedAtByKey: { [keyOf(finished)]: "2026-03-09T10:04:00.000Z" },
+      }).get(keyOf(parent)),
+    ).toBe(1);
+  });
+
+  it("counts two running children and ignores the finished one", () => {
+    const parent = parentShell(null);
+    const counts = collectWorkingDelegatedChildCounts({
+      threads: [
+        parent,
+        childShell("child-a", runningTurn()),
+        childShell("child-b", runningTurn()),
+        childShell("child-c", makeLatestTurn()),
+      ],
+    });
+    expect(counts.get(keyOf(parent))).toBe(2);
+  });
+
+  it("treats a child whose session is starting as working", () => {
+    const parent = parentShell(null);
+    const starting = childShell("child", null, {
+      threadId: ThreadId.make("thread-child"),
+      status: "starting",
+      providerName: "opencode",
+      providerInstanceId: ProviderInstanceId.make("opencode"),
+      runtimeMode: DEFAULT_RUNTIME_MODE,
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: "2026-03-09T10:00:00.000Z",
+    });
+    const counts = collectWorkingDelegatedChildCounts({ threads: [parent, starting] });
+    expect(counts.get(keyOf(parent))).toBe(1);
+  });
+
+  it("returns nothing for a forest without delegated children", () => {
+    expect(collectWorkingDelegatedChildCounts({ threads: [parentShell(null)] }).size).toBe(0);
+    expect(collectWorkingDelegatedChildCounts({ threads: [] }).size).toBe(0);
+  });
+
+  it("counts only direct children, not grandchildren", () => {
+    const parent = parentShell(null);
+    const middle = childShell("child", makeLatestTurn());
+    const grandchild = childShell("grandchild", runningTurn(), null, ThreadId.make("thread-child"));
+    const counts = collectWorkingDelegatedChildCounts({
+      threads: [parent, middle, grandchild],
+    });
+    expect(counts.get(keyOf(parent))).toBeUndefined();
+    expect(counts.get(keyOf(middle))).toBe(1);
   });
 });

@@ -1298,6 +1298,64 @@ export function sidebarDelegationParentKey(thread: {
   );
 }
 
+/**
+ * Direct delegated children that finished after the user last visited them,
+ * counted per resolved parent key. Reuses the row's own `hasUnseenCompletion`
+ * predicate, so opening the child clears its Done pill and this parent marker
+ * together; a running child never counts. Purely derived from the shells the
+ * sidebar already holds plus the local visit record.
+ */
+export function collectUnseenDelegatedChildCounts<
+  TThread extends ThreadStatusInput & {
+    readonly delegationParent?: SidebarThreadSummary["delegationParent"];
+  },
+>(input: {
+  readonly threads: readonly TThread[];
+  readonly getKey: (thread: TThread) => string;
+  readonly lastVisitedAtByKey: Readonly<Record<string, string | undefined>>;
+}): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const thread of input.threads) {
+    const parentKey = sidebarDelegationParentKey(thread);
+    if (parentKey === null) continue;
+    const lastVisitedAt = input.lastVisitedAtByKey[input.getKey(thread)];
+    if (!hasUnseenCompletion({ ...thread, lastVisitedAt })) continue;
+    counts.set(parentKey, (counts.get(parentKey) ?? 0) + 1);
+  }
+  return counts;
+}
+
+// A delegated child's turn counts as working while it runs; a child whose turn
+// has not started yet carries only the session status its own row shows as
+// Working. OrchestrationLatestTurnState has no "queued" literal.
+function isDelegatedChildWorking(
+  thread: Pick<ThreadStatusInput, "latestTurn" | "session">,
+): boolean {
+  if (thread.latestTurn?.state === "running") return true;
+  return thread.session?.status === "running" || thread.session?.status === "starting";
+}
+
+/**
+ * Direct delegated children with a turn in flight, counted per resolved parent
+ * key. Needs no visit record, unlike `collectUnseenDelegatedChildCounts`: the
+ * count follows the child's own Working state and empties when the last child
+ * settles.
+ */
+export function collectWorkingDelegatedChildCounts<
+  TThread extends ThreadStatusInput & {
+    readonly delegationParent?: SidebarThreadSummary["delegationParent"];
+  },
+>(input: { readonly threads: readonly TThread[] }): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const thread of input.threads) {
+    const parentKey = sidebarDelegationParentKey(thread);
+    if (parentKey === null) continue;
+    if (!isDelegatedChildWorking(thread)) continue;
+    counts.set(parentKey, (counts.get(parentKey) ?? 0) + 1);
+  }
+  return counts;
+}
+
 export function orderSidebarSectionForest<TThread>(input: {
   readonly threads: readonly TThread[];
   readonly getKey: (thread: TThread) => string;

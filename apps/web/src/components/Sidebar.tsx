@@ -117,6 +117,7 @@ import {
   useThreadSelectionStore,
 } from "../threadSelectionStore";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { useSwitchThreadProvider } from "../hooks/useSwitchThreadProvider";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { isCommandPaletteOpen, openCommandPalette } from "../commandPaletteBus";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -142,19 +143,32 @@ import {
   resolveActiveThreadRouteRef,
   resolveThreadRouteTarget,
 } from "../threadRoutes";
+import { requestThreadChildrenDialog } from "../threadChildrenDialog";
 import { formatRelativeTimeLabel, parseTimestampDate } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
-import { buildThreadActionMenuItems } from "./threadActionMenu.logic";
+import {
+  buildThreadActionMenuItems,
+  collectDelegatedChildRefs,
+  collectDelegatedChildRefsForParents,
+  resolveDelegatedChildrenBulkCascade,
+  runDelegatedChildrenAction,
+  runDelegatedChildrenCleanup,
+  selectStaleDelegatedChildren,
+} from "./threadActionMenu.logic";
+import { requestSwitchProviderTarget } from "./SwitchProviderDialog";
+import { canSwitchThreadProvider } from "./switchProviderDialog.logic";
 import {
   animateSidebarLayoutChanges,
   applySidebarThreadDrop,
   buildBulkTitleRegenerationContextMenuItem,
   buildBulkUnpinContextMenuItem,
+  collectUnseenDelegatedChildCounts,
   collectVisibleDelegatedSubtree,
+  collectWorkingDelegatedChildCounts,
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   formatWorkingDurationLabel,
@@ -992,6 +1006,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // Title of the delegating parent thread for the marker tooltip; null when
   // the thread is not a delegated child or the parent is not visible.
   delegationParentTitle: string | null;
+  // Direct delegated children that finished after the user last opened them.
+  // Derived from the shell forest, not a server event; 0 hides the marker.
+  delegatedChildrenReturned: number;
+  // Direct delegated children whose turn is still in flight. Same derivation,
+  // but with no visit state: 0 hides the marker.
+  delegatedChildrenWorking: number;
   // Section-local forest attachment: visual indent level.
   depth: number;
   // Non-null when this row parents visible descendants in its section:
@@ -1618,6 +1638,72 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         <TooltipPopup>{delegationLabel}</TooltipPopup>
       </Tooltip>
     ) : null;
+  // Parent wake-up marker: direct delegated children finished and not opened
+  // yet. The count + corner glyph keep it distinct from the parent's own Done
+  // pill; a running child never contributes. No animation, no live region.
+  const delegatedChildrenReturned = props.delegatedChildrenReturned;
+  const delegatedChildrenReturnedMarker =
+    delegatedChildrenReturned > 0 ? (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              role="img"
+              aria-label={
+                delegatedChildrenReturned === 1
+                  ? "1 delegated subtask finished"
+                  : `${delegatedChildrenReturned} delegated subtasks finished`
+              }
+              data-testid={`sidebar-delegated-children-returned-${thread.id}`}
+              className="inline-flex shrink-0 items-center gap-0.5 font-medium text-emerald-600 tabular-nums dark:text-emerald-300/90"
+            />
+          }
+        >
+          <CornerDownRightIcon aria-hidden className="size-3 shrink-0" />
+          <span aria-hidden className="text-[11px]">
+            {delegatedChildrenReturned}
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {delegatedChildrenReturned === 1
+            ? "1 delegated subtask finished"
+            : `${delegatedChildrenReturned} delegated subtasks finished`}
+        </TooltipPopup>
+      </Tooltip>
+    ) : null;
+  // Parent "children working" marker: mirror of the returned badge for
+  // in-flight children. Sky + dashed ring match the row's own Working
+  // vocabulary; no visit state, no animation, no live region.
+  const delegatedChildrenWorking = props.delegatedChildrenWorking;
+  const delegatedChildrenWorkingMarker =
+    delegatedChildrenWorking > 0 ? (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              role="img"
+              aria-label={
+                delegatedChildrenWorking === 1
+                  ? "1 delegated subtask working"
+                  : `${delegatedChildrenWorking} delegated subtasks working`
+              }
+              data-testid={`sidebar-delegated-children-working-${thread.id}`}
+              className="inline-flex shrink-0 items-center gap-0.5 font-medium text-sky-600 tabular-nums dark:text-sky-400"
+            />
+          }
+        >
+          <CircleDashedIcon aria-hidden className="size-3 shrink-0" />
+          <span aria-hidden className="text-[11px]">
+            {delegatedChildrenWorking}
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {delegatedChildrenWorking === 1
+            ? "1 delegated subtask working"
+            : `${delegatedChildrenWorking} delegated subtasks working`}
+        </TooltipPopup>
+      </Tooltip>
+    ) : null;
   // Forest collapse toggle for parent rows. Children indent; a collapsed
   // parent keeps its own row and shows the hidden descendant count.
   const forestToggleKey = props.forestToggleKey;
@@ -1700,6 +1786,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {title}
             {pinIndicator}
             {delegationMarker}
+            {delegatedChildrenReturnedMarker}
+            {delegatedChildrenWorkingMarker}
             {forestCollapsedCount}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
@@ -1863,6 +1951,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               {pinIndicator}
               {delegationMarker}
               {forestCollapsedCount}
+              {delegatedChildrenReturnedMarker}
+              {delegatedChildrenWorkingMarker}
               {/* The visible state owns this slot's width: status at rest,
                   actions on hover/keyboard focus or while the popover is open. Keeping
                   the hidden state out of flow lets the project label reclaim
@@ -2224,6 +2314,8 @@ export default function Sidebar() {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
+  const deleteThreadChildren = useClientSettings((s) => s.deleteThreadChildren);
+  const archiveThreadChildren = useClientSettings((s) => s.archiveThreadChildren);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
@@ -2240,6 +2332,7 @@ export default function Sidebar() {
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const { attemptSwitchProvider } = useSwitchThreadProvider();
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -2716,6 +2809,25 @@ export default function Sidebar() {
   const searchableThreads = useMemo(
     () => [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...settledThreads],
     [activeThreads, pinnedThreads, settledThreads, snoozedThreads],
+  );
+  // Parent wake-up: a direct delegated child whose turn finished stays marked
+  // on the parent row until the user opens that child. Derived from the shells
+  // already loaded plus the local visit record — no server field, no event.
+  const threadLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
+  const unseenDelegatedChildCounts = useMemo(
+    () =>
+      collectUnseenDelegatedChildCounts({
+        threads: searchableThreads,
+        getKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        lastVisitedAtByKey: threadLastVisitedAtById,
+      }),
+    [searchableThreads, threadLastVisitedAtById],
+  );
+  // Parent "children working": no visit record and no server field — the
+  // in-flight count follows the child shells already loaded.
+  const workingDelegatedChildCounts = useMemo(
+    () => collectWorkingDelegatedChildCounts({ threads: searchableThreads }),
+    [searchableThreads],
   );
   const threadSearchResults = useMemo(
     () => searchSidebarThreads(searchableThreads, threadSearchQuery),
@@ -4334,11 +4446,50 @@ export default function Sidebar() {
         );
         if (confirmed._tag === "Failure" || !confirmed.value) return;
       }
+      // Delegated children resolve before any deletion in the batch, so a
+      // dismissed dialog cancels everything and no parent disappears ahead of
+      // its own dialog. Decisions then replay per entry below.
+      const childrenByParentKey = collectDelegatedChildRefsForParents({
+        parents: threadKeys.flatMap((threadKey) => {
+          const thread = threadByKeyRef.current.get(threadKey);
+          return thread ? [scopeThreadRef(thread.environmentId, thread.id)] : [];
+        }),
+        threads: readThreadShells(),
+        excludeKeys: new Set(threadKeys),
+      });
+      const cascadeKeys = await resolveDelegatedChildrenBulkCascade({
+        action: "delete",
+        mode: deleteThreadChildren,
+        childrenByParentKey,
+        ask: (request) => requestThreadChildrenDialog(request),
+      });
+      if (cascadeKeys === null) return;
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: threadKeys.map((threadKey) => ({ threadKey })),
         delete: async ({ threadKey }, deletedThreadKeys) => {
           const thread = threadByKeyRef.current.get(threadKey);
           if (!thread) return null;
+          if (cascadeKeys.has(threadKey)) {
+            for (const childRef of childrenByParentKey.get(threadKey) ?? []) {
+              const childResult = await deleteThread(childRef, { deletedThreadKeys });
+              if (
+                childResult._tag === "Failure" &&
+                !isAtomCommandInterrupted(childResult) &&
+                readThreadShell(childRef) !== null
+              ) {
+                const error = squashAtomCommandFailure(childResult);
+                toastManager.add(
+                  stackedThreadToast({
+                    type: "error",
+                    title: "Failed to delete delegated subtask",
+                    description: error instanceof Error ? error.message : "An error occurred.",
+                  }),
+                );
+                // Stop before the parent; the rest of the batch continues.
+                return null;
+              }
+            }
+          }
           return deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
             deletedThreadKeys,
           });
@@ -4368,6 +4519,7 @@ export default function Sidebar() {
       clearSelection,
       confirmThreadDelete,
       deleteThread,
+      deleteThreadChildren,
       markThreadUnread,
       performSnooze,
       removeFromSelection,
@@ -4419,12 +4571,17 @@ export default function Sidebar() {
             buildThreadActionMenuItems({
               branch: thread.branch ?? null,
               isPinned,
+              canSwitchProvider: canSwitchThreadProvider(thread),
               isSettled,
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
               isRunning:
                 thread.session?.status === "running" && thread.session.activeTurnId != null,
+              staleDelegatedChildCount: selectStaleDelegatedChildren({
+                parent: threadRef,
+                threads: readThreadShells(),
+              }).stale.length,
               supports: {
                 settlement: supportsSettlement,
                 snooze: supportsSnooze,
@@ -4495,6 +4652,27 @@ export default function Sidebar() {
           case "unpin":
             attemptUnpin(threadRef);
             return;
+          case "switch-provider": {
+            // Target + optional reason come from the picker dialog; the
+            // attempt reports engine failures (including
+            // provider_handoff_unsupported) as a visible toast.
+            const choice = await requestSwitchProviderTarget({
+              environmentId: threadRef.environmentId,
+              currentInstanceId: thread.modelSelection.instanceId,
+              currentModel: thread.modelSelection.model,
+            });
+            if (!choice) return;
+            await attemptSwitchProvider(
+              threadRef,
+              {
+                providerInstanceId: choice.instanceId,
+                driverKind: choice.driverKind,
+                model: choice.model,
+              },
+              choice.reason,
+            );
+            return;
+          }
           case "rename":
             startThreadRename(threadRef, thread.title);
             return;
@@ -4540,58 +4718,180 @@ export default function Sidebar() {
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
-          case "archive": {
-            if (confirmThreadArchive) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(`Archive thread "${thread.title}"?`),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            let didArchive = false;
-            const result = await archiveThread(threadRef, {
-              onArchived: () => {
-                didArchive = true;
+          case "archive-old-children":
+          case "delete-old-children": {
+            const cleanupAction = clicked.value === "delete-old-children" ? "delete" : "archive";
+            const outcome = await runDelegatedChildrenCleanup({
+              action: cleanupAction,
+              parent: threadRef,
+              threads: readThreadShells(),
+              confirm: async (message) => {
+                const confirmed = await settlePromise(() =>
+                  api.dialogs.confirm(
+                    message,
+                    cleanupAction === "delete" ? { variant: "destructive" } : undefined,
+                  ),
+                );
+                return confirmed._tag === "Success" && confirmed.value;
+              },
+              runChild: async (childRef, staleKeys) => {
+                if (cleanupAction === "archive") {
+                  const result = await archiveThread(childRef);
+                  return result._tag === "Failure" && !isAtomCommandInterrupted(result)
+                    ? { ok: false, error: squashAtomCommandFailure(result) }
+                    : { ok: true };
+                }
+                const result = await deleteThread(childRef, { deletedThreadKeys: staleKeys });
+                if (
+                  result._tag === "Failure" &&
+                  !isAtomCommandInterrupted(result) &&
+                  readThreadShell(childRef) !== null
+                ) {
+                  return { ok: false, error: squashAtomCommandFailure(result) };
+                }
+                return { ok: true };
               },
             });
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
+            if (outcome.kind === "child-failed") {
+              const error = outcome.error;
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: didArchive
-                    ? "Thread archived, but navigation failed"
-                    : "Failed to archive thread",
+                  title:
+                    cleanupAction === "delete"
+                      ? "Failed to delete old delegated subtask"
+                      : "Failed to archive old delegated subtask",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
-              return;
+            }
+            return;
+          }
+          case "archive": {
+            const children = collectDelegatedChildRefs({
+              parent: threadRef,
+              threads: readThreadShells(),
+            });
+            const outcome = await runDelegatedChildrenAction({
+              children,
+              mode: archiveThreadChildren,
+              ask: () =>
+                requestThreadChildrenDialog({ action: "archive", childCount: children.length }),
+              runChild: async (childRef) => {
+                const result = await archiveThread(childRef);
+                return result._tag === "Success"
+                  ? { ok: true }
+                  : { ok: false, error: squashAtomCommandFailure(result) };
+              },
+              runParent: async ({ cascadeConfirmed }) => {
+                if (!cascadeConfirmed && confirmThreadArchive) {
+                  const confirmed = await settlePromise(() =>
+                    api.dialogs.confirm(`Archive thread "${thread.title}"?`),
+                  );
+                  if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
+                }
+                let didArchive = false;
+                const result = await archiveThread(threadRef, {
+                  onArchived: () => {
+                    didArchive = true;
+                  },
+                });
+                if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                  const error = squashAtomCommandFailure(result);
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "error",
+                      title: didArchive
+                        ? "Thread archived, but navigation failed"
+                        : "Failed to archive thread",
+                      description: error instanceof Error ? error.message : "An error occurred.",
+                    }),
+                  );
+                  return { ok: false };
+                }
+                return { ok: true };
+              },
+            });
+            if (outcome.kind === "child-failed") {
+              const error = outcome.error;
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to archive delegated subtask",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
             }
             return;
           }
           case "delete": {
-            if (confirmThreadDelete) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  [
-                    `Delete thread "${thread.title}"?`,
-                    "This permanently clears conversation history for this thread.",
-                  ].join("\n"),
-                  { variant: "destructive" },
-                ),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            const result = await deleteThread(threadRef);
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
+            const children = collectDelegatedChildRefs({
+              parent: threadRef,
+              threads: readThreadShells(),
+            });
+            const deletedChildKeys = new Set(children.map((childRef) => scopedThreadKey(childRef)));
+            const outcome = await runDelegatedChildrenAction({
+              children,
+              mode: deleteThreadChildren,
+              ask: () =>
+                requestThreadChildrenDialog({ action: "delete", childCount: children.length }),
+              runChild: async (childRef) => {
+                const result = await deleteThread(childRef, {
+                  deletedThreadKeys: deletedChildKeys,
+                });
+                if (
+                  result._tag === "Failure" &&
+                  !isAtomCommandInterrupted(result) &&
+                  readThreadShell(childRef) !== null
+                ) {
+                  return { ok: false, error: squashAtomCommandFailure(result) };
+                }
+                return { ok: true };
+              },
+              runParent: async ({ cascadeConfirmed }) => {
+                if (!cascadeConfirmed && confirmThreadDelete) {
+                  const confirmed = await settlePromise(() =>
+                    api.dialogs.confirm(
+                      [
+                        `Delete thread "${thread.title}"?`,
+                        "This permanently clears conversation history for this thread.",
+                      ].join("\n"),
+                      { variant: "destructive" },
+                    ),
+                  );
+                  if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
+                }
+                const result = await deleteThread(threadRef);
+                if (
+                  result._tag === "Failure" &&
+                  !isAtomCommandInterrupted(result) &&
+                  // A failure with the thread already gone is worktree cleanup
+                  // failing after a successful delete; deleteThread has toasted
+                  // that itself.
+                  readThreadShell(threadRef) !== null
+                ) {
+                  const error = squashAtomCommandFailure(result);
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "error",
+                      title: "Failed to delete thread",
+                      description: error instanceof Error ? error.message : "An error occurred.",
+                    }),
+                  );
+                  return { ok: false };
+                }
+                return { ok: true };
+              },
+            });
+            if (outcome.kind === "child-failed") {
+              const error = outcome.error;
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: "Failed to delete thread",
+                  title: "Failed to delete delegated subtask",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
-              return;
             }
             return;
           }
@@ -4602,9 +4902,11 @@ export default function Sidebar() {
     },
     [
       archiveThread,
+      archiveThreadChildren,
       attemptPin,
       attemptSettle,
       attemptSnooze,
+      attemptSwitchProvider,
       attemptUnpin,
       attemptUnsettle,
       attemptUnsnooze,
@@ -4614,6 +4916,7 @@ export default function Sidebar() {
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
+      deleteThreadChildren,
       handleMultiSelectContextMenu,
       markThreadUnread,
       openProjectSettings,
@@ -5046,6 +5349,12 @@ export default function Sidebar() {
                             }
                             isPinned={thread.pinnedAt != null}
                             delegationParentTitle={delegationParentTitle}
+                            delegatedChildrenReturned={
+                              unseenDelegatedChildCounts.get(threadKey) ?? 0
+                            }
+                            delegatedChildrenWorking={
+                              workingDelegatedChildCounts.get(threadKey) ?? 0
+                            }
                             depth={forest?.depth ?? 0}
                             forestToggleKey={(forest?.descendantCount ?? 0) > 0 ? threadKey : null}
                             forestCollapsed={collapsedForestKeys.has(threadKey)}

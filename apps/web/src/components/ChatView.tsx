@@ -28,6 +28,7 @@ import {
   type ProjectId,
   type ProviderApprovalDecision,
   type PreviewAnnotationPayload,
+  type FollowUpBehavior,
   ProviderInstanceId,
   type ServerProvider,
   type ResolvedKeybindingsConfig,
@@ -263,6 +264,7 @@ import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import { useRemoveClonedProject } from "../hooks/useRemoveClonedProject";
 import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { useThreadActions } from "../hooks/useThreadActions";
+import { useSwitchThreadProvider } from "../hooks/useSwitchThreadProvider";
 import { resolveAppModelSelectionForInstance } from "../modelSelection";
 import { confirmTerminalClose, isTerminalCloseConfirmPending } from "../lib/terminalCloseConfirm";
 import { isPreviewFocused } from "../lib/previewFocus";
@@ -314,6 +316,7 @@ import {
   isQueuedMessageDue,
   latestCompletedToolActivityId,
   type QueuedComposerMessage,
+  shouldEnqueueFollowUp,
   useQueuedMessages,
   useQueuedMessageStore,
 } from "../queuedMessageStore";
@@ -432,6 +435,8 @@ import {
   PullRequestDialogState,
   cloneComposerImageForRetry,
   deriveLockedProvider,
+  shouldSwitchProviderInPlace,
+  threadHasStarted,
   readFileAsDataUrl,
   resolveFileAttachmentUrl,
   prepareRevertedMessageAttachments,
@@ -1455,6 +1460,9 @@ export default function ChatView(props: ChatViewProps) {
   const threadDetailLoading = threadSyncPhase === "loading";
   const handleNewThread = useNewThreadHandler();
   const { settleThread, pinThread, confirmAndUnpinThread } = useThreadActions();
+  // Composer picker target for ordinary threads: picking another provider
+  // switches the current thread in place instead of staging a draft.
+  const { attemptSwitchProvider } = useSwitchThreadProvider();
   const routeThreadRef = useMemo(
     () => scopeThreadRef(environmentId, threadId),
     [environmentId, threadId],
@@ -7174,6 +7182,11 @@ export default function ChatView(props: ChatViewProps) {
     },
     /** A queued message being sent now instead of the live composer draft. */
     queuedMessage?: QueuedComposerMessage,
+    /**
+     * Per-send override. A steer cuts in on the running turn (interrupt,
+     * then a new turn with this message) instead of waiting in the queue.
+     */
+    sendOptions?: { followUpBehavior?: FollowUpBehavior },
   ) => {
     e?.preventDefault();
     // Typed out in full rather than picked from the menu. Attachments or contexts
@@ -7497,11 +7510,16 @@ export default function ChatView(props: ChatViewProps) {
       );
       return;
     }
-    // A send during a running turn waits in the queue. It leaves on the next
-    // tool boundary, when the turn ends, or when the user clicks Steer. The
-    // provider treats a mid-turn send as a steer of the active turn, so the
-    // dispatch below is the same either way.
-    if (!queuedMessage && !directAnnotation && phase === "running" && activeThreadKey) {
+    // A send during a running turn waits in the queue by default. It leaves
+    // on the next tool boundary, when the turn ends, or when the user clicks
+    // Steer. A steer cuts in instead: it dispatches immediately so the
+    // provider interrupts the active turn and starts fresh with the message.
+    if (
+      !queuedMessage &&
+      !directAnnotation &&
+      activeThreadKey &&
+      shouldEnqueueFollowUp({ phase, followUpBehavior: sendOptions?.followUpBehavior })
+    ) {
       if (composerRef.current?.validateProviderInput(promptForSend) === false) {
         return;
       }
@@ -7973,6 +7991,11 @@ export default function ChatView(props: ChatViewProps) {
           titleSeed: title,
           runtimeMode,
           interactionMode: sendInteractionMode,
+          // A Steer click cuts in on the running turn; anything else rides
+          // the default queue path. Servers pre-dating the flag ignore it.
+          ...(sendOptions?.followUpBehavior !== undefined
+            ? { followUpBehavior: sendOptions.followUpBehavior }
+            : {}),
           ...(bootstrap ? { bootstrap } : {}),
           createdAt: messageCreatedAt,
         },
@@ -8211,7 +8234,9 @@ export default function ChatView(props: ChatViewProps) {
     steer: (id) => {
       const message = queuedMessages.find((entry) => entry.id === id);
       if (!message || sendInFlightRef.current || queueBlockedByPendingRequest) return;
-      void onSend(undefined, message.submissionIntent, undefined, message);
+      void onSend(undefined, message.submissionIntent, undefined, message, {
+        followUpBehavior: "steer",
+      });
     },
     remove: (id) => {
       if (!activeThreadKey) return;
@@ -8880,6 +8905,39 @@ export default function ChatView(props: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
+      // An unlocked pick on a started thread with a session moves
+      // the whole thread to the new provider through the engine — it never
+      // stages a draft that a later send would silently run elsewhere.
+      if (
+        entry !== undefined &&
+        resolvedDriverKind !== null &&
+        shouldSwitchProviderInPlace({
+          lockedProvider,
+          hasSession: activeThread.session !== null,
+          threadStarted: threadHasStarted(activeThread),
+          currentInstanceId:
+            activeThread.session?.providerInstanceId ?? activeThread.modelSelection.instanceId,
+          nextInstanceId: instanceId,
+        })
+      ) {
+        const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
+        void attemptSwitchProvider(
+          threadRef,
+          {
+            providerInstanceId: instanceId,
+            driverKind: resolvedDriverKind,
+            model: resolvedModel,
+          },
+          "Switched from the provider picker.",
+        ).then((switched) => {
+          if (switched) {
+            setComposerDraftModelSelection(threadRef, nextModelSelection, { explicit: true });
+            setStickyComposerModelSelection(nextModelSelection);
+          }
+          scheduleComposerFocus();
+        });
+        return;
+      }
       setComposerDraftModelSelection(
         scopeThreadRef(activeThread.environmentId, activeThread.id),
         nextModelSelection,
@@ -8890,6 +8948,7 @@ export default function ChatView(props: ChatViewProps) {
     },
     [
       activeThread,
+      attemptSwitchProvider,
       lockedProvider,
       scheduleComposerFocus,
       setComposerDraftModelSelection,

@@ -1999,6 +1999,125 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("moves the thinking row to the steering turn and settles the superseded one", () => {
+    // Steer: turn-1 was interrupted and turn-2 is running with no tool rows
+    // or messages yet. The live "thinking" indicator must follow turn-2's
+    // start instead of hanging on turn-1, and turn-1 folds as settled.
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:00Z",
+          message: {
+            id: "user-1" as never,
+            role: "user" as const,
+            text: "do it",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:00Z",
+            updatedAt: "2026-01-01T00:00:00Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "assistant-partial-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:09Z",
+          message: {
+            id: "assistant-partial" as never,
+            role: "assistant" as const,
+            text: "Kicking off call 1.",
+            turnId: "turn-1" as never,
+            createdAt: "2026-01-01T00:00:09Z",
+            updatedAt: "2026-01-01T00:00:09Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "work-entry-1",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:12Z",
+          entry: {
+            id: "work-1",
+            createdAt: "2026-01-01T00:00:12Z",
+            turnId: "turn-1" as never,
+            label: "Ran command",
+            tone: "tool" as const,
+          },
+        },
+        {
+          id: "steer-user-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:14Z",
+          message: {
+            id: "user-2" as never,
+            role: "user" as const,
+            text: "actually do 15",
+            turnId: null,
+            createdAt: "2026-01-01T00:00:14Z",
+            updatedAt: "2026-01-01T00:00:14Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-2" as never,
+        state: "running",
+        startedAt: "2026-01-01T00:00:14Z",
+        completedAt: null,
+      },
+      runningTurnId: "turn-2" as never,
+      isWorking: true,
+      activeTurnStartedAt: "2026-01-01T00:00:14Z",
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    const thinking = rows.find((row) => row.kind === "thinking");
+    expect(thinking).toMatchObject({ id: "live-activity-row" });
+    // Bound to the steering turn's start, not the superseded turn.
+    expect(thinking).toHaveProperty("createdAt", "2026-01-01T00:00:14Z");
+    const foldRow = rows.find(
+      (row): row is Extract<(typeof rows)[number], { kind: "turn-fold" }> =>
+        row.kind === "turn-fold",
+    );
+    expect(foldRow?.turnId).toBe("turn-1");
+  });
+
+  it("drops the thinking row once the steering turn settles", () => {
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "assistant-final-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:20Z",
+          message: {
+            id: "assistant-final" as never,
+            role: "assistant" as const,
+            text: "Done",
+            turnId: "turn-2" as never,
+            createdAt: "2026-01-01T00:00:20Z",
+            updatedAt: "2026-01-01T00:00:22Z",
+            streaming: false,
+          },
+        },
+      ],
+      latestTurn: {
+        turnId: "turn-2" as never,
+        state: "interrupted",
+        startedAt: "2026-01-01T00:00:14Z",
+        completedAt: "2026-01-01T00:00:47Z",
+      },
+      runningTurnId: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+
+    expect(rows.some((row) => row.kind === "thinking")).toBe(false);
+  });
+
   it("keeps the previous turn folded while a newly sent message awaits its turn", () => {
     // Right after send, isWorking is true but latestTurn still points at the
     // previous, settled turn — it must stay folded through that window.
