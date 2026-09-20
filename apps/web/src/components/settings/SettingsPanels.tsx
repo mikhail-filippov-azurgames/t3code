@@ -12,7 +12,7 @@ import {
   type ScopedThreadRef,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -41,6 +41,7 @@ import {
   type ResponseStreamingMode,
   MIN_TERMINAL_FONT_SIZE,
   type QuitConfirmationMode,
+  type ThreadChildrenAction,
 } from "@t3tools/contracts/settings";
 import { resolveServerBackgroundActivitySettings } from "@t3tools/shared/backgroundActivitySettings";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -71,6 +72,7 @@ import {
   useTheme,
 } from "../../hooks/useTheme";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
+import { useClientSettings } from "../../hooks/useSettings";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
@@ -92,9 +94,12 @@ import {
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform } from "../../lib/utils";
+import { readThreadShell, readThreadShells } from "../../state/entities";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
+import { requestThreadChildrenDialog } from "../../threadChildrenDialog";
+import { collectDelegatedChildRefs, runDelegatedChildrenAction } from "../threadActionMenu.logic";
 import {
   AlertDialog,
   AlertDialogClose,
@@ -204,6 +209,12 @@ const QUIT_CONFIRMATION_MODE_LABELS: Record<QuitConfirmationMode, string> = {
   direct: "Direct",
   hold: "Hold",
   "double-click": "Double press",
+};
+
+const THREAD_CHILDREN_ACTION_LABELS: Record<ThreadChildrenAction, string> = {
+  ask: "Ask",
+  "always-yes": "Always together",
+  "always-no": "Parent only",
 };
 
 const BACKGROUND_ACTIVITY_PROFILE_LABELS: Record<BackgroundActivityProfile, string> = {
@@ -612,6 +623,12 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(settings.deleteThreadChildren !== DEFAULT_UNIFIED_SETTINGS.deleteThreadChildren
+        ? ["Delete subtasks with parent"]
+        : []),
+      ...(settings.archiveThreadChildren !== DEFAULT_UNIFIED_SETTINGS.archiveThreadChildren
+        ? ["Archive subtasks with parent"]
+        : []),
       ...(settings.confirmQuit !== DEFAULT_UNIFIED_SETTINGS.confirmQuit ? ["Quit shortcut"] : []),
       ...(isTextGenerationModelDirty ? ["Text generation model"] : []),
       ...getChangedBrowserSettingLabels(settings),
@@ -635,6 +652,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
       settings.confirmThreadUnpin,
+      settings.deleteThreadChildren,
+      settings.archiveThreadChildren,
       settings.composerCollapseOnScroll,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
@@ -769,6 +788,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
       confirmThreadUnpin: DEFAULT_UNIFIED_SETTINGS.confirmThreadUnpin,
+      deleteThreadChildren: DEFAULT_UNIFIED_SETTINGS.deleteThreadChildren,
+      archiveThreadChildren: DEFAULT_UNIFIED_SETTINGS.archiveThreadChildren,
       confirmQuit: DEFAULT_UNIFIED_SETTINGS.confirmQuit,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       fontFamilySans: DEFAULT_UNIFIED_SETTINGS.fontFamilySans,
@@ -2893,6 +2914,94 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        <SettingsRow
+          {...searchableSetting("delete-children-mode")}
+          description="What happens to a thread's delegated subtasks when the thread is deleted."
+          resetAction={
+            settings.deleteThreadChildren !== DEFAULT_UNIFIED_SETTINGS.deleteThreadChildren ? (
+              <SettingResetButton
+                label="delete subtasks behavior"
+                onClick={() =>
+                  updateSettings({
+                    deleteThreadChildren: DEFAULT_UNIFIED_SETTINGS.deleteThreadChildren,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.deleteThreadChildren}
+              onValueChange={(value) => {
+                if (value === "ask" || value === "always-yes" || value === "always-no") {
+                  updateSettings({ deleteThreadChildren: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-44"
+                aria-label="Delete delegated subtasks behavior"
+              >
+                <SelectValue>
+                  {THREAD_CHILDREN_ACTION_LABELS[settings.deleteThreadChildren]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {Object.entries(THREAD_CHILDREN_ACTION_LABELS).map(([value, label]) => (
+                  <SelectItem hideIndicator key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
+        <SettingsRow
+          {...searchableSetting("archive-children-mode")}
+          description="What happens to a thread's delegated subtasks when the thread is archived."
+          resetAction={
+            settings.archiveThreadChildren !== DEFAULT_UNIFIED_SETTINGS.archiveThreadChildren ? (
+              <SettingResetButton
+                label="archive subtasks behavior"
+                onClick={() =>
+                  updateSettings({
+                    archiveThreadChildren: DEFAULT_UNIFIED_SETTINGS.archiveThreadChildren,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.archiveThreadChildren}
+              onValueChange={(value) => {
+                if (value === "ask" || value === "always-yes" || value === "always-no") {
+                  updateSettings({ archiveThreadChildren: value });
+                }
+              }}
+            >
+              <SelectTrigger
+                size="sm"
+                className="w-full sm:w-44"
+                aria-label="Archive delegated subtasks behavior"
+              >
+                <SelectValue>
+                  {THREAD_CHILDREN_ACTION_LABELS[settings.archiveThreadChildren]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {Object.entries(THREAD_CHILDREN_ACTION_LABELS).map(([value, label]) => (
+                  <SelectItem hideIndicator key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          }
+        />
+
         {isElectron ? (
           <SettingsRow
             {...searchableSetting("quit-confirmation")}
@@ -3100,13 +3209,49 @@ export function GeneralSettingsPanel() {
 
 export function ArchivedThreadsPanel() {
   const { scope } = useSettingsScope();
-  const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
+  const { unarchiveThread, deleteThread } = useThreadActions();
+  const deleteThreadChildren = useClientSettings((settings) => settings.deleteThreadChildren);
+  const confirmThreadDelete = useClientSettings((settings) => settings.confirmThreadDelete);
   const {
     snapshots: archivedSnapshots,
     error: archiveError,
     isLoading: isLoadingArchive,
     refresh: refreshArchivedThreads,
   } = useArchivedThreadSnapshots(scope.environmentIds);
+
+  // A second click lands before the row leaves the list, and the server
+  // rejects an unarchive for a thread that is no longer archived.
+  const pendingUnarchiveKeysRef = useRef(new Set<string>());
+  const [pendingUnarchiveKeys, setPendingUnarchiveKeys] = useState<ReadonlySet<string>>(new Set());
+  const unarchiveArchivedThread = useCallback(
+    async (threadRef: ScopedThreadRef) => {
+      const key = scopedThreadKey(threadRef);
+      if (pendingUnarchiveKeysRef.current.has(key)) return;
+      pendingUnarchiveKeysRef.current.add(key);
+      setPendingUnarchiveKeys(new Set(pendingUnarchiveKeysRef.current));
+      try {
+        const result = await unarchiveThread(threadRef);
+        if (result._tag === "Success") {
+          refreshArchivedThreads();
+          return;
+        }
+        if (!isAtomCommandInterrupted(result)) {
+          const error = squashAtomCommandFailure(result);
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Failed to unarchive thread",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            }),
+          );
+        }
+      } finally {
+        pendingUnarchiveKeysRef.current.delete(key);
+        setPendingUnarchiveKeys(new Set(pendingUnarchiveKeysRef.current));
+      }
+    },
+    [refreshArchivedThreads, unarchiveThread],
+  );
 
   const archivedGroups = useMemo(() => {
     const selectedProjectKeys =
@@ -3172,39 +3317,81 @@ export function ArchivedThreadsPanel() {
       );
 
       if (clicked === "unarchive") {
-        const result = await unarchiveThread(threadRef);
-        if (result._tag === "Success") {
-          refreshArchivedThreads();
-        } else if (!isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: "Failed to unarchive thread",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
-        }
+        await unarchiveArchivedThread(threadRef);
         return;
       }
 
       if (clicked === "delete") {
-        const result = await confirmAndDeleteThread(threadRef);
-        if (result._tag === "Success") {
-          refreshArchivedThreads();
-        } else if (!isAtomCommandInterrupted(result)) {
-          const error = squashAtomCommandFailure(result);
+        // An archived parent can still have live delegated children in the
+        // main store; the tri-state setting decides whether they go with it.
+        const children = collectDelegatedChildRefs({
+          parent: threadRef,
+          threads: readThreadShells(),
+        });
+        const outcome = await runDelegatedChildrenAction({
+          children,
+          mode: deleteThreadChildren,
+          ask: () => requestThreadChildrenDialog({ action: "delete", childCount: children.length }),
+          runChild: async (childRef) => {
+            const result = await deleteThread(childRef);
+            if (
+              result._tag === "Failure" &&
+              !isAtomCommandInterrupted(result) &&
+              readThreadShell(childRef) !== null
+            ) {
+              return { ok: false, error: squashAtomCommandFailure(result) };
+            }
+            return { ok: true };
+          },
+          runParent: async ({ cascadeConfirmed }) => {
+            if (!cascadeConfirmed && confirmThreadDelete) {
+              const confirmed = await settlePromise(() =>
+                api.dialogs.confirm(
+                  [
+                    'Delete thread "this thread"?',
+                    "This permanently clears conversation history for this thread.",
+                  ].join("\n"),
+                  { variant: "destructive" },
+                ),
+              );
+              if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
+            }
+            const result = await deleteThread(threadRef);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to delete thread",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+              return { ok: false };
+            }
+            return { ok: true };
+          },
+        });
+        if (outcome.kind === "child-failed") {
+          const error = outcome.error;
           toastManager.add(
             stackedThreadToast({
               type: "error",
-              title: "Failed to delete thread",
+              title: "Failed to delete delegated subtask",
               description: error instanceof Error ? error.message : "An error occurred.",
             }),
           );
+        } else if (outcome.kind !== "dismissed" && outcome.parent.ok) {
+          refreshArchivedThreads();
         }
       }
     },
-    [confirmAndDeleteThread, refreshArchivedThreads, unarchiveThread],
+    [
+      confirmThreadDelete,
+      deleteThread,
+      deleteThreadChildren,
+      refreshArchivedThreads,
+      unarchiveArchivedThread,
+    ],
   );
 
   return (
@@ -3286,27 +3473,11 @@ export function ArchivedThreadsPanel() {
                     variant="outline"
                     size="xs"
                     className="shrink-0"
+                    disabled={pendingUnarchiveKeys.has(
+                      scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+                    )}
                     onClick={() => {
-                      void (async () => {
-                        const result = await unarchiveThread(
-                          scopeThreadRef(thread.environmentId, thread.id),
-                        );
-                        if (result._tag === "Success") {
-                          refreshArchivedThreads();
-                          return;
-                        }
-                        if (!isAtomCommandInterrupted(result)) {
-                          const error = squashAtomCommandFailure(result);
-                          toastManager.add(
-                            stackedThreadToast({
-                              type: "error",
-                              title: "Failed to unarchive thread",
-                              description:
-                                error instanceof Error ? error.message : "An error occurred.",
-                            }),
-                          );
-                        }
-                      })();
+                      void unarchiveArchivedThread(scopeThreadRef(thread.environmentId, thread.id));
                     }}
                   >
                     <ArchiveX className="size-3.5" />

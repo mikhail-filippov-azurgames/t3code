@@ -596,6 +596,17 @@ export const OrchestrationThreadActivity = Schema.Struct({
 });
 export type OrchestrationThreadActivity = typeof OrchestrationThreadActivity.Type;
 
+export const DelegationCompletedActivityPayload = Schema.Struct({
+  version: Schema.Literal(1),
+  childThreadId: ThreadId,
+  delegatedTurnId: TurnId,
+  status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
+  completedAt: IsoDateTime,
+  resultExcerpt: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
+  terminalError: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),
+});
+export type DelegationCompletedActivityPayload = typeof DelegationCompletedActivityPayload.Type;
+
 const OrchestrationLatestTurnState = Schema.Literals([
   "running",
   "interrupted",
@@ -1499,6 +1510,17 @@ const ThreadMessageUserAppendCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadMessageSystemAppendCommand = Schema.Struct({
+  type: Schema.Literal("thread.message.system.append"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  message: Schema.Struct({
+    messageId: MessageId,
+    text: Schema.String,
+  }),
+  createdAt: IsoDateTime,
+});
+
 const ThreadProposedPlanUpsertCommand = Schema.Struct({
   type: Schema.Literal("thread.proposed-plan.upsert"),
   commandId: CommandId,
@@ -1597,6 +1619,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantCompleteCommand,
   ThreadHistoryImportCommand,
   ThreadMessageUserAppendCommand,
+  ThreadMessageSystemAppendCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,

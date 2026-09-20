@@ -3082,6 +3082,147 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
+  it("uses a durable same-instance provider switch on the next turn", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const instanceId = ProviderInstanceId.make("codex");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-durable-switch-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-durable-switch-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        modelSelection: { instanceId, model: "gpt-5-codex" },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-meta-durable-switch"),
+        threadId: ThreadId.make("thread-1"),
+        modelSelection: { instanceId, model: "gpt-5.4" },
+      }),
+    );
+    await harness.drain();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-durable-switch-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-durable-switch-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      modelSelection: { instanceId, model: "gpt-5.4" },
+    });
+  });
+
+  it("restarts an active session for a durable cross-driver provider switch", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const target = {
+      instanceId: ProviderInstanceId.make("museCode"),
+      model: "muse-spark-1.3",
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-cross-driver-1"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-cross-driver-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-thread-meta-cross-driver"),
+        threadId: ThreadId.make("thread-1"),
+        modelSelection: target,
+      }),
+    );
+    await harness.drain();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-cross-driver-2"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-cross-driver-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      input: expect.stringContaining(
+        "[Conversation context transferred from the previous provider.",
+      ),
+    });
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      input: expect.stringContaining("USER:\nfirst"),
+    });
+    expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+      input: expect.stringContaining("<current_user_request>\nsecond"),
+    });
+
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      provider: ProviderDriverKind.make("museCode"),
+      providerInstanceId: target.instanceId,
+      modelSelection: target,
+    });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+
+    const readModel = await harness.readModel();
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.make("thread-1"));
+    expect(thread?.session?.providerName).toBe("museCode");
+    expect(thread?.session?.providerInstanceId).toBe(target.instanceId);
+    expect(
+      thread?.activities.find((activity) => activity.kind === "provider.turn.start.failed"),
+    ).toBeUndefined();
+  });
+
   it("forwards an explicit steer followUpBehavior to the provider send", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -4771,4 +4912,139 @@ describe("ProviderCommandReactor", () => {
       expect(thread?.session?.providerInstanceId).toBe(ProviderInstanceId.make("codex_work"));
     }),
   );
+
+  it("prepends an undelivered delegation wake and records one durable delivery marker", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const wakeMessageId = MessageId.make("delegation-wake:child-turn-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.system.append",
+        commandId: CommandId.make("cmd-wake-message-1"),
+        threadId,
+        message: { messageId: wakeMessageId, text: "Delegated child completed. Result: fixed." },
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-wake-turn-1"),
+        threadId,
+        message: {
+          messageId: MessageId.make("user-wake-1"),
+          role: "user",
+          text: "Continue with the next step.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const firstInput = harness.sendTurn.mock.calls[0]?.[0].input;
+    if (typeof firstInput !== "string") throw new Error("First provider input was not captured");
+    expect(firstInput).toContain("Delegated child completed. Result: fixed.");
+    expect(firstInput.indexOf("Delegated child completed")).toBeLessThan(
+      firstInput.indexOf("Continue with the next step."),
+    );
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.filter((activity) => activity.kind === "delegation.wake-delivered")
+          .length === 1
+      );
+    });
+
+    const afterFirstTurn = await harness.readModel();
+    const firstThread = afterFirstTurn.threads.find((entry) => entry.id === threadId);
+    const marker = firstThread?.activities.find(
+      (activity) => activity.kind === "delegation.wake-delivered",
+    );
+    expect(marker?.payload).toEqual({ wakeMessageIds: [wakeMessageId] });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-wake-turn-2"),
+        threadId,
+        message: {
+          messageId: MessageId.make("user-wake-2"),
+          role: "user",
+          text: "Second request only.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.sendTurn.mock.calls[1]?.[0].input).toBe("Second request only.");
+    const afterSecondTurn = await harness.readModel();
+    expect(
+      afterSecondTurn.threads
+        .find((entry) => entry.id === threadId)
+        ?.activities.filter((activity) => activity.kind === "delegation.wake-delivered"),
+    ).toHaveLength(1);
+  });
+
+  it("leaves a turn without wakes unchanged", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-no-wake-turn"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("user-no-wake"),
+          role: "user",
+          text: "No delegated result here.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("No delegated result here.");
+    const thread = (await harness.readModel()).threads.find(
+      (entry) => entry.id === ThreadId.make("thread-1"),
+    );
+    expect(
+      thread?.activities.some((activity) => activity.kind === "delegation.wake-delivered"),
+    ).toBe(false);
+  });
+
+  it("continues a turn when wake context cannot be decoded", async () => {
+    const harness = await createHarness({ unreadableHistory: true });
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-wake-read-failure"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: MessageId.make("user-wake-read-failure"),
+          role: "user",
+          text: "Proceed despite the read failure.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("Proceed despite the read failure.");
+  });
 });

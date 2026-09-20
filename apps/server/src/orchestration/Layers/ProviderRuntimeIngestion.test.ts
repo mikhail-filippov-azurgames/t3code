@@ -30,6 +30,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -42,6 +43,8 @@ import { afterEach, describe, expect, it } from "vite-plus/test";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -267,6 +270,7 @@ describe("ProviderRuntimeIngestion", () => {
     serverSettings?: Partial<ServerSettings>;
     threadTitle?: string;
     workspaceSubdirectory?: string;
+    captureLogs?: boolean;
   }) {
     const repositoryRoot = makeTempDir("t3-provider-project-");
     NodeChildProcess.execFileSync("git", ["init", "--initial-branch=main"], {
@@ -316,6 +320,18 @@ describe("ProviderRuntimeIngestion", () => {
       monotonicTimeNanos: realClock.monotonicTimeNanos,
       sleep: (duration) => realClock.sleep(duration),
     };
+    const capturedLogs: Array<string> = [];
+    const logCaptureLayer =
+      options?.captureLogs === true
+        ? Logger.layer(
+            [
+              Logger.make(({ message }) => {
+                capturedLogs.push(message.map((entry) => String(entry)).join(" "));
+              }),
+            ],
+            { mergeWithExisting: false },
+          )
+        : Layer.empty;
     const layer = ProviderRuntimeIngestionLive.pipe(
       Layer.provide(Layer.succeed(Clock.Clock, shiftedClock)),
       Layer.provideMerge(orchestrationLayer),
@@ -325,6 +341,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ThreadBackgroundLiveness.layer),
       Layer.provideMerge(ThreadPlanProgress.layer),
       Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(SqlitePersistenceMemory))),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(makeTestServerSettingsLayer(options?.serverSettings)),
       Layer.provideMerge(CheckpointStore.layer.pipe(Layer.provide(VcsDriverRegistry.layer))),
@@ -332,6 +349,7 @@ describe("ProviderRuntimeIngestion", () => {
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
       Layer.provideMerge(Layer.succeed(Tracer.Tracer, sqlCounter.tracer)),
+      Layer.provideMerge(logCaptureLayer),
     );
     const testRuntime = ManagedRuntime.make(layer);
     runtime = testRuntime;
@@ -341,6 +359,18 @@ describe("ProviderRuntimeIngestion", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
     await testRuntime.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => testRuntime.runPromise(ingestion.drain);
+    const readPendingTurnStart = (threadId: ThreadId) =>
+      testRuntime.runPromise(
+        Effect.service(ProjectionTurnRepository).pipe(
+          Effect.flatMap((repository) => repository.getPendingTurnStartByThreadId({ threadId })),
+        ),
+      );
+    const readLatestTurnById = (threadId: ThreadId, id: TurnId) =>
+      testRuntime.runPromise(
+        Effect.service(ProjectionTurnRepository).pipe(
+          Effect.flatMap((repository) => repository.getByTurnId({ threadId, turnId: id })),
+        ),
+      );
     const dispatch = (command: OrchestrationCommand) =>
       testRuntime.runPromise(engine.dispatch(command));
     const emitAndDrain = (events: ReadonlyArray<LegacyProviderRuntimeEvent>) =>
@@ -416,6 +446,9 @@ describe("ProviderRuntimeIngestion", () => {
         clockOffsetMs += ms;
       },
       emitAndDrain,
+      readPendingTurnStart,
+      readLatestTurnById,
+      logs: capturedLogs,
       sqlCount: sqlCounter.count,
       setProviderSession: provider.setSession,
       drain,
@@ -563,6 +596,940 @@ describe("ProviderRuntimeIngestion", () => {
       model: "opencode-go/deepseek-v4-pro",
       evidence: "provider-rerouted",
     });
+  });
+
+  it("announces a delegated terminal turn on its parent exactly once", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const delegatedTurnId = asTurnId("delegated-turn-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make("parent-running"),
+      threadId: parentThreadId,
+      session: {
+        threadId: parentThreadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: asTurnId("parent-turn"),
+        updatedAt: now,
+        lastError: null,
+      },
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("child-create"),
+      threadId: childThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Child",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("child-lineage"),
+      threadId: childThreadId,
+      activity: {
+        id: asEventId("child-lineage"),
+        tone: "info",
+        kind: "delegation.created",
+        summary: "Delegated task created",
+        payload: {
+          version: 1,
+          taskId: childThreadId,
+          childThreadId,
+          parentEnvironmentId: "test-environment",
+          parentThreadId,
+          delegatedMessageId,
+          role: "general",
+        },
+        turnId: null,
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("child-turn-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: delegatedMessageId,
+        role: "user",
+        text: "Do the child work.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("child-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: now,
+        turnId: delegatedTurnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "content.delta",
+        eventId: asEventId("child-answer"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: now,
+        turnId: delegatedTurnId,
+        itemId: asItemId("child-answer-item"),
+        payload: { streamKind: "assistant_text", delta: "CHILD_OK" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("child-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: delegatedTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("child-turn-completed-replay"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: delegatedTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    const readModel = await harness.readModel();
+    const parent = readModel.threads.find((thread) => thread.id === parentThreadId);
+    const completionActivities = parent?.activities.filter(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    expect(completionActivities).toHaveLength(1);
+    expect(completionActivities?.[0]?.payload).toMatchObject({
+      childThreadId,
+      delegatedTurnId,
+      status: "completed",
+      completedAt: "2026-01-01T00:00:01.000Z",
+      resultExcerpt: "CHILD_OK",
+    });
+    expect(parent?.messages.filter((message) => message.role === "system")).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining("CHILD_OK"),
+        turnId: null,
+      }),
+    ]);
+    expect(parent?.latestTurn).toMatchObject({
+      turnId: asTurnId("parent-turn"),
+      state: "running",
+    });
+    expect(parent?.session?.activeTurnId).toBe(asTurnId("parent-turn"));
+  });
+
+  it("auto-starts a parent turn for an idle parent when the child terminal lands", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const delegatedTurnId = asTurnId("delegated-turn-1");
+    const anchorMessageId = asMessageId(`delegation-wake-turn:${childThreadId}:${delegatedTurnId}`);
+    const anchorText =
+      "Delegated child finished. The result is included above. React to it and act on it if needed.";
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("child-create"),
+      threadId: childThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Child",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("child-lineage"),
+      threadId: childThreadId,
+      activity: {
+        id: asEventId("child-lineage"),
+        tone: "info",
+        kind: "delegation.created",
+        summary: "Delegated task created",
+        payload: {
+          version: 1,
+          taskId: childThreadId,
+          childThreadId,
+          parentEnvironmentId: "test-environment",
+          parentThreadId,
+          delegatedMessageId,
+          role: "general",
+        },
+        turnId: null,
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("child-turn-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: delegatedMessageId,
+        role: "user",
+        text: "Do the child work.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("child-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: now,
+        turnId: delegatedTurnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("child-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: delegatedTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    let thread = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
+      expect.objectContaining({ id: anchorMessageId, text: anchorText, turnId: null }),
+    ]);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(pendingStart.value.messageId).toBe(anchorMessageId);
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("child-turn-completed-replay"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: delegatedTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+    thread = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    const pendingStartAfterReplay = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStartAfterReplay)).toBe(true);
+    expect(pendingStartAfterReplay.value.messageId).toBe(anchorMessageId);
+  });
+
+  it.each([
+    {
+      variant: "a running parent turn" as const,
+      busy: async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+        await harness.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("parent-running"),
+          threadId: asThreadId("thread-1"),
+          session: {
+            threadId: asThreadId("thread-1"),
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("parent-turn"),
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            lastError: null,
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        return "parent-turn";
+      },
+    },
+    {
+      variant: "a queued parent turn start" as const,
+      busy: async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+        await harness.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("parent-pending-start"),
+          threadId: asThreadId("thread-1"),
+          message: {
+            messageId: asMessageId("parent-pending-message"),
+            role: "user",
+            text: "Queued parent prompt.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        return null;
+      },
+    },
+  ])("does not auto-start a parent turn for $variant", async ({ busy }) => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const delegatedTurnId = asTurnId("delegated-turn-1");
+    const anchorMessageId = asMessageId(`delegation-wake-turn:${childThreadId}:${delegatedTurnId}`);
+    const now = "2026-01-01T00:00:00.000Z";
+
+    const pendingStartOwnerTurnId = await busy(harness);
+
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("child-create"),
+      threadId: childThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Child",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("child-lineage"),
+      threadId: childThreadId,
+      activity: {
+        id: asEventId("child-lineage"),
+        tone: "info",
+        kind: "delegation.created",
+        summary: "Delegated task created",
+        payload: {
+          version: 1,
+          taskId: childThreadId,
+          childThreadId,
+          parentEnvironmentId: "test-environment",
+          parentThreadId,
+          delegatedMessageId,
+          role: "general",
+        },
+        turnId: null,
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("child-turn-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: delegatedMessageId,
+        role: "user",
+        text: "Do the child work.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("child-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: now,
+        turnId: delegatedTurnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("child-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: delegatedTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(thread?.messages.some((message) => message.id === anchorMessageId)).toBe(false);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    if (pendingStartOwnerTurnId === null) {
+      expect(Option.isSome(pendingStart)).toBe(true);
+      expect(pendingStart.value.messageId).toBe(asMessageId("parent-pending-message"));
+    } else {
+      expect(Option.isNone(pendingStart)).toBe(true);
+    }
+  });
+
+  it("does not wake an ordinary terminal turn or fail when lineage is missing", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("ordinary-turn");
+    const messageId = asMessageId("ordinary-message");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("ordinary-turn-start"),
+      threadId,
+      message: { messageId, role: "user", text: "ordinary", attachments: [] },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("ordinary-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: now,
+        turnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("ordinary-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.activities.some((activity) => activity.kind === "delegation.completed")).toBe(
+      false,
+    );
+    expect(thread?.messages.some((message) => message.role === "system")).toBe(false);
+  });
+
+  it("does not fail a child terminal when its delegated parent cannot be resolved", async () => {
+    const harness = await createHarness({ captureLogs: true });
+    const childThreadId = asThreadId("orphan-child");
+    const delegatedMessageId = asMessageId("orphan-message");
+    const delegatedTurnId = asTurnId("orphan-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("orphan-child-create"),
+      threadId: childThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Orphan child",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("orphan-child-lineage"),
+      threadId: childThreadId,
+      activity: {
+        id: asEventId("orphan-child-lineage"),
+        tone: "info",
+        kind: "delegation.created",
+        summary: "Delegated task created",
+        payload: {
+          version: 1,
+          taskId: childThreadId,
+          childThreadId,
+          parentEnvironmentId: "test-environment",
+          parentThreadId: asThreadId("missing-parent"),
+          delegatedMessageId,
+          role: "general",
+        },
+        turnId: null,
+        createdAt: now,
+      },
+      createdAt: now,
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("orphan-child-turn-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: delegatedMessageId,
+        role: "user",
+        text: "Finish without a parent row.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+
+    await expect(
+      harness.emitAndDrain([
+        {
+          type: "turn.started",
+          eventId: asEventId("orphan-child-started"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId: childThreadId,
+          createdAt: now,
+          turnId: delegatedTurnId,
+          payload: { model: "gpt-5-codex" },
+        },
+        {
+          type: "turn.completed",
+          eventId: asEventId("orphan-child-completed"),
+          provider: ProviderDriverKind.make("codex"),
+          threadId: childThreadId,
+          createdAt: "2026-01-01T00:00:01.000Z",
+          turnId: delegatedTurnId,
+          payload: { state: "completed" },
+        },
+      ]),
+    ).resolves.toBe(0);
+
+    expect(harness.logs.some((entry) => entry.includes("failed to wake delegation parent"))).toBe(
+      true,
+    );
+
+    const child = (await harness.readModel()).threads.find((thread) => thread.id === childThreadId);
+    expect(child?.latestTurn).toMatchObject({
+      turnId: delegatedTurnId,
+      state: "completed",
+    });
+  });
+
+  type WakeHarness = Awaited<ReturnType<typeof createHarness>>;
+  const WAKE_ANCHOR_TEXT =
+    "Delegated child finished. The result is included above. React to it and act on it if needed.";
+
+  async function seedDelegatedChild(
+    harness: WakeHarness,
+    input: {
+      readonly childThreadId: ThreadId;
+      readonly parentThreadId: ThreadId;
+      readonly delegatedMessageId: MessageId;
+      readonly createdAt: string;
+    },
+  ) {
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`${input.childThreadId}-create`),
+      threadId: input.childThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Child",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: input.createdAt,
+    });
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(`${input.childThreadId}-lineage`),
+      threadId: input.childThreadId,
+      activity: {
+        id: asEventId(`${input.childThreadId}-lineage`),
+        tone: "info",
+        kind: "delegation.created",
+        summary: "Delegated task created",
+        payload: {
+          version: 1,
+          taskId: input.childThreadId,
+          childThreadId: input.childThreadId,
+          parentEnvironmentId: "test-environment",
+          parentThreadId: input.parentThreadId,
+          delegatedMessageId: input.delegatedMessageId,
+          role: "general",
+        },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make(`${input.childThreadId}-turn-start`),
+      threadId: input.childThreadId,
+      message: {
+        messageId: input.delegatedMessageId,
+        role: "user",
+        text: "Do the child work.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: input.createdAt,
+    });
+  }
+
+  async function completeDelegatedChild(
+    harness: WakeHarness,
+    input: {
+      readonly childThreadId: ThreadId;
+      readonly delegatedTurnId: TurnId;
+      readonly startedAt: string;
+      readonly completedAt: string;
+    },
+  ) {
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId(`${input.delegatedTurnId}-started`),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: input.childThreadId,
+        createdAt: input.startedAt,
+        turnId: input.delegatedTurnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId(`${input.delegatedTurnId}-completed`),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: input.childThreadId,
+        createdAt: input.completedAt,
+        turnId: input.delegatedTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+  }
+
+  async function occupyParent(
+    harness: WakeHarness,
+    parentThreadId: ThreadId,
+    parentTurnId: TurnId,
+    createdAt: string,
+  ) {
+    await harness.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.make(`${parentTurnId}-running`),
+      threadId: parentThreadId,
+      session: {
+        threadId: parentThreadId,
+        status: "running",
+        providerName: "codex",
+        runtimeMode: "approval-required",
+        activeTurnId: parentTurnId,
+        updatedAt: createdAt,
+        lastError: null,
+      },
+      createdAt,
+    });
+  }
+
+  async function settleParent(
+    harness: WakeHarness,
+    parentThreadId: ThreadId,
+    parentTurnId: TurnId,
+    createdAt: string,
+    eventTag = "completed",
+    terminalType: "turn.completed" | "turn.aborted" = "turn.completed",
+  ) {
+    await harness.emitAndDrain([
+      terminalType === "turn.completed"
+        ? {
+            type: "turn.completed",
+            eventId: asEventId(`${parentTurnId}-${eventTag}`),
+            provider: ProviderDriverKind.make("codex"),
+            threadId: parentThreadId,
+            createdAt,
+            turnId: parentTurnId,
+            payload: { state: "completed" },
+          }
+        : {
+            type: "turn.aborted",
+            eventId: asEventId(`${parentTurnId}-${eventTag}`),
+            provider: ProviderDriverKind.make("codex"),
+            threadId: parentThreadId,
+            createdAt,
+            turnId: parentTurnId,
+            payload: { reason: "Interrupted by user." },
+          },
+    ]);
+  }
+
+  const userMessageIds = (messages: ReadonlyArray<ProviderRuntimeTestMessage>) =>
+    messages.filter((message) => message.role === "user").map((message) => message.id);
+
+  it.each(["turn.completed", "turn.aborted"] as const)(
+    "drains an undelivered wake with an auto-turn once the occupying %s settles",
+    async (terminalType) => {
+      const harness = await createHarness();
+      const parentThreadId = asThreadId("thread-1");
+      const childThreadId = asThreadId("child-thread-1");
+      const delegatedMessageId = asMessageId("delegated-message-1");
+      const delegatedTurnId = asTurnId("delegated-turn-1");
+      const drainMessageId = asMessageId(
+        `delegation-wake-drain:${parentThreadId}:${delegatedTurnId}`,
+      );
+      const now = "2026-01-01T00:00:00.000Z";
+
+      await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+      await seedDelegatedChild(harness, {
+        childThreadId,
+        parentThreadId,
+        delegatedMessageId,
+        createdAt: now,
+      });
+      await completeDelegatedChild(harness, {
+        childThreadId,
+        delegatedTurnId,
+        startedAt: now,
+        completedAt: "2026-01-01T00:00:01.000Z",
+      });
+
+      // The child terminal only records the wake; the busy parent gets no turn.
+      let parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+      expect(parent?.messages.some((message) => message.id === drainMessageId)).toBe(false);
+      expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+
+      await settleParent(
+        harness,
+        parentThreadId,
+        asTurnId("parent-turn"),
+        "2026-01-01T00:00:02.000Z",
+        "settled",
+        terminalType,
+      );
+
+      parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+      expect(parent?.messages.filter((message) => message.role === "user")).toEqual([
+        expect.objectContaining({ id: drainMessageId, text: WAKE_ANCHOR_TEXT, turnId: null }),
+      ]);
+      const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+      expect(Option.isSome(pendingStart)).toBe(true);
+      expect(pendingStart.value.messageId).toBe(drainMessageId);
+    },
+  );
+
+  it("does not drain when a terminal turn leaves no undelivered wake", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("ordinary-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("ordinary-turn-start"),
+      threadId,
+      message: {
+        messageId: asMessageId("ordinary-message"),
+        role: "user",
+        text: "ordinary",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("ordinary-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: now,
+        turnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("ordinary-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(thread?.messages.some((message) => message.role === "system")).toBe(false);
+    expect(
+      thread?.messages.some((message) => String(message.id).startsWith("delegation-wake-drain:")),
+    ).toBe(false);
+    expect(Option.isNone(await harness.readPendingTurnStart(threadId))).toBe(true);
+  });
+
+  it("does not create a second drain turn for a replayed parent terminal", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedTurnId = asTurnId("delegated-turn-1");
+    const drainMessageId = asMessageId(
+      `delegation-wake-drain:${parentThreadId}:${delegatedTurnId}`,
+    );
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("delegated-message-1"),
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:03.000Z",
+      "replay",
+    );
+
+    let parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainMessageId]);
+
+    // The drain turn runs and settles without a delivery marker: the same
+    // deterministic command id must not start a second turn.
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("drain-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+        turnId: asTurnId("drain-turn"),
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("drain-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+        turnId: asTurnId("drain-turn"),
+        payload: { state: "completed" },
+      },
+    ]);
+
+    parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainMessageId]);
+    expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+  });
+
+  it("drains the next undelivered wake after the first wake auto-turn settles", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    const turnA = asTurnId("turn-a");
+    const turnB = asTurnId("turn-b");
+    const wakeA = asMessageId(`delegation-wake:${turnA}`);
+    const drainA = asMessageId(`delegation-wake-drain:${parentThreadId}:${turnA}`);
+    const drainB = asMessageId(`delegation-wake-drain:${parentThreadId}:${turnB}`);
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedDelegatedChild(harness, {
+      childThreadId: asThreadId("child-a"),
+      parentThreadId,
+      delegatedMessageId: asMessageId("delegated-a"),
+      createdAt: now,
+    });
+    await seedDelegatedChild(harness, {
+      childThreadId: asThreadId("child-b"),
+      parentThreadId,
+      delegatedMessageId: asMessageId("delegated-b"),
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId: asThreadId("child-a"),
+      delegatedTurnId: turnA,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId: asThreadId("child-b"),
+      delegatedTurnId: turnB,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:02.000Z",
+    });
+
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:03.000Z",
+    );
+
+    let parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainA]);
+
+    // The reactor marks A's wake delivered when A's auto-turn starts.
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make("wake-a-delivered"),
+      threadId: parentThreadId,
+      activity: {
+        id: asEventId("wake-a-delivered"),
+        tone: "info",
+        kind: "delegation.wake-delivered",
+        summary: "Delegated wake delivered",
+        payload: { wakeMessageIds: [wakeA] },
+        turnId: null,
+        createdAt: "2026-01-01T00:00:04.000Z",
+      },
+      createdAt: "2026-01-01T00:00:04.000Z",
+    });
+
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("wake-auto-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+        turnId: asTurnId("wake-auto-turn"),
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("wake-auto-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:05.000Z",
+        turnId: asTurnId("wake-auto-turn"),
+        payload: { state: "completed" },
+      },
+    ]);
+
+    parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainA, drainB]);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(pendingStart.value.messageId).toBe(drainB);
   });
 
   it.each([

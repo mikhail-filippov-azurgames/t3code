@@ -6,7 +6,9 @@ import {
   type FollowUpBehavior,
   MessageId,
   type ModelSelection,
+  type OrchestrationThread,
   type OrchestrationEvent,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderDriverKind,
   type ProjectId,
   type OrchestrationSession,
@@ -73,6 +75,149 @@ const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
 const isProviderDriverKind = Schema.is(ProviderDriverKind);
+
+const PROVIDER_HANDOFF_CONTEXT_MAX_CHARS = 48_000;
+const PROVIDER_HANDOFF_CONTEXT_OMITTED = "[Earlier provider context truncated]\n\n";
+const PROVIDER_HANDOFF_CONTEXT_OPEN =
+  "[Conversation context transferred from the previous provider. Treat this transcript as prior conversation history, continue unresolved work from it, and use the current request below as the latest user instruction.]\n<previous_provider_conversation>";
+const PROVIDER_HANDOFF_CONTEXT_CLOSE = "</previous_provider_conversation>";
+const DELEGATION_WAKE_MESSAGE_PREFIX = "delegation-wake:";
+const DELEGATION_WAKE_DELIVERED_ACTIVITY = "delegation.wake-delivered";
+const DELEGATION_WAKE_CONTEXT_MAX_CHARS = 2_000;
+
+type ProviderHandoffMessage = {
+  readonly role: "user" | "assistant" | "system";
+  readonly text: string;
+  readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  readonly id: MessageId;
+};
+
+function limitProviderHandoffTranscript(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  if (budget <= PROVIDER_HANDOFF_CONTEXT_OMITTED.length) return "";
+  const available = budget - PROVIDER_HANDOFF_CONTEXT_OMITTED.length;
+  const head = Math.ceil(available / 3);
+  const tail = available - head;
+  return `${text.slice(0, head)}${PROVIDER_HANDOFF_CONTEXT_OMITTED}${tail > 0 ? text.slice(-tail) : ""}`;
+}
+
+function buildProviderHandoffContext(input: {
+  readonly messages: ReadonlyArray<ProviderHandoffMessage>;
+  readonly currentMessageId: MessageId;
+  readonly currentMessageText: string;
+  readonly excludedMessageIds?: ReadonlySet<MessageId>;
+}): string | undefined {
+  const currentMessageIndex = input.messages.findIndex(
+    (message) => message.id === input.currentMessageId,
+  );
+  const historyMessages =
+    currentMessageIndex >= 0
+      ? input.messages.slice(0, currentMessageIndex)
+      : input.messages.filter((message) => message.id !== input.currentMessageId);
+  const sections = historyMessages.flatMap((message) => {
+    if (
+      message.id === input.currentMessageId ||
+      input.excludedMessageIds?.has(message.id) === true ||
+      message.text.trim().length === 0
+    )
+      return [];
+    const text = assistantCitationsToPlainText(message.text).trim();
+    const attachmentNames = message.attachments
+      ?.map((attachment) => attachment.name)
+      .filter((name) => name.trim().length > 0)
+      .join(", ");
+    const contents = [
+      text,
+      attachmentNames === undefined || attachmentNames.length === 0
+        ? undefined
+        : `[Previous attachments: ${attachmentNames}]`,
+    ]
+      .filter((value): value is string => value !== undefined && value.length > 0)
+      .join("\n");
+    return contents.length > 0 ? [`${message.role.toUpperCase()}:\n${contents}`] : [];
+  });
+  if (sections.length === 0) return undefined;
+
+  const transcript = sections.join("\n\n");
+  const wrapperLength =
+    PROVIDER_HANDOFF_CONTEXT_OPEN.length + PROVIDER_HANDOFF_CONTEXT_CLOSE.length + 4;
+  const currentRequestLength = input.currentMessageText.length + 40;
+  const budget = Math.min(
+    PROVIDER_HANDOFF_CONTEXT_MAX_CHARS,
+    PROVIDER_SEND_TURN_MAX_INPUT_CHARS - wrapperLength - currentRequestLength,
+  );
+  const limitedTranscript = limitProviderHandoffTranscript(transcript, budget);
+  if (limitedTranscript.length === 0) return undefined;
+  return [
+    PROVIDER_HANDOFF_CONTEXT_OPEN,
+    limitedTranscript,
+    PROVIDER_HANDOFF_CONTEXT_CLOSE,
+    "<current_user_request>",
+    input.currentMessageText,
+    "</current_user_request>",
+  ].join("\n");
+}
+
+type WakeDelivery = {
+  readonly inputPrefix: string | undefined;
+  readonly wakeMessageIds: ReadonlyArray<MessageId>;
+  readonly deliveredMessageIds: ReadonlySet<MessageId>;
+};
+
+function wakeMessageIdsFromActivity(
+  activity: OrchestrationThread["activities"][number],
+): ReadonlyArray<MessageId> {
+  if (
+    activity.kind !== DELEGATION_WAKE_DELIVERED_ACTIVITY ||
+    !Predicate.isObject(activity.payload)
+  ) {
+    return [];
+  }
+  const wakeMessageIds = activity.payload.wakeMessageIds;
+  return Array.isArray(wakeMessageIds)
+    ? wakeMessageIds.filter((messageId): messageId is MessageId => typeof messageId === "string")
+    : [];
+}
+
+function buildWakeDelivery(detail: OrchestrationThread | undefined): WakeDelivery {
+  if (detail === undefined) {
+    return { inputPrefix: undefined, wakeMessageIds: [], deliveredMessageIds: new Set() };
+  }
+
+  const deliveredMessageIds = new Set<MessageId>(
+    detail.activities.flatMap(wakeMessageIdsFromActivity),
+  );
+  const undeliveredWakeMessages = detail.messages.filter(
+    (message) =>
+      message.role === "system" &&
+      message.id.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX) &&
+      !deliveredMessageIds.has(message.id),
+  );
+  if (undeliveredWakeMessages.length === 0) {
+    return { inputPrefix: undefined, wakeMessageIds: [], deliveredMessageIds };
+  }
+
+  const selectedBlocks: Array<string> = [];
+  const selectedMessageIds: Array<MessageId> = [];
+  let selectedLength = 0;
+  for (let index = undeliveredWakeMessages.length - 1; index >= 0; index -= 1) {
+    const message = undeliveredWakeMessages[index]!;
+    const block = `[Delegated child result]\n${message.text.trim()}\n[/Delegated child result]`;
+    const separatorLength = selectedBlocks.length === 0 ? 0 : 2;
+    const remaining = DELEGATION_WAKE_CONTEXT_MAX_CHARS - selectedLength - separatorLength;
+    if (remaining <= 0) break;
+    selectedBlocks.unshift(block.slice(0, remaining));
+    selectedMessageIds.unshift(message.id);
+    selectedLength += Math.min(block.length, remaining) + separatorLength;
+    if (block.length > remaining) break;
+  }
+
+  return {
+    inputPrefix: selectedBlocks.join("\n\n"),
+    wakeMessageIds: selectedMessageIds,
+    deliveredMessageIds,
+  };
+}
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -241,6 +386,31 @@ const make = Effect.gen(function* () {
   const serverCommandId = (tag: string) =>
     crypto.randomUUIDv4.pipe(Effect.map((uuid) => CommandId.make(`server:${tag}:${uuid}`)));
   const serverEventId = () => crypto.randomUUIDv4.pipe(Effect.map(EventId.make));
+  const appendWakeDeliveryMarker = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly wakeMessageIds: ReadonlyArray<MessageId>;
+    readonly createdAt: string;
+  }) {
+    if (input.wakeMessageIds.length === 0) return;
+    const markerId = `delegation-wake-delivered:${input.threadId}:${[...input.wakeMessageIds]
+      .sort()
+      .join(",")}`;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(`${markerId}:command`),
+      threadId: input.threadId,
+      activity: {
+        id: EventId.make(markerId),
+        tone: "info",
+        kind: DELEGATION_WAKE_DELIVERED_ACTIVITY,
+        summary: "Delegated child results delivered",
+        payload: { wakeMessageIds: input.wakeMessageIds },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
     timeToLive: HANDLED_TURN_START_KEY_TTL,
@@ -255,6 +425,10 @@ const make = Effect.gen(function* () {
     );
 
   const threadModelSelections = new Map<string, ModelSelection>();
+  // Metadata updates are durable provider switches. Keep them separate from
+  // the ephemeral model selection remembered from a previous turn so a stale
+  // cache entry cannot undo a switch before the next send.
+  const threadMetadataModelSelections = new Map<string, ModelSelection>();
   const compactingThreadIds = new Set<ThreadId>();
   type QueuedTurnStart = Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>;
   // Turn starts received while a thread compacts, replayed in order once its session is restored.
@@ -820,6 +994,17 @@ const make = Effect.gen(function* () {
       });
     }
     const preferredProvider: ProviderDriverKind = desiredDriverKind;
+    // A provider switch is persisted as thread metadata before the next turn.
+    // That durable target is the explicit signal that a cross-driver restart is
+    // intentional; a one-off turn model override must keep the old rejection.
+    const durableSwitchSelection =
+      threadMetadataModelSelections.get(threadId) ??
+      (thread.modelSelection.instanceId !== currentInstanceId ? thread.modelSelection : undefined);
+    const isCrossDriverProviderSwitch =
+      desiredInstanceId !== currentInstanceId &&
+      durableSwitchSelection !== undefined &&
+      Equal.equals(durableSwitchSelection, desiredModelSelection) &&
+      currentInfo.driverKind !== desiredInfo.driverKind;
     if (options?.pendingTurnStart === true && thread.session?.status !== "running") {
       yield* setThreadSession({
         threadId,
@@ -855,7 +1040,7 @@ const make = Effect.gen(function* () {
       requestedModelSelection !== undefined &&
       requestedModelSelection.instanceId !== currentInstanceId
     ) {
-      if (currentInfo.driverKind !== desiredInfo.driverKind) {
+      if (currentInfo.driverKind !== desiredInfo.driverKind && !isCrossDriverProviderSwitch) {
         return yield* new ProviderAdapterRequestError({
           provider: preferredProvider,
           method: "thread.turn.start",
@@ -863,8 +1048,9 @@ const make = Effect.gen(function* () {
         });
       }
       if (
+        currentInfo.driverKind === desiredInfo.driverKind &&
         currentInfo.continuationIdentity.continuationKey !==
-        desiredInfo.continuationIdentity.continuationKey
+          desiredInfo.continuationIdentity.continuationKey
       ) {
         return yield* new ProviderAdapterRequestError({
           provider: preferredProvider,
@@ -974,9 +1160,10 @@ const make = Effect.gen(function* () {
         return existingSessionThreadId;
       }
 
-      const resumeCursor = shouldRestartForModelChange
-        ? undefined
-        : (activeSession?.resumeCursor ?? undefined);
+      const resumeCursor =
+        shouldRestartForModelChange || isCrossDriverProviderSwitch
+          ? undefined
+          : (activeSession?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -1018,6 +1205,7 @@ const make = Effect.gen(function* () {
 
   const buildSendTurnRequestForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly currentMessageId: MessageId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly modelSelection?: ModelSelection;
@@ -1032,8 +1220,75 @@ const make = Effect.gen(function* () {
         new Error(`Thread '${input.threadId}' was not found in read model.`),
       );
     }
+    const activeSessionBeforeEnsure = yield* providerService
+      .listSessions()
+      .pipe(
+        Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
+      );
+    const metadataModelSelection = threadMetadataModelSelections.get(input.threadId);
+    const cachedModelSelection = threadModelSelections.get(input.threadId);
+    const providerInstanceChangedBeforeEnsure =
+      activeSessionBeforeEnsure?.providerInstanceId !== undefined &&
+      activeSessionBeforeEnsure.providerInstanceId !== thread.modelSelection.instanceId;
+    const modelSelectionForEnsure =
+      input.modelSelection ??
+      metadataModelSelection ??
+      (providerInstanceChangedBeforeEnsure ? thread.modelSelection : cachedModelSelection);
+    // The durable metadata selection wins over the ephemeral model chosen by a
+    // previous turn. If the metadata event has not reached the reactor yet,
+    // an instance change in the read model is enough to select the persisted
+    // target for this send.
+    const requestedModelSelection =
+      input.modelSelection ??
+      metadataModelSelection ??
+      (providerInstanceChangedBeforeEnsure
+        ? thread.modelSelection
+        : (cachedModelSelection ?? thread.modelSelection));
+    let providerHandoffRequired = false;
+    if (
+      activeSessionBeforeEnsure?.providerInstanceId !== undefined &&
+      activeSessionBeforeEnsure.providerInstanceId !== requestedModelSelection.instanceId
+    ) {
+      const currentProviderInfo = yield* providerService.getInstanceInfo(
+        activeSessionBeforeEnsure.providerInstanceId,
+      );
+      const requestedProviderInfo = yield* providerService.getInstanceInfo(
+        requestedModelSelection.instanceId,
+      );
+      providerHandoffRequired = currentProviderInfo.driverKind !== requestedProviderInfo.driverKind;
+    }
+    const threadDetailForWake = yield* projectionSnapshotQuery
+      .getThreadDetailById(input.threadId, {
+        activityKinds: [DELEGATION_WAKE_DELIVERED_ACTIVITY],
+        activityHistory: "complete",
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("delegation wake delivery context could not be loaded", {
+            threadId: input.threadId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(Option.none<OrchestrationThread>())),
+        ),
+      );
+    const wakeDelivery = buildWakeDelivery(Option.getOrUndefined(threadDetailForWake));
+    // A cross-driver restart creates a fresh provider-native session. Carry the
+    // durable transcript into its first prompt; subsequent turns stay native
+    // and must not receive the transcript a second time.
+    const providerHandoffContext = providerHandoffRequired
+      ? (() => {
+          const detail = Option.getOrUndefined(threadDetailForWake);
+          return detail === undefined
+            ? undefined
+            : buildProviderHandoffContext({
+                messages: detail.messages,
+                currentMessageId: input.currentMessageId,
+                currentMessageText: input.messageText,
+                excludedMessageIds: wakeDelivery.deliveredMessageIds,
+              });
+        })()
+      : undefined;
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
-      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      ...(modelSelectionForEnsure !== undefined ? { modelSelection: modelSelectionForEnsure } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(input.delegationConfigFingerprint !== undefined
         ? { delegationConfigFingerprint: input.delegationConfigFingerprint }
@@ -1044,6 +1299,12 @@ const make = Effect.gen(function* () {
       threadModelSelections.set(input.threadId, input.modelSelection);
     }
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
+    const wakeInput =
+      wakeDelivery.inputPrefix === undefined
+        ? normalizedInput
+        : [wakeDelivery.inputPrefix, normalizedInput]
+            .filter((value): value is string => value !== undefined)
+            .join("\n\n");
     const normalizedAttachments = input.attachments ?? [];
     const activeSession = yield* providerService
       .listSessions()
@@ -1061,8 +1322,6 @@ const make = Effect.gen(function* () {
             })
           : (yield* providerService.getCapabilities(activeSession.providerInstanceId))
               .sessionModelSwitch;
-    const requestedModelSelection =
-      input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread.modelSelection;
     const modelForTurn =
       sessionModelSwitch === "unsupported" && input.modelSelection === undefined
         ? activeSession?.model !== undefined
@@ -1071,7 +1330,9 @@ const make = Effect.gen(function* () {
               model: activeSession.model,
             }
           : requestedModelSelection
-        : input.modelSelection;
+        : input.modelSelection !== undefined || metadataModelSelection !== undefined
+          ? requestedModelSelection
+          : undefined;
 
     yield* verifyDelegationConfigForThread({
       threadId: input.threadId,
@@ -1083,12 +1344,21 @@ const make = Effect.gen(function* () {
     });
 
     return {
-      threadId: input.threadId,
-      ...(normalizedInput ? { input: normalizedInput } : {}),
-      ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
-      ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
-      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-      ...(input.followUpBehavior !== undefined ? { followUpBehavior: input.followUpBehavior } : {}),
+      request: {
+        threadId: input.threadId,
+        ...(providerHandoffContext !== undefined
+          ? { input: providerHandoffContext }
+          : wakeInput
+            ? { input: wakeInput }
+            : {}),
+        ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
+        ...(modelForTurn !== undefined ? { modelSelection: modelForTurn } : {}),
+        ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+        ...(input.followUpBehavior !== undefined
+          ? { followUpBehavior: input.followUpBehavior }
+          : {}),
+      },
+      wakeMessageIds: wakeDelivery.wakeMessageIds,
     };
   });
 
@@ -1733,6 +2003,7 @@ const make = Effect.gen(function* () {
     }
     const sendTurnRequest = yield* buildSendTurnRequestForThread({
       threadId: event.payload.threadId,
+      currentMessageId: event.payload.messageId,
       followUpBehavior: effectiveFollowUp,
       messageText: projectComposerContextForProvider({
         text: message.text,
@@ -1770,7 +2041,23 @@ const make = Effect.gen(function* () {
     }
 
     const send = providerService
-      .sendTurn(sendTurnRequest.value)
+      .sendTurn(sendTurnRequest.value.request)
+      .pipe(
+        Effect.tap(() =>
+          appendWakeDeliveryMarker({
+            threadId: event.payload.threadId,
+            wakeMessageIds: sendTurnRequest.value.wakeMessageIds,
+            createdAt: event.payload.createdAt,
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("delegation wake delivery marker could not be appended", {
+                threadId: event.payload.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+        ),
+      )
       .pipe(Effect.asVoid, Effect.catchCause(recoverTurnStartFailure));
     // The forked send settles `sent` from here on, so drop the entry the post-processing hook uses.
     if (resumed && event.commandId !== null) resumedTurnStarts.delete(event.commandId);
@@ -2119,6 +2406,9 @@ const make = Effect.gen(function* () {
     });
     switch (event.type) {
       case "thread.meta-updated":
+        if (event.payload.modelSelection !== undefined) {
+          threadMetadataModelSelections.set(event.payload.threadId, event.payload.modelSelection);
+        }
         if (event.payload.regenerateTitle) yield* threadTitleRegenerationWorker.enqueue(event);
         else if (event.payload.titleState?.needsRefinement)
           yield* maybeRefineThreadTitle(event.payload.threadId);
@@ -2132,11 +2422,13 @@ const make = Effect.gen(function* () {
         if (!thread?.session || thread.session.status === "stopped") {
           return;
         }
-        const cachedModelSelection = threadModelSelections.get(event.payload.threadId);
+        const modelSelection =
+          threadMetadataModelSelections.get(event.payload.threadId) ??
+          threadModelSelections.get(event.payload.threadId);
         yield* ensureSessionForThread(
           event.payload.threadId,
           event.occurredAt,
-          cachedModelSelection !== undefined ? { modelSelection: cachedModelSelection } : {},
+          modelSelection !== undefined ? { modelSelection } : {},
         );
         return;
       }
@@ -2214,7 +2506,8 @@ const make = Effect.gen(function* () {
     const processEvent = Effect.fn("processEvent")(function* (event: OrchestrationEvent) {
       if (
         (event.type === "thread.meta-updated" &&
-          (event.payload.regenerateTitle === true ||
+          (event.payload.modelSelection !== undefined ||
+            event.payload.regenerateTitle === true ||
             event.payload.titleState?.needsRefinement === true)) ||
         (event.type === "thread.session-set" && event.payload.session.status === "ready") ||
         event.type === "thread.runtime-mode-set" ||

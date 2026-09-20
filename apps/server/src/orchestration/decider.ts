@@ -1,5 +1,6 @@
 import {
   EventId,
+  DelegationCompletedActivityPayload,
   MAX_SCRIPT_ID_LENGTH,
   SCRIPT_RUN_COMMAND_PATTERN,
   MessageId,
@@ -52,6 +53,7 @@ const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const decodeUserInputRequestedPayload = Schema.decodeUnknownOption(UserInputRequestedPayload);
 const threadPullRequestLinksEqual = Schema.toEquivalence(Schema.NullOr(ThreadLinkedPullRequest));
+const isDelegationCompletedActivityPayload = Schema.is(DelegationCompletedActivityPayload);
 
 /**
  * Blocked-on-you work derived from the thread's retained activities: an
@@ -823,6 +825,19 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    // Served by the UI switch handler (which calls the orchestrator
+    // `switchProvider` engine with its capability checks), never here: the
+    // pure decider cannot read live provider state. Reaching this case means
+    // a transport bypassed the handler.
+    case "thread.switch-provider": {
+      return yield* Effect.fail(
+        new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "thread.switch-provider is served by the UI switch handler, not the decider",
+        }),
+      );
+    }
+
     case "thread.pin.reorder": {
       const thread = yield* requireThreadNotArchived({
         readModel,
@@ -1456,6 +1471,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.delegationConfigFingerprint !== undefined
             ? { delegationConfigFingerprint: command.delegationConfigFingerprint }
             : {}),
+          ...(command.followUpBehavior !== undefined
+            ? { followUpBehavior: command.followUpBehavior }
+            : {}),
           createdAt: command.createdAt,
         },
       };
@@ -1538,6 +1556,36 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           text: command.message.text,
           attachments: command.message.attachments,
           ...(command.message.context !== undefined ? { context: command.message.context } : {}),
+          turnId: null,
+          streaming: false,
+          createdAt: command.createdAt,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.message.system.append": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.messages.some((message) => message.id === command.message.messageId)) {
+        return [];
+      }
+      return {
+        ...(yield* withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        })),
+        type: "thread.message-sent",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.message.messageId,
+          role: "system",
+          text: command.message.text,
           turnId: null,
           streaming: false,
           createdAt: command.createdAt,
@@ -2154,6 +2202,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      if (
+        command.activity.kind === "delegation.completed" &&
+        isDelegationCompletedActivityPayload(command.activity.payload) &&
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "delegation.completed" &&
+            isDelegationCompletedActivityPayload(activity.payload) &&
+            activity.payload.delegatedTurnId === command.activity.payload.delegatedTurnId,
+        )
+      ) {
+        return [];
+      }
       const requestId =
         typeof command.activity.payload === "object" &&
         command.activity.payload !== null &&

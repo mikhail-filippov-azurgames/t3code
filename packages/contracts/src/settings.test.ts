@@ -261,6 +261,37 @@ describe("ClientSettings load balancing", () => {
   });
 });
 
+describe("ClientSettings thread children action", () => {
+  it("asks by default for both delete and archive", () => {
+    expect(decodeClientSettings({}).deleteThreadChildren).toBe("ask");
+    expect(decodeClientSettings({}).archiveThreadChildren).toBe("ask");
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("deleteThreadChildren");
+    expect(decodeClientSettingsPatch({})).not.toHaveProperty("archiveThreadChildren");
+  });
+
+  it.each(["ask", "always-yes", "always-no"])("round-trips the %s mode", (mode) => {
+    const settings = decodeClientSettings({
+      deleteThreadChildren: mode,
+      archiveThreadChildren: mode,
+    });
+    expect(encodeClientSettings(settings).deleteThreadChildren).toBe(mode);
+    expect(encodeClientSettings(settings).archiveThreadChildren).toBe(mode);
+    expect(decodeClientSettingsPatch({ deleteThreadChildren: mode }).deleteThreadChildren).toBe(
+      mode,
+    );
+    expect(decodeClientSettingsPatch({ archiveThreadChildren: mode }).archiveThreadChildren).toBe(
+      mode,
+    );
+  });
+
+  it("rejects modes outside the three states", () => {
+    expect(() => decodeClientSettings({ deleteThreadChildren: "yes" })).toThrow();
+    expect(() => decodeClientSettings({ archiveThreadChildren: true })).toThrow();
+    expect(() => decodeClientSettingsPatch({ deleteThreadChildren: "always" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ archiveThreadChildren: "always" })).toThrow();
+  });
+});
+
 describe("ClientSettings word wrap", () => {
   it("defaults word wrap on", () => {
     expect(decodeClientSettings({}).wordWrap).toBe(true);

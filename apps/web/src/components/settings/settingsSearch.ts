@@ -363,6 +363,18 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["ask before thread chat history"],
   },
   {
+    id: "delete-children-mode",
+    title: "Delete subtasks with parent",
+    to: "/settings/general",
+    searchTerms: ["delegated child threads subtasks cascade together ask always never parent only"],
+  },
+  {
+    id: "archive-children-mode",
+    title: "Archive subtasks with parent",
+    to: "/settings/general",
+    searchTerms: ["delegated child threads subtasks cascade together ask always never parent only"],
+  },
+  {
     id: "quit-confirmation",
     title: "Quit shortcut",
     to: "/settings/general",
