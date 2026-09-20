@@ -45,6 +45,7 @@ import {
   OrchestrationGetSnapshotError,
   OrchestrationSearchThreadsError,
   OrchestrationGetTurnDiffError,
+  OrchestratorMcpFailure,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
   type ProjectEntriesFailure,
@@ -105,11 +106,15 @@ import {
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
+import { handleUiThreadSwitchProvider } from "./orchestration/uiThreadSwitchProvider.ts";
+import * as ProjectionTurns from "./persistence/Services/ProjectionTurns.ts";
+import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns.ts";
 import {
   CalendarEventRepository,
   CalendarEventRepositoryLive,
 } from "./persistence/Services/CalendarEvents.ts";
 import { nextCalendarFireAt } from "./background/CalendarReactor.ts";
+import { loadDelegationPermissionEnvelope } from "./provider/DelegationPermissionEnvelope.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -184,6 +189,9 @@ import * as SessionStore from "./auth/SessionStore.ts";
 import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
 import * as RelayClient from "@t3tools/shared/relayClient";
 const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+// Engine failures from the UI-served `thread.switch-provider` command pass
+// through the dispatch RPC untouched so their codes reach the UI.
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
@@ -536,6 +544,50 @@ const makeWsRpcLayer = (
           command,
           hasClientOrigin ? { origin: clientOrigin } : undefined,
         );
+      // UI-initiated provider switch: served by the orchestrator engine
+      // directly (capability checks and failure codes included), never by
+      // the decider. Engine failures propagate untouched so their codes
+      // reach the UI through the dispatch RPC error union.
+      const serveUiThreadSwitchProvider = (
+        command: Extract<OrchestrationCommand, { readonly type: "thread.switch-provider" }>,
+      ) =>
+        Effect.gen(function* () {
+          const turns = yield* ProjectionTurns.ProjectionTurnRepository;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          // Ordinary-thread switches scope to the thread itself; the engine
+          // needs the serving environment to name that scope.
+          const serverEnvironmentId = yield* serverEnvironment.getEnvironmentId;
+          yield* handleUiThreadSwitchProvider(
+            {
+              dispatch: dispatchFromClient,
+              subscribeDomainEvents: orchestrationEngine.subscribeDomainEvents,
+              getThreadShellById: projectionSnapshotQuery.getThreadShellById,
+              getProjectShellById: projectionSnapshotQuery.getProjectShellById,
+              getThreadDetailById: projectionSnapshotQuery.getThreadDetailById,
+              listTurnsByThreadId: turns.listByThreadId,
+              getProviders: providerRegistry.getProviders,
+              getSettings: serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (error) =>
+                    new OrchestratorMcpFailure({
+                      code: "orchestration_error",
+                      message: `Could not read server settings: ${error instanceof Error ? error.message : String(error)}`,
+                    }),
+                ),
+              ),
+              loadPermissionEnvelope: (input) =>
+                loadDelegationPermissionEnvelope(input).pipe(
+                  Effect.provideService(FileSystem.FileSystem, fileSystem),
+                  Effect.provideService(Path.Path, path),
+                ),
+              now: nowIso,
+            },
+            command,
+            undefined,
+            { serverEnvironmentId },
+          );
+        }).pipe(Effect.provide(ProjectionTurnRepositoryLive));
       const recordClientCommandAnalytics = (command: OrchestrationCommand) => {
         switch (command.type) {
           case "thread.create":
@@ -1836,6 +1888,14 @@ const makeWsRpcLayer = (
             Effect.gen(function* () {
               yield* ProjectCloneTracker.rejectCommandsDuringClone(projectCloneTracker, command);
               const normalizedCommand = yield* normalizeDispatchCommand(command);
+              if (normalizedCommand.type === "thread.switch-provider") {
+                yield* serveUiThreadSwitchProvider(normalizedCommand);
+                yield* recordClientCommandAnalytics(normalizedCommand);
+                // The engine already persisted the switch (meta update plus
+                // lineage event); report the current head sequence as the
+                // dispatch receipt.
+                return { sequence: yield* orchestrationEngine.latestSequence };
+              }
               // Archive removes the thread from the client, so this transport
               // closes its session and terminals after the command lands.
               // Settlement cleanup is driven by thread.settled events in the
@@ -1907,7 +1967,7 @@ const makeWsRpcLayer = (
               return result;
             }).pipe(
               Effect.mapError((cause) =>
-                isOrchestrationDispatchCommandError(cause)
+                isOrchestrationDispatchCommandError(cause) || isOrchestratorMcpFailure(cause)
                   ? cause
                   : new OrchestrationDispatchCommandError({
                       message: "Failed to dispatch orchestration command",

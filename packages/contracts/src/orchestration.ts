@@ -23,7 +23,7 @@ import {
   TrimmedString,
   TurnId,
 } from "./baseSchemas.ts";
-import { ProviderInstanceId } from "./providerInstance.ts";
+import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import {
   PullRequestActor,
   PullRequestChecksState,
@@ -1144,6 +1144,26 @@ const ThreadUnpinCommand = Schema.Struct({
   threadId: ThreadId,
 });
 
+const ThreadSwitchProviderTarget = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  driverKind: ProviderDriverKind,
+  model: TrimmedNonEmptyString.check(Schema.isMaxLength(512)),
+});
+
+/**
+ * UI-initiated provider switch for a delegated thread. Served by the UI
+ * switch handler (which calls the orchestrator `switchProvider` engine
+ * with its capability checks), never by the decider: capability checks
+ * need live provider state the pure decider cannot read.
+ */
+const ThreadSwitchProviderCommand = Schema.Struct({
+  type: Schema.Literal("thread.switch-provider"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  target: ThreadSwitchProviderTarget,
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)),
+});
+
 const ThreadPinReorderCommand = Schema.Struct({
   type: Schema.Literal("thread.pin.reorder"),
   commandId: CommandId,
@@ -1367,6 +1387,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadUnsnoozeCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadSwitchProviderCommand,
   ThreadPinReorderCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,
@@ -1400,6 +1421,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadUnsnoozeCommand,
   ThreadPinCommand,
   ThreadUnpinCommand,
+  ThreadSwitchProviderCommand,
   ThreadPinReorderCommand,
   ThreadActiveReorderCommand,
   ThreadMetaUpdateCommand,

@@ -9,6 +9,8 @@ import {
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpFailure,
+  OrchestratorMcpSwitchProviderInput,
+  OrchestratorMcpSwitchProviderResult,
   OrchestratorMcpTaskResult,
 } from "./orchestratorMcp.ts";
 
@@ -16,6 +18,8 @@ const decodeCapabilities = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesR
 const decodeDelegate = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeFailure = Schema.decodeUnknownSync(OrchestratorMcpFailure);
 const decodeTask = Schema.decodeUnknownSync(OrchestratorMcpTaskResult);
+const decodeSwitchInput = Schema.decodeUnknownSync(OrchestratorMcpSwitchProviderInput);
+const decodeSwitchResult = Schema.decodeUnknownSync(OrchestratorMcpSwitchProviderResult);
 
 const target = {
   providerInstanceId: "claude_work",
@@ -77,14 +81,15 @@ const taskResult = {
 } as const;
 
 describe("orchestrator MCP contracts", () => {
-  it("freezes the accepted five-tool protocol surface", () => {
-    expect(ORCHESTRATOR_MCP_PROTOCOL_VERSION).toBe(2);
+  it("freezes the accepted six-tool protocol surface", () => {
+    expect(ORCHESTRATOR_MCP_PROTOCOL_VERSION).toBe(3);
     expect(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES)).toEqual([
       "orchestrator_capabilities",
       "delegate_task",
       "task_status",
       "task_wait",
       "task_cancel",
+      "switch_provider",
     ]);
   });
 
@@ -255,7 +260,7 @@ describe("orchestrator MCP contracts", () => {
 
   it("decodes fail-closed capability summaries and wait limits", () => {
     const decoded = decodeCapabilities({
-      protocolVersion: 2,
+      protocolVersion: 3,
       parent: {
         environmentId: "environment-1",
         threadId: "parent-thread-1",
@@ -297,6 +302,92 @@ describe("orchestrator MCP contracts", () => {
     expect(decoded.providers[0]?.delegatable).toBe(false);
   });
 
+  it("decodes a provider switch with carried scope", () => {
+    const decoded = decodeSwitchInput({
+      taskId: "child-thread-1",
+      target,
+      reason: "The orchestrator provider hit its usage limit.",
+    });
+
+    expect(decoded.taskId).toBe("child-thread-1");
+    expect(decoded.target.providerInstanceId).toBe("claude_work");
+    expect(decoded.reason).toContain("usage limit");
+
+    const result = decodeSwitchResult({
+      taskId: "child-thread-1",
+      switchedAt: "2026-09-14T10:02:00.000Z",
+      oldProvider: {
+        providerInstanceId: "codex_one",
+        driverKind: "codex",
+        model: "gpt-test",
+      },
+      requested: {
+        ...target,
+        options: [...target.options],
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        providerConfigFingerprint: "sha256:switch-target-config",
+      },
+      reason: "The orchestrator provider hit its usage limit.",
+      scope: { messageCount: 2, pendingCount: 1, lineagePreserved: true },
+      advanced: false,
+      task: taskResult,
+    });
+
+    expect(result.oldProvider.model).toBe("gpt-test");
+    expect(result.scope.lineagePreserved).toBe(true);
+    expect(result.task?.taskId).toBe("child-thread-1");
+    expect(() =>
+      decodeSwitchResult({
+        taskId: "child-thread-1",
+        switchedAt: "2026-09-14T10:02:00.000Z",
+        oldProvider: {
+          providerInstanceId: "codex_one",
+          driverKind: "codex",
+          model: "gpt-test",
+        },
+        requested: {
+          ...target,
+          options: [...target.options],
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          providerConfigFingerprint: "sha256:switch-target-config",
+        },
+        reason: "The orchestrator provider hit its usage limit.",
+        scope: { messageCount: 0, pendingCount: 0, lineagePreserved: false },
+        advanced: false,
+        task: taskResult,
+      }),
+    ).toThrow();
+  });
+
+  it("decodes an ordinary-thread switch with no owned task", () => {
+    const result = decodeSwitchResult({
+      taskId: "thread-1",
+      switchedAt: "2026-09-14T10:02:00.000Z",
+      oldProvider: {
+        providerInstanceId: "codex_one",
+        driverKind: "codex",
+        model: "gpt-test",
+      },
+      requested: {
+        ...target,
+        options: [...target.options],
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        providerConfigFingerprint: "sha256:switch-target-config",
+      },
+      reason: "The orchestrator provider hit its usage limit.",
+      scope: { messageCount: 2, pendingCount: 1, lineagePreserved: true },
+      advanced: false,
+      task: null,
+    });
+
+    expect(result.taskId).toBe("thread-1");
+    expect(result.advanced).toBe(false);
+    expect(result.task).toBeNull();
+  });
+
   it("decodes every typed pre-spawn failure code", () => {
     const codes = [
       "capability_denied",
@@ -311,6 +402,8 @@ describe("orchestrator MCP contracts", () => {
       "idempotency_conflict",
       "task_not_found",
       "task_not_cancellable",
+      "provider_handoff_unsupported",
+      "thread_has_no_history",
       "orchestration_error",
     ] as const;
 

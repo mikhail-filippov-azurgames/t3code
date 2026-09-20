@@ -3,6 +3,8 @@ import {
   EnvironmentId,
   ORCHESTRATION_WS_METHODS,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
   type ClientOrchestrationCommand,
 } from "@t3tools/contracts";
@@ -28,6 +30,7 @@ import {
   reorderActiveThread,
   settleThread,
   stopThreadSession,
+  switchThreadProvider,
   unsettleThread,
 } from "./commands.ts";
 
@@ -191,6 +194,38 @@ describe("environment commands", () => {
           commandId: "unsettle-command",
           threadId: "thread-1",
           reason: "user",
+        },
+      ]);
+    }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
+  );
+
+  it.effect("dispatches a provider switch with the menu-chosen target and reason", () =>
+    Effect.gen(function* () {
+      const dispatched: ClientOrchestrationCommand[] = [];
+      const supervisor = yield* makeSupervisor(dispatched);
+      const result = yield* switchThreadProvider({
+        commandId: CommandId.make("switch-command"),
+        threadId: ThreadId.make("thread-1"),
+        target: {
+          providerInstanceId: ProviderInstanceId.make("codex-default"),
+          driverKind: ProviderDriverKind.make("codex"),
+          model: "gpt-5.3",
+        },
+        reason: "quota exhausted",
+      }).pipe(Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor));
+
+      expect(result).toEqual({ sequence: 1 });
+      expect(dispatched).toEqual([
+        {
+          type: "thread.switch-provider",
+          commandId: "switch-command",
+          threadId: "thread-1",
+          target: {
+            providerInstanceId: "codex-default",
+            driverKind: "codex",
+            model: "gpt-5.3",
+          },
+          reason: "quota exhausted",
         },
       ]);
     }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),

@@ -85,6 +85,7 @@ import {
   ReviewDiffPreviewResult,
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
+import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
 import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -1259,7 +1260,16 @@ const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
 const WsOrchestrationDispatchCommandRpc = Rpc.make(ORCHESTRATION_WS_METHODS.dispatchCommand, {
   payload: ClientOrchestrationCommand,
   success: OrchestrationRpcSchemas.dispatchCommand.output,
-  error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
+  // OrchestratorMcpFailure is surfaced only by the UI-served
+  // `thread.switch-provider` command: the switch handler calls the engine
+  // directly, so its capability checks and failure codes (e.g.
+  // provider_handoff_unsupported, thread_has_no_history) reach the UI
+  // structurally instead of flattened into a dispatch message.
+  error: Schema.Union([
+    OrchestrationDispatchCommandError,
+    EnvironmentAuthorizationError,
+    OrchestratorMcpFailure,
+  ]),
 });
 
 const WsOrchestrationGetWorkflowScriptRpc = Rpc.make(ORCHESTRATION_WS_METHODS.getWorkflowScript, {

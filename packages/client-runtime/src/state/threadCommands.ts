@@ -27,6 +27,7 @@ import {
   type SetThreadInteractionModeInput,
   type SetThreadRuntimeModeInput,
   type PinThreadInput,
+  type SwitchThreadProviderInput,
   type ReorderPinnedThreadInput,
   type ReorderActiveThreadInput,
   type SettleThreadInput,
@@ -51,6 +52,7 @@ import {
   setThreadInteractionMode,
   setThreadRuntimeMode,
   pinThread,
+  switchThreadProvider,
   reorderPinnedThread,
   reorderActiveThread,
   settleThread,
@@ -79,6 +81,7 @@ export type {
   SetThreadInteractionModeInput,
   SetThreadRuntimeModeInput,
   PinThreadInput,
+  SwitchThreadProviderInput,
   ReorderPinnedThreadInput,
   ReorderActiveThreadInput,
   SettleThreadInput,
@@ -161,6 +164,16 @@ export function createThreadEnvironmentAtoms<R, E>(
     unpin: createEnvironmentCommand(runtime, {
       label: "environment-data:commands:thread:unpin",
       execute: (input: UnpinThreadInput) => unpinThread(input),
+      scheduler,
+      concurrency,
+    }),
+    // Single-write on purpose: the engine answers synchronously with the
+    // switch result (or its failure codes), and the shell subscription
+    // carries the new provider — there is no optimistic preview to roll
+    // back like pin/unpin have.
+    switchProvider: createEnvironmentCommand(runtime, {
+      label: "environment-data:commands:thread:switch-provider",
+      execute: (input: SwitchThreadProviderInput) => switchThreadProvider(input),
       scheduler,
       concurrency,
     }),

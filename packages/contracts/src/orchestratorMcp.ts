@@ -5,6 +5,7 @@ import {
   EnvironmentId,
   IsoDateTime,
   MessageId,
+  NonNegativeInt,
   PositiveInt,
   ProjectId,
   ThreadId,
@@ -15,7 +16,7 @@ import { ProviderOptionDescriptor, ProviderOptionSelection } from "./model.ts";
 import { ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
-export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 2 as const;
+export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 3 as const;
 export const ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 export const ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS = 30 * 60 * 1_000;
 export const ORCHESTRATOR_MCP_TOOL_NAMES = {
@@ -24,6 +25,7 @@ export const ORCHESTRATOR_MCP_TOOL_NAMES = {
   taskStatus: "task_status",
   taskWait: "task_wait",
   taskCancel: "task_cancel",
+  switchProvider: "switch_provider",
 } as const;
 
 const BoundedIdempotencyKey = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
@@ -312,6 +314,8 @@ export const OrchestratorMcpFailureCode = Schema.Literals([
   "idempotency_conflict",
   "task_not_found",
   "task_not_cancellable",
+  "provider_handoff_unsupported",
+  "thread_has_no_history",
   "orchestration_error",
 ]);
 export type OrchestratorMcpFailureCode = typeof OrchestratorMcpFailureCode.Type;
@@ -388,6 +392,43 @@ export const OrchestratorMcpTaskWaitResult = OrchestratorMcpTaskResult;
 export type OrchestratorMcpTaskWaitResult = typeof OrchestratorMcpTaskWaitResult.Type;
 export const OrchestratorMcpTaskCancelResult = OrchestratorMcpTaskResult;
 export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelResult.Type;
+
+export const OrchestratorMcpSwitchProviderInput = Schema.Struct({
+  taskId: ThreadId,
+  target: OrchestratorMcpTarget,
+  reason: BoundedReason,
+});
+export type OrchestratorMcpSwitchProviderInput = typeof OrchestratorMcpSwitchProviderInput.Type;
+
+export const OrchestratorMcpSwitchedProvider = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  driverKind: ProviderDriverKind,
+  model: TrimmedNonEmptyString,
+});
+export type OrchestratorMcpSwitchedProvider = typeof OrchestratorMcpSwitchedProvider.Type;
+
+export const OrchestratorMcpSwitchScope = Schema.Struct({
+  messageCount: NonNegativeInt,
+  pendingCount: NonNegativeInt,
+  lineagePreserved: Schema.Literal(true),
+});
+export type OrchestratorMcpSwitchScope = typeof OrchestratorMcpSwitchScope.Type;
+
+export const OrchestratorMcpSwitchProviderResult = Schema.Struct({
+  taskId: ThreadId,
+  switchedAt: IsoDateTime,
+  oldProvider: OrchestratorMcpSwitchedProvider,
+  requested: OrchestratorMcpRequestedIdentity,
+  reason: BoundedReason,
+  scope: OrchestratorMcpSwitchScope,
+  advanced: Schema.Boolean,
+  // Null for an ordinary-thread switch: the thread itself is the scope, it
+  // carries no delegation lineage, so there is no owned task to report.
+  // Delegated switches carry the owned task snapshot here, including when the
+  // completed child thread is being repointed for a future turn.
+  task: Schema.NullOr(OrchestratorMcpTaskResult),
+});
+export type OrchestratorMcpSwitchProviderResult = typeof OrchestratorMcpSwitchProviderResult.Type;
 
 export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFailure>()(
   "OrchestratorMcpFailure",

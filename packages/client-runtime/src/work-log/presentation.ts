@@ -82,6 +82,7 @@ const T3_MCP_TOOL_LABELS: Record<
   delegate_task: ["Delegate", "Delegating", "Delegated", "a child task"],
   task_status: ["Get", "Getting", "Got", "delegated task status"],
   task_cancel: ["Cancel", "Canceling", "Canceled", "delegated task"],
+  switch_provider: ["Switch", "Switching", "Switched", "delegated task provider"],
   schedule_task: ["Schedule", "Scheduling", "Scheduled", "a recurring task"],
   list_scheduled_tasks: ["List", "Listing", "Listed", "scheduled tasks"],
   update_scheduled_task: ["Update", "Updating", "Updated", "a scheduled task"],
