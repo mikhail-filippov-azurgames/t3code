@@ -25,6 +25,10 @@ const make = Effect.gen(function* () {
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.taskCancel(scope, taskId),
       ),
+    switch_provider: (input) =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.switchProvider(scope, input),
+      ),
   });
 });
 

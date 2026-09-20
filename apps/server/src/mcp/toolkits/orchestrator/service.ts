@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 import {
   CommandId,
   EventId,
+  isProviderDriverKind,
   MessageId,
   ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
   ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
@@ -23,6 +24,9 @@ import {
   type OrchestratorMcpPermissionEnvelopeSummary,
   type OrchestratorMcpProviderCapability,
   type OrchestratorMcpRequestedIdentity,
+  type OrchestratorMcpSwitchProviderInput,
+  type OrchestratorMcpSwitchProviderResult,
+  type OrchestratorMcpSwitchedProvider,
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpTaskResult,
   type OrchestratorMcpTaskWaitResult,
@@ -64,6 +68,8 @@ const DELEGATION_CANCEL_REQUESTED_ACTIVITY = "delegation.cancel-requested";
 const DELEGATION_CANCELLED_ACTIVITY = "delegation.cancelled";
 const DELEGATION_PROVIDER_BOUND_ACTIVITY = "delegation.provider-bound";
 const DELEGATION_MODEL_OBSERVED_ACTIVITY = "delegation.model-observed";
+const DELEGATION_COMPLETED_ACTIVITY = "delegation.completed";
+const DELEGATION_PROVIDER_SWITCHED_ACTIVITY = "delegation.provider-switched";
 const DELEGATION_ACTIVITY_VERSION = 1 as const;
 const TASK_ACTIVITY_KINDS = [
   DELEGATION_CREATED_ACTIVITY,
@@ -71,6 +77,8 @@ const TASK_ACTIVITY_KINDS = [
   DELEGATION_CANCELLED_ACTIVITY,
   DELEGATION_PROVIDER_BOUND_ACTIVITY,
   DELEGATION_MODEL_OBSERVED_ACTIVITY,
+  DELEGATION_COMPLETED_ACTIVITY,
+  DELEGATION_PROVIDER_SWITCHED_ACTIVITY,
   "provider.turn.start.failed",
   "provider.turn.interrupt.failed",
   "approval.requested",
@@ -107,12 +115,20 @@ interface DelegationCreatedPayload {
   readonly worktreePath: string;
 }
 
-interface ParentContext {
+interface TargetParentContext {
   readonly thread: OrchestrationThreadShell;
   readonly project: OrchestrationProjectShell;
-  readonly activeTurnId: TurnId;
   readonly scope: NonNullable<McpInvocationScope["orchestration"]>;
 }
+
+interface ParentContext extends TargetParentContext {
+  readonly activeTurnId: TurnId;
+}
+
+type TargetResolutionRequest = Pick<
+  OrchestratorMcpDelegateTaskInput,
+  "target" | "runtimeMode" | "interactionMode"
+>;
 
 interface DelegationProviderBoundPayload {
   readonly version: typeof DELEGATION_ACTIVITY_VERSION;
@@ -132,6 +148,27 @@ interface DelegationModelObservedPayload {
   readonly model: string;
   readonly evidence: "provider-executed" | "provider-rerouted";
   readonly observedAt: string;
+}
+
+interface DelegationProviderSwitchedPayload {
+  readonly version: typeof DELEGATION_ACTIVITY_VERSION;
+  readonly taskId: ThreadId;
+  // Null for an ordinary-thread switch: the thread carries no delegated
+  // message, the scope is the thread itself.
+  readonly delegatedMessageId: MessageId | null;
+  readonly oldProvider: {
+    readonly providerInstanceId: OrchestratorMcpRequestedIdentity["providerInstanceId"];
+    readonly driverKind: OrchestratorMcpRequestedIdentity["driverKind"];
+    readonly model: string;
+  };
+  readonly requested: OrchestratorMcpRequestedIdentity;
+  readonly reason: string;
+  readonly scope: {
+    readonly messageCount: number;
+    readonly pendingCount: number;
+    readonly lineagePreserved: true;
+  };
+  readonly switchedAt: string;
 }
 
 interface ResolvedTarget {
@@ -178,6 +215,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     taskId: ThreadId,
   ) => Effect.Effect<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure>;
+  readonly switchProvider: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpSwitchProviderInput,
+  ) => Effect.Effect<OrchestratorMcpSwitchProviderResult, OrchestratorMcpFailure>;
 }
 
 export class OrchestratorMcpService extends Context.Service<
@@ -421,7 +462,7 @@ function providerUnavailableReason(provider: ServerProvider): string | null {
   return null;
 }
 
-function requestedModelSelection(input: OrchestratorMcpDelegateTaskInput): ModelSelection {
+function requestedModelSelection(input: TargetResolutionRequest): ModelSelection {
   return {
     instanceId: input.target.providerInstanceId,
     model: input.target.model,
@@ -467,9 +508,12 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
   // reasons mean the credential no longer matches this thread.
   const parentNotActive = (reason: string, message: string, hint: string) =>
     failure("parent_not_active", `${message} [reason=${reason}] ${hint}`);
-  const requireActiveParent = (
+  // Parent shells without an active-turn requirement. taskCancel,
+  // taskStatus/taskWait, and switchProvider only need capability plus
+  // ownership: the parent may legitimately be waiting on the child.
+  const loadSwitchParent = (
     scope: McpInvocationScope,
-  ): Effect.Effect<ParentContext, OrchestratorMcpFailure> =>
+  ): Effect.Effect<TargetParentContext, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const frozen = yield* requireCapability(scope);
       const threadOption = yield* loadThreadShell(scope.threadId);
@@ -490,6 +534,30 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         );
       }
       const project = projectOption.value;
+      const worktreePath = thread.worktreePath ?? project.workspaceRoot;
+      if (
+        frozen.projectId !== thread.projectId ||
+        frozen.runtimeMode !== thread.runtimeMode ||
+        frozen.interactionMode !== thread.interactionMode ||
+        frozen.branch !== thread.branch ||
+        frozen.workspaceRoot !== project.workspaceRoot ||
+        frozen.worktreePath !== worktreePath
+      ) {
+        return yield* parentNotActive(
+          "parent_scope_drift",
+          "The active parent no longer matches the permission scope frozen for this MCP session.",
+          "The thread moved project, mode, branch, or worktree after this credential was issued. Do not retry in a loop; report reason parent_scope_drift.",
+        );
+      }
+      return { thread, project, scope: frozen };
+    });
+
+  const requireActiveParent = (
+    scope: McpInvocationScope,
+  ): Effect.Effect<ParentContext, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      const base = yield* loadSwitchParent(scope);
+      const thread = base.thread;
       const activeTurnId = thread.session?.activeTurnId;
       if (activeTurnId === null || activeTurnId === undefined) {
         return yield* parentNotActive(
@@ -519,28 +587,13 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           "The thread moved to another provider instance, so this credential is stale. Do not retry in a loop; report reason parent_session_instance_changed.",
         );
       }
-      const worktreePath = thread.worktreePath ?? project.workspaceRoot;
-      if (
-        frozen.projectId !== thread.projectId ||
-        frozen.runtimeMode !== thread.runtimeMode ||
-        frozen.interactionMode !== thread.interactionMode ||
-        frozen.branch !== thread.branch ||
-        frozen.workspaceRoot !== project.workspaceRoot ||
-        frozen.worktreePath !== worktreePath
-      ) {
-        return yield* parentNotActive(
-          "parent_scope_drift",
-          "The active parent no longer matches the permission scope frozen for this MCP session.",
-          "The thread moved project, mode, branch, or worktree after this credential was issued. Do not retry in a loop; report reason parent_scope_drift.",
-        );
-      }
-      return { thread, project, activeTurnId, scope: frozen };
+      return { ...base, activeTurnId };
     });
 
   const resolveTarget = (
     scope: McpInvocationScope,
-    parent: ParentContext,
-    input: OrchestratorMcpDelegateTaskInput,
+    parent: TargetParentContext,
+    input: TargetResolutionRequest,
   ): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
     Effect.gen(function* () {
       const providers = yield* dependencies.getProviders;
@@ -643,6 +696,261 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           : orchestrationFailure("resolve provider target")(error),
       ),
     );
+
+  // Capability gate for a provider switch. Unlike resolveTarget (which keeps
+  // delegateTask's historical codes), an existing-but-unusable target is an
+  // explicit handoff refusal: the provider cannot accept the thread's
+  // history, pending queue, and lineage.
+  const resolveSwitchTarget = (
+    scope: McpInvocationScope,
+    parent: TargetParentContext,
+    child: OrchestrationThread,
+    target: OrchestratorMcpDelegateTaskInput["target"],
+  ): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
+    Effect.gen(function* () {
+      const providers = yield* dependencies.getProviders;
+      const provider = providers.find(
+        (candidate) => candidate.instanceId === target.providerInstanceId,
+      );
+      if (provider === undefined) {
+        return yield* failure(
+          "provider_unavailable",
+          `Provider instance ${target.providerInstanceId} is not registered.`,
+        );
+      }
+      if (provider.driver !== target.driverKind) {
+        return yield* failure(
+          "provider_unavailable",
+          `Provider instance ${provider.instanceId} uses driver ${provider.driver}, not ${target.driverKind}.`,
+        );
+      }
+      const unavailableReason = providerUnavailableReason(provider);
+      if (unavailableReason !== null) {
+        return yield* failure(
+          "provider_handoff_unsupported",
+          `Provider instance ${provider.instanceId} cannot accept a handoff: ${unavailableReason}`,
+        );
+      }
+      const model = provider.models.find((candidate) => candidate.slug === target.model);
+      if (model === undefined) {
+        return yield* failure(
+          "model_unavailable",
+          `Model ${target.model} is not advertised by provider ${provider.instanceId}.`,
+        );
+      }
+      const invalidOptions = validateOptions(
+        target.options ?? [],
+        model.capabilities?.optionDescriptors,
+      );
+      if (invalidOptions.length > 0) {
+        return yield* failure("invalid_model_options", invalidOptions.join(" "));
+      }
+      const settings = yield* dependencies.getSettings;
+      const instanceConfig = deriveProviderInstanceConfigMap(settings)[target.providerInstanceId];
+      if (instanceConfig === undefined || instanceConfig.driver !== target.driverKind) {
+        return yield* failure(
+          "provider_unavailable",
+          `Provider instance ${target.providerInstanceId} has no matching effective configuration.`,
+        );
+      }
+      const runtimeMode = child.runtimeMode;
+      const interactionMode = child.interactionMode;
+      const permissionEnvelope = yield* dependencies.loadPermissionEnvelope({
+        driverKind: target.driverKind,
+        runtimeMode,
+        interactionMode,
+        instanceConfig,
+        environment: process.env,
+        workspaceRoot: parent.project.workspaceRoot,
+        worktreePath: parent.scope.worktreePath,
+        branch: parent.thread.branch,
+        t3McpCapabilities: scope.capabilities,
+      });
+      const comparison = compareDelegationPermissionEnvelopes({
+        parent: parent.scope.permissionEnvelope,
+        target: permissionEnvelope,
+        parentInteractionMode: parent.thread.interactionMode,
+        targetInteractionMode: interactionMode,
+        parentWorkspace: {
+          projectId: parent.thread.projectId,
+          workspaceRoot: parent.project.workspaceRoot,
+          worktreePath: parent.scope.worktreePath,
+          branch: parent.thread.branch,
+        },
+        targetWorkspace: {
+          projectId: parent.thread.projectId,
+          workspaceRoot: parent.project.workspaceRoot,
+          worktreePath: parent.scope.worktreePath,
+          branch: parent.thread.branch,
+        },
+      });
+      if (!comparison.allowed) {
+        return yield* failure(
+          "provider_handoff_unsupported",
+          `Provider instance ${provider.instanceId} cannot accept a handoff: ${comparison.reason}`,
+        );
+      }
+      if (permissionEnvelope.status !== "verified") {
+        return yield* failure(
+          "provider_handoff_unsupported",
+          `Provider instance ${provider.instanceId} cannot accept a handoff: ${permissionEnvelope.reason}`,
+        );
+      }
+      return {
+        provider,
+        instanceConfig,
+        modelSelection: requestedModelSelection({ target }),
+        requested: {
+          providerInstanceId: target.providerInstanceId,
+          driverKind: target.driverKind,
+          model: target.model,
+          options: target.options ?? [],
+          runtimeMode,
+          interactionMode,
+          providerConfigFingerprint: permissionEnvelope.fingerprint,
+        },
+        permissionEnvelope,
+      };
+    }).pipe(
+      Effect.mapError((error) =>
+        isOrchestratorMcpFailure(error)
+          ? error
+          : orchestrationFailure("resolve switch provider target")(error),
+      ),
+    );
+
+  // Identity of the provider an ordinary thread runs on, for the switch
+  // record. The session owns it; the stored model selection is the fallback
+  // when the session predates the instance id. Unlike the target, the old
+  // provider is never availability-gated — an exhausted provider is the
+  // reason to switch.
+  const resolveOrdinaryOldProvider = Effect.fn("OrchestratorMcpService.resolveOrdinaryOldProvider")(
+    function* (
+      thread: OrchestrationThread,
+      session: NonNullable<OrchestrationThreadShell["session"]>,
+    ) {
+      const providers = yield* dependencies.getProviders;
+      const instanceId = session.providerInstanceId ?? thread.modelSelection.instanceId;
+      const driverKind =
+        providers.find((candidate) => candidate.instanceId === instanceId)?.driver ??
+        (isProviderDriverKind(session.providerName) ? session.providerName : undefined);
+      if (driverKind === undefined) {
+        return yield* failure(
+          "orchestration_error",
+          `Could not determine the thread's current provider for instance ${instanceId}.`,
+        );
+      }
+      return {
+        providerInstanceId: instanceId,
+        driverKind,
+        model: thread.modelSelection.model,
+      };
+    },
+  );
+
+  // Provider switch for an ordinary (non-delegated) thread: the scope is the
+  // thread itself, so no delegation lineage is required. Message history and
+  // the pending queue are preserved by construction — the switch only
+  // repoints the thread's default provider and records the switch. Failure
+  // codes match the delegated path. The switch never starts a turn: queued
+  // and running work drains on the old provider, the next send uses the new
+  // one, and the result carries no owned task.
+  const switchOrdinaryThread = Effect.fn("OrchestratorMcpService.switchOrdinaryThread")(function* (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpSwitchProviderInput,
+    thread: OrchestrationThread,
+  ) {
+    const parent = yield* loadSwitchParent(scope);
+    const session = parent.thread.session;
+    if (session === null || session === undefined) {
+      return yield* parentNotActive(
+        "parent_no_session",
+        "Switching providers requires a provider session on this thread.",
+        "Start the thread with a provider first; a thread that never ran has no provider to switch from.",
+      );
+    }
+    const target = yield* resolveSwitchTarget(scope, parent, thread, input.target);
+    // The history is the handoff: a thread with no messages cannot be
+    // carried to a new provider and cannot be advanced.
+    if (thread.messages.length === 0) {
+      return yield* failure(
+        "thread_has_no_history",
+        "The thread has no message history to hand off. Send a message first, then switch providers.",
+      );
+    }
+    const oldProvider = yield* resolveOrdinaryOldProvider(thread, session);
+    const switchedAt = yield* dependencies.now;
+    yield* dependencies
+      .dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make(
+          deterministicId(
+            "mcp-provider-switch-meta",
+            input.taskId,
+            target.requested.providerConfigFingerprint,
+          ),
+        ),
+        threadId: input.taskId,
+        modelSelection: target.modelSelection,
+      })
+      .pipe(Effect.mapError(orchestrationFailure("repoint thread provider")));
+    const rows = yield* listTurns(input.taskId);
+    const pendingCount = rows.filter((row) => row.turnId === null).length;
+    const switchScope = {
+      messageCount: thread.messages.length,
+      pendingCount,
+      lineagePreserved: true as const,
+    };
+    const payload: DelegationProviderSwitchedPayload = {
+      version: DELEGATION_ACTIVITY_VERSION,
+      taskId: input.taskId,
+      delegatedMessageId: null,
+      oldProvider,
+      requested: target.requested,
+      reason: input.reason,
+      scope: switchScope,
+      switchedAt,
+    };
+    yield* dependencies
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(
+          deterministicId(
+            "mcp-provider-switch-lineage",
+            input.taskId,
+            target.requested.providerConfigFingerprint,
+          ),
+        ),
+        threadId: input.taskId,
+        activity: {
+          id: EventId.make(
+            deterministicId(
+              "mcp-provider-switch-lineage",
+              input.taskId,
+              target.requested.providerConfigFingerprint,
+            ),
+          ),
+          tone: "info",
+          kind: DELEGATION_PROVIDER_SWITCHED_ACTIVITY,
+          summary: "Thread switched provider",
+          payload,
+          turnId: thread.latestTurn?.turnId ?? null,
+          createdAt: switchedAt,
+        },
+        createdAt: switchedAt,
+      })
+      .pipe(Effect.mapError(orchestrationFailure("persist provider-switch lineage")));
+    return {
+      taskId: input.taskId,
+      switchedAt,
+      oldProvider,
+      requested: target.requested,
+      reason: input.reason,
+      scope: switchScope,
+      advanced: false,
+      task: null,
+    };
+  });
 
   const readOwnedTask = (
     scope: McpInvocationScope,
@@ -1376,6 +1684,174 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           .pipe(Effect.mapError(orchestrationFailure("interrupt delegated provider turn")));
         return yield* readOwnedTask(scope, taskId);
       }),
+    switchProvider: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const threadOption = yield* loadThreadDetail(input.taskId);
+        if (Option.isNone(threadOption)) {
+          return yield* failure("task_not_found", "The delegated task was not found.");
+        }
+        const thread = threadOption.value;
+        const lineage = findLineage(thread);
+        if (
+          lineage === null ||
+          lineage.taskId !== input.taskId ||
+          lineage.childThreadId !== input.taskId ||
+          lineage.parentThreadId !== scope.threadId ||
+          lineage.parentEnvironmentId !== scope.environmentId
+        ) {
+          // No owned delegation lineage. An ordinary thread switches itself
+          // (task = scope thread, no lineage); anything else stays hidden
+          // behind task_not_found so task existence never leaks across
+          // ownership.
+          if (input.taskId !== scope.threadId || lineage !== null) {
+            return yield* failure("task_not_found", "The delegated task was not found.");
+          }
+          return yield* switchOrdinaryThread(scope, input, thread);
+        }
+        const current = yield* readOwnedTask(scope, input.taskId);
+        // A completed delegated turn still owns a live child thread: switching
+        // it repoints the provider used by the next child turn. It must not
+        // replay the already-completed work. Cancellation remains terminal so
+        // a provider switch cannot accidentally resurrect a cancelled task.
+        if (current.status === "cancelled") {
+          return yield* failure(
+            "task_not_cancellable",
+            "A cancelled delegated task cannot switch providers.",
+          );
+        }
+        const parent = yield* loadSwitchParent(scope);
+        const target = yield* resolveSwitchTarget(scope, parent, thread, input.target);
+        // The original prompt survives only as fingerprints in lineage, so a
+        // thread with no messages cannot be carried to a new provider and
+        // cannot be advanced: refuse instead of recording a no-op switch.
+        if (thread.messages.length === 0) {
+          return yield* failure(
+            "thread_has_no_history",
+            "The delegated thread has no message history to hand off. Create a fresh delegation instead.",
+          );
+        }
+        const switchedAt = yield* dependencies.now;
+        const oldProvider = {
+          providerInstanceId: lineage.requested.providerInstanceId,
+          driverKind: lineage.requested.driverKind,
+          model: lineage.requested.model,
+        };
+        yield* dependencies
+          .dispatch({
+            type: "thread.meta.update",
+            commandId: CommandId.make(
+              deterministicId(
+                "mcp-provider-switch-meta",
+                input.taskId,
+                target.requested.providerConfigFingerprint,
+              ),
+            ),
+            threadId: input.taskId,
+            modelSelection: target.modelSelection,
+          })
+          .pipe(Effect.mapError(orchestrationFailure("repoint delegated thread provider")));
+        const rows = yield* listTurns(input.taskId);
+        const matchingRows = rows.filter(
+          (row) => row.pendingMessageId === lineage.delegatedMessageId,
+        );
+        const concrete = matchingRows.find(
+          (row): row is ProjectionTurn & { readonly turnId: TurnId } => row.turnId !== null,
+        );
+        const pendingCount = matchingRows.filter((row) => row.turnId === null).length;
+        const switchScope = {
+          messageCount: thread.messages.length,
+          pendingCount,
+          lineagePreserved: true as const,
+        };
+        const payload: DelegationProviderSwitchedPayload = {
+          version: DELEGATION_ACTIVITY_VERSION,
+          taskId: input.taskId,
+          delegatedMessageId: lineage.delegatedMessageId,
+          oldProvider,
+          requested: target.requested,
+          reason: input.reason,
+          scope: switchScope,
+          switchedAt,
+        };
+        yield* dependencies
+          .dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(
+              deterministicId(
+                "mcp-provider-switch-lineage",
+                input.taskId,
+                target.requested.providerConfigFingerprint,
+              ),
+            ),
+            threadId: input.taskId,
+            activity: {
+              id: EventId.make(
+                deterministicId(
+                  "mcp-provider-switch-lineage",
+                  input.taskId,
+                  target.requested.providerConfigFingerprint,
+                ),
+              ),
+              tone: "info",
+              kind: DELEGATION_PROVIDER_SWITCHED_ACTIVITY,
+              summary: "Delegated task switched provider",
+              payload,
+              turnId: concrete?.turnId ?? null,
+              createdAt: switchedAt,
+            },
+            createdAt: switchedAt,
+          })
+          .pipe(Effect.mapError(orchestrationFailure("persist provider-switch lineage")));
+        // Advance only when nothing is queued or bound yet: the delegated
+        // turn was rejected or suppressed before it could start, and the
+        // stored prompt is replayed on the new provider. A queued or running
+        // turn is never restarted; it drains on the old provider.
+        let advanced = false;
+        if (concrete === undefined && pendingCount === 0) {
+          const delegatedMessage = thread.messages.find(
+            (message) => message.id === lineage.delegatedMessageId && message.role === "user",
+          );
+          if (delegatedMessage !== undefined) {
+            yield* dependencies
+              .dispatch({
+                type: "thread.turn.start",
+                commandId: CommandId.make(
+                  deterministicId(
+                    "mcp-provider-switch-start",
+                    input.taskId,
+                    target.requested.providerConfigFingerprint,
+                  ),
+                ),
+                threadId: input.taskId,
+                message: {
+                  messageId: lineage.delegatedMessageId,
+                  role: "user",
+                  text: delegatedMessage.text,
+                  attachments: [],
+                },
+                modelSelection: target.modelSelection,
+                runtimeMode: lineage.requested.runtimeMode,
+                interactionMode: lineage.requested.interactionMode,
+                delegationConfigFingerprint: target.requested.providerConfigFingerprint,
+                createdAt: switchedAt,
+              })
+              .pipe(Effect.mapError(orchestrationFailure("start switched provider turn")));
+            advanced = true;
+          }
+        }
+        const task = yield* readOwnedTask(scope, input.taskId);
+        return {
+          taskId: input.taskId,
+          switchedAt,
+          oldProvider,
+          requested: target.requested,
+          reason: input.reason,
+          scope: switchScope,
+          advanced,
+          task,
+        };
+      }),
   };
 }
 
@@ -1410,6 +1886,18 @@ const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(OrchestratorMcpService, make);
+
+/**
+ * Build the orchestrator service from explicit dependencies without going
+ * through the Layer stack. The UI `thread.switch-provider` dispatch handler
+ * serves the same `switchProvider` engine outside an MCP session, so it
+ * constructs the service directly from the WS handler's services.
+ */
+export function createOrchestratorMcpService(
+  dependencies: OrchestratorMcpDependencies,
+): OrchestratorMcpServiceShape {
+  return makeService(dependencies);
+}
 
 export const __testing = {
   makeService,

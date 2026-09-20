@@ -15,6 +15,7 @@ import {
   type OrchestrationThread,
   type OrchestrationThreadShell,
   type OrchestratorMcpDelegateTaskInput,
+  type OrchestratorMcpSwitchProviderInput,
   type ProviderInstanceConfig,
   type RuntimeMode,
   type ServerProvider,
@@ -99,6 +100,8 @@ const legacyProvider = {
   ...provider,
   instanceId: legacyProviderInstanceId,
 } as ServerProvider;
+
+const secondProviderInstanceId = ProviderInstanceId.make("codex_two");
 
 function parentShell(): OrchestrationThreadShell {
   return {
@@ -194,6 +197,21 @@ const delegateInput = (overrides: Partial<OrchestratorMcpDelegateTaskInput> = {}
     ...overrides,
   }) satisfies OrchestratorMcpDelegateTaskInput;
 
+const switchInput = (
+  taskId: ThreadId,
+  overrides: Partial<OrchestratorMcpSwitchProviderInput> = {},
+) =>
+  ({
+    taskId,
+    target: {
+      providerInstanceId: secondProviderInstanceId,
+      driverKind,
+      model: "gpt-test",
+    },
+    reason: "The orchestrator provider hit its usage limit.",
+    ...overrides,
+  }) satisfies OrchestratorMcpSwitchProviderInput;
+
 function emptyChild(
   command: Extract<OrchestrationCommand, { readonly type: "thread.create" }>,
 ): OrchestrationThread {
@@ -215,6 +233,60 @@ function emptyChild(
     session: null,
     createdAt: command.createdAt,
     updatedAt: command.createdAt,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    deletedAt: null,
+  } as OrchestrationThread;
+}
+
+function ordinaryThreadDetail(): OrchestrationThread {
+  const shell = parentShell();
+  const turnId = TurnId.make("ordinary-turn");
+  return {
+    id: parentThreadId,
+    projectId,
+    title: "Ordinary",
+    modelSelection: { instanceId: providerInstanceId, model: "gpt-test" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: "main",
+    worktreePath: null,
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt: now,
+      startedAt: now,
+      completedAt: now,
+      assistantMessageId: null,
+    },
+    messages: [
+      {
+        id: MessageId.make("ordinary-user-1"),
+        role: "user",
+        text: "First.",
+        turnId,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: MessageId.make("ordinary-assistant-1"),
+        role: "assistant",
+        text: "Done.",
+        turnId,
+        streaming: false,
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    activities: [],
+    checkpoints: [],
+    proposedPlans: [],
+    pullRequests: [],
+    session: shell.session,
+    createdAt: now,
+    updatedAt: now,
     archivedAt: null,
     settledOverride: null,
     settledAt: null,
@@ -244,6 +316,8 @@ function pendingTurn(threadId: ThreadId, messageId: MessageId): ProjectionTurn {
 interface HarnessOptions {
   readonly settingsSequence?: ReadonlyArray<ProviderInstanceConfig>;
   readonly useLegacyProviderConfig?: boolean;
+  readonly includeSecondProvider?: boolean;
+  readonly disableSecondProvider?: boolean;
   readonly parentRuntimeMode?: RuntimeMode;
   readonly interruptOutcomes?: ReadonlyArray<"failure" | "success">;
   readonly failAfterOnce?: "thread.create" | "thread.activity.append";
@@ -432,7 +506,22 @@ function makeHarness(options: HarnessOptions = {}): {
         });
       }),
     listTurnsByThreadId: ({ threadId }) => Effect.succeed(turns.get(threadId) ?? []),
-    getProviders: Effect.succeed([options.useLegacyProviderConfig ? legacyProvider : provider]),
+    getProviders: Effect.succeed(
+      options.useLegacyProviderConfig
+        ? [legacyProvider]
+        : [
+            provider,
+            ...(options.includeSecondProvider || options.disableSecondProvider
+              ? [
+                  {
+                    ...provider,
+                    instanceId: secondProviderInstanceId,
+                    enabled: !options.disableSecondProvider,
+                  } as ServerProvider,
+                ]
+              : []),
+          ],
+    ),
     getSettings: Effect.sync(() => {
       const sequence = options.settingsSequence ?? [instanceConfig];
       const selected = sequence[Math.min(settingsRead, sequence.length - 1)]!;
@@ -445,7 +534,12 @@ function makeHarness(options: HarnessOptions = {}): {
         },
         providerInstances: options.useLegacyProviderConfig
           ? {}
-          : { [providerInstanceId]: selected },
+          : {
+              [providerInstanceId]: selected,
+              ...((options.includeSecondProvider || options.disableSecondProvider
+                ? { [secondProviderInstanceId]: selected }
+                : {}) as Record<string, ProviderInstanceConfig>),
+            },
       } satisfies ServerSettings;
     }),
     loadPermissionEnvelope: (input) =>
@@ -1009,6 +1103,285 @@ describe("OrchestratorMcpService", () => {
         .taskStatus(foreignScope, delegated.taskId)
         .pipe(Effect.flip);
       expect(error.code).toBe("task_not_found");
+    }),
+  );
+
+  it.effect("switches a live delegated thread without losing work", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const childBefore = harness.children.get(delegated.taskId)!;
+
+      const switched = yield* harness.service.switchProvider(scope, switchInput(delegated.taskId));
+
+      expect(switched.taskId).toBe(delegated.taskId);
+      expect(switched.oldProvider).toMatchObject({
+        providerInstanceId,
+        driverKind,
+        model: "gpt-test",
+      });
+      expect(switched.requested.providerInstanceId).toBe(secondProviderInstanceId);
+      expect(switched.reason).toContain("usage limit");
+      expect(switched.scope).toMatchObject({
+        messageCount: 1,
+        pendingCount: 1,
+        lineagePreserved: true,
+      });
+      expect(switched.advanced).toBe(false);
+      expect(switched.task!.status).toBe("queued");
+      expect(harness.dispatched.map(({ type }) => type)).toEqual([
+        "thread.create",
+        "thread.activity.append",
+        "thread.turn.start",
+        "thread.meta.update",
+        "thread.activity.append",
+      ]);
+      const meta = harness.dispatched.find(({ type }) => type === "thread.meta.update");
+      expect(meta).toMatchObject({
+        threadId: delegated.taskId,
+        modelSelection: { instanceId: secondProviderInstanceId, model: "gpt-test" },
+      });
+      // Shell identity is untouched: same thread, original lineage intact.
+      const child = harness.children.get(delegated.taskId)!;
+      expect(child.id).toBe(childBefore.id);
+      expect(child.projectId).toBe(childBefore.projectId);
+      expect(child.activities.filter(({ kind }) => kind === "delegation.created")).toHaveLength(1);
+      expect(
+        child.activities.find(({ kind }) => kind === "delegation.created")?.payload,
+      ).toMatchObject({ requested: { providerInstanceId } });
+      expect(
+        child.activities.find(({ kind }) => kind === "delegation.provider-switched")?.payload,
+      ).toMatchObject({
+        version: 1,
+        taskId: delegated.taskId,
+        delegatedMessageId: delegated.lineage.delegatedMessageId,
+        oldProvider: { providerInstanceId, driverKind, model: "gpt-test" },
+        requested: { providerInstanceId: secondProviderInstanceId },
+        reason: "The orchestrator provider hit its usage limit.",
+        scope: { messageCount: 1, pendingCount: 1, lineagePreserved: true },
+      });
+      // The queued delegated turn is left alone to drain on the old provider.
+      expect(harness.dispatched.filter(({ type }) => type === "thread.turn.start")).toHaveLength(1);
+    }),
+  );
+
+  it.effect("switches a completed delegated thread for future turns", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      bindDelegatedTurn(
+        harness,
+        delegated.taskId,
+        delegated.lineage.delegatedMessageId,
+        "completed",
+      );
+
+      const switched = yield* harness.service.switchProvider(scope, switchInput(delegated.taskId));
+
+      expect(switched.advanced).toBe(false);
+      expect(switched.task?.status).toBe("completed");
+      expect(switched.requested.providerInstanceId).toBe(secondProviderInstanceId);
+      expect(harness.dispatched.map(({ type }) => type)).toEqual([
+        "thread.create",
+        "thread.activity.append",
+        "thread.turn.start",
+        "thread.meta.update",
+        "thread.activity.append",
+      ]);
+      expect(harness.dispatched.filter(({ type }) => type === "thread.turn.start")).toHaveLength(1);
+      expect(
+        harness.children
+          .get(delegated.taskId)
+          ?.activities.some(({ kind }) => kind === "delegation.provider-switched"),
+      ).toBe(true);
+    }),
+  );
+
+  it.effect("refuses a switch to a provider that cannot accept the handoff", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ disableSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service
+        .switchProvider(scope, switchInput(delegated.taskId))
+        .pipe(Effect.flip);
+      expect(error.code).toBe("provider_handoff_unsupported");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
+      const child = harness.children.get(delegated.taskId)!;
+      expect(child.activities.some(({ kind }) => kind === "delegation.provider-switched")).toBe(
+        false,
+      );
+    }),
+  );
+
+  it.effect("refuses a switch when the thread has no history to carry", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const child = harness.children.get(delegated.taskId)!;
+      harness.children.set(delegated.taskId, { ...child, messages: [] });
+      harness.turns.set(delegated.taskId, []);
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service
+        .switchProvider(scope, switchInput(delegated.taskId))
+        .pipe(Effect.flip);
+      expect(error.code).toBe("thread_has_no_history");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
+    }),
+  );
+
+  it.effect("advances a suppressed delegated turn on the new provider", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      // The delegated turn was rejected before it could queue; the stored
+      // prompt is the only history and must be replayed, not restarted.
+      harness.turns.set(delegated.taskId, []);
+
+      const switched = yield* harness.service.switchProvider(scope, switchInput(delegated.taskId));
+
+      expect(switched.advanced).toBe(true);
+      expect(switched.scope).toMatchObject({
+        messageCount: 1,
+        pendingCount: 0,
+        lineagePreserved: true,
+      });
+      const starts = harness.dispatched.filter(({ type }) => type === "thread.turn.start");
+      expect(starts).toHaveLength(2);
+      const replay = starts[1];
+      expect(replay?.type).toBe("thread.turn.start");
+      if (replay?.type === "thread.turn.start") {
+        expect(replay.message.messageId).toBe(delegated.lineage.delegatedMessageId);
+        expect(replay.message.text).toBe("Implement the accepted widget contract.");
+        expect(replay.modelSelection).toMatchObject({
+          instanceId: secondProviderInstanceId,
+          model: "gpt-test",
+        });
+      }
+    }),
+  );
+
+  it.effect("switches an ordinary thread with a session without lineage", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const before = ordinaryThreadDetail();
+      harness.children.set(parentThreadId, before);
+      const queued = pendingTurn(parentThreadId, MessageId.make("ordinary-pending-1"));
+      harness.turns.set(parentThreadId, [queued]);
+
+      const switched = yield* harness.service.switchProvider(scope, switchInput(parentThreadId));
+
+      expect(switched.taskId).toBe(parentThreadId);
+      expect(switched.oldProvider).toMatchObject({
+        providerInstanceId,
+        driverKind,
+        model: "gpt-test",
+      });
+      expect(switched.requested.providerInstanceId).toBe(secondProviderInstanceId);
+      expect(switched.reason).toContain("usage limit");
+      expect(switched.scope).toMatchObject({
+        messageCount: 2,
+        pendingCount: 1,
+        lineagePreserved: true,
+      });
+      // An ordinary switch never starts a turn and carries no owned task:
+      // queued work drains on the old provider, the next send uses the new one.
+      expect(switched.advanced).toBe(false);
+      expect(switched.task).toBeNull();
+      expect(harness.dispatched.map(({ type }) => type)).toEqual([
+        "thread.meta.update",
+        "thread.activity.append",
+      ]);
+      const meta = harness.dispatched.find(({ type }) => type === "thread.meta.update");
+      expect(meta).toMatchObject({
+        threadId: parentThreadId,
+        modelSelection: { instanceId: secondProviderInstanceId, model: "gpt-test" },
+      });
+      const record = harness.dispatched.find(({ type }) => type === "thread.activity.append");
+      expect(record?.type).toBe("thread.activity.append");
+      if (record?.type === "thread.activity.append") {
+        expect(record.threadId).toBe(parentThreadId);
+        expect(record.activity.kind).toBe("delegation.provider-switched");
+        expect(record.activity.summary).toBe("Thread switched provider");
+        expect(record.activity.payload).toMatchObject({
+          version: 1,
+          taskId: parentThreadId,
+          delegatedMessageId: null,
+          oldProvider: { providerInstanceId, driverKind, model: "gpt-test" },
+          requested: { providerInstanceId: secondProviderInstanceId },
+          reason: "The orchestrator provider hit its usage limit.",
+          scope: { messageCount: 2, pendingCount: 1, lineagePreserved: true },
+        });
+      }
+      // History and the pending queue are preserved in place: same thread,
+      // same messages, same queued row, no replay.
+      const after = harness.children.get(parentThreadId)!;
+      expect(after.id).toBe(before.id);
+      expect(after.messages).toEqual(before.messages);
+      expect(after.activities.some(({ kind }) => kind === "delegation.created")).toBe(false);
+      expect(harness.turns.get(parentThreadId)).toEqual([queued]);
+    }),
+  );
+
+  it.effect("refuses an ordinary switch when the thread has no session", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        includeSecondProvider: true,
+        patchParentShell: (shell) => ({ ...shell, session: null }),
+      });
+      const scope = makeScope();
+      harness.children.set(parentThreadId, {
+        ...ordinaryThreadDetail(),
+        session: null,
+      } as OrchestrationThread);
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service
+        .switchProvider(scope, switchInput(parentThreadId))
+        .pipe(Effect.flip);
+      expect(error.code).toBe("parent_not_active");
+      expect(error.message).toContain("[reason=parent_no_session]");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
+    }),
+  );
+
+  it.effect("refuses an ordinary switch when the thread has no history to carry", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      harness.children.set(parentThreadId, { ...ordinaryThreadDetail(), messages: [] });
+      harness.turns.set(parentThreadId, []);
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service
+        .switchProvider(scope, switchInput(parentThreadId))
+        .pipe(Effect.flip);
+      expect(error.code).toBe("thread_has_no_history");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
+    }),
+  );
+
+  it.effect("does not reveal an ordinary thread across scope ownership", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const foreignId = ThreadId.make("foreign-ordinary-thread");
+      harness.children.set(foreignId, { ...ordinaryThreadDetail(), id: foreignId });
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service
+        .switchProvider(scope, switchInput(foreignId))
+        .pipe(Effect.flip);
+      expect(error.code).toBe("task_not_found");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
     }),
   );
 });

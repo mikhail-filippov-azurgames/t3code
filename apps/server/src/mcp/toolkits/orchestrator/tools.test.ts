@@ -6,6 +6,7 @@ import * as Tool from "effect/unstable/ai/Tool";
 import {
   DelegateTaskTool,
   OrchestratorCapabilitiesTool,
+  SwitchProviderTool,
   TaskCancelTool,
   TaskStatusTool,
   TaskWaitTool,
@@ -18,9 +19,10 @@ describe("orchestrator MCP tools", () => {
     TaskStatusTool,
     TaskWaitTool,
     TaskCancelTool,
+    SwitchProviderTool,
   ];
 
-  it("publishes exactly the accepted five-tool surface", () => {
+  it("publishes exactly the accepted six-tool surface", () => {
     expect(tools.map(({ name }) => name)).toEqual(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES));
   });
 
@@ -40,6 +42,9 @@ describe("orchestrator MCP tools", () => {
     expect(Context.get(DelegateTaskTool.annotations, Tool.Readonly)).toBe(false);
     expect(Context.get(DelegateTaskTool.annotations, Tool.Destructive)).toBe(false);
     expect(Context.get(DelegateTaskTool.annotations, Tool.Idempotent)).toBe(true);
+    expect(Context.get(SwitchProviderTool.annotations, Tool.Readonly)).toBe(false);
+    expect(Context.get(SwitchProviderTool.annotations, Tool.Destructive)).toBe(false);
+    expect(Context.get(SwitchProviderTool.annotations, Tool.Idempotent)).toBe(true);
     expect(Context.get(TaskCancelTool.annotations, Tool.Readonly)).toBe(false);
     expect(Context.get(TaskCancelTool.annotations, Tool.Destructive)).toBe(true);
     expect(Context.get(TaskCancelTool.annotations, Tool.Idempotent)).toBe(true);
@@ -56,5 +61,14 @@ describe("orchestrator MCP tools", () => {
     expect(Tool.getDescription(TaskStatusTool)).toContain("never follows a later ordinary turn");
     expect(Tool.getDescription(TaskWaitTool)).toContain("never cancels");
     expect(Tool.getDescription(TaskCancelTool)).toContain("later ordinary child turn");
+    expect(Tool.getDescription(DelegateTaskTool)).toContain(
+      "durable message in this parent thread",
+    );
+    expect(Tool.getDescription(DelegateTaskTool)).toContain("short bounded task_wait");
+    expect(Tool.getDescription(TaskWaitTool)).toContain("never cancels the task");
+    expect(Tool.getDescription(TaskWaitTool)).toContain("short bounded wait");
+    expect(Tool.getDescription(SwitchProviderTool)).toContain("delegatable=true");
+    expect(Tool.getDescription(SwitchProviderTool)).toContain("delegation.provider-switched");
+    expect(Tool.getDescription(SwitchProviderTool)).toContain("provider_handoff_unsupported");
   });
 });
