@@ -1,9 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
 
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import {
+  makeMuseTurnIdleWatchdog,
   museApprovalModeForRuntimeMode,
   museChoiceForDecision,
   museEffortForSelection,
@@ -215,4 +218,44 @@ describe("museChoiceForDecision", () => {
       museChoiceForDecision("accept", [{ choiceId: "deny", decision: "denied", scope: "once" }]),
     ).toBeUndefined();
   });
+});
+
+describe("makeMuseTurnIdleWatchdog", () => {
+  it.effect("resolves only after an idle window with no activity", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(1000);
+      const fiber = yield* watchdog.awaitIdle.pipe(Effect.forkChild);
+      yield* TestClock.adjust("999 millis");
+      expect(fiber.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("1 millis");
+      expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
+
+  it.effect("restarts its deadline every time activity arrives", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(1000);
+      const fiber = yield* watchdog.awaitIdle.pipe(Effect.forkChild);
+      yield* TestClock.adjust("800 millis");
+      yield* watchdog.markActivity;
+      yield* TestClock.adjust("800 millis");
+      expect(fiber.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("200 millis");
+      expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
+
+  it.effect("never resolves while activity keeps arriving", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(1000);
+      const fiber = yield* watchdog.awaitIdle.pipe(Effect.forkChild);
+      for (let index = 0; index < 5; index += 1) {
+        yield* TestClock.adjust("500 millis");
+        yield* watchdog.markActivity;
+      }
+      expect(fiber.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("1000 millis");
+      expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
 });

@@ -32,9 +32,11 @@ import type { ApprovalDecisionInput, Session, Turn, TurnOutcome } from "@muse-co
 import type { ApprovalMode, ApprovalRequestParams, TodoItem } from "@muse-code/sdk/dist/src/msp.js";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as NodeOS from "node:os";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -44,6 +46,7 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import type { EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -64,6 +67,17 @@ import type { MuseCodeAdapterShape } from "../Services/MuseCodeAdapter.ts";
 const PROVIDER = ProviderDriverKind.make("museCode");
 const MUSE_RESUME_VERSION = 1 as const;
 const RAW_SOURCE = "muse.msp.notification" as const;
+
+/**
+ * How long a Muse turn may run without a delta before the adapter stops
+ * trusting the host and settles the turn itself. The SDK never times a turn
+ * out locally (facade/turn-handle.js, INV-006), and the reaper skips sessions
+ * with an active turn (ProviderSessionReaper), so a host that goes silent
+ * mid-turn would leave the thread "thinking" forever. Ten minutes mirrors the
+ * Grok reasoning ceiling: Muse streams reasoning deltas, so a healthy turn is
+ * not silent that long.
+ */
+export const MUSE_TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1_000;
 
 interface MuseSessionRecord {
   readonly session: Session;
@@ -97,6 +111,8 @@ export interface MuseCodeAdapterOptions {
   readonly museBin: string;
   readonly env: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
+  /** Raw MSP notification log. Owned by the caller; diagnostics only. */
+  readonly nativeEventLogger?: EventNdjsonLogger;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -313,6 +329,41 @@ function streamKindFromDeltaField(
   return field.includes("reason") ? "reasoning_text" : "unknown";
 }
 
+export interface MuseTurnIdleWatchdog {
+  /** Restart the idle deadline; called for every turn event. */
+  readonly markActivity: Effect.Effect<void>;
+  /** Resolves once no activity has arrived for the idle window. */
+  readonly awaitIdle: Effect.Effect<void>;
+}
+
+/**
+ * One turn's idle deadline. `awaitIdle` resolves only after `timeoutMs` with
+ * no `markActivity`, so the caller can race it against the real terminal and
+ * settle the turn locally when the host has gone quiet.
+ */
+export const makeMuseTurnIdleWatchdog = (timeoutMs: number): Effect.Effect<MuseTurnIdleWatchdog> =>
+  Effect.gen(function* () {
+    // Monotonic time, not wall clock: an NTP step or VM suspend must not stall
+    // or mis-fire the deadline.
+    const timeoutNanos = BigInt(Math.max(1, Math.floor(timeoutMs))) * 1_000_000n;
+    const lastActivityAtNanos = yield* Ref.make(yield* Clock.monotonicTimeNanos);
+    return {
+      markActivity: Effect.flatMap(Clock.monotonicTimeNanos, (now) =>
+        Ref.set(lastActivityAtNanos, now),
+      ),
+      awaitIdle: Effect.gen(function* () {
+        while (true) {
+          const elapsed = (yield* Clock.monotonicTimeNanos) - (yield* Ref.get(lastActivityAtNanos));
+          const remaining = timeoutNanos - elapsed;
+          if (remaining <= 0n) {
+            return;
+          }
+          yield* Effect.sleep(Duration.nanos(remaining));
+        }
+      }),
+    };
+  });
+
 export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
   return Effect.gen(function* () {
     const boundInstanceId = options.instanceId ?? ProviderInstanceId.make("museCode");
@@ -324,6 +375,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     const sessionsRef = yield* Ref.make(new Map<ThreadId, MuseSessionRecord>());
     const approvalsRef = yield* Ref.make(new Map<string, PendingMuseApproval>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
+    const nativeEventLogger = options.nativeEventLogger;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const randomUUIDv4 = crypto.randomUUIDv4.pipe(
@@ -462,23 +514,58 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         return next;
       });
 
+    // Raw MSP notifications, for post-mortem diagnostics of a wedged turn.
+    const logNative = (threadId: ThreadId | null, method: string, payload: unknown) =>
+      Effect.gen(function* () {
+        if (nativeEventLogger === undefined) return;
+        const observedAt = yield* nowIso;
+        yield* nativeEventLogger.write(
+          {
+            observedAt,
+            event: {
+              id: yield* randomUUIDv4,
+              kind: "notification",
+              provider: PROVIDER,
+              createdAt: observedAt,
+              method,
+              threadId,
+              payload,
+            },
+          },
+          threadId,
+        );
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to write native Muse notification log.", { cause, method }),
+        ),
+      );
+
     const bridgeHostNotifications = (bridgeHost: MuseHost) => {
       bridgeHost.addNotificationHandler((notification) => {
-        if (
-          notification.method !== "session/todoListChanged" &&
-          notification.method !== "item/started" &&
-          notification.method !== "item/completed"
-        ) {
+        const isBridged =
+          notification.method === "session/todoListChanged" ||
+          notification.method === "item/started" ||
+          notification.method === "item/completed";
+        // Delta frames are the high-frequency tail; skip them synchronously so
+        // the notification path stays allocation-light, and only pay for the
+        // rest when the bridge or the native log actually wants them.
+        if (notification.method.endsWith("/delta")) {
+          return;
+        }
+        if (!isBridged && nativeEventLogger === undefined) {
           return;
         }
         runPromise(
           Effect.gen(function* () {
             const params = isRecord(notification.params) ? notification.params : undefined;
             const sessionId = typeof params?.sessionId === "string" ? params.sessionId : undefined;
-            if (sessionId === undefined) return;
             const sessions = yield* Ref.get(sessionsRef);
-            const record = [...sessions.values()].find((entry) => entry.mspSessionId === sessionId);
-            if (record === undefined) return;
+            const record =
+              sessionId === undefined
+                ? undefined
+                : [...sessions.values()].find((entry) => entry.mspSessionId === sessionId);
+            yield* logNative(record?.threadId ?? null, notification.method, notification.params);
+            if (!isBridged || record === undefined) return;
             if (notification.method === "session/todoListChanged") {
               const items = readTodoItems(params?.items);
               if (items !== undefined) yield* emitPlanBridge(record, items);
