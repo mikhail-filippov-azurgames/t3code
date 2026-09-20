@@ -268,6 +268,19 @@ import {
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  CalendarCreateInput,
+  CalendarCreateResult,
+  CalendarDeleteInput,
+  CalendarDeleteResult,
+  CalendarError,
+  CalendarListInput,
+  CalendarListResult,
+} from "./calendar.ts";
+
+// Calendar contract types are re-exported here so the package barrel surfaces
+// them without a separate index entry.
+export * from "./calendar.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -410,6 +423,11 @@ export const WS_METHODS = {
   pullRequestsRequestReviewers: "pullRequests.requestReviewers",
   pullRequestsLabelCandidates: "pullRequests.labelCandidates",
   pullRequestsSetLabels: "pullRequests.setLabels",
+
+  // Calendar methods
+  calendarList: "calendar.list",
+  calendarCreate: "calendar.create",
+  calendarDelete: "calendar.delete",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -1357,6 +1375,26 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
+const WsCalendarListRpc = Rpc.make(WS_METHODS.calendarList, {
+  payload: CalendarListInput,
+  success: CalendarListResult,
+  error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
+});
+
+const WsCalendarCreateRpc = Rpc.make(WS_METHODS.calendarCreate, {
+  payload: CalendarCreateInput,
+  success: CalendarCreateResult,
+  error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
+});
+
+const WsCalendarDeleteRpc = Rpc.make(WS_METHODS.calendarDelete, {
+  payload: CalendarDeleteInput,
+  success: CalendarDeleteResult,
+  error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
+});
+
+export const CalendarRpcs = [WsCalendarListRpc, WsCalendarCreateRpc, WsCalendarDeleteRpc] as const;
+
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
   WsServerGetConfigRpc,
@@ -1419,6 +1457,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsRequestReviewersRpc,
   WsPullRequestsLabelCandidatesRpc,
   WsPullRequestsSetLabelsRpc,
+  ...CalendarRpcs,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,

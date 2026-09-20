@@ -68,6 +68,9 @@ import {
   AssetWorkspaceContextResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
+  CalendarError,
+  type CalendarEvent,
+  CalendarEventId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -102,6 +105,11 @@ import {
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ThreadDeletionReactor } from "./orchestration/Services/ThreadDeletionReactor.ts";
+import {
+  CalendarEventRepository,
+  CalendarEventRepositoryLive,
+} from "./persistence/Services/CalendarEvents.ts";
+import { nextCalendarFireAt } from "./background/CalendarReactor.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
   observeRpcStream as instrumentRpcStream,
@@ -665,6 +673,12 @@ const makeWsRpcLayer = (
       const resourceTelemetry = yield* ResourceTelemetry.ResourceTelemetry;
       const usage = yield* UsageService.UsageService;
       const relayClient = yield* RelayClient.RelayClient;
+      const calendarEvents = yield* CalendarEventRepository;
+      const toCalendarError = (operation: string, cause: unknown) =>
+        new CalendarError({
+          operation,
+          detail: cause instanceof Error ? cause.message : String(cause),
+        });
       const authorizationError = (requiredScope: AuthEnvironmentScope) =>
         new EnvironmentAuthorizationError({
           message: `The authenticated token is missing required scope: ${requiredScope}.`,
@@ -2851,6 +2865,69 @@ const makeWsRpcLayer = (
               "rpc.aggregate": "pull-requests",
             },
           ),
+        [WS_METHODS.calendarList]: (_input) =>
+          observeRpcEffect(
+            WS_METHODS.calendarList,
+            calendarEvents.listAll().pipe(
+              Effect.map((events) => ({ events })),
+              Effect.mapError((cause) => toCalendarError("calendar.list", cause)),
+            ),
+            { "rpc.aggregate": "calendar" },
+          ),
+        [WS_METHODS.calendarCreate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.calendarCreate,
+            Effect.gen(function* () {
+              const createdAt = yield* nowIso;
+              const nextFireAt = nextCalendarFireAt(
+                input.cronExpression,
+                input.timeZone,
+                createdAt,
+              );
+              if (nextFireAt === null) {
+                return yield* new CalendarError({
+                  operation: "calendar.create",
+                  detail: "Cron expression has no upcoming fire time.",
+                });
+              }
+              const event: CalendarEvent = {
+                eventId: CalendarEventId.make(
+                  yield* crypto.randomUUIDv4.pipe(
+                    Effect.mapError((cause) => toCalendarError("calendar.create", cause)),
+                  ),
+                ),
+                projectId: input.projectId,
+                title: input.title,
+                message: input.message,
+                mode: input.mode,
+                cronExpression: input.cronExpression,
+                timeZone: input.timeZone,
+                nextFireAt,
+                lastFiredAt: null,
+                lastMissedAt: null,
+                threadId: null,
+                modelSelection: input.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                createdAt,
+                updatedAt: createdAt,
+              };
+              yield* calendarEvents
+                .create(event)
+                .pipe(Effect.mapError((cause) => toCalendarError("calendar.create", cause)));
+              return event;
+            }),
+            { "rpc.aggregate": "calendar" },
+          ),
+        [WS_METHODS.calendarDelete]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.calendarDelete,
+            calendarEvents.deleteById({ eventId: input.eventId }).pipe(
+              Effect.as({}),
+              Effect.mapError((cause) => toCalendarError("calendar.delete", cause)),
+            ),
+            { "rpc.aggregate": "calendar" },
+          ),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
@@ -3730,6 +3807,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              Layer.provide(CalendarEventRepositoryLive),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
