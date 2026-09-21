@@ -15,6 +15,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as CalendarRouteImport } from './routes/calendar'
+import { Route as BoardRouteImport } from './routes/board'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as SettingsSourceControlRouteImport } from './routes/settings.source-control'
@@ -62,6 +63,11 @@ const ConnectRoute = ConnectRouteImport.update({
 const CalendarRoute = CalendarRouteImport.update({
   id: '/calendar',
   path: '/calendar',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BoardRoute = BoardRouteImport.update({
+  id: '/board',
+  path: '/board',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -158,6 +164,7 @@ const ChatEnvironmentIdThreadIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
+  '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
   '/connect': typeof ConnectRoute
   '/pair': typeof PairRoute
@@ -182,6 +189,7 @@ export interface FileRoutesByFullPath {
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
 }
 export interface FileRoutesByTo {
+  '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
   '/connect': typeof ConnectRoute
   '/pair': typeof PairRoute
@@ -209,6 +217,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_chat': typeof ChatRouteWithChildren
+  '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
   '/connect': typeof ConnectRoute
   '/pair': typeof PairRoute
@@ -237,6 +246,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/board'
     | '/calendar'
     | '/connect'
     | '/pair'
@@ -261,6 +271,7 @@ export interface FileRouteTypes {
     | '/draft/$draftId'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/board'
     | '/calendar'
     | '/connect'
     | '/pair'
@@ -287,6 +298,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_chat'
+    | '/board'
     | '/calendar'
     | '/connect'
     | '/pair'
@@ -314,6 +326,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
+  BoardRoute: typeof BoardRoute
   CalendarRoute: typeof CalendarRoute
   ConnectRoute: typeof ConnectRoute
   PairRoute: typeof PairRoute
@@ -365,6 +378,13 @@ declare module '@tanstack/react-router' {
       path: '/calendar'
       fullPath: '/calendar'
       preLoaderRoute: typeof CalendarRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/board': {
+      id: '/board'
+      path: '/board'
+      fullPath: '/board'
+      preLoaderRoute: typeof BoardRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_chat': {
@@ -548,6 +568,7 @@ const SettingsRouteWithChildren = SettingsRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
+  BoardRoute: BoardRoute,
   CalendarRoute: CalendarRoute,
   ConnectRoute: ConnectRoute,
   PairRoute: PairRoute,
