@@ -24,7 +24,10 @@ import { ProviderValidationError } from "../Errors.ts";
 import { ProviderSessionReaper } from "../Services/ProviderSessionReaper.ts";
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
-import { makeProviderSessionReaperLive } from "./ProviderSessionReaper.ts";
+import {
+  makeProviderSessionReaperLive,
+  resolveProviderSessionReaperOptions,
+} from "./ProviderSessionReaper.ts";
 
 const defaultModelSelection = {
   instanceId: ProviderInstanceId.make("codex"),
@@ -731,5 +734,67 @@ describe("ProviderSessionReaper", () => {
       defectThreadId,
       reapedThreadId,
     ]);
+  });
+});
+
+describe("resolveProviderSessionReaperOptions", () => {
+  const defaults = {
+    inactivityThresholdMs: 30 * 60 * 1000,
+    sweepIntervalMs: 5 * 60 * 1000,
+  };
+
+  it("uses defaults when neither options nor env are set", () => {
+    expect(resolveProviderSessionReaperOptions()).toEqual({ ...defaults, invalidEnv: [] });
+  });
+
+  it("reads positive millisecond overrides from env", () => {
+    expect(
+      resolveProviderSessionReaperOptions(undefined, {
+        T3CODE_PROVIDER_SESSION_IDLE_MS: "300000",
+        T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS: "60000",
+      }),
+    ).toEqual({ inactivityThresholdMs: 300_000, sweepIntervalMs: 60_000, invalidEnv: [] });
+  });
+
+  it("lets explicit options take precedence over env", () => {
+    expect(
+      resolveProviderSessionReaperOptions(
+        { inactivityThresholdMs: 1_000, sweepIntervalMs: 2_000 },
+        {
+          T3CODE_PROVIDER_SESSION_IDLE_MS: "300000",
+          T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS: "60000",
+        },
+      ),
+    ).toEqual({ inactivityThresholdMs: 1_000, sweepIntervalMs: 2_000, invalidEnv: [] });
+  });
+
+  it.each(["", "abc", "0", "-5", "NaN", "Infinity"])(
+    "ignores the invalid idle value %o and reports it",
+    (raw) => {
+      const resolved = resolveProviderSessionReaperOptions(undefined, {
+        T3CODE_PROVIDER_SESSION_IDLE_MS: raw,
+      });
+      expect(resolved.inactivityThresholdMs).toBe(defaults.inactivityThresholdMs);
+      expect(resolved.invalidEnv).toEqual([{ name: "T3CODE_PROVIDER_SESSION_IDLE_MS", raw }]);
+    },
+  );
+
+  it("keeps the valid env value when the other env value is invalid", () => {
+    const resolved = resolveProviderSessionReaperOptions(undefined, {
+      T3CODE_PROVIDER_SESSION_IDLE_MS: "120000",
+      T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS: "nope",
+    });
+    expect(resolved.inactivityThresholdMs).toBe(120_000);
+    expect(resolved.sweepIntervalMs).toBe(defaults.sweepIntervalMs);
+    expect(resolved.invalidEnv).toEqual([
+      { name: "T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS", raw: "nope" },
+    ]);
+  });
+
+  it("accepts strictly positive fractional values", () => {
+    const resolved = resolveProviderSessionReaperOptions(undefined, {
+      T3CODE_PROVIDER_SESSION_IDLE_MS: "1500.5",
+    });
+    expect(resolved.inactivityThresholdMs).toBe(1500.5);
   });
 });

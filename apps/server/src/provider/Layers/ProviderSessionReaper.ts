@@ -17,10 +17,71 @@ import { ProviderService } from "../Services/ProviderService.ts";
 const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
+const IDLE_ENV = "T3CODE_PROVIDER_SESSION_IDLE_MS";
+const INTERVAL_ENV = "T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS";
+
 export interface ProviderSessionReaperLiveOptions {
   readonly inactivityThresholdMs?: number;
   readonly sweepIntervalMs?: number;
 }
+
+export interface ProviderSessionReaperEnv {
+  readonly T3CODE_PROVIDER_SESSION_IDLE_MS?: string | undefined;
+  readonly T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS?: string | undefined;
+}
+
+export interface ResolvedProviderSessionReaperOptions {
+  readonly inactivityThresholdMs: number;
+  readonly sweepIntervalMs: number;
+  readonly invalidEnv: ReadonlyArray<{ readonly name: string; readonly raw: string }>;
+}
+
+type ParsedEnvMs =
+  | { readonly _tag: "unset" }
+  | { readonly _tag: "valid"; readonly value: number }
+  | { readonly _tag: "invalid"; readonly raw: string };
+
+const parsePositiveMs = (raw: string | undefined): ParsedEnvMs => {
+  if (raw === undefined) {
+    return { _tag: "unset" };
+  }
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  if (trimmed === "" || !Number.isFinite(parsed) || parsed <= 0) {
+    return { _tag: "invalid", raw };
+  }
+  return { _tag: "valid", value: parsed };
+};
+
+// Precedence: explicit options (tests, programmatic callers) > env > default.
+// Invalid or non-positive env values are ignored so a typo cannot disable the
+// reaper; the caller logs them.
+export const resolveProviderSessionReaperOptions = (
+  options?: ProviderSessionReaperLiveOptions,
+  env?: ProviderSessionReaperEnv,
+): ResolvedProviderSessionReaperOptions => {
+  const idle = parsePositiveMs(env?.[IDLE_ENV]);
+  const interval = parsePositiveMs(env?.[INTERVAL_ENV]);
+
+  return {
+    inactivityThresholdMs:
+      options?.inactivityThresholdMs !== undefined
+        ? Math.max(1, options.inactivityThresholdMs)
+        : idle._tag === "valid"
+          ? idle.value
+          : DEFAULT_INACTIVITY_THRESHOLD_MS,
+    sweepIntervalMs:
+      options?.sweepIntervalMs !== undefined
+        ? Math.max(1, options.sweepIntervalMs)
+        : interval._tag === "valid"
+          ? interval.value
+          : DEFAULT_SWEEP_INTERVAL_MS,
+    invalidEnv: [
+      ...(idle._tag === "invalid" ? [{ name: IDLE_ENV, raw: idle.raw }] : []),
+      ...(interval._tag === "invalid" ? [{ name: INTERVAL_ENV, raw: interval.raw }] : []),
+    ],
+  };
+};
 
 const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =>
   Effect.gen(function* () {
@@ -28,11 +89,19 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const directory = yield* ProviderSessionDirectory;
     const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
 
-    const inactivityThresholdMs = Math.max(
-      1,
-      options?.inactivityThresholdMs ?? DEFAULT_INACTIVITY_THRESHOLD_MS,
+    const { inactivityThresholdMs, sweepIntervalMs, invalidEnv } =
+      resolveProviderSessionReaperOptions(options, process.env);
+
+    yield* Effect.forEach(
+      invalidEnv,
+      (entry) =>
+        Effect.logWarning("provider.session.reaper.invalid-env", {
+          name: entry.name,
+          value: entry.raw,
+          reason: "expected a positive number of milliseconds; using the default",
+        }),
+      { discard: true },
     );
-    const sweepIntervalMs = Math.max(1, options?.sweepIntervalMs ?? DEFAULT_SWEEP_INTERVAL_MS);
 
     const sweep = Effect.gen(function* () {
       const bindings = yield* directory.listBindings();
