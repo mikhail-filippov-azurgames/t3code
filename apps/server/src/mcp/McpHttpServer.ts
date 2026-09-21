@@ -17,6 +17,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
+import { CalendarEventRepositoryLive } from "../persistence/Services/CalendarEvents.ts";
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
@@ -44,6 +45,8 @@ import {
 import { OrchestratorMcpToolkitHandlersLive } from "./toolkits/orchestrator/handlers.ts";
 import { layer as OrchestratorMcpServiceLive } from "./toolkits/orchestrator/service.ts";
 import { OrchestratorMcpToolkit } from "./toolkits/orchestrator/tools.ts";
+import { CalendarToolkitHandlersLive } from "./toolkits/calendar/handlers.ts";
+import { CalendarToolkit } from "./toolkits/calendar/tools.ts";
 
 const unauthorized = HttpServerResponse.jsonUnsafe(
   {
@@ -612,6 +615,13 @@ export const PullRequestsToolkitRegistrationLive = McpServer.toolkit(PullRequest
   Layer.provide(PullRequestsToolkitHandlersLive),
 );
 
+export const CalendarToolkitRegistrationLive = McpServer.toolkit(CalendarToolkit).pipe(
+  Layer.provide(CalendarToolkitHandlersLive),
+  // Like the `calendar.*` RPC handler, the toolkit owns its repository layer so
+  // the server-wide layer does not gain a calendar dependency.
+  Layer.provide(CalendarEventRepositoryLive),
+);
+
 const DeviceStandardToolkitRegistrationLive = McpServer.toolkit(DeviceStandardToolkit).pipe(
   Layer.provide(DeviceStandardToolkitHandlersLive),
 );
@@ -642,6 +652,7 @@ const McpTransportLive = McpServer.layerHttp({
 export const layer = Layer.mergeAll(
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
+  CalendarToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,
   OrchestratorMcpToolkitRegistrationLive,
 ).pipe(Layer.provideMerge(McpTransportLive), Layer.provide(ProjectionTurnRepositoryLive));

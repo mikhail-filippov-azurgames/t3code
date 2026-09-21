@@ -33,4 +33,4 @@ Before create, show: title; project + environment; mode and (for continue) the t
 
 ## After human confirmation
 
-Call `calendar.create`, return eventId + nextFireAt; remind about the owner and the renewal-equivalent routine for the event.
+Call the `calendar_create` tool with the confirmed fields; it returns the stored event, including `eventId` and `nextFireAt`. Remind about the owner and the renewal-equivalent routine for the event. The toolkit's other names are `calendar_list`, `calendar_update`, and `calendar_delete` (cancels every future fire); use them only on an explicit human request.
