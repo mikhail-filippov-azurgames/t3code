@@ -77,6 +77,18 @@ export type BoardOrchestratorRemoveInput = typeof BoardOrchestratorRemoveInput.T
 export const BoardOrchestratorRemoveResult = Schema.Struct({});
 export type BoardOrchestratorRemoveResult = typeof BoardOrchestratorRemoveResult.Type;
 
+/**
+ * Re-delivers the briefing on demand. Unlike `add` (idempotent), every call
+ * appends a fresh notice and, when the thread is idle, wakes it again.
+ */
+export const BoardOrchestratorResendBriefInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type BoardOrchestratorResendBriefInput = typeof BoardOrchestratorResendBriefInput.Type;
+
+export const BoardOrchestratorResendBriefResult = Schema.Struct({});
+export type BoardOrchestratorResendBriefResult = typeof BoardOrchestratorResendBriefResult.Type;
+
 export const BoardListInput = Schema.Struct({});
 export type BoardListInput = typeof BoardListInput.Type;
 

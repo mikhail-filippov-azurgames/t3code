@@ -102,6 +102,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.boardOrchestratorsList]: AuthOrchestrationReadScope,
   [WS_METHODS.boardOrchestratorAdd]: AuthOrchestrationOperateScope,
   [WS_METHODS.boardOrchestratorRemove]: AuthOrchestrationOperateScope,
+  [WS_METHODS.boardOrchestratorResendBrief]: AuthOrchestrationOperateScope,
   [WS_METHODS.boardList]: AuthOrchestrationReadScope,
   [WS_METHODS.boardCreate]: AuthOrchestrationOperateScope,
   [WS_METHODS.boardStart]: AuthOrchestrationOperateScope,

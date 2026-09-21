@@ -86,6 +86,8 @@ import {
   type BoardOrchestratorAddResult,
   type BoardOrchestratorRemoveInput,
   type BoardOrchestratorRemoveResult,
+  type BoardOrchestratorResendBriefInput,
+  type BoardOrchestratorResendBriefResult,
   type BoardOrchestratorsListInput,
   type BoardOrchestratorsListResult,
   type BoardStartInput,
@@ -568,6 +570,9 @@ export interface BoardRpcHandlers {
   readonly orchestratorRemove: (
     input: BoardOrchestratorRemoveInput,
   ) => Effect.Effect<BoardOrchestratorRemoveResult, BoardError>;
+  readonly resendBrief: (
+    input: BoardOrchestratorResendBriefInput,
+  ) => Effect.Effect<BoardOrchestratorResendBriefResult, BoardError>;
   readonly list: (input: BoardListInput) => Effect.Effect<BoardListResult, BoardError>;
   readonly create: (input: BoardCreateInput) => Effect.Effect<BoardCreateResult, BoardError>;
   readonly start: (input: BoardStartInput) => Effect.Effect<BoardStartResult, BoardError>;
@@ -647,6 +652,31 @@ const boardStartTaskText = (card: BoardCard): string =>
 const BOARD_START_TURN_TEXT =
   "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
 
+const BOARD_ORCHESTRATOR_MESSAGE_PREFIX = "board-orchestrator:";
+const BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX = "board-orchestrator-turn:";
+const BOARD_ORCHESTRATOR_SKILL_PATH = ".agents/skills/board-orchestrator/SKILL.md";
+
+// Concise on purpose: the full playbook lives in the skill file this notice
+// points at, so a marked thread learns the board workflow without a long prompt.
+const BOARD_ORCHESTRATOR_BRIEF = [
+  "You were marked as the orchestrator for this board. You run the board, not a single task: plan cards, route them to executors, and review what comes back.",
+  "",
+  "Plan before acting. Create cards with board_create_card before any work starts, and keep each status truthful: todo -> orchestrator -> in_progress -> review -> done. Read the board and its append-only history with board_list_cards, move cards with board_update_card, and drop them with board_delete_card.",
+  "",
+  "Route work through delegate_task, then link it. Moving a card to in_progress requires both assignee (the provider/model/effort you chose) and executorThreadId (the delegated child thread id). Delegate first, then pass the returned childThreadId - otherwise the server rejects the move with executor_required.",
+  "",
+  "Pick the executor from orchestrator_capabilities together with the active routing policy (role + effort). If no routing policy is available, choose from the catalog and the roles you need. When a human names an executor, follow that assignment.",
+  "",
+  "When an executor finishes, its card moves to review automatically and you are woken to review the result: accept with done, or send it back to in_progress/todo. On failure or needs human, you decide: retry, reassign, or escalate.",
+  "",
+  "Humans cannot stop, reassign, change status, or delete work; they send you a request and you act on it. Progress history is written automatically and is append-only - never try to rewrite it.",
+  "",
+  `Full playbook: read ${BOARD_ORCHESTRATOR_SKILL_PATH}.`,
+].join("\n");
+
+const BOARD_ORCHESTRATOR_TURN_TEXT =
+  "You were marked as a board orchestrator. Read the notice above and follow the board workflow (skill board-orchestrator).";
+
 const findExecutorChildThreadIds = (
   deps: BoardRpcDependencies,
   orchestratorThreadId: ThreadId,
@@ -660,6 +690,34 @@ const findExecutorChildThreadIds = (
       .filter((thread) => thread.delegationParent?.parentThreadId === orchestratorThreadId)
       .map((thread) => thread.id);
   });
+
+/** Idle means no live session turn and no pending or running turn. */
+const isThreadIdle = (
+  shell: OrchestrationThreadShell,
+  turns: ReadonlyArray<ProjectionTurns.ProjectionTurn>,
+): boolean => {
+  const session = shell.session ?? null;
+  return !(
+    (session !== null &&
+      (session.activeTurnId !== null ||
+        session.status === "running" ||
+        session.status === "starting")) ||
+    turns.some((turn) => turn.state === "pending" || turn.state === "running")
+  );
+};
+
+/** A delegated child thread is not eligible to be a board orchestrator. */
+const assertNotDelegatedChild = (
+  operation: string,
+  threadId: ThreadId,
+  shell: OrchestrationThreadShell,
+): BoardError | null =>
+  shell.delegationParent == null
+    ? null
+    : new BoardError({
+        operation,
+        detail: `Delegated child thread ${threadId} cannot be a board orchestrator.`,
+      });
 
 /** @public Board RPC handlers; wired into the WS group in `makeWsRpcLayer`. */
 export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandlers => {
@@ -682,12 +740,21 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
           detail: `Thread ${input.threadId} was not found.`,
         });
       }
-      if (shell.value.delegationParent != null) {
-        return yield* new BoardError({
-          operation: "board.orchestrator.add",
-          detail: `Delegated child thread ${input.threadId} cannot be marked as an orchestrator.`,
-        });
-      }
+      const delegatedChild = assertNotDelegatedChild(
+        "board.orchestrator.add",
+        input.threadId,
+        shell.value,
+      );
+      if (delegatedChild !== null) return yield* delegatedChild;
+
+      const orchestrators = yield* repository
+        .listOrchestrators()
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+      // Already marked: a repeat add is a no-op, so a double click cannot
+      // duplicate the brief or its wake turn.
+      const existing = orchestrators.find((row) => row.threadId === input.threadId);
+      if (existing !== undefined) return existing;
+
       const createdAt = yield* deps.now;
       const created: BoardOrchestrator = {
         threadId: input.threadId,
@@ -697,6 +764,49 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
       yield* repository
         .addOrchestrator(created)
         .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+
+      // A fresh registration gets nonce-scoped ids: the earlier brief's command
+      // receipt survives `orchestratorRemove`, so deterministic ids would replay
+      // silently and the re-marked thread would never be briefed or woken.
+      const nonce = yield* deps
+        .newId()
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+      const noticeMessageId = `${BOARD_ORCHESTRATOR_MESSAGE_PREFIX}${input.threadId}:${nonce}`;
+      yield* deps
+        .dispatch({
+          type: "thread.message.system.append",
+          commandId: CommandId.make(noticeMessageId),
+          threadId: input.threadId,
+          message: {
+            messageId: MessageId.make(noticeMessageId),
+            text: BOARD_ORCHESTRATOR_BRIEF,
+          },
+          createdAt,
+        })
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+
+      const turns = yield* deps
+        .listTurns(input.threadId)
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+      if (isThreadIdle(shell.value, turns)) {
+        const turnMessageId = `${BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX}${input.threadId}:${nonce}`;
+        yield* deps
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(turnMessageId),
+            threadId: input.threadId,
+            message: {
+              messageId: MessageId.make(turnMessageId),
+              role: "user",
+              text: BOARD_ORCHESTRATOR_TURN_TEXT,
+              attachments: [],
+            },
+            runtimeMode: shell.value.runtimeMode,
+            interactionMode: shell.value.interactionMode,
+            createdAt,
+          })
+          .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+      }
       return created;
     });
 
@@ -718,6 +828,77 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
             .pipe(Effect.asVoid, Effect.mapError(toBoardError("board.orchestrator.remove"))),
         { discard: true },
       );
+      return {};
+    });
+
+  const resendBrief: BoardRpcHandlers["resendBrief"] = (input) =>
+    Effect.gen(function* () {
+      const orchestrators = yield* repository
+        .listOrchestrators()
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.resendBrief")));
+      if (!orchestrators.some((row) => row.threadId === input.threadId)) {
+        return yield* new BoardError({
+          operation: "board.orchestrator.resendBrief",
+          detail: `Thread ${input.threadId} is not a registered orchestrator.`,
+        });
+      }
+      const shell = yield* deps
+        .getThreadShell(input.threadId)
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.resendBrief")));
+      if (Option.isNone(shell)) {
+        return yield* new BoardError({
+          operation: "board.orchestrator.resendBrief",
+          detail: `Thread ${input.threadId} was not found.`,
+        });
+      }
+      const delegatedChild = assertNotDelegatedChild(
+        "board.orchestrator.resendBrief",
+        input.threadId,
+        shell.value,
+      );
+      if (delegatedChild !== null) return yield* delegatedChild;
+      const createdAt = yield* deps.now;
+      // A fresh nonce keeps each resend out of the engine's command receipt, so
+      // a human can re-deliver the brief as often as they need.
+      const nonce = yield* deps
+        .newId()
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.resendBrief")));
+      const noticeMessageId = `${BOARD_ORCHESTRATOR_MESSAGE_PREFIX}${input.threadId}:${nonce}`;
+      yield* deps
+        .dispatch({
+          type: "thread.message.system.append",
+          commandId: CommandId.make(noticeMessageId),
+          threadId: input.threadId,
+          message: {
+            messageId: MessageId.make(noticeMessageId),
+            text: BOARD_ORCHESTRATOR_BRIEF,
+          },
+          createdAt,
+        })
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.resendBrief")));
+
+      const turns = yield* deps
+        .listTurns(input.threadId)
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.resendBrief")));
+      if (isThreadIdle(shell.value, turns)) {
+        const turnMessageId = `${BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX}${input.threadId}:${nonce}`;
+        yield* deps
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(turnMessageId),
+            threadId: input.threadId,
+            message: {
+              messageId: MessageId.make(turnMessageId),
+              role: "user",
+              text: BOARD_ORCHESTRATOR_TURN_TEXT,
+              attachments: [],
+            },
+            runtimeMode: shell.value.runtimeMode,
+            interactionMode: shell.value.interactionMode,
+            createdAt,
+          })
+          .pipe(Effect.mapError(toBoardError("board.orchestrator.resendBrief")));
+      }
       return {};
     });
 
@@ -771,14 +952,6 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         { concurrency: 2 },
       ).pipe(Effect.mapError(toBoardError("board.start")));
       const orchestrator = Option.getOrUndefined(shell);
-      const session = orchestrator?.session ?? null;
-      const idle = !(
-        (session !== null &&
-          (session.activeTurnId !== null ||
-            session.status === "running" ||
-            session.status === "starting")) ||
-        turns.some((turn) => turn.state === "pending" || turn.state === "running")
-      );
 
       // Durable task notice: delivered even when the orchestrator is busy (INV-4).
       yield* deps
@@ -794,7 +967,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         })
         .pipe(Effect.mapError(toBoardError("board.start")));
 
-      if (orchestrator !== undefined && idle) {
+      if (orchestrator !== undefined && isThreadIdle(orchestrator, turns)) {
         yield* deps
           .dispatch({
             type: "thread.turn.start",
@@ -837,6 +1010,16 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         updatedAt: at,
       };
       yield* repository.updateCard(next).pipe(Effect.mapError(toBoardError("board.update")));
+      if (next.archived !== current.value.archived) {
+        yield* repository
+          .appendEvent(
+            buildBoardCardEvent(next, {
+              at,
+              body: next.archived ? "archived by human" : "unarchived by human",
+            }),
+          )
+          .pipe(Effect.mapError(toBoardError("board.update")));
+      }
       return next;
     });
 
@@ -853,6 +1036,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
     orchestratorsList,
     orchestratorAdd,
     orchestratorRemove,
+    resendBrief,
     list,
     create,
     start,
@@ -3408,6 +3592,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(
             WS_METHODS.boardOrchestratorRemove,
             boardHandlers.orchestratorRemove(input),
+            { "rpc.aggregate": "board" },
+          ),
+        [WS_METHODS.boardOrchestratorResendBrief]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.boardOrchestratorResendBrief,
+            boardHandlers.resendBrief(input),
             { "rpc.aggregate": "board" },
           ),
         [WS_METHODS.boardList]: (input) =>

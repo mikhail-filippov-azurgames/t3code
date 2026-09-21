@@ -294,6 +294,8 @@ import {
   BoardOrchestratorAddResult,
   BoardOrchestratorRemoveInput,
   BoardOrchestratorRemoveResult,
+  BoardOrchestratorResendBriefInput,
+  BoardOrchestratorResendBriefResult,
   BoardOrchestratorsListInput,
   BoardOrchestratorsListResult,
   BoardStartInput,
@@ -460,6 +462,7 @@ export const WS_METHODS = {
   boardOrchestratorsList: "board.orchestrators.list",
   boardOrchestratorAdd: "board.orchestrator.add",
   boardOrchestratorRemove: "board.orchestrator.remove",
+  boardOrchestratorResendBrief: "board.orchestrator.resendBrief",
   boardList: "board.list",
   boardCreate: "board.create",
   boardStart: "board.start",
@@ -1478,6 +1481,12 @@ const WsBoardOrchestratorRemoveRpc = Rpc.make(WS_METHODS.boardOrchestratorRemove
   error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
 });
 
+const WsBoardOrchestratorResendBriefRpc = Rpc.make(WS_METHODS.boardOrchestratorResendBrief, {
+  payload: BoardOrchestratorResendBriefInput,
+  success: BoardOrchestratorResendBriefResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
 const WsBoardListRpc = Rpc.make(WS_METHODS.boardList, {
   payload: BoardListInput,
   success: BoardListResult,
@@ -1512,6 +1521,7 @@ export const BoardRpcs = [
   WsBoardOrchestratorsListRpc,
   WsBoardOrchestratorAddRpc,
   WsBoardOrchestratorRemoveRpc,
+  WsBoardOrchestratorResendBriefRpc,
   WsBoardListRpc,
   WsBoardCreateRpc,
   WsBoardStartRpc,

@@ -14,6 +14,11 @@
  * fire; deleting an orchestrator thread therefore removes the orchestrator row
  * here, and cards plus history cascade from it.
  *
+ * On startup it also recovers cards left `in_progress` by an executor session
+ * orphaned during a restart: such a session never emits a terminal event, so
+ * the reactor fails the card and wakes the orchestrator instead of leaving it
+ * stuck.
+ *
  * Every card change appends an append-only `board_card_events` row and posts a
  * card-context system message to the orchestrator thread, without an LLM call.
  *
@@ -26,11 +31,13 @@ import {
   type IsoDateTime,
   MessageId,
   type OrchestrationEvent,
+  type OrchestrationThreadShell,
   type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -39,8 +46,13 @@ import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 
 import { BoardRepository, buildBoardCardEvent } from "../persistence/Services/Board.ts";
+import {
+  ProjectionTurnRepository,
+  type ProjectionTurn,
+} from "../persistence/Services/ProjectionTurns.ts";
 import { forkParked } from "../serverActivation.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
 /** Consecutive non-success executor finishes before a card is escalated. */
 export const NEEDS_HUMAN_FAILURE_STREAK = 3;
@@ -90,10 +102,55 @@ function findCardForExecutor(
   return cards.find((card) => card.executorThreadId === threadId) ?? null;
 }
 
+/** A card whose executor session was lost when the process restarted. */
+const ORPHANED_EXECUTOR_NOTE = "executor session lost after restart";
+
+const ORPHANED_EXECUTOR_WAKE_TEXT =
+  "A delegated executor was lost when the server restarted and its board card was cancelled. Review the card and decide whether to retry, reassign, or escalate it.";
+
+/** Idle means no live session turn and no pending or running turn. */
+function isThreadIdle(
+  shell: OrchestrationThreadShell,
+  turns: ReadonlyArray<ProjectionTurn>,
+): boolean {
+  const session = shell.session ?? null;
+  return !(
+    (session !== null &&
+      (session.activeTurnId !== null ||
+        session.status === "running" ||
+        session.status === "starting")) ||
+    turns.some((turn) => turn.state === "pending" || turn.state === "running")
+  );
+}
+
+/**
+ * Whether the executor's thread still has a live session or an unfinished
+ * turn. A missing shell or a thread without a session row is treated as alive,
+ * so recovery never fails a card whose liveness it cannot read.
+ */
+function executorSessionIsLive(
+  shell: OrchestrationThreadShell | undefined,
+  turns: ReadonlyArray<ProjectionTurn>,
+): boolean {
+  if (shell === undefined) return true;
+  const session = shell.session;
+  if (session === null) return true;
+  if (
+    session.activeTurnId !== null ||
+    session.status === "running" ||
+    session.status === "starting"
+  ) {
+    return true;
+  }
+  return turns.some((turn) => turn.state === "pending" || turn.state === "running");
+}
+
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngineService;
   const board = yield* BoardRepository;
+  const snapshots = yield* ProjectionSnapshotQuery;
+  const turnRepository = yield* ProjectionTurnRepository;
 
   const appendCardSystemMessage = (card: BoardCard, at: IsoDateTime, text: string, key: string) =>
     engine.dispatch({
@@ -120,11 +177,14 @@ export const make = Effect.gen(function* () {
     readonly clearExecutorThreadId: boolean;
     readonly key: string;
     readonly reason: string;
+    /** Status to move the card to; omitted keeps the current status. */
+    readonly status?: BoardCard["status"];
   }) {
     const failureStreak = input.card.failureStreak + 1;
     const needsHuman = failureStreak >= NEEDS_HUMAN_FAILURE_STREAK;
     const next: BoardCard = {
       ...input.card,
+      ...(input.status === undefined ? {} : { status: input.status }),
       ...(input.clearExecutorThreadId ? { executorThreadId: null } : {}),
       outcome: input.outcome,
       lastError: input.note,
@@ -222,6 +282,69 @@ export const make = Effect.gen(function* () {
     yield* board.appendEvent(buildBoardCardEvent(next, { at, body: "executor thread deleted" }));
   });
 
+  const wakeOrchestrator = Effect.fn("BoardReactor.wakeOrchestrator")(function* (
+    card: BoardCard,
+    at: IsoDateTime,
+  ) {
+    const shell = Option.getOrUndefined(
+      yield* snapshots.getThreadShellById(card.orchestratorThreadId),
+    );
+    if (shell === undefined) return;
+    const turns = yield* turnRepository.listByThreadId({ threadId: card.orchestratorThreadId });
+    if (!isThreadIdle(shell, turns)) return;
+    const wakeId = `board:card-wake:${card.cardId}`;
+    yield* engine.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make(wakeId),
+      threadId: card.orchestratorThreadId,
+      message: {
+        messageId: MessageId.make(wakeId),
+        role: "user",
+        text: ORPHANED_EXECUTOR_WAKE_TEXT,
+        attachments: [],
+      },
+      runtimeMode: shell.runtimeMode,
+      interactionMode: shell.interactionMode,
+      createdAt: at,
+    });
+  });
+
+  /**
+   * Startup recovery for cards whose executor session was orphaned by a
+   * restart. An orphaned session never emits a terminal provider event, so the
+   * delegation wake never runs; fail the card through the normal failure path
+   * and wake the orchestrator to re-route it.
+   */
+  const recoverOrphanedExecutors = Effect.fn("BoardReactor.recoverOrphanedExecutors")(function* () {
+    const candidates = (yield* board.listCards()).filter(
+      (card) => card.status === "in_progress" && card.executorThreadId !== null,
+    );
+    if (candidates.length === 0) return;
+    const at = DateTime.formatIso(yield* DateTime.now);
+    yield* Effect.forEach(
+      candidates,
+      (card) =>
+        Effect.gen(function* () {
+          const threadId = card.executorThreadId!;
+          const shell = Option.getOrUndefined(yield* snapshots.getThreadShellById(threadId));
+          const turns = yield* turnRepository.listByThreadId({ threadId });
+          if (executorSessionIsLive(shell, turns)) return;
+          yield* writeFailure({
+            card,
+            at,
+            status: "orchestrator",
+            outcome: "cancelled",
+            note: ORPHANED_EXECUTOR_NOTE,
+            clearExecutorThreadId: true,
+            key: "executor-orphaned-after-restart",
+            reason: "executor session lost after restart",
+          });
+          yield* wakeOrchestrator(card, at);
+        }),
+      { discard: true },
+    );
+  });
+
   const processEvent = Effect.fn("BoardReactor.processEvent")(function* (
     event: OrchestrationEvent,
   ) {
@@ -232,29 +355,44 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const processEventSafely = (event: OrchestrationEvent) =>
-    processEvent(event).pipe(
+  type BoardTask =
+    | { readonly kind: "event"; readonly event: OrchestrationEvent }
+    | { readonly kind: "recover" };
+
+  const processTask = Effect.fn("BoardReactor.processTask")(function* (task: BoardTask) {
+    if (task.kind === "recover") {
+      yield* recoverOrphanedExecutors();
+      return;
+    }
+    yield* processEvent(task.event);
+  });
+
+  const processTaskSafely = (task: BoardTask) =>
+    processTask(task).pipe(
       Effect.catchCause((cause) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.failCause(cause)
-          : Effect.logWarning("board reactor event handling failed", {
-              eventType: event.type,
+          : Effect.logWarning("board reactor task failed", {
+              task: task.kind,
               cause: Cause.pretty(cause),
             }),
       ),
     );
 
-  const worker = yield* makeDrainableWorker(processEventSafely);
+  const worker = yield* makeDrainableWorker(processTaskSafely);
 
   const start: BoardReactor["Service"]["start"] = Effect.fn("BoardReactor.start")(function* () {
     const events = yield* engine.subscribeDomainEvents;
     yield* forkParked(
       Stream.runForEach(events, (event) =>
         isDelegationCompletedEvent(event) || event.type === "thread.deleted"
-          ? worker.enqueue(event)
+          ? worker.enqueue({ kind: "event", event })
           : Effect.void,
       ),
     );
+    // Parked at the activation boundary so startup reconciliation has already
+    // settled orphaned provider sessions to `error` when the sweep reads them.
+    yield* forkParked(worker.enqueue({ kind: "recover" }));
   });
 
   return { start, drain: worker.drain } satisfies BoardReactor["Service"];

@@ -98,6 +98,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
   const removeOrchestrator = useAtomCommand(boardEnvironment.orchestratorRemove, {
     reportFailure: false,
   });
+  const resendBrief = useAtomCommand(boardEnvironment.resendBrief, { reportFailure: false });
   const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
     reportFailure: false,
   });
@@ -238,6 +239,26 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     setSelectedCardId(null);
   };
 
+  const handleResendBrief = async (threadId: ThreadId) => {
+    if (environmentId === null) return;
+    setBusy(true);
+    const result = await resendBrief({ environmentId, input: { threadId } });
+    setBusy(false);
+    if (AsyncResult.isSuccess(result)) {
+      toastManager.add({
+        type: "success",
+        title: "Brief resent",
+        description: "The orchestrator will see it in its thread.",
+      });
+      return;
+    }
+    toastManager.add({
+      type: "error",
+      title: "Could not resend the brief",
+      description: boardFailureText(result.cause),
+    });
+  };
+
   const isLive = orchestratorsQuery.isSuccess && listQuery.isSuccess;
 
   return (
@@ -284,6 +305,14 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                   onClick={() => void handleRemoveOrchestrator(selectedOrchestratorId)}
                 >
                   Unmark
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void handleResendBrief(selectedOrchestratorId)}
+                >
+                  Resend brief
                 </Button>
                 <Button size="sm" onClick={() => setCreateCardOpen(true)}>
                   <PlusIcon />

@@ -108,6 +108,14 @@ export function createBoardEnvironmentAtoms<R, E>(
       concurrency: serial,
       onSuccess: refreshAll,
     }),
+    // Re-delivery appends a notice and may start a turn, but changes neither the
+    // registry nor the cards, so no read refresh is needed.
+    resendBrief: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:board:orchestrator-resend-brief",
+      tag: WS_METHODS.boardOrchestratorResendBrief,
+      scheduler: commandScheduler,
+      concurrency: serial,
+    }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:board:create",
       tag: WS_METHODS.boardCreate,

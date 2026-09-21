@@ -78,6 +78,7 @@ import {
   type ReactNode,
 } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
+import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useRightPanelStore } from "../rightPanelStore";
 import {
@@ -2427,6 +2428,9 @@ export default function Sidebar() {
   const removeOrchestrator = useAtomCommand(boardEnvironment.orchestratorRemove, {
     reportFailure: false,
   });
+  const resendBrief = useAtomCommand(boardEnvironment.resendBrief, {
+    reportFailure: false,
+  });
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -4607,7 +4611,10 @@ export default function Sidebar() {
                 ? [{ id: "board-make-orchestrator" as const, label: "Make orchestrator" }]
                 : []),
               ...(isOrchestrator
-                ? [{ id: "board-create-task" as const, label: "Create task" }]
+                ? [
+                    { id: "board-create-task" as const, label: "Create task" },
+                    { id: "board-resend-brief" as const, label: "Resend brief" },
+                  ]
                 : []),
             ]
           : [];
@@ -4801,6 +4808,34 @@ export default function Sidebar() {
               search: { orchestrator: threadRef.threadId, create: true },
             });
             return;
+          case "board-resend-brief": {
+            if (primaryEnvironmentId === null) return;
+            const result = await resendBrief({
+              environmentId: primaryEnvironmentId,
+              input: { threadId: threadRef.threadId },
+            });
+            if (AsyncResult.isSuccess(result)) {
+              toastManager.add(
+                stackedThreadToast({
+                  type: "success",
+                  title: "Brief resent",
+                  description: "The orchestrator will see it in its thread.",
+                }),
+              );
+              return;
+            }
+            if (!isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Could not resend the brief",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
           case "board-unmark-orchestrator": {
             if (primaryEnvironmentId === null) return;
             if (!readSkipOrchestratorUnmarkConfirmation()) {
@@ -5035,6 +5070,7 @@ export default function Sidebar() {
       primaryEnvironmentId,
       projectByKey,
       removeOrchestrator,
+      resendBrief,
       router,
       serverConfigs,
       startThreadRename,

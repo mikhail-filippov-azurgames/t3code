@@ -227,6 +227,7 @@ describe("board RPC wiring", () => {
         WS_METHODS.boardList,
         WS_METHODS.boardOrchestratorAdd,
         WS_METHODS.boardOrchestratorRemove,
+        WS_METHODS.boardOrchestratorResendBrief,
         WS_METHODS.boardOrchestratorsList,
         WS_METHODS.boardStart,
         WS_METHODS.boardUpdate,

@@ -148,6 +148,9 @@ function makeHarness(
     orchestrators: [],
   };
   const dispatched: OrchestrationCommand[] = [];
+  let nextId = 0;
+  // Mirrors the engine command receipt: a repeated commandId is a no-op.
+  const commandReceipts = new Set<string>();
   const shells = new Map(
     [...(options.shells ?? []), ...(options.archivedShells ?? [])].map((thread) => [
       thread.id,
@@ -165,14 +168,20 @@ function makeHarness(
   const deps: BoardRpcDependencies = {
     repository: makeFakeRepository(state),
     dispatch: (command) => {
-      dispatched.push(command);
+      if (!commandReceipts.has(command.commandId)) {
+        commandReceipts.add(command.commandId);
+        dispatched.push(command);
+      }
       return Effect.succeed({ sequence: dispatched.length });
     },
     getThreadShell: (threadId) => Effect.succeed(Option.fromNullishOr(shells.get(threadId))),
     getShellSnapshot: () => Effect.succeed(snapshot(options.shells ?? [])),
     getArchivedShellSnapshot: () => Effect.succeed(snapshot(options.archivedShells ?? [])),
     listTurns: () => Effect.succeed(options.turns ?? []),
-    newId: () => Effect.succeed("generated-id"),
+    newId: () => {
+      nextId += 1;
+      return Effect.succeed(nextId === 1 ? "generated-id" : `generated-id-${nextId}`);
+    },
     now: Effect.succeed(AT),
   };
   return { handlers: makeBoardRpcHandlers(deps), state, dispatched };
@@ -296,16 +305,21 @@ describe("board RPC handlers", () => {
     }),
   );
 
-  it.effect("update allows archiving a card", () =>
+  it.effect("update archives and unarchives a card with an append-only history row", () =>
     Effect.gen(function* () {
       const card = makeCard({ status: "orchestrator" });
       const { handlers, state } = makeHarness({ cards: [card] });
 
       const updated = yield* handlers.update({ cardId: card.cardId, archived: true });
+      const unarchived = yield* handlers.update({ cardId: card.cardId, archived: false });
 
       assert.isTrue(updated.archived);
-      assert.isTrue(state.cards[0]?.archived ?? false);
-      assert.strictEqual(state.events.length, 0);
+      assert.isFalse(unarchived.archived);
+      assert.isFalse(state.cards[0]?.archived ?? true);
+      assert.deepEqual(
+        state.events.map((event) => event.body),
+        ["archived by human", "unarchived by human"],
+      );
     }),
   );
 
@@ -356,6 +370,184 @@ describe("board RPC handlers", () => {
       assert.strictEqual(created.threadId, ORCHESTRATOR);
       assert.strictEqual(created.createdBy, "human");
       assert.strictEqual(state.orchestrators.length, 1);
+    }),
+  );
+
+  it.effect("orchestrator.add briefs an idle thread and wakes it", () =>
+    Effect.gen(function* () {
+      const { handlers, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR })],
+      });
+
+      yield* handlers.orchestratorAdd({ threadId: ORCHESTRATOR });
+
+      const notice = dispatched.find((command) =>
+        (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
+      );
+      assert.isDefined(notice);
+      assert.isTrue(
+        dispatched.some(
+          (command) =>
+            command.type === "thread.turn.start" &&
+            command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
+        ),
+      );
+    }),
+  );
+
+  it.effect("orchestrator.add is idempotent for the briefing and its wake turn", () =>
+    Effect.gen(function* () {
+      const { handlers, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR })],
+      });
+
+      yield* handlers.orchestratorAdd({ threadId: ORCHESTRATOR });
+      yield* handlers.orchestratorAdd({ threadId: ORCHESTRATOR });
+
+      assert.strictEqual(
+        dispatched.filter((command) =>
+          (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
+        ).length,
+        1,
+      );
+      assert.strictEqual(
+        dispatched.filter(
+          (command) =>
+            command.type === "thread.turn.start" &&
+            command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
+        ).length,
+        1,
+      );
+    }),
+  );
+
+  it.effect("orchestrator.add after remove re-briefs and wakes the thread again", () =>
+    Effect.gen(function* () {
+      const { handlers, state, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR })],
+      });
+
+      yield* handlers.orchestratorAdd({ threadId: ORCHESTRATOR });
+      yield* handlers.orchestratorRemove({ threadId: ORCHESTRATOR });
+      yield* handlers.orchestratorAdd({ threadId: ORCHESTRATOR });
+
+      const notices = dispatched.filter((command) =>
+        (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
+      );
+      assert.strictEqual(notices.length, 2);
+      assert.notStrictEqual(messageIdOf(notices[0]!), messageIdOf(notices[1]!));
+
+      const turns = dispatched.filter(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
+      );
+      assert.strictEqual(turns.length, 2);
+      assert.strictEqual(state.orchestrators.length, 1);
+    }),
+  );
+
+  it.effect("orchestrator.add while busy briefs but starts no turn", () =>
+    Effect.gen(function* () {
+      const { handlers, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR, session: makeSession("running") })],
+      });
+
+      yield* handlers.orchestratorAdd({ threadId: ORCHESTRATOR });
+
+      assert.isDefined(
+        dispatched.find((command) =>
+          (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
+        ),
+      );
+      assert.isFalse(dispatched.some((command) => command.type === "thread.turn.start"));
+    }),
+  );
+
+  it.effect("orchestrator.resendBrief refuses a thread that is not an orchestrator", () =>
+    Effect.gen(function* () {
+      const { handlers, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR })],
+      });
+
+      const error = yield* Effect.flip(handlers.resendBrief({ threadId: ORCHESTRATOR }));
+
+      assert.instanceOf(error, BoardError);
+      assert.strictEqual(error.operation, "board.orchestrator.resendBrief");
+      assert.strictEqual(dispatched.length, 0);
+    }),
+  );
+
+  it.effect("orchestrator.resendBrief refuses a delegated child thread", () =>
+    Effect.gen(function* () {
+      const { handlers, state, dispatched } = makeHarness({
+        shells: [
+          makeThread({
+            id: CHILD,
+            delegationParent: {
+              parentThreadId: ORCHESTRATOR,
+              parentEnvironmentId: "env-1",
+              role: "general",
+            },
+          }),
+        ],
+      });
+      state.orchestrators.push({ threadId: CHILD, createdBy: "human", createdAt: AT });
+
+      const error = yield* Effect.flip(handlers.resendBrief({ threadId: CHILD }));
+
+      assert.instanceOf(error, BoardError);
+      assert.strictEqual(error.operation, "board.orchestrator.resendBrief");
+      assert.strictEqual(dispatched.length, 0);
+    }),
+  );
+
+  it.effect("orchestrator.resendBrief re-appends a unique brief and wakes an idle thread", () =>
+    Effect.gen(function* () {
+      const { handlers, state, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR })],
+      });
+      state.orchestrators.push({ threadId: ORCHESTRATOR, createdBy: "human", createdAt: AT });
+
+      yield* handlers.resendBrief({ threadId: ORCHESTRATOR });
+      yield* handlers.resendBrief({ threadId: ORCHESTRATOR });
+
+      const notices = dispatched.filter((command) =>
+        (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
+      );
+      assert.strictEqual(notices.length, 2);
+      assert.notStrictEqual(messageIdOf(notices[0]!), messageIdOf(notices[1]!));
+      assert.isTrue(
+        notices.some(
+          (command) =>
+            command.type === "thread.message.system.append" &&
+            command.message.text.includes("orchestrator for this board"),
+        ),
+      );
+      const turns = dispatched.filter(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
+      );
+      assert.strictEqual(turns.length, 2);
+    }),
+  );
+
+  it.effect("orchestrator.resendBrief while busy briefs but starts no turn", () =>
+    Effect.gen(function* () {
+      const { handlers, state, dispatched } = makeHarness({
+        shells: [makeThread({ id: ORCHESTRATOR, session: makeSession("running") })],
+      });
+      state.orchestrators.push({ threadId: ORCHESTRATOR, createdBy: "human", createdAt: AT });
+
+      yield* handlers.resendBrief({ threadId: ORCHESTRATOR });
+
+      assert.isTrue(
+        dispatched.some((command) =>
+          (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
+        ),
+      );
+      assert.isFalse(dispatched.some((command) => command.type === "thread.turn.start"));
     }),
   );
 
