@@ -1275,6 +1275,58 @@ describe("ProviderRuntimeIngestion", () => {
   const BOARD_START_TURN_TEXT =
     "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
 
+  const BOARD_ORCHESTRATOR_TURN_TEXT =
+    "You were marked as a board orchestrator. Read the notice above and follow the board workflow (skill board-orchestrator).";
+
+  async function seedBoardOrchestratorNotice(
+    harness: WakeHarness,
+    input: { readonly threadId: ThreadId; readonly createdAt: string },
+  ) {
+    await harness.dispatch({
+      type: "thread.message.system.append",
+      commandId: CommandId.make(`board-orchestrator:${input.threadId}`),
+      threadId: input.threadId,
+      message: {
+        messageId: asMessageId(`board-orchestrator:${input.threadId}`),
+        text: "You were marked as the orchestrator for this board.",
+      },
+      createdAt: input.createdAt,
+    });
+  }
+
+  async function markBoardOrchestratorDelivered(
+    harness: WakeHarness,
+    input: { readonly threadId: ThreadId; readonly createdAt: string },
+  ) {
+    await harness.dispatch({
+      type: "thread.message.user.append",
+      commandId: CommandId.make(`board-orchestrator-turn:${input.threadId}`),
+      threadId: input.threadId,
+      message: {
+        messageId: asMessageId(`board-orchestrator-turn:${input.threadId}`),
+        text: BOARD_ORCHESTRATOR_TURN_TEXT,
+        attachments: [],
+      },
+      createdAt: input.createdAt,
+    });
+  }
+
+  async function seedBoardOrchestratorResendNotice(
+    harness: WakeHarness,
+    input: { readonly threadId: ThreadId; readonly nonce: string; readonly createdAt: string },
+  ) {
+    await harness.dispatch({
+      type: "thread.message.system.append",
+      commandId: CommandId.make(`board-orchestrator:${input.threadId}:${input.nonce}`),
+      threadId: input.threadId,
+      message: {
+        messageId: asMessageId(`board-orchestrator:${input.threadId}:${input.nonce}`),
+        text: "You were marked as the orchestrator for this board.",
+      },
+      createdAt: input.createdAt,
+    });
+  }
+
   async function seedBoardStartNotice(
     harness: WakeHarness,
     input: { readonly threadId: ThreadId; readonly cardId: string; readonly createdAt: string },
@@ -1711,6 +1763,110 @@ describe("ProviderRuntimeIngestion", () => {
       parent?.messages.some((message) => String(message.id).startsWith("board-start-drain:")),
     ).toBe(false);
     expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+  });
+
+  it("drains a board-orchestrator notice queued while the orchestrator was busy", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const drainMessageId = asMessageId(`board-orchestrator-drain:${parentThreadId}`);
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedBoardOrchestratorNotice(harness, { threadId: parentThreadId, createdAt: now });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainMessageId]);
+    const drainMessage = parent?.messages.find((message) => message.id === drainMessageId);
+    expect(drainMessage?.text).toBe(BOARD_ORCHESTRATOR_TURN_TEXT);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(drainMessageId);
+  });
+
+  it("does not drain a board-orchestrator notice already delivered by ws.ts", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedBoardOrchestratorNotice(harness, { threadId: parentThreadId, createdAt: now });
+    await markBoardOrchestratorDelivered(harness, {
+      threadId: parentThreadId,
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(
+      parent?.messages.some((message) =>
+        String(message.id).startsWith("board-orchestrator-drain:"),
+      ),
+    ).toBe(false);
+    expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+  });
+
+  it("drains the oldest orchestrator brief first, then a newer resend", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+    const drainPrimary = asMessageId(`board-orchestrator-drain:${parentThreadId}`);
+    const drainResend = asMessageId(`board-orchestrator-drain:${parentThreadId}:n1`);
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedBoardOrchestratorNotice(harness, { threadId: parentThreadId, createdAt: now });
+    await seedBoardOrchestratorResendNotice(harness, {
+      threadId: parentThreadId,
+      nonce: "n1",
+      createdAt: "2026-01-01T00:00:00.500Z",
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:01.000Z",
+    );
+
+    let parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainPrimary]);
+
+    // Settle the primary brief's auto-turn so the drain runs again.
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("brief-auto-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        turnId: asTurnId("brief-auto-turn"),
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("brief-auto-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+        turnId: asTurnId("brief-auto-turn"),
+        payload: { state: "completed" },
+      },
+    ]);
+
+    parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainPrimary, drainResend]);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(drainResend);
   });
 
   it.each([
@@ -2221,6 +2377,89 @@ describe("ProviderRuntimeIngestion", () => {
         expect(thread.session?.status).toBe("running");
         expect(thread.session?.activeTurnId).toBe(asTurnId("turn-after-reconnect"));
       }),
+  );
+
+  effectIt.effect("keeps a restarted in-flight turn running across a synthetic session start", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness());
+      const threadId = asThreadId("thread-1");
+      const delegatedMessageId = MessageId.make("delegated-message-before-restart");
+      const interruptedTurnId = asTurnId("delegated-turn-before-restart");
+
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-turn-start-before-restart"),
+        threadId,
+        message: {
+          messageId: delegatedMessageId,
+          role: "user",
+          text: "delegated work",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId("evt-turn-started-before-restart"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        turnId: interruptedTurnId,
+        payload: { model: "gpt-5-codex" },
+        createdAt: "2026-01-01T00:00:02.000Z",
+      });
+      yield* Effect.promise(() =>
+        waitForThread(
+          harness.readModel,
+          (entry) =>
+            entry.session?.status === "running" && entry.session.activeTurnId === interruptedTurnId,
+        ),
+      );
+
+      // Startup reconciliation marks the interrupted session "starting" with
+      // no active turn and forwards the interrupted turn under the
+      // continuation marker (serverRuntimeStartup.ts).
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("cmd-session-starting-before-restart"),
+        threadId,
+        session: {
+          threadId,
+          status: "starting",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-01-01T00:00:03.000Z",
+        },
+        createdAt: "2026-01-01T00:00:03.000Z",
+      });
+
+      // The re-attaching adapter synthesizes session.started before the
+      // continuation prompt opens its provider turn.
+      harness.emit({
+        type: "session.started",
+        eventId: asEventId("evt-session-started-before-restart"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId,
+        createdAt: "2026-01-01T00:00:04.000Z",
+      });
+      yield* Effect.promise(() => harness.drain());
+
+      const thread = (yield* Effect.promise(() => harness.readModel())).threads.find(
+        (entry) => entry.id === threadId,
+      )!;
+      expect(thread.session?.status).toBe("starting");
+      expect(thread.session?.activeTurnId).toBeNull();
+
+      const turn = yield* Effect.promise(() =>
+        harness.readLatestTurnById(threadId, interruptedTurnId),
+      );
+      expect(Option.isNone(turn)).toBe(false);
+      expect(Option.getOrThrow(turn).state).toBe("running");
+      expect(Option.getOrThrow(turn).pendingMessageId).toBe(delegatedMessageId);
+    }),
   );
 
   effectIt.effect("keeps an aborted pending start stopped across duplicate exit events", () =>

@@ -71,6 +71,13 @@ const BOARD_START_DRAIN_MESSAGE_PREFIX = "board-start-drain:";
 // must not import from the WS layer.
 const BOARD_START_TURN_TEXT =
   "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
+const BOARD_ORCHESTRATOR_MESSAGE_PREFIX = "board-orchestrator:";
+const BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX = "board-orchestrator-turn:";
+const BOARD_ORCHESTRATOR_DRAIN_MESSAGE_PREFIX = "board-orchestrator-drain:";
+// Mirrors BOARD_ORCHESTRATOR_TURN_TEXT in ws.ts. Duplicated on purpose:
+// ingestion must not import from the WS layer.
+const BOARD_ORCHESTRATOR_TURN_TEXT =
+  "You were marked as a board orchestrator. Read the notice above and follow the board workflow (skill board-orchestrator).";
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -1101,6 +1108,9 @@ const make = Effect.gen(function* () {
     if (!(yield* delegationWakeTargetIsIdle(input.parentThreadId))) {
       return;
     }
+    const shell = Option.getOrUndefined(
+      yield* projectionSnapshotQuery.getThreadShellById(input.parentThreadId),
+    );
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
       commandId: CommandId.make(
@@ -1115,6 +1125,8 @@ const make = Effect.gen(function* () {
         text: DELEGATION_WAKE_TURN_MESSAGE_TEXT,
         attachments: [],
       },
+      runtimeMode: shell?.runtimeMode ?? "full-access",
+      interactionMode: shell?.interactionMode ?? "default",
       createdAt: input.completedAt,
     });
   });
@@ -1286,6 +1298,19 @@ const make = Effect.gen(function* () {
     const boardStartDelivered = (cardId: string): boolean =>
       messageIds.has(MessageId.make(`${BOARD_START_TURN_MESSAGE_PREFIX}${cardId}`)) ||
       messageIds.has(MessageId.make(`${BOARD_START_DRAIN_MESSAGE_PREFIX}${threadId}:${cardId}`));
+    // The orchestrator brief counts as delivered once ws.ts (idle path) or this
+    // drain has started the waking turn for that exact notice. Each notice carries
+    // its own suffix, so a re-sent brief drains again instead of being masked by
+    // the first one.
+    const boardOrchestratorNoticeSuffix = (messageId: string): string =>
+      messageId.slice(BOARD_ORCHESTRATOR_MESSAGE_PREFIX.length);
+    const boardOrchestratorDelivered = (messageId: string): boolean => {
+      const suffix = boardOrchestratorNoticeSuffix(messageId);
+      return (
+        messageIds.has(MessageId.make(`${BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX}${suffix}`)) ||
+        messageIds.has(MessageId.make(`${BOARD_ORCHESTRATOR_DRAIN_MESSAGE_PREFIX}${suffix}`))
+      );
+    };
     const undelivered = messages.find((message) => {
       if (message.role !== "system") return false;
       if (message.messageId.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX)) {
@@ -1294,19 +1319,34 @@ const make = Effect.gen(function* () {
       if (message.messageId.startsWith(BOARD_START_MESSAGE_PREFIX)) {
         return !boardStartDelivered(message.messageId.slice(BOARD_START_MESSAGE_PREFIX.length));
       }
+      if (message.messageId.startsWith(BOARD_ORCHESTRATOR_MESSAGE_PREFIX)) {
+        return !boardOrchestratorDelivered(message.messageId);
+      }
       return false;
     });
     if (undelivered === undefined) return;
     if (!(yield* delegationWakeTargetIsIdle(threadId, ignoreTurnId))) return;
+    const shell = Option.getOrUndefined(
+      yield* projectionSnapshotQuery.getThreadShellById(threadId),
+    );
 
+    const undeliveredMessageId = String(undelivered.messageId);
     const isDelegationWake = undelivered.messageId.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX);
+    const isBoardOrchestrator = undelivered.messageId.startsWith(BOARD_ORCHESTRATOR_MESSAGE_PREFIX);
     const drainId = isDelegationWake
-      ? `delegation-wake-drain:${threadId}:${String(undelivered.messageId).slice(
+      ? `delegation-wake-drain:${threadId}:${undeliveredMessageId.slice(
           DELEGATION_WAKE_MESSAGE_PREFIX.length,
         )}`
-      : `${BOARD_START_DRAIN_MESSAGE_PREFIX}${threadId}:${String(undelivered.messageId).slice(
-          BOARD_START_MESSAGE_PREFIX.length,
-        )}`;
+      : isBoardOrchestrator
+        ? `${BOARD_ORCHESTRATOR_DRAIN_MESSAGE_PREFIX}${boardOrchestratorNoticeSuffix(undeliveredMessageId)}`
+        : `${BOARD_START_DRAIN_MESSAGE_PREFIX}${threadId}:${undeliveredMessageId.slice(
+            BOARD_START_MESSAGE_PREFIX.length,
+          )}`;
+    const turnText = isDelegationWake
+      ? DELEGATION_WAKE_TURN_MESSAGE_TEXT
+      : isBoardOrchestrator
+        ? BOARD_ORCHESTRATOR_TURN_TEXT
+        : BOARD_START_TURN_TEXT;
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
       commandId: CommandId.make(drainId),
@@ -1314,9 +1354,11 @@ const make = Effect.gen(function* () {
       message: {
         messageId: MessageId.make(drainId),
         role: "user",
-        text: isDelegationWake ? DELEGATION_WAKE_TURN_MESSAGE_TEXT : BOARD_START_TURN_TEXT,
+        text: turnText,
         attachments: [],
       },
+      runtimeMode: shell?.runtimeMode ?? "full-access",
+      interactionMode: shell?.interactionMode ?? "default",
       createdAt: now,
     });
   });
@@ -2054,8 +2096,14 @@ const make = Effect.gen(function* () {
             case "session.started":
             case "thread.started":
               // Provider thread/session start notifications can arrive during an
-              // active or pending turn; preserve that lifecycle state.
-              return activeTurnId !== null ? "running" : hasPendingTurnStart ? "starting" : "ready";
+              // active or pending turn; preserve that lifecycle state. A session
+              // the restart reconciler put in "starting" has a continuation in
+              // flight but no pending turn start, so treat it as starting too.
+              return activeTurnId !== null
+                ? "running"
+                : hasPendingTurnStart || thread.session?.status === "starting"
+                  ? "starting"
+                  : "ready";
           }
         })();
         const nextActiveTurnId =

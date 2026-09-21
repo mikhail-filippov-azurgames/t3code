@@ -80,6 +80,10 @@ export const ProviderSendTurnInput = Schema.Struct({
   /** Internal recovery signal. Allows an empty turn only for adapters that
       explicitly support promptless continuation. */
   continuation: Schema.optional(Schema.Boolean),
+  /** Internal recovery signal. A server-restart continuation must resume the
+      interrupted provider turn under its original turn id so the continued
+      work stays attached to the turn the caller is waiting on. */
+  resumeTurnId: Schema.optional(TurnId),
   input: Schema.optional(
     TrimmedNonEmptyString.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   ),

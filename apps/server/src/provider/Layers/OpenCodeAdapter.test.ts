@@ -30,6 +30,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
@@ -1520,6 +1521,37 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.equal(session?.status, "running");
       NodeAssert.equal(String(session?.activeTurnId), String(turn.turnId));
       NodeAssert.equal(runtimeMock.state.promptCalls.length, 2);
+    }),
+  );
+
+  it.effect("resumes the interrupted turn id when a restart continuation asks for it", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("thread-resume-turn-id");
+      const interruptedTurnId = TurnId.make("opencode-turn-interrupted-before-restart");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      // A server-restart continuation re-attaches to a live session with no
+      // in-memory active turn. Reusing the interrupted turn id keeps the
+      // continued work attached to the turn its caller is waiting on.
+      const continuation = yield* adapter.sendTurn({
+        threadId,
+        input: "Continue where you left off.",
+        resumeTurnId: interruptedTurnId,
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "openai/gpt-5",
+        },
+      });
+      NodeAssert.equal(String(continuation.turnId), String(interruptedTurnId));
+
+      const session = (yield* adapter.listSessions()).find((entry) => entry.threadId === threadId);
+      NodeAssert.equal(session?.status, "running");
+      NodeAssert.equal(String(session?.activeTurnId), String(interruptedTurnId));
     }),
   );
 

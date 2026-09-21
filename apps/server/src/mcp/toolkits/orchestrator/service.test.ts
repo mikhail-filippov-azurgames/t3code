@@ -1133,6 +1133,71 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("keeps a restarted delegated turn non-terminal until the continued turn finishes", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const turnId = bindDelegatedTurn(
+        harness,
+        delegated.taskId,
+        delegated.lineage.delegatedMessageId,
+      );
+      // Pre-restart partial output is already on the interrupted turn.
+      harness.children.set(delegated.taskId, {
+        ...harness.children.get(delegated.taskId)!,
+        messages: [
+          {
+            id: MessageId.make("partial-before-restart"),
+            role: "assistant",
+            text: "partial fragment",
+            turnId,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      });
+
+      const interrupted = yield* harness.service.taskStatus(scope, delegated.taskId);
+      expect(interrupted.status).toBe("running");
+      expect(interrupted.result).toBeNull();
+
+      // The continuation reuses the interrupted turn id, so the continued
+      // work's final assistant message lands on that same turn and only then
+      // does the delegation become terminal.
+      const runningChild = harness.children.get(delegated.taskId)!;
+      const runningRow = harness.turns.get(delegated.taskId)![0]!;
+      Object.assign(runningRow, { state: "completed", completedAt: now });
+      harness.children.set(delegated.taskId, {
+        ...runningChild,
+        session: {
+          ...runningChild.session!,
+          status: "ready",
+          activeTurnId: null,
+        },
+        latestTurn: { ...runningChild.latestTurn!, state: "completed", completedAt: now },
+        messages: [
+          ...runningChild.messages,
+          {
+            id: MessageId.make("final-after-continuation"),
+            role: "assistant",
+            text: "the real final report",
+            turnId,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      });
+
+      const completed = yield* harness.service.taskStatus(scope, delegated.taskId);
+      expect(completed.status).toBe("completed");
+      expect(completed.result?.text).toBe("the real final report");
+      expect(completed.lineage.delegatedTurnId).toBe(turnId);
+    }),
+  );
+
   it.effect("pins a pre-bind cancellation to the delegated pending message", () =>
     Effect.gen(function* () {
       const harness = makeHarness();

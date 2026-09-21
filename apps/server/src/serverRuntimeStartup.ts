@@ -701,11 +701,13 @@ export const reconcileProviderSessions = Effect.gen(function* () {
               });
             }
             const capabilities = yield* providerService.getCapabilities(providerInstanceId);
+            const resumeTurnId = session.activeTurnId ?? continuationTurnId;
             yield* providerService.sendTurn({
               threadId: thread.id,
               ...(capabilities.promptlessTurnContinuation === true
                 ? { continuation: true }
                 : { input: SERVER_UPDATE_CONTINUATION_PROMPT }),
+              ...(resumeTurnId !== null ? { resumeTurnId } : {}),
               interactionMode: thread.interactionMode,
             });
           });

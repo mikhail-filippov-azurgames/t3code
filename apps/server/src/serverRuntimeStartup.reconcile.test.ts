@@ -304,10 +304,16 @@ it.effect.each(
           String(left.threadId).localeCompare(String(right.threadId)),
         ),
         [
-          { threadId: codex.id, continuation: true, interactionMode: "default" },
+          {
+            threadId: codex.id,
+            continuation: true,
+            resumeTurnId: TurnId.make("turn-continue-codex"),
+            interactionMode: "default",
+          },
           {
             threadId: fallback.id,
             input: "Continue where you left off.",
+            resumeTurnId: fallbackContinuationTurnId,
             interactionMode: "default",
           },
         ],
@@ -906,7 +912,12 @@ for (const preparedStatus of [
       yield* runReconciliation(input);
       yield* Deferred.await(cleared);
       assert.deepStrictEqual(sends, [
-        { threadId: thread.id, continuation: true, interactionMode: "default" },
+        {
+          threadId: thread.id,
+          continuation: true,
+          resumeTurnId: turnId,
+          interactionMode: "default",
+        },
       ]);
       assert.deepStrictEqual(binding.runtimePayload, {
         activeTurnId: null,
