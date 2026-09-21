@@ -15,7 +15,7 @@ import {
   setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
-import { describeCalendarRunNotice, noticeKey } from "./calendar/calendar.logic";
+import { describeCalendarRunNotice } from "./calendar/calendar.logic";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
 
@@ -89,9 +89,10 @@ export function ThreadNotificationCoordinator() {
 }
 
 /**
- * Scheduled-run notices are not derived from a thread shell snapshot, so they
- * have their own subscription to the calendar store. The store is a seam: the
- * server-side calendar wiring will be what pushes notices into it.
+ * Scheduled-run notices arrive on their own stream, not from a thread shell
+ * snapshot, and live in the calendar store as a durable list. The sidebar
+ * subscription fills it; this component turns each new notice into an alert
+ * once per device, tracked by the store's notified cursor.
  */
 function CalendarStartNotifications({
   onNotification,
@@ -99,19 +100,31 @@ function CalendarStartNotifications({
   onNotification: (environmentId: EnvironmentId, notification: Notification) => void;
 }) {
   const notices = useCalendarStore((state) => state.notices);
-  const dismissNotice = useCalendarStore((state) => state.dismissNotice);
+  const lastNotifiedAt = useCalendarStore((state) => state.lastNotifiedAt);
+  const markNoticesNotified = useCalendarStore((state) => state.markNoticesNotified);
   const mode = useClientSettings((settings) => settings.notificationMode);
   const inAppNotificationsEnabled = useClientSettings(
     (settings) => settings.inAppNotificationsEnabled,
   );
   const navigate = useNavigate();
-  const handled = useRef(new Set<string>());
+  // A fresh browser should not replay every notice the server still holds, so
+  // the first non-empty snapshot only advances the cursor.
+  const primed = useRef(false);
 
   useEffect(() => {
-    for (const { environmentId, notice } of notices) {
-      const key = noticeKey(notice);
-      if (handled.current.has(key)) continue;
-      handled.current.add(key);
+    if (!primed.current) {
+      if (notices.length === 0) return;
+      primed.current = true;
+      markNoticesNotified();
+      return;
+    }
+    const notifiedLimit = lastNotifiedAt === null ? null : Date.parse(lastNotifiedAt);
+    const pending = notices.filter(({ notice }) => {
+      const observed = Date.parse(notice.observedAt);
+      return notifiedLimit === null || !Number.isFinite(notifiedLimit) || observed > notifiedLimit;
+    });
+    if (pending.length === 0) return;
+    for (const { environmentId, notice } of pending) {
       const { title, body, tone } = describeCalendarRunNotice(notice);
       if (hasNotificationSound(mode)) {
         void playNotificationSound(tone === "success" ? "completion" : "input", () =>
@@ -133,7 +146,6 @@ function CalendarStartNotifications({
             },
           },
         });
-        dismissNotice(key);
         continue;
       }
       if (
@@ -158,9 +170,18 @@ function CalendarStartNotifications({
           // Some browsers expose Notification but reject desktop presentation.
         }
       }
-      dismissNotice(key);
     }
-  }, [dismissNotice, inAppNotificationsEnabled, mode, navigate, notices, onNotification]);
+    // The durable list outlives an alert; the device cursor stops replays.
+    markNoticesNotified();
+  }, [
+    inAppNotificationsEnabled,
+    lastNotifiedAt,
+    markNoticesNotified,
+    mode,
+    navigate,
+    notices,
+    onNotification,
+  ]);
 
   return null;
 }

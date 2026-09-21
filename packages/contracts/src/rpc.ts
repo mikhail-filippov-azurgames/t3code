@@ -277,6 +277,8 @@ import {
   CalendarError,
   CalendarListInput,
   CalendarListResult,
+  CalendarNoticesResult,
+  CalendarSubscribeNoticesInput,
   CalendarUpdateInput,
   CalendarUpdateResult,
 } from "./calendar.ts";
@@ -452,6 +454,7 @@ export const WS_METHODS = {
   calendarCreate: "calendar.create",
   calendarUpdate: "calendar.update",
   calendarDelete: "calendar.delete",
+  calendarSubscribeNotices: "calendar.subscribeNotices",
 
   // Board methods
   boardOrchestratorsList: "board.orchestrators.list",
@@ -1442,11 +1445,19 @@ const WsCalendarDeleteRpc = Rpc.make(WS_METHODS.calendarDelete, {
   error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
 });
 
+const WsCalendarSubscribeNoticesRpc = Rpc.make(WS_METHODS.calendarSubscribeNotices, {
+  payload: CalendarSubscribeNoticesInput,
+  success: CalendarNoticesResult,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
 export const CalendarRpcs = [
   WsCalendarListRpc,
   WsCalendarCreateRpc,
   WsCalendarUpdateRpc,
   WsCalendarDeleteRpc,
+  WsCalendarSubscribeNoticesRpc,
 ] as const;
 
 const WsBoardOrchestratorsListRpc = Rpc.make(WS_METHODS.boardOrchestratorsList, {

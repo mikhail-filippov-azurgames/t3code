@@ -16,9 +16,11 @@ import {
   calendarCronMatchesDay,
   calendarCronSortedValues,
   calendarNameExcerpt,
+  calendarRunNoticeKey,
   type CalendarEvent,
   type CalendarEventMode,
   type CalendarRunNotice,
+  type CalendarRunNoticeStatus,
   type ParsedCalendarCron,
   parseCalendarCron,
 } from "@t3tools/contracts";
@@ -313,5 +315,31 @@ export function describeCalendarRunNotice(
 }
 
 export function noticeKey(notice: CalendarRunNotice): string {
-  return `${notice.eventId}:${notice.status}:${notice.scheduledAt}`;
+  return calendarRunNoticeKey(notice);
+}
+
+export interface CalendarNoticeCard {
+  readonly key: string;
+  readonly name: string;
+  readonly status: CalendarRunNoticeStatus;
+  readonly statusLabel: string;
+  readonly scheduledAt: string;
+  readonly observedAt: string;
+  readonly unread: boolean;
+}
+
+/** One notice prepared for the list page; `unread` is the device's read cursor. */
+export function toCalendarNoticeCard(
+  notice: CalendarRunNotice,
+  unread: boolean,
+): CalendarNoticeCard {
+  return {
+    key: noticeKey(notice),
+    name: notice.name,
+    status: notice.status,
+    statusLabel: notice.status === "started" ? "Started" : "Skipped (missed)",
+    scheduledAt: notice.scheduledAt,
+    observedAt: notice.observedAt,
+    unread,
+  };
 }

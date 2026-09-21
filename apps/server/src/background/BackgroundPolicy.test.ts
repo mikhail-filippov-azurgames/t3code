@@ -22,6 +22,7 @@ import { CalendarEventRepository } from "../persistence/Services/CalendarEvents.
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as BackgroundPolicy from "./BackgroundPolicy.ts";
+import * as CalendarNotices from "./CalendarNotices.ts";
 import * as CalendarReactor from "./CalendarReactor.ts";
 import * as HostPowerMonitor from "./HostPowerMonitor.ts";
 
@@ -425,6 +426,7 @@ describe("HostPowerMonitor layer sharing", () => {
         Layer.provide(Layer.mock(CalendarEventRepository)({})),
         Layer.provide(Layer.mock(OrchestrationEngine.OrchestrationEngineService)({})),
         Layer.provide(Layer.succeed(Crypto.Crypto, testCrypto)),
+        Layer.provide(CalendarNotices.layer),
       ),
       Layer.effect(
         MonitorProbeOne,

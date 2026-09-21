@@ -13,6 +13,7 @@ import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as UsageRouteImport } from './routes/usage'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
+import { Route as NoticesRouteImport } from './routes/notices'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as BoardRouteImport } from './routes/board'
@@ -53,6 +54,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const PairRoute = PairRouteImport.update({
   id: '/pair',
   path: '/pair',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const NoticesRoute = NoticesRouteImport.update({
+  id: '/notices',
+  path: '/notices',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConnectRoute = ConnectRouteImport.update({
@@ -167,6 +173,7 @@ export interface FileRoutesByFullPath {
   '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
   '/connect': typeof ConnectRoute
+  '/notices': typeof NoticesRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
@@ -192,6 +199,7 @@ export interface FileRoutesByTo {
   '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
   '/connect': typeof ConnectRoute
+  '/notices': typeof NoticesRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
@@ -220,6 +228,7 @@ export interface FileRoutesById {
   '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
   '/connect': typeof ConnectRoute
+  '/notices': typeof NoticesRoute
   '/pair': typeof PairRoute
   '/settings': typeof SettingsRouteWithChildren
   '/usage': typeof UsageRoute
@@ -249,6 +258,7 @@ export interface FileRouteTypes {
     | '/board'
     | '/calendar'
     | '/connect'
+    | '/notices'
     | '/pair'
     | '/settings'
     | '/usage'
@@ -274,6 +284,7 @@ export interface FileRouteTypes {
     | '/board'
     | '/calendar'
     | '/connect'
+    | '/notices'
     | '/pair'
     | '/settings'
     | '/usage'
@@ -301,6 +312,7 @@ export interface FileRouteTypes {
     | '/board'
     | '/calendar'
     | '/connect'
+    | '/notices'
     | '/pair'
     | '/settings'
     | '/usage'
@@ -329,6 +341,7 @@ export interface RootRouteChildren {
   BoardRoute: typeof BoardRoute
   CalendarRoute: typeof CalendarRoute
   ConnectRoute: typeof ConnectRoute
+  NoticesRoute: typeof NoticesRoute
   PairRoute: typeof PairRoute
   SettingsRoute: typeof SettingsRouteWithChildren
   UsageRoute: typeof UsageRoute
@@ -364,6 +377,13 @@ declare module '@tanstack/react-router' {
       path: '/pair'
       fullPath: '/pair'
       preLoaderRoute: typeof PairRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/notices': {
+      id: '/notices'
+      path: '/notices'
+      fullPath: '/notices'
+      preLoaderRoute: typeof NoticesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/connect': {
@@ -571,6 +591,7 @@ const rootRouteChildren: RootRouteChildren = {
   BoardRoute: BoardRoute,
   CalendarRoute: CalendarRoute,
   ConnectRoute: ConnectRoute,
+  NoticesRoute: NoticesRoute,
   PairRoute: PairRoute,
   SettingsRoute: SettingsRouteWithChildren,
   UsageRoute: UsageRoute,

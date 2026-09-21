@@ -19,9 +19,11 @@ import {
   formatTimeZoneLabel,
   inferCalendarRepeat,
   nextCronOccurrence,
+  noticeKey,
   parseCron,
   startOfDay,
   startOfWeek,
+  toCalendarNoticeCard,
 } from "./calendar.logic";
 
 function makeEvent(cronExpression: string): CalendarEvent {
@@ -231,6 +233,33 @@ describe("describeCalendarRunNotice", () => {
     assert.equal(presentation.title, "Scheduled task skipped");
     assert.equal(presentation.tone, "warning");
     assert.ok(presentation.body.includes("missed"));
+  });
+});
+
+describe("toCalendarNoticeCard", () => {
+  const notice: CalendarRunNotice = {
+    version: 1,
+    eventId: CalendarEventId.make("event-test"),
+    status: "skipped-missed",
+    scheduledAt: "2026-01-05T16:00:00.000Z",
+    observedAt: "2026-01-05T16:01:00.000Z",
+    name: "Daily review",
+  };
+
+  it("labels the status and carries the unread flag", () => {
+    const card = toCalendarNoticeCard(notice, true);
+    assert.equal(card.key, noticeKey(notice));
+    assert.equal(card.name, "Daily review");
+    assert.equal(card.statusLabel, "Skipped (missed)");
+    assert.equal(card.scheduledAt, "2026-01-05T16:00:00.000Z");
+    assert.equal(card.observedAt, "2026-01-05T16:01:00.000Z");
+    assert.equal(card.unread, true);
+  });
+
+  it("labels a started run", () => {
+    const card = toCalendarNoticeCard({ ...notice, status: "started" }, false);
+    assert.equal(card.statusLabel, "Started");
+    assert.equal(card.unread, false);
   });
 });
 

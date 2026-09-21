@@ -1,5 +1,6 @@
 import {
   ArrowLeftIcon,
+  BellIcon,
   CalendarDaysIcon,
   ChartNoAxesColumnIcon,
   GitPullRequestIcon,
@@ -12,7 +13,9 @@ import { Link, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-ro
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
+import { selectUnreadNoticeCount, useCalendarStore } from "../../state/calendar";
 import { useEnvironments } from "../../state/environments";
+import { useCalendarNoticesBackend } from "../calendar/useCalendarNotices";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -113,18 +116,43 @@ function SidebarUtilityItem({
   icon,
   label,
   onClick,
+  onContextMenu,
+  badgeCount = 0,
 }: {
   icon: ReactNode;
   label: string;
   onClick: () => void;
+  onContextMenu?: () => void;
+  badgeCount?: number;
 }) {
   return (
     <SidebarMenuItem className="shrink-0">
       <Tooltip>
         <TooltipTrigger
           render={
-            <SidebarMenuButton aria-label={label} onClick={onClick} size="icon">
-              {icon}
+            <SidebarMenuButton
+              aria-label={label}
+              onClick={onClick}
+              onContextMenu={
+                onContextMenu === undefined
+                  ? undefined
+                  : (event) => {
+                      // Pressing either mouse button clears the unread state; only
+                      // the left button also navigates.
+                      event.preventDefault();
+                      onContextMenu();
+                    }
+              }
+              size="icon"
+            >
+              <span className="relative inline-flex items-center justify-center">
+                {icon}
+                {badgeCount > 0 ? (
+                  <span className="absolute -top-1 -right-1 inline-flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold leading-3.5 text-primary-foreground">
+                    {badgeCount > 99 ? "99+" : badgeCount}
+                  </span>
+                ) : null}
+              </span>
             </SidebarMenuButton>
           }
         />
@@ -135,9 +163,14 @@ function SidebarUtilityItem({
 }
 
 export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
+  // The sidebar is mounted on every route, so the notice stream stays live even
+  // when the notices and calendar pages are not.
+  useCalendarNoticesBackend();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const { isMobile, setOpenMobile } = useSidebar();
+  const unreadNoticeCount = useCalendarStore(selectUnreadNoticeCount);
+  const markAllNoticesRead = useCalendarStore((state) => state.markAllNoticesRead);
   const currentFooterPage = useLocation({
     select: (location) =>
       /^\/settings(?:\/|$)/.test(location.pathname)
@@ -148,11 +181,13 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             ? "usage"
             : location.pathname === "/calendar"
               ? "calendar"
-              : location.pathname === "/board"
-                ? "board"
-                : location.pathname === "/pull-requests"
-                  ? "pull-requests"
-                  : null,
+              : location.pathname === "/notices"
+                ? "notices"
+                : location.pathname === "/board"
+                  ? "board"
+                  : location.pathname === "/pull-requests"
+                    ? "pull-requests"
+                    : null,
   });
   const { environments } = useEnvironments();
   // The page reads every connected server, so one of them offering pull requests is enough for
@@ -188,6 +223,16 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
     closeMobileSidebar();
     void navigate({ to: "/calendar" });
   }, [closeMobileSidebar, navigate]);
+
+  const handleNoticesClick = useCallback(() => {
+    markAllNoticesRead();
+    closeMobileSidebar();
+    void navigate({ to: "/notices" });
+  }, [closeMobileSidebar, markAllNoticesRead, navigate]);
+
+  const handleNoticesMarkRead = useCallback(() => {
+    markAllNoticesRead();
+  }, [markAllNoticesRead]);
 
   const handleBoardClick = useCallback(() => {
     closeMobileSidebar();
@@ -235,6 +280,13 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<CalendarDaysIcon />}
             label="Calendar"
             onClick={handleCalendarClick}
+          />
+          <SidebarUtilityItem
+            icon={<BellIcon />}
+            label="Notifications"
+            onClick={handleNoticesClick}
+            onContextMenu={handleNoticesMarkRead}
+            badgeCount={unreadNoticeCount}
           />
           <SidebarUtilityItem
             icon={<SquareKanbanIcon />}

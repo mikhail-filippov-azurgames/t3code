@@ -106,6 +106,7 @@ const decodeTransferShellSnapshot = Schema.decodeUnknownEffect(
 const encodeTestJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Unknown));
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+import * as CalendarNotices from "./background/CalendarNotices.ts";
 import * as ServerConfig from "./config.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { HTTP_ROUTER_CONFIG, makeRoutesLayer } from "./server.ts";
@@ -1210,7 +1211,7 @@ const buildAppUnderTest = (options?: {
       Layer.provideMerge(ServerSecretStore.layer),
       Layer.provide(workspaceAndProjectServicesLayer),
       Layer.provideMerge(FetchHttpClient.layer),
-      Layer.provide(VcsProcess.layer),
+      Layer.provide(Layer.mergeAll(VcsProcess.layer, CalendarNotices.layer)),
       Layer.provide(layerConfig),
     );
 

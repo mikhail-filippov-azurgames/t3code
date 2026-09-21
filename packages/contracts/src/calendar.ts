@@ -176,7 +176,10 @@ export type CalendarEvent = typeof CalendarEvent.Type;
 export const CalendarRunNoticeStatus = Schema.Literals(["started", "skipped-missed"]);
 export type CalendarRunNoticeStatus = typeof CalendarRunNoticeStatus.Type;
 
-/** Payload posted to the thread-completion notification channel. */
+/**
+ * One run notification. `threadId` is absent for a `new-thread` event that was
+ * skipped before its thread existed, so consumers must not rely on it.
+ */
 export const CalendarRunNotice = Schema.Struct({
   version: Schema.Literal(1),
   eventId: CalendarEventId,
@@ -184,8 +187,17 @@ export const CalendarRunNotice = Schema.Struct({
   scheduledAt: IsoDateTime,
   observedAt: IsoDateTime,
   name: Schema.String.check(Schema.isMaxLength(CALENDAR_NAME_LIMIT)),
+  threadId: Schema.optional(Schema.NullOr(ThreadId)),
 });
 export type CalendarRunNotice = typeof CalendarRunNotice.Type;
+
+/**
+ * Stable identity of one run notification. Two notices with the same key
+ * describe the same run, so a redelivered snapshot never duplicates a card.
+ */
+export function calendarRunNoticeKey(notice: CalendarRunNotice): string {
+  return `${notice.eventId}:${notice.status}:${notice.scheduledAt}`;
+}
 
 export const CalendarListInput = Schema.Struct({});
 export type CalendarListInput = typeof CalendarListInput.Type;
@@ -194,6 +206,15 @@ export const CalendarListResult = Schema.Struct({
   events: Schema.Array(CalendarEvent),
 });
 export type CalendarListResult = typeof CalendarListResult.Type;
+
+export const CalendarSubscribeNoticesInput = Schema.Struct({});
+export type CalendarSubscribeNoticesInput = typeof CalendarSubscribeNoticesInput.Type;
+
+/** Full run-notice list, newest first; the stream sends the whole list on every change. */
+export const CalendarNoticesResult = Schema.Struct({
+  notices: Schema.Array(CalendarRunNotice),
+});
+export type CalendarNoticesResult = typeof CalendarNoticesResult.Type;
 
 export const CalendarCreateInput = Schema.Struct({
   projectId: ProjectId,

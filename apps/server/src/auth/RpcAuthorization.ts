@@ -98,6 +98,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.calendarCreate]: AuthOrchestrationOperateScope,
   [WS_METHODS.calendarUpdate]: AuthOrchestrationOperateScope,
   [WS_METHODS.calendarDelete]: AuthOrchestrationOperateScope,
+  [WS_METHODS.calendarSubscribeNotices]: AuthOrchestrationReadScope,
   [WS_METHODS.boardOrchestratorsList]: AuthOrchestrationReadScope,
   [WS_METHODS.boardOrchestratorAdd]: AuthOrchestrationOperateScope,
   [WS_METHODS.boardOrchestratorRemove]: AuthOrchestrationOperateScope,

@@ -136,6 +136,7 @@ import {
   CalendarEventRepository,
   CalendarEventRepositoryLive,
 } from "./persistence/Services/CalendarEvents.ts";
+import { CalendarNotices } from "./background/CalendarNotices.ts";
 import { nextCalendarFireAt, planCalendarEventUpdate } from "./background/CalendarReactor.ts";
 import {
   BoardRepository,
@@ -1079,6 +1080,7 @@ const makeWsRpcLayer = (
       const usage = yield* UsageService.UsageService;
       const relayClient = yield* RelayClient.RelayClient;
       const calendarEvents = yield* CalendarEventRepository;
+      const calendarNotices = yield* CalendarNotices;
       const boardRepository = yield* BoardRepository;
       const projectionTurns = yield* ProjectionTurns.ProjectionTurnRepository;
       const toCalendarError = (operation: string, cause: unknown) =>
@@ -3379,6 +3381,16 @@ const makeWsRpcLayer = (
             calendarEvents.deleteById({ eventId: input.eventId }).pipe(
               Effect.as({}),
               Effect.mapError((cause) => toCalendarError("calendar.delete", cause)),
+            ),
+            { "rpc.aggregate": "calendar" },
+          ),
+        [WS_METHODS.calendarSubscribeNotices]: (_input) =>
+          observeRpcStream(
+            WS_METHODS.calendarSubscribeNotices,
+            Stream.unwrap(
+              Effect.map(calendarNotices.subscribe, ({ latest, changes }) =>
+                Stream.concat(Stream.make(latest), changes),
+              ),
             ),
             { "rpc.aggregate": "calendar" },
           ),

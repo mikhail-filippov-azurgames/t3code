@@ -1,6 +1,8 @@
 import {
   CalendarError,
   CalendarEventId,
+  type CalendarRunNotice,
+  EnvironmentId,
   ProjectId,
   ProviderInstanceId,
   type CalendarEvent,
@@ -9,7 +11,14 @@ import { createModelSelection } from "@t3tools/shared/model";
 import * as Cause from "effect/Cause";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import { calendarFailureText, useCalendarStore } from "./calendar";
+import {
+  calendarFailureText,
+  isNoticeUnread,
+  selectUnreadNoticeCount,
+  sortNoticesNewestFirst,
+  useCalendarStore,
+  type CalendarRunNoticeEnvelope,
+} from "./calendar";
 
 function makeEvent(eventId: string, title = "Daily review"): CalendarEvent {
   const now = new Date(2026, 0, 5, 8, 0).toISOString();
@@ -34,8 +43,27 @@ function makeEvent(eventId: string, title = "Daily review"): CalendarEvent {
 }
 
 beforeEach(() => {
-  useCalendarStore.setState({ events: [], notices: [], transport: "offline", error: null });
+  useCalendarStore.setState({
+    events: [],
+    notices: [],
+    lastReadAt: null,
+    lastNotifiedAt: null,
+    transport: "offline",
+    error: null,
+  });
 });
+
+function makeNotice(eventId: string, observedAt: string): CalendarRunNoticeEnvelope {
+  const notice: CalendarRunNotice = {
+    version: 1,
+    eventId: CalendarEventId.make(eventId),
+    status: "started",
+    scheduledAt: observedAt,
+    observedAt,
+    name: "Standup",
+  };
+  return { environmentId: EnvironmentId.make("environment-1"), notice };
+}
 
 describe("calendar store", () => {
   it("replaces the whole list with the server's answer", () => {
@@ -68,6 +96,59 @@ describe("calendar store", () => {
     useCalendarStore.getState().setError("denied");
     expect(useCalendarStore.getState().transport).toBe("live");
     expect(useCalendarStore.getState().error).toBe("denied");
+  });
+});
+
+describe("calendar notice read state", () => {
+  it("counts every notice as unread before the first read", () => {
+    useCalendarStore.getState().replaceNotices([makeNotice("event-a", "2026-01-05T08:00:00.000Z")]);
+    expect(selectUnreadNoticeCount(useCalendarStore.getState())).toBe(1);
+  });
+
+  it("clears the badge through the newest notice instant", () => {
+    useCalendarStore
+      .getState()
+      .replaceNotices([
+        makeNotice("event-a", "2026-01-05T08:00:00.000Z"),
+        makeNotice("event-b", "2026-01-05T09:00:00.000Z"),
+      ]);
+    useCalendarStore.getState().markAllNoticesRead();
+
+    expect(useCalendarStore.getState().lastReadAt).toBe("2026-01-05T09:00:00.000Z");
+    expect(selectUnreadNoticeCount(useCalendarStore.getState())).toBe(0);
+  });
+
+  it("keeps a notice newer than the read cursor unread", () => {
+    useCalendarStore.getState().replaceNotices([makeNotice("event-a", "2026-01-05T08:00:00.000Z")]);
+    useCalendarStore.getState().markAllNoticesRead();
+    useCalendarStore
+      .getState()
+      .replaceNotices([
+        makeNotice("event-a", "2026-01-05T08:00:00.000Z"),
+        makeNotice("event-b", "2026-01-05T10:00:00.000Z"),
+      ]);
+
+    expect(selectUnreadNoticeCount(useCalendarStore.getState())).toBe(1);
+    expect(
+      isNoticeUnread(
+        makeNotice("event-a", "2026-01-05T08:00:00.000Z").notice,
+        useCalendarStore.getState().lastReadAt,
+      ),
+    ).toBe(false);
+  });
+
+  it("sorts notices newest first", () => {
+    useCalendarStore
+      .getState()
+      .replaceNotices([
+        makeNotice("event-a", "2026-01-05T08:00:00.000Z"),
+        makeNotice("event-b", "2026-01-05T09:00:00.000Z"),
+      ]);
+    expect(
+      sortNoticesNewestFirst(useCalendarStore.getState().notices).map(
+        ({ notice }) => notice.eventId as string,
+      ),
+    ).toEqual(["event-b", "event-a"]);
   });
 });
 

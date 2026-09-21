@@ -16,6 +16,7 @@ import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
+  createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 
@@ -28,6 +29,11 @@ export function createCalendarEnvironmentAtoms<R, E>(
     tag: WS_METHODS.calendarList,
     staleTimeMs: 30_000,
   });
+  // The server streams the whole notice list on every change; the atom holds the latest.
+  const notices = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:calendar:notices",
+    tag: WS_METHODS.calendarSubscribeNotices,
+  });
   const refreshList = (
     { environmentId }: { readonly environmentId: EnvironmentId },
     registry: AtomRegistry.AtomRegistry,
@@ -35,6 +41,7 @@ export function createCalendarEnvironmentAtoms<R, E>(
 
   return {
     list,
+    notices,
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:calendar:create",
       tag: WS_METHODS.calendarCreate,
