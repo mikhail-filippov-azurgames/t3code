@@ -1,7 +1,8 @@
 /**
- * Google-Calendar-shaped week/day grid: a time gutter, one column per day, and
- * one absolutely positioned chip per occurrence. The contract carries no end
- * time, so a chip is drawn at a fixed cosmetic duration.
+ * Time-table week/day grid: a time gutter, one column per day, and one row per
+ * hour. Cards stack vertically inside their hour slot, which grows with the
+ * number of cards, so parallel occurrences never overlap and never shrink in
+ * width. The contract carries no end time, so a card has a fixed height.
  *
  * @module components/calendar/CalendarWeekGrid
  */
@@ -14,14 +15,19 @@ import {
   formatClock,
   formatDayLabel,
   formatTimeZoneLabel,
+  layoutCalendarSlots,
   layoutOccurrences,
   startOfDay,
-  type CalendarOccurrence,
 } from "./calendar.logic";
 
 const HOUR_HEIGHT = 48;
-const DAY_HEIGHT = 24 * HOUR_HEIGHT;
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
+const CARD_HEIGHT = Math.round((DEFAULT_EVENT_MINUTES / 60) * HOUR_HEIGHT);
+const CARD_GAP = 2;
+const SLOT_ROW_INSET = 4;
+/** An empty or single-card slot keeps one card's height; extra cards add rows. */
+const BASE_ROW_HEIGHT = CARD_HEIGHT + SLOT_ROW_INSET;
+const PER_CARD_ROW_HEIGHT = CARD_HEIGHT + CARD_GAP;
 
 export interface CalendarWeekGridProps {
   readonly events: ReadonlyArray<CalendarEvent>;
@@ -45,7 +51,7 @@ function dayKeys(rangeStart: Date, rangeEnd: Date): ReadonlyArray<Date> {
 
 function chipClass(selected: boolean): string {
   return cn(
-    "absolute inset-x-0.5 overflow-hidden rounded-md border px-1.5 py-0.5 text-left text-xs leading-tight",
+    "w-full overflow-hidden rounded-md border px-1.5 py-0.5 text-left text-xs leading-tight",
     "border-primary/30 bg-primary/10 text-foreground hover:bg-primary/15",
     selected && "ring-2 ring-ring",
   );
@@ -63,16 +69,14 @@ export function CalendarWeekGrid({
     () => layoutOccurrences(events, rangeStart, rangeEnd),
     [events, rangeStart, rangeEnd],
   );
-  const byDay = useMemo(() => {
-    const grouped = new Map<number, CalendarOccurrence[]>();
-    for (const occurrence of occurrences) {
-      const key = startOfDay(occurrence.start).getTime();
-      const list = grouped.get(key);
-      if (list === undefined) grouped.set(key, [occurrence]);
-      else list.push(occurrence);
-    }
-    return grouped;
-  }, [occurrences]);
+  const slots = useMemo(
+    () =>
+      layoutCalendarSlots(occurrences, days, {
+        baseRowHeight: BASE_ROW_HEIGHT,
+        perOccurrenceHeight: PER_CARD_ROW_HEIGHT,
+      }),
+    [occurrences, days],
+  );
 
   const gridTemplateColumns = `4rem repeat(${days.length}, minmax(0, 1fr))`;
 
@@ -93,51 +97,54 @@ export function CalendarWeekGrid({
       </div>
       <div className="max-h-[68vh] overflow-y-auto">
         <div className="grid" style={{ gridTemplateColumns }}>
-          <div className="relative border-r border-border" style={{ height: DAY_HEIGHT }}>
+          <div className="border-r border-border">
             {HOURS.map((hour) => (
               <div
                 key={hour}
-                className="absolute right-1.5 -translate-y-1/2 text-[10px] text-muted-foreground tabular-nums"
-                style={{ top: hour * HOUR_HEIGHT }}
+                className="relative"
+                style={{ height: slots.rowHeights[hour] ?? BASE_ROW_HEIGHT }}
               >
-                {hour === 0 ? "" : formatClock(new Date(2000, 0, 1, hour))}
+                {hour === 0 ? null : (
+                  <div className="absolute right-1.5 top-0 -translate-y-1/2 text-[10px] text-muted-foreground tabular-nums">
+                    {formatClock(new Date(2000, 0, 1, hour))}
+                  </div>
+                )}
               </div>
             ))}
           </div>
           {days.map((day) => {
-            const dayOccurrences = byDay.get(day.getTime()) ?? [];
+            const daySlots = slots.byDay.get(day.getTime());
             return (
-              <div
-                key={day.toISOString()}
-                className="relative border-r border-border last:border-r-0"
-                style={{ height: DAY_HEIGHT }}
-              >
-                {HOURS.map((hour) => (
-                  <div
-                    key={hour}
-                    className="absolute inset-x-0 border-t border-border/60"
-                    style={{ top: hour * HOUR_HEIGHT }}
-                  />
-                ))}
-                {dayOccurrences.map((occurrence) => {
-                  const minutesFromDayStart = (occurrence.start.getTime() - day.getTime()) / 60_000;
-                  const top = (minutesFromDayStart / 60) * HOUR_HEIGHT;
-                  const height = (DEFAULT_EVENT_MINUTES / 60) * HOUR_HEIGHT;
-                  const selected = selectedEventId === (occurrence.event.eventId as string);
+              <div key={day.toISOString()} className="border-r border-border last:border-r-0">
+                {HOURS.map((hour) => {
+                  const hourOccurrences = daySlots?.get(hour) ?? [];
                   return (
-                    <button
-                      key={`${occurrence.event.eventId}:${occurrence.start.toISOString()}`}
-                      type="button"
-                      className={chipClass(selected)}
-                      style={{ top, height }}
-                      onClick={() => onSelectEvent?.(occurrence.event.eventId as string)}
+                    <div
+                      key={hour}
+                      className="flex flex-col gap-0.5 overflow-hidden border-t border-border/60 p-0.5"
+                      style={{ height: slots.rowHeights[hour] ?? BASE_ROW_HEIGHT }}
                     >
-                      <span className="block truncate font-medium">{occurrence.event.title}</span>
-                      <span className="block truncate text-[10px] text-muted-foreground">
-                        {formatClock(occurrence.start)}
-                        {occurrence.event.mode === "continue" ? " · continues" : ""}
-                      </span>
-                    </button>
+                      {hourOccurrences.map((occurrence) => {
+                        const selected = selectedEventId === (occurrence.event.eventId as string);
+                        return (
+                          <button
+                            key={`${occurrence.event.eventId}:${occurrence.start.toISOString()}`}
+                            type="button"
+                            className={chipClass(selected)}
+                            style={{ height: CARD_HEIGHT }}
+                            onClick={() => onSelectEvent?.(occurrence.event.eventId as string)}
+                          >
+                            <span className="block truncate font-medium">
+                              {occurrence.event.title}
+                            </span>
+                            <span className="block truncate text-[10px] text-muted-foreground">
+                              {formatClock(occurrence.start)}
+                              {occurrence.event.mode === "continue" ? " · continues" : ""}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   );
                 })}
               </div>

@@ -260,6 +260,46 @@ export function layoutOccurrences(
     .toSorted((left, right) => left.start.getTime() - right.start.getTime());
 }
 
+export interface CalendarSlotLayout {
+  /** Day start (epoch ms) -> hour -> occurrences starting in that hour, in start order. */
+  readonly byDay: ReadonlyMap<number, ReadonlyMap<number, ReadonlyArray<CalendarOccurrence>>>;
+  /** One height per hour of the day, shared by every day column so the table stays aligned. */
+  readonly rowHeights: ReadonlyArray<number>;
+}
+
+/**
+ * Buckets occurrences into hour rows: cards stack vertically inside their slot
+ * and the row grows with the number of cards instead of squeezing their width.
+ * A row keeps at least `baseRowHeight` (an empty or single-card slot), and every
+ * day column shares the tallest row so the hours line up across the week.
+ */
+export function layoutCalendarSlots(
+  occurrences: ReadonlyArray<CalendarOccurrence>,
+  days: ReadonlyArray<Date>,
+  options: { readonly baseRowHeight: number; readonly perOccurrenceHeight: number },
+): CalendarSlotLayout {
+  const byDay = new Map<number, Map<number, CalendarOccurrence[]>>();
+  for (const day of days) {
+    byDay.set(startOfDay(day).getTime(), new Map());
+  }
+  for (const occurrence of occurrences) {
+    const dayGroups = byDay.get(startOfDay(occurrence.start).getTime());
+    if (dayGroups === undefined) continue;
+    const hour = occurrence.start.getHours();
+    const list = dayGroups.get(hour);
+    if (list === undefined) dayGroups.set(hour, [occurrence]);
+    else list.push(occurrence);
+  }
+  const rowHeights = Array.from({ length: 24 }, (_, hour) => {
+    let count = 0;
+    for (const dayGroups of byDay.values()) {
+      count = Math.max(count, dayGroups.get(hour)?.length ?? 0);
+    }
+    return Math.max(options.baseRowHeight, count * options.perOccurrenceHeight);
+  });
+  return { byDay, rowHeights };
+}
+
 /** The first fire at or after `from`, or null when the expression never matches. */
 export function nextCronOccurrence(expression: string, from: Date): Date | null {
   const cron = parseCron(expression);

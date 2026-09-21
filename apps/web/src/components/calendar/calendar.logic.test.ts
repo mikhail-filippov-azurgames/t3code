@@ -21,11 +21,13 @@ import {
   formatClock,
   formatTimeZoneLabel,
   inferCalendarRepeat,
+  layoutCalendarSlots,
   nextCronOccurrence,
   noticeKey,
   parseCron,
   startOfDay,
   startOfWeek,
+  type CalendarOccurrence,
 } from "./calendar.logic";
 
 function makeEvent(cronExpression: string): CalendarEvent {
@@ -354,5 +356,64 @@ describe("browser display zone", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("layoutCalendarSlots", () => {
+  const monday = new Date(2026, 0, 5);
+  const tuesday = new Date(2026, 0, 6);
+  const options = { baseRowHeight: 40, perOccurrenceHeight: 38 };
+
+  function occurrence(day: Date, hour: number, minute: number): CalendarOccurrence {
+    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
+    return {
+      event: makeEvent("0 9 * * *"),
+      start,
+      end: new Date(start.getTime() + 45 * 60_000),
+    };
+  }
+
+  it("keeps an empty slot at one card's height", () => {
+    const layout = layoutCalendarSlots([], [monday], options);
+    assert.equal(layout.rowHeights[9], 40);
+    assert.equal(layout.byDay.get(startOfDay(monday).getTime())?.size ?? 0, 0);
+  });
+
+  it("grows the row with every stacked card", () => {
+    const layout = layoutCalendarSlots(
+      [occurrence(monday, 10, 0), occurrence(monday, 10, 20), occurrence(monday, 10, 40)],
+      [monday],
+      options,
+    );
+    assert.equal(layout.rowHeights[10], 3 * 38);
+    assert.equal(layout.rowHeights[9], 40);
+    assert.deepEqual(
+      layout.byDay
+        .get(startOfDay(monday).getTime())
+        ?.get(10)
+        ?.map((entry) => entry.start.getMinutes()),
+      [0, 20, 40],
+    );
+  });
+
+  it("shares the tallest row across days so the hours stay aligned", () => {
+    const layout = layoutCalendarSlots(
+      [occurrence(monday, 10, 0), occurrence(tuesday, 10, 0), occurrence(tuesday, 10, 10)],
+      [monday, tuesday],
+      options,
+    );
+    assert.equal(layout.rowHeights[10], 2 * 38);
+    assert.equal(layout.byDay.get(startOfDay(monday).getTime())?.get(10)?.length, 1);
+    assert.equal(layout.byDay.get(startOfDay(tuesday).getTime())?.get(10)?.length, 2);
+  });
+
+  it("ignores occurrences outside the rendered days", () => {
+    const layout = layoutCalendarSlots(
+      [occurrence(new Date(2026, 0, 9), 10, 0)],
+      [monday],
+      options,
+    );
+    assert.equal(layout.rowHeights[10], 40);
+    assert.equal(layout.byDay.get(startOfDay(monday).getTime())?.size ?? 0, 0);
   });
 });
