@@ -12,6 +12,7 @@ import {
   getLocalEnvironmentEnabled,
   setLocalEnvironmentEnabled,
 } from "./methods/localEnvironment.ts";
+import { restartApp } from "./methods/lifecycle.ts";
 import {
   getAdvertisedEndpoints,
   getServerExposureState,
@@ -86,6 +87,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(getLocalEnvironmentEnabled);
   yield* ipc.handle(setLocalEnvironmentEnabled);
   yield* ipc.handle(getLocalEnvironmentBearerToken);
+  yield* ipc.handle(restartApp);
 
   yield* ipc.handle(getClientSettings);
   yield* ipc.handle(setClientSettings);

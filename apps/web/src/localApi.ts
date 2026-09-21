@@ -74,6 +74,15 @@ function createBrowserLocalApi(): LocalApi {
         writeBrowserClientSettings(settings);
       },
     },
+    // Restarting the process is a desktop-shell capability; the browser build
+    // has nothing to restart, so it fails closed with a clear message.
+    restartApp: async () => {
+      const bridge = window.desktopBridge;
+      if (!bridge?.restartApp) {
+        throw new Error("Restart is only available in the desktop app.");
+      }
+      await bridge.restartApp();
+    },
   };
 }
 

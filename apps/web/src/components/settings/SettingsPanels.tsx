@@ -1,5 +1,6 @@
 import { Spinner } from "~/components/ui/spinner";
 import { NotificationSettings } from "./NotificationSettings";
+import { RestartAppSetting } from "./RestartAppSetting";
 import { ArchiveIcon, ArchiveX, ChevronRightIcon, SettingsIcon } from "lucide-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import type { CSSProperties, ReactNode } from "react";
@@ -58,6 +59,7 @@ import {
 } from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
+import { useSkipOrchestratorUnmarkConfirmation } from "../board/boardPreferences";
 import {
   resolveEnvironmentIdentificationPillLabel,
   useEnvironmentStageLabel,
@@ -2104,6 +2106,8 @@ function LegacyFeaturesSection() {
 export function GeneralSettingsPanel() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const [skipOrchestratorUnmarkConfirm, setSkipOrchestratorUnmarkConfirm] =
+    useSkipOrchestratorUnmarkConfirmation();
   const navigate = useNavigate();
   const { scope, environment, connectedEnvironments } = useSettingsScope();
   // The representative environment supplies the provider list for pickers;
@@ -3002,6 +3006,18 @@ export function GeneralSettingsPanel() {
           }
         />
 
+        <SettingsRow
+          title="Orchestrator unmark confirmation"
+          description="Unmarking an orchestrator deletes its cards and delegated chats. Turn this on to skip the confirmation dialog. Saved on this device."
+          control={
+            <Switch
+              checked={skipOrchestratorUnmarkConfirm}
+              onCheckedChange={(checked) => setSkipOrchestratorUnmarkConfirm(Boolean(checked))}
+              aria-label="Skip orchestrator unmark confirmation"
+            />
+          }
+        />
+
         {isElectron ? (
           <SettingsRow
             {...searchableSetting("quit-confirmation")}
@@ -3201,6 +3217,8 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+
+      <RestartAppSetting />
 
       <LegacyFeaturesSection />
     </SettingsPageContainer>

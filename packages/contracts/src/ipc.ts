@@ -1314,6 +1314,8 @@ export interface DesktopBridge {
   probeRemoteEditors?: () => Promise<readonly EditorId[]>;
   /** Present when the desktop shell can perform an ordered plain-text paste. */
   pasteAsText?: () => Promise<void>;
+  /** Restarts the desktop app process; durable threads resume afterwards. */
+  restartApp?: () => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   onSnapShotEvent?: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
   /**
@@ -1471,6 +1473,11 @@ export interface LocalApi {
     getClientSettings: () => Promise<ClientSettings | null>;
     setClientSettings: (settings: ClientSettings) => Promise<void>;
   };
+  /**
+   * Restarts the host app process. Only the desktop shell can do this; web
+   * builds reject. Durable threads survive the restart.
+   */
+  restartApp: () => Promise<void>;
 }
 
 /**

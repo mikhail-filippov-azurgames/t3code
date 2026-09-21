@@ -121,6 +121,14 @@ describe("LocalApi", () => {
     );
   });
 
+  it("rejects restarting the app in a browser", async () => {
+    const { createLocalApi } = await import("./localApi");
+
+    await expect(createLocalApi().restartApp()).rejects.toThrow(
+      "Restart is only available in the desktop app.",
+    );
+  });
+
   it("delegates host capabilities and persistence to the desktop bridge", async () => {
     const showContextMenu = vi.fn().mockResolvedValue("delete");
     const pickFolder = vi.fn().mockResolvedValue("/tmp/project");
