@@ -6,15 +6,18 @@ import {
   type CalendarRunNotice,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
-import { assert, describe, it } from "vite-plus/test";
+import { assert, describe, it, vi } from "vite-plus/test";
 
 import {
   addDays,
+  browserTimeZone,
   composeCron,
   cronMatchesDay,
   describeCalendarRunNotice,
   eventOccurrencesBetween,
   formatClock,
+  formatTimeZoneLabel,
+  inferCalendarRepeat,
   nextCronOccurrence,
   parseCron,
   startOfDay,
@@ -55,31 +58,37 @@ describe("parseCron", () => {
   it("normalises both Sunday values to 0", () => {
     const parsed = parseCron("0 16 * * 7");
     assert.ok(parsed !== null);
-    assert.deepEqual([...parsed.daysOfWeek.values], [0]);
-    assert.equal(parsed.daysOfWeek.restricted, true);
+    assert.deepEqual([...parsed.dayOfWeek.values], [0]);
+    assert.equal(parsed.dayOfWeek.restricted, true);
   });
 
   it("keeps an unrestricted day field unrestricted", () => {
     const parsed = parseCron("0 16 * * *");
     assert.ok(parsed !== null);
-    assert.equal(parsed.daysOfWeek.restricted, false);
-    assert.equal(parsed.daysOfMonth.restricted, false);
+    assert.equal(parsed.dayOfWeek.restricted, false);
+    assert.equal(parsed.dayOfMonth.restricted, false);
   });
 
   it("accepts a stepped wildcard and a stepped range", () => {
     const stepped = parseCron("*/15 9-17 * * *");
     assert.ok(stepped !== null);
-    assert.deepEqual([...stepped.minutes.values], [0, 15, 30, 45]);
-    assert.deepEqual([...stepped.hours.values], [9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    assert.deepEqual([...stepped.minute.values], [0, 15, 30, 45]);
+    assert.deepEqual([...stepped.hour.values], [9, 10, 11, 12, 13, 14, 15, 16, 17]);
   });
 
-  it("rejects a bare number with a step, which the contract does not allow", () => {
-    assert.equal(parseCron("5/10 9 * * *"), null);
+  it("reads a bare n/step as n through the field maximum like the server", () => {
+    const parsed = parseCron("5/10 9 * * *");
+    assert.ok(parsed !== null);
+    assert.deepEqual([...parsed.minute.values], [5, 15, 25, 35, 45, 55]);
   });
 });
 
 describe("composeCron", () => {
   const start = new Date(2026, 0, 7, 16, 5); // Wednesday, 2026-01-07.
+
+  it("encodes hourly at the chosen minute", () => {
+    assert.equal(composeCron(start, "hourly"), "5 * * * *");
+  });
 
   it("encodes daily at the chosen time", () => {
     assert.equal(composeCron(start, "daily"), "5 16 * * *");
@@ -99,6 +108,22 @@ describe("composeCron", () => {
 
   it("passes a custom expression through trimmed", () => {
     assert.equal(composeCron(start, "custom", "  0 16 * * 1-5 "), "0 16 * * 1-5");
+  });
+});
+
+describe("inferCalendarRepeat", () => {
+  it("recognises the shapes the form composes", () => {
+    assert.equal(inferCalendarRepeat("5 * * * *"), "hourly");
+    assert.equal(inferCalendarRepeat("5 16 * * *"), "daily");
+    assert.equal(inferCalendarRepeat("5 16 * * 3"), "weekly");
+    assert.equal(inferCalendarRepeat("5 16 7 * *"), "monthly");
+    assert.equal(inferCalendarRepeat("5 16 7 1 *"), "yearly");
+  });
+
+  it("falls back to custom for stepped, listed or invalid expressions", () => {
+    assert.equal(inferCalendarRepeat("*/15 * * * *"), "custom");
+    assert.equal(inferCalendarRepeat("0 16 * * 1-5"), "custom");
+    assert.equal(inferCalendarRepeat("not a cron"), "custom");
   });
 });
 
@@ -137,22 +162,14 @@ describe("eventOccurrencesBetween", () => {
   it("finds one occurrence a week for a weekly repeat", () => {
     const rangeStart = startOfWeek(new Date(2026, 0, 7), 1);
     const rangeEnd = addDays(rangeStart, 7);
-    const occurrences = eventOccurrencesBetween(
-      makeEvent("30 14 * * 3"),
-      rangeStart,
-      rangeEnd,
-    );
+    const occurrences = eventOccurrencesBetween(makeEvent("30 14 * * 3"), rangeStart, rangeEnd);
     assert.equal(occurrences.length, 1);
     assert.equal(occurrences[0]?.getDay(), 3);
   });
 
   it("returns nothing before the range", () => {
     const rangeStart = startOfDay(new Date(2026, 0, 5));
-    const occurrences = eventOccurrencesBetween(
-      makeEvent("0 9 * * *"),
-      rangeStart,
-      rangeStart,
-    );
+    const occurrences = eventOccurrencesBetween(makeEvent("0 9 * * *"), rangeStart, rangeStart);
     assert.equal(occurrences.length, 0);
   });
 });
@@ -221,5 +238,83 @@ describe("startOfWeek", () => {
   it("walks back to the configured first day", () => {
     assert.equal(startOfWeek(new Date(2026, 0, 7), 0).getDay(), 0);
     assert.equal(startOfWeek(new Date(2026, 0, 7), 1).getDay(), 1);
+  });
+});
+
+describe("local wall-clock DST handling", () => {
+  it("resolves an ambiguous fall-back slot to the earlier instant once", () => {
+    try {
+      vi.stubEnv("TZ", "America/New_York");
+      const from = new Date("2026-10-15T12:00:00.000Z");
+      const next = nextCronOccurrence("30 1 1 11 *", from);
+      assert.ok(next !== null);
+      assert.equal(next.toISOString(), "2026-11-01T05:30:00.000Z");
+      assert.equal(next.getHours(), 1);
+
+      const occurrences = eventOccurrencesBetween(
+        makeEvent("30 1 1 11 *"),
+        new Date("2026-11-01T00:00:00.000Z"),
+        new Date("2026-11-02T00:00:00.000Z"),
+      );
+      assert.equal(occurrences.length, 1);
+      assert.equal(occurrences[0]?.toISOString(), "2026-11-01T05:30:00.000Z");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("skips a spring-forward gap slot", () => {
+    try {
+      vi.stubEnv("TZ", "America/New_York");
+      const next = nextCronOccurrence("30 2 8 3 *", new Date("2026-01-15T00:00:00.000Z"));
+      assert.ok(next !== null);
+      assert.equal(next.toISOString(), "2027-03-08T07:30:00.000Z");
+      const occurrences = eventOccurrencesBetween(
+        makeEvent("30 2 8 3 *"),
+        new Date("2026-03-08T00:00:00.000Z"),
+        new Date("2026-03-09T00:00:00.000Z"),
+      );
+      assert.equal(occurrences.length, 0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("browser display zone", () => {
+  it("reads the single source from Intl", () => {
+    assert.equal(browserTimeZone(), Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+  });
+
+  it("labels the zone via Intl", () => {
+    const date = new Date(2026, 0, 5, 12, 0);
+    const expected =
+      new Intl.DateTimeFormat(undefined, {
+        timeZone: browserTimeZone(),
+        timeZoneName: "short",
+      })
+        .formatToParts(date)
+        .find((part) => part.type === "timeZoneName")?.value ?? browserTimeZone();
+    assert.equal(formatTimeZoneLabel(date), expected);
+    assert.ok(formatTimeZoneLabel(date).length > 0);
+  });
+
+  it("keeps day boundaries and upcoming in the browser zone for an event stored in another zone", () => {
+    try {
+      vi.stubEnv("TZ", "America/New_York");
+      const event = { ...makeEvent("0 9 * * *"), timeZone: "Asia/Tokyo" };
+      const rangeStart = startOfDay(new Date(2026, 0, 5, 12, 0));
+      const rangeEnd = addDays(rangeStart, 1);
+      const occurrences = eventOccurrencesBetween(event, rangeStart, rangeEnd);
+      assert.equal(occurrences.length, 1);
+      assert.equal(occurrences[0]?.getHours(), 9);
+
+      const next = nextCronOccurrence(event.cronExpression, new Date(2026, 0, 5, 8, 0));
+      assert.ok(next !== null);
+      assert.equal(next.getDate(), 5);
+      assert.equal(next.getHours(), 9);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

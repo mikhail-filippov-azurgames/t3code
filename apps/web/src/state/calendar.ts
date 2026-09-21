@@ -1,29 +1,41 @@
 /**
- * Client-side calendar state.
+ * Calendar event cache for the web client.
  *
- * `calendar.list` / `calendar.create` / `calendar.delete` are defined in
- * `@t3tools/contracts` but are not members of `WsRpcGroup` yet, so the app has
- * no generated atom or command for them. Until that server wiring lands this
- * store is the only source of events: a created event is kept locally and
- * marked `localOnlyEventIds` so the grid can label it as not saved. When the
- * RPCs are wired, the transport flips to `live`, `replaceEvents` takes the
- * server list, and the local-only path can be deleted.
+ * The server owns calendar events. `useCalendarBackend` fills this store from
+ * `calendar.list` and flips `transport` to `live`; while the server is
+ * unreachable the store keeps whatever it last received and reports the failure
+ * through `error`. There is no local-only write path: an event this browser
+ * invented could never fire on the server.
  *
  * @module state/calendar
  */
-import {
-  CalendarEventId,
-  type CalendarCreateInput,
-  type CalendarEvent,
-  type CalendarRunNotice,
-  type EnvironmentId,
-} from "@t3tools/contracts";
+import { type CalendarEvent, type CalendarRunNotice, type EnvironmentId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import { create } from "zustand";
 
-import { nextCronOccurrence } from "../components/calendar/calendar.logic";
-import { randomUUID } from "../lib/utils";
+export type CalendarTransport = "offline" | "live";
 
-export type CalendarTransport = "unwired" | "live";
+/**
+ * The most specific sentence available for a failed calendar RPC. `CalendarError`
+ * carries its reason in `detail` and leaves `message` empty, so message-first is
+ * not enough.
+ */
+export function calendarFailureText(cause: Cause.Cause<unknown>): string {
+  const error = Cause.squash(cause);
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "detail" in error &&
+    typeof error.detail === "string" &&
+    error.detail.trim().length > 0
+  ) {
+    return error.detail;
+  }
+  return "The calendar server rejected the request.";
+}
 
 /** A run notice plus the environment whose server posted it. */
 export interface CalendarRunNoticeEnvelope {
@@ -33,84 +45,43 @@ export interface CalendarRunNoticeEnvelope {
 
 export interface CalendarStoreState {
   readonly events: ReadonlyArray<CalendarEvent>;
-  readonly localOnlyEventIds: ReadonlySet<string>;
   readonly notices: ReadonlyArray<CalendarRunNoticeEnvelope>;
   readonly transport: CalendarTransport;
   readonly error: string | null;
   readonly setTransport: (transport: CalendarTransport) => void;
   readonly setError: (error: string | null) => void;
   readonly replaceEvents: (events: ReadonlyArray<CalendarEvent>) => void;
+  readonly upsertEvent: (event: CalendarEvent) => void;
   readonly removeEvent: (eventId: string) => void;
-  readonly createLocalEvent: (input: CalendarCreateInput) => CalendarEvent;
   readonly pushNotice: (envelope: CalendarRunNoticeEnvelope) => void;
   readonly dismissNotice: (key: string) => void;
 }
 
-export function buildCalendarEvent(input: CalendarCreateInput, now: Date): CalendarEvent {
-  const iso = now.toISOString();
-  const nextFire = nextCronOccurrence(input.cronExpression, now) ?? now;
-  return {
-    eventId: CalendarEventId.make(randomUUID()),
-    projectId: input.projectId,
-    title: input.title,
-    message: input.message,
-    mode: input.mode,
-    cronExpression: input.cronExpression,
-    timeZone: input.timeZone,
-    nextFireAt: nextFire.toISOString(),
-    lastFiredAt: null,
-    lastMissedAt: null,
-    threadId: null,
-    modelSelection: input.modelSelection,
-    runtimeMode: input.runtimeMode,
-    interactionMode: input.interactionMode,
-    createdAt: iso,
-    updatedAt: iso,
-  };
-}
-
 export const useCalendarStore = create<CalendarStoreState>((set) => ({
   events: [],
-  localOnlyEventIds: new Set(),
   notices: [],
-  transport: "unwired",
+  transport: "offline",
   error: null,
   setTransport: (transport) => set({ transport }),
   setError: (error) => set({ error }),
-  replaceEvents: (events) =>
+  replaceEvents: (events) => set({ events }),
+  // Server refreshes land before or after the command reply; replacing by id
+  // keeps an optimistic insert from doubling up on the same event.
+  upsertEvent: (event) =>
     set((state) => {
-      const serverIds = new Set(events.map((event) => event.eventId as string));
-      const keptLocal = state.events.filter(
-        (event) =>
-          state.localOnlyEventIds.has(event.eventId as string) &&
-          !serverIds.has(event.eventId as string),
-      );
-      const keptLocalIds = new Set(keptLocal.map((event) => event.eventId as string));
-      return {
-        events: [...events, ...keptLocal],
-        localOnlyEventIds: keptLocalIds,
-      };
+      const index = state.events.findIndex((candidate) => candidate.eventId === event.eventId);
+      if (index === -1) {
+        return { events: [...state.events, event] };
+      }
+      const events = [...state.events];
+      events[index] = event;
+      return { events };
     }),
   removeEvent: (eventId) =>
-    set((state) => {
-      const localOnlyEventIds = new Set(state.localOnlyEventIds);
-      localOnlyEventIds.delete(eventId);
-      return {
-        events: state.events.filter((event) => (event.eventId as string) !== eventId),
-        localOnlyEventIds,
-      };
-    }),
-  createLocalEvent: (input) => {
-    const event = buildCalendarEvent(input, new Date());
-    set((state) => {
-      const localOnlyEventIds = new Set(state.localOnlyEventIds);
-      localOnlyEventIds.add(event.eventId as string);
-      return { events: [...state.events, event], localOnlyEventIds };
-    });
-    return event;
-  },
-  pushNotice: (envelope) =>
-    set((state) => ({ notices: [...state.notices, envelope] })),
+    set((state) => ({
+      events: state.events.filter((event) => (event.eventId as string) !== eventId),
+    })),
+  pushNotice: (envelope) => set((state) => ({ notices: [...state.notices, envelope] })),
   dismissNotice: (key) =>
     set((state) => ({
       notices: state.notices.filter(

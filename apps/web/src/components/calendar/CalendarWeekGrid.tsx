@@ -13,6 +13,7 @@ import {
   DEFAULT_EVENT_MINUTES,
   formatClock,
   formatDayLabel,
+  formatTimeZoneLabel,
   layoutOccurrences,
   startOfDay,
   type CalendarOccurrence,
@@ -26,7 +27,6 @@ export interface CalendarWeekGridProps {
   readonly events: ReadonlyArray<CalendarEvent>;
   readonly rangeStart: Date;
   readonly rangeEnd: Date;
-  readonly localOnlyEventIds: ReadonlySet<string>;
   readonly selectedEventId?: string | null;
   readonly onSelectEvent?: (eventId: string) => void;
 }
@@ -43,11 +43,10 @@ function dayKeys(rangeStart: Date, rangeEnd: Date): ReadonlyArray<Date> {
   return days;
 }
 
-function chipClass(isLocalOnly: boolean, selected: boolean): string {
+function chipClass(selected: boolean): string {
   return cn(
     "absolute inset-x-0.5 overflow-hidden rounded-md border px-1.5 py-0.5 text-left text-xs leading-tight",
     "border-primary/30 bg-primary/10 text-foreground hover:bg-primary/15",
-    isLocalOnly && "border-dashed",
     selected && "ring-2 ring-ring",
   );
 }
@@ -56,7 +55,6 @@ export function CalendarWeekGrid({
   events,
   rangeStart,
   rangeEnd,
-  localOnlyEventIds,
   selectedEventId = null,
   onSelectEvent,
 }: CalendarWeekGridProps) {
@@ -82,7 +80,7 @@ export function CalendarWeekGrid({
     <div className="overflow-hidden rounded-xl border border-border bg-card">
       <div className="grid border-b border-border" style={{ gridTemplateColumns }}>
         <div className="border-r border-border py-1.5 text-center text-[11px] text-muted-foreground">
-          GMT
+          {formatTimeZoneLabel(rangeStart)}
         </div>
         {days.map((day) => (
           <div
@@ -122,17 +120,15 @@ export function CalendarWeekGrid({
                   />
                 ))}
                 {dayOccurrences.map((occurrence) => {
-                  const minutesFromDayStart =
-                    (occurrence.start.getTime() - day.getTime()) / 60_000;
+                  const minutesFromDayStart = (occurrence.start.getTime() - day.getTime()) / 60_000;
                   const top = (minutesFromDayStart / 60) * HOUR_HEIGHT;
                   const height = (DEFAULT_EVENT_MINUTES / 60) * HOUR_HEIGHT;
-                  const isLocalOnly = localOnlyEventIds.has(occurrence.event.eventId as string);
                   const selected = selectedEventId === (occurrence.event.eventId as string);
                   return (
                     <button
                       key={`${occurrence.event.eventId}:${occurrence.start.toISOString()}`}
                       type="button"
-                      className={chipClass(isLocalOnly, selected)}
+                      className={chipClass(selected)}
                       style={{ top, height }}
                       onClick={() => onSelectEvent?.(occurrence.event.eventId as string)}
                     >
@@ -140,7 +136,6 @@ export function CalendarWeekGrid({
                       <span className="block truncate text-[10px] text-muted-foreground">
                         {formatClock(occurrence.start)}
                         {occurrence.event.mode === "continue" ? " · continues" : ""}
-                        {isLocalOnly ? " · local" : ""}
                       </span>
                     </button>
                   );

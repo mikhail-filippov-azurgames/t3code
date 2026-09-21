@@ -6,21 +6,30 @@
  * an event created before the calendar RPCs are wired. Repeats are the same
  * five-field cron the contract stores, read in local wall-clock time.
  *
+ * Display policy: everything renders in the browser zone. `event.timeZone`
+ * drives the server fire only and is never used as a display zone here.
+ *
  * @module components/calendar/calendar.logic
  */
 import {
+  CALENDAR_CRON_LOOKAHEAD_DAYS,
+  calendarCronMatchesDay,
+  calendarCronSortedValues,
   calendarNameExcerpt,
   type CalendarEvent,
   type CalendarEventMode,
   type CalendarRunNotice,
+  type ParsedCalendarCron,
+  parseCalendarCron,
 } from "@t3tools/contracts";
 
-export type CalendarRepeat = "daily" | "weekly" | "monthly" | "yearly" | "custom";
+export type CalendarRepeat = "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
 export const CALENDAR_REPEAT_OPTIONS: ReadonlyArray<{
   readonly value: CalendarRepeat;
   readonly label: string;
 }> = [
+  { value: "hourly", label: "Hourly" },
   { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
   { value: "monthly", label: "Monthly" },
@@ -39,94 +48,38 @@ export const CALENDAR_MODE_OPTIONS: ReadonlyArray<{
 /** Cosmetic only: the contract carries no duration, so a chip gets a fixed one. */
 export const DEFAULT_EVENT_MINUTES = 45;
 
-interface CronFieldSet {
-  readonly values: ReadonlySet<number>;
-  readonly restricted: boolean;
-}
-
-export interface ParsedCron {
-  readonly minutes: CronFieldSet;
-  readonly hours: CronFieldSet;
-  readonly daysOfMonth: CronFieldSet;
-  readonly months: CronFieldSet;
-  readonly daysOfWeek: CronFieldSet;
-}
-
-function parseField(raw: string, min: number, max: number): CronFieldSet | null {
-  const field = raw.trim();
-  if (field.length === 0) return null;
-  const restricted = field !== "*";
-  const values = new Set<number>();
-  for (const part of field.split(",")) {
-    const [rangePart, stepPart, ...rest] = part.split("/");
-    if (rest.length > 0 || rangePart === undefined || rangePart.length === 0) return null;
-    const step = stepPart === undefined ? 1 : Number(stepPart);
-    if (!Number.isInteger(step) || step < 1) return null;
-
-    let from = min;
-    let to = max;
-    if (rangePart !== "*") {
-      const [startPart, endPart, ...rangeRest] = rangePart.split("-");
-      if (rangeRest.length > 0 || startPart === undefined || startPart.length === 0) return null;
-      // The contract allows a stepped range or a stepped wildcard, not a bare
-      // `n/step`, and the server reads that shape differently from a single value.
-      if (endPart === undefined && stepPart !== undefined) return null;
-      from = Number(startPart);
-      to = endPart === undefined ? from : Number(endPart);
-      if (!Number.isInteger(from) || !Number.isInteger(to)) return null;
-    }
-    if (from < min || to > max || from > to) return null;
-    for (let value = from; value <= to; value += step) values.add(value);
-  }
-  if (values.size === 0) return null;
-  return { values, restricted };
-}
-
-export function parseCron(expression: string): ParsedCron | null {
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 5) return null;
-  const [minuteRaw, hourRaw, dayRaw, monthRaw, weekRaw] = fields as [
-    string,
-    string,
-    string,
-    string,
-    string,
-  ];
-  const minutes = parseField(minuteRaw, 0, 59);
-  const hours = parseField(hourRaw, 0, 23);
-  const daysOfMonth = parseField(dayRaw, 1, 31);
-  const months = parseField(monthRaw, 1, 12);
-  const week = parseField(weekRaw, 0, 7);
-  if (!minutes || !hours || !daysOfMonth || !months || !week) return null;
-
-  // Both 0 and 7 mean Sunday, so the set is normalised down to 0-6.
-  const daysOfWeek = new Set<number>();
-  for (const value of week.values) daysOfWeek.add(value === 7 ? 0 : value);
-  return {
-    minutes,
-    hours,
-    daysOfMonth,
-    months,
-    daysOfWeek: { values: daysOfWeek, restricted: week.restricted },
-  };
-}
+/** The contract owns cron parsing; the client reads the same five-field expression. */
+export const parseCron = parseCalendarCron;
+export type ParsedCron = ParsedCalendarCron;
 
 /**
  * Standard cron day rule: a restricted day-of-month and day-of-week are ORed,
  * while a `*` field leaves the other one in charge.
  */
-export function cronMatchesDay(cron: ParsedCron, date: Date): boolean {
-  if (!cron.months.values.has(date.getMonth() + 1)) return false;
-  const dayMatch = cron.daysOfMonth.values.has(date.getDate());
-  const weekMatch = cron.daysOfWeek.values.has(date.getDay());
-  if (cron.daysOfMonth.restricted && cron.daysOfWeek.restricted) return dayMatch || weekMatch;
-  if (cron.daysOfMonth.restricted) return dayMatch;
-  if (cron.daysOfWeek.restricted) return weekMatch;
-  return true;
+export function cronMatchesDay(cron: ParsedCalendarCron, date: Date): boolean {
+  if (!cron.month.values.has(date.getMonth() + 1)) return false;
+  return calendarCronMatchesDay(cron, date.getDate(), date.getDay());
 }
 
-function sortedValues(values: ReadonlySet<number>): ReadonlyArray<number> {
-  return [...values].toSorted((left, right) => left - right);
+/**
+ * A local wall clock that does not exist (spring-forward gap) resolves to a
+ * different clock reading; reject it so the client matches the server's gate.
+ */
+function matchesWallClock(
+  candidate: Date,
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour: number,
+  minute: number,
+): boolean {
+  return (
+    candidate.getFullYear() === year &&
+    candidate.getMonth() === monthIndex &&
+    candidate.getDate() === day &&
+    candidate.getHours() === hour &&
+    candidate.getMinutes() === minute
+  );
 }
 
 export function startOfDay(date: Date): Date {
@@ -145,12 +98,37 @@ export function startOfWeek(date: Date, weekStartsOn: number): Date {
   return addDays(start, -offset);
 }
 
+/** Single source for the display zone: the browser's IANA zone. */
+export function browserTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+/** Zone caption for grid headers and similar spots, rendered via Intl. */
+export function formatTimeZoneLabel(date: Date = new Date()): string {
+  const zone = browserTimeZone();
+  const parts = new Intl.DateTimeFormat(undefined, {
+    timeZone: zone,
+    timeZoneName: "short",
+  }).formatToParts(date);
+  return parts.find((part) => part.type === "timeZoneName")?.value ?? zone;
+}
+
 export function formatClock(date: Date): string {
-  return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hour12: false });
+  return date.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: browserTimeZone(),
+  });
 }
 
 export function formatDayLabel(date: Date): string {
-  return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  return date.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: browserTimeZone(),
+  });
 }
 
 /** Compose the cron the form's chosen start instant and repeat imply. */
@@ -158,6 +136,8 @@ export function composeCron(date: Date, repeat: CalendarRepeat, custom = ""): st
   const minute = date.getMinutes();
   const hour = date.getHours();
   switch (repeat) {
+    case "hourly":
+      return `${minute} * * * *`;
     case "daily":
       return `${minute} ${hour} * * *`;
     case "weekly":
@@ -169,6 +149,39 @@ export function composeCron(date: Date, repeat: CalendarRepeat, custom = ""): st
     case "custom":
       return custom.trim();
   }
+}
+
+/**
+ * Reverse of {@link composeCron} for the form's prefill: recognise the simple
+ * shapes the form itself produces and fall back to `"custom"` for anything else
+ * (stepped ranges, lists, multiple hours), which keeps the raw expression.
+ */
+export function inferCalendarRepeat(expression: string): CalendarRepeat {
+  const cron = parseCron(expression);
+  if (cron === null) return "custom";
+  const singleMinute = cron.minute.values.size === 1;
+  const singleHour = cron.hour.values.size === 1;
+  const anyDom = !cron.dayOfMonth.restricted;
+  const anyMonth = !cron.month.restricted;
+  const anyDow = !cron.dayOfWeek.restricted;
+  if (singleMinute && !cron.hour.restricted && anyDom && anyMonth && anyDow) return "hourly";
+  if (singleMinute && singleHour && anyDom && anyMonth && anyDow) return "daily";
+  if (singleMinute && singleHour && anyDom && anyMonth && cron.dayOfWeek.values.size === 1) {
+    return "weekly";
+  }
+  if (singleMinute && singleHour && cron.dayOfMonth.values.size === 1 && anyMonth && anyDow) {
+    return "monthly";
+  }
+  if (
+    singleMinute &&
+    singleHour &&
+    cron.dayOfMonth.values.size === 1 &&
+    cron.month.values.size === 1 &&
+    anyDow
+  ) {
+    return "yearly";
+  }
+  return "custom";
 }
 
 export interface CalendarOccurrence {
@@ -189,15 +202,34 @@ export function eventOccurrencesBetween(
 ): ReadonlyArray<Date> {
   const cron = parseCron(event.cronExpression);
   if (cron === null || rangeStart.getTime() >= rangeEnd.getTime()) return [];
-  const hours = sortedValues(cron.hours.values);
-  const minutes = sortedValues(cron.minutes.values);
+  const hours = calendarCronSortedValues(cron.hour);
+  const minutes = calendarCronSortedValues(cron.minute);
   const occurrences: Date[] = [];
-  for (let day = startOfDay(rangeStart); day.getTime() < rangeEnd.getTime(); day = addDays(day, 1)) {
+  for (
+    let day = startOfDay(rangeStart);
+    day.getTime() < rangeEnd.getTime();
+    day = addDays(day, 1)
+  ) {
     if (!cronMatchesDay(cron, day)) continue;
     for (const hour of hours) {
       for (const minute of minutes) {
         const candidate = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
-        if (candidate.getTime() >= rangeStart.getTime() && candidate.getTime() < rangeEnd.getTime()) {
+        if (
+          !matchesWallClock(
+            candidate,
+            day.getFullYear(),
+            day.getMonth(),
+            day.getDate(),
+            hour,
+            minute,
+          )
+        ) {
+          continue;
+        }
+        if (
+          candidate.getTime() >= rangeStart.getTime() &&
+          candidate.getTime() < rangeEnd.getTime()
+        ) {
           occurrences.push(candidate);
         }
       }
@@ -228,16 +260,28 @@ export function layoutOccurrences(
 export function nextCronOccurrence(expression: string, from: Date): Date | null {
   const cron = parseCron(expression);
   if (cron === null) return null;
-  const hours = sortedValues(cron.hours.values);
-  const minutes = sortedValues(cron.minutes.values);
+  const hours = calendarCronSortedValues(cron.hour);
+  const minutes = calendarCronSortedValues(cron.minute);
   const start = new Date(from);
   start.setSeconds(0, 0);
-  for (let offset = 0; offset <= 370; offset += 1) {
+  for (let offset = 0; offset <= CALENDAR_CRON_LOOKAHEAD_DAYS; offset += 1) {
     const day = addDays(startOfDay(start), offset);
     if (!cronMatchesDay(cron, day)) continue;
     for (const hour of hours) {
       for (const minute of minutes) {
         const candidate = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, minute);
+        if (
+          !matchesWallClock(
+            candidate,
+            day.getFullYear(),
+            day.getMonth(),
+            day.getDate(),
+            hour,
+            minute,
+          )
+        ) {
+          continue;
+        }
         if (candidate.getTime() >= start.getTime()) return candidate;
       }
     }
