@@ -330,23 +330,31 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  // Returns true when the fire cap left an in-grace slot due; the caller runs
+  // one sweep at the boot instant so it fires before it can age out.
   const skipMissedAtStartup = Effect.fn("CalendarReactor.skipMissedAtStartup")(function* () {
     const observedAt = yield* nowIso;
     const power = yield* hostPower.snapshot;
     const events = yield* repository.listAll();
     let budget = FIRE_PER_SWEEP_LIMIT;
+    let leftDueInGrace = false;
     for (const event of events) {
       if (compareDateTimeStrings(event.nextFireAt, observedAt) > 0) continue;
       if (isWithinFireGrace(event.nextFireAt, observedAt)) {
         // A slot inside the grace window runs late; when the cap is spent it
-        // stays due for the first sweep instead of being recorded as missed.
-        if (budget <= 0) continue;
+        // stays due for the immediate first sweep instead of being recorded as
+        // missed.
+        if (budget <= 0) {
+          leftDueInGrace = true;
+          continue;
+        }
         budget -= 1;
         yield* fireOnSweep(event, "calendar event fire failed at startup");
         continue;
       }
       yield* collapseMissedSlot(event, observedAt, power);
     }
+    return leftDueInGrace;
   });
 
   const sweep = Effect.fn("CalendarReactor.sweep")(function* () {
@@ -385,15 +393,28 @@ export const make = Effect.gen(function* () {
 
   const start: CalendarReactor["Service"]["start"] = Effect.fn("CalendarReactor.start")(
     function* () {
-      yield* skipMissedAtStartup().pipe(
+      const leftDueInGrace = yield* skipMissedAtStartup().pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterruptsOnly(cause)
             ? Effect.interrupt
             : Effect.logWarning("calendar startup miss sweep failed", {
                 cause: Cause.pretty(cause),
-              }),
+              }).pipe(Effect.as(false)),
         ),
       );
+      // A capped startup sweep can leave an in-grace slot due. Claim it now,
+      // before the 30s sleep, so it fires instead of aging out of grace.
+      if (leftDueInGrace) {
+        yield* sweep().pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("calendar startup catch-up sweep failed", {
+                  cause: Cause.pretty(cause),
+                }),
+          ),
+        );
+      }
       yield* Effect.forever(
         Effect.sleep(SWEEP_INTERVAL).pipe(
           Effect.andThen(

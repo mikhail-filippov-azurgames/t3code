@@ -515,6 +515,52 @@ describe("CalendarReactor startup miss semantics", () => {
       );
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
+
+  it.effect("fires in-grace slots the startup cap left due instead of reporting them missed", () =>
+    Effect.gen(function* () {
+      // Boot 4m50s after the slot: inside the 5m grace, but the cap is spent
+      // before the fourth slot, which must fire rather than age out.
+      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 13, 4, 50));
+      const harness = yield* makeStartupHarness(
+        makeCalendarEvent({
+          eventId: "e-1",
+          nextFireAt: "2026-01-15T13:00:00.000Z",
+          mode: "continue",
+          threadId: ThreadId.make("thread-1"),
+        }),
+        makeCalendarEvent({
+          eventId: "e-2",
+          nextFireAt: "2026-01-15T13:00:00.000Z",
+          mode: "continue",
+          threadId: ThreadId.make("thread-2"),
+        }),
+        makeCalendarEvent({
+          eventId: "e-3",
+          nextFireAt: "2026-01-15T13:00:00.000Z",
+          mode: "continue",
+          threadId: ThreadId.make("thread-3"),
+        }),
+        makeCalendarEvent({
+          eventId: "e-4",
+          nextFireAt: "2026-01-15T13:00:00.000Z",
+          mode: "continue",
+          threadId: ThreadId.make("thread-4"),
+        }),
+      );
+      yield* harness.reactor.start();
+
+      assert.equal((yield* Ref.get(harness.missed)).length, 0);
+      assert.deepEqual((yield* Ref.get(harness.fired)).map((fire) => fire.eventId).sort(), [
+        "e-1",
+        "e-2",
+        "e-3",
+        "e-4",
+      ]);
+      const notices = yield* Ref.get(harness.notices);
+      assert.equal(notices.length, 4);
+      assert.isTrue(notices.every((notice) => notice.status === "started"));
+    }),
+  );
 });
 
 describe("CalendarReactor sweep fire cap", () => {
