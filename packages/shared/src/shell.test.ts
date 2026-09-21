@@ -3,6 +3,7 @@ import { it as effectIt } from "@effect/vitest";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as TestClock from "effect/testing/TestClock";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -15,6 +16,7 @@ import {
   listLoginShellCandidates,
   mergePathEntries,
   mergePathValues,
+  parseWindowsShimExecutable,
   readEnvironmentFromLoginShell,
   readEnvironmentFromWindowsShell,
   readPathFromLaunchctl,
@@ -23,8 +25,10 @@ import {
   resolveKnownWindowsCliDirs,
   resolveSpawnCommand,
   resolveWindowsEnvironment,
+  resolveWindowsShimExecutable,
   SpawnExecutableResolution,
   WindowsShellEnvironment,
+  WindowsShimExecutableResolution,
   type WindowsShellEnvironmentReader,
 } from "./shell.ts";
 
@@ -475,6 +479,74 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
   );
 });
 
+describe("parseWindowsShimExecutable", () => {
+  it("extracts the native executable named by a %dp0% npm shim", () => {
+    const shimPath = "C:\\Users\\tester\\AppData\\Roaming\\npm\\opencode.cmd";
+    const contents = [
+      "@ECHO off",
+      "GOTO start",
+      ":find_dp0",
+      "SET dp0=%~dp0",
+      "EXIT /b",
+      ":start",
+      "SETLOCAL",
+      "CALL :find_dp0",
+      '"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*',
+      "",
+    ].join("\r\n");
+
+    expect(parseWindowsShimExecutable(shimPath, contents)).toBe(
+      "C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+    );
+  });
+
+  it("ignores an executable whose basename does not match the shim", () => {
+    expect(
+      parseWindowsShimExecutable(
+        "C:\\tools\\opencode.cmd",
+        '"%~dp0\\node.exe" "%~dp0\\node_modules\\opencode\\bin.js" %*',
+      ),
+    ).toBeUndefined();
+  });
+
+  it("resolves a relative reference against the shim directory", () => {
+    expect(parseWindowsShimExecutable("C:\\tools\\opencode.cmd", '"bin\\opencode.exe" %*')).toBe(
+      "C:\\tools\\bin\\opencode.exe",
+    );
+  });
+
+  it("returns undefined for a script-only shim", () => {
+    expect(
+      parseWindowsShimExecutable(
+        "C:\\tools\\opencode.cmd",
+        '"node" "%~dp0\\node_modules\\opencode\\bin.js" %*',
+      ),
+    ).toBeUndefined();
+  });
+});
+
+effectIt.layer(NodeServices.layer)("resolveWindowsShimExecutable", (it) => {
+  const hostPlatform = HostProcessPlatform.defaultValue();
+
+  it.effect.skipIf(hostPlatform !== "win32")("prefers an .exe sibling over the shim", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-shim-sibling-" });
+      const shim = path.join(directory, "opencode.cmd");
+      const nativeExecutable = path.join(directory, "opencode.exe");
+      yield* fs.writeFileString(shim, "@echo off\n");
+      yield* fs.writeFileString(nativeExecutable, "");
+
+      expect(resolveWindowsShimExecutable(shim)).toBe(nativeExecutable);
+    }),
+  );
+
+  it("returns undefined when neither the shim nor a native executable exists", () => {
+    expect(resolveWindowsShimExecutable("C:\\definitely\\missing\\opencode.cmd")).toBeUndefined();
+  });
+});
+
 effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
   it.effect("runs Windows executables directly without a shell", () =>
     Effect.gen(function* () {
@@ -551,6 +623,82 @@ effectIt.layer(NodeServices.layer)("resolveSpawnCommand", (it) => {
       expect(command).toEqual({
         command: "missing & calc",
         args: ["unsafe & value"],
+        shell: false,
+      });
+    }),
+  );
+
+  it.effect("spawns the native executable a Windows command shim wraps", () =>
+    Effect.gen(function* () {
+      const command = yield* resolveSpawnCommand(
+        "opencode",
+        ["serve", "--port=1234", "value & calc"],
+        {
+          env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+          preferWindowsShimExecutable: true,
+        },
+      ).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(
+          SpawnExecutableResolution,
+          () => "C:\\Users\\tester\\AppData\\Roaming\\npm\\opencode.cmd",
+        ),
+        Effect.provideService(
+          WindowsShimExecutableResolution,
+          () =>
+            "C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+        ),
+      );
+
+      expect(command).toEqual({
+        command:
+          "C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe",
+        // Direct spawn: no cmd.exe, so arguments are passed through verbatim.
+        args: ["serve", "--port=1234", "value & calc"],
+        shell: false,
+      });
+    }),
+  );
+
+  it.effect("falls back to cmd.exe and warns when a shim wraps no native executable", () =>
+    Effect.gen(function* () {
+      const warnings: Array<unknown> = [];
+      const command = yield* resolveSpawnCommand("tool", ["run", "value & calc"], {
+        env: { PATH: "", PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+        preferWindowsShimExecutable: true,
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "win32"),
+        Effect.provideService(SpawnExecutableResolution, () => "C:\\tools\\tool.cmd"),
+        Effect.provideService(WindowsShimExecutableResolution, () => undefined),
+        Effect.provide(
+          Logger.layer(
+            [
+              Logger.make<unknown, void>(({ message }) => {
+                warnings.push(message);
+              }),
+            ],
+            { mergeWithExisting: false },
+          ),
+        ),
+      );
+
+      expect(command.shell).toBe(true);
+      expect(command.command).toContain("tool.cmd");
+      expect(command.args).toEqual(['^"run^"', '^"value^ ^&^ calc^"']);
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0])).toContain("falling back to cmd.exe");
+    }),
+  );
+
+  it.effect("keeps POSIX spawns untouched when the shim preference is set", () =>
+    Effect.gen(function* () {
+      const command = yield* resolveSpawnCommand("/usr/local/bin/opencode", ["serve"], {
+        preferWindowsShimExecutable: true,
+      }).pipe(Effect.provideService(HostProcessPlatform, "linux"));
+
+      expect(command).toEqual({
+        command: "/usr/local/bin/opencode",
+        args: ["serve"],
         shell: false,
       });
     }),

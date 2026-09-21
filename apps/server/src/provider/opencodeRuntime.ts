@@ -576,7 +576,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
   const netService = yield* NetService.NetService;
   const hostPlatform = yield* HostProcessPlatform;
   const resolveCommand = (command: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv) =>
-    resolveSpawnCommand(command, args, env ? { env } : {});
+    resolveSpawnCommand(command, args, {
+      ...(env ? { env } : {}),
+      // npm installs OpenCode as a `opencode.cmd` shim that wraps a real
+      // `opencode.exe`. Prefer the executable so the provider process is a
+      // direct child of the server (no `cmd.exe` in between), which keeps
+      // Task Manager from nesting Bun under a command prompt.
+      preferWindowsShimExecutable: true,
+    });
 
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {

@@ -86,6 +86,99 @@ export interface ResolvedSpawnCommand {
   readonly shell: boolean;
 }
 
+export interface SpawnCommandOptions extends CommandAvailabilityOptions {
+  /**
+   * Windows only. When the resolved command is a `.cmd`/`.bat` npm shim, spawn
+   * the native executable it wraps instead of the shim, so the child is not
+   * routed through `cmd.exe` (see {@link resolveWindowsShimExecutable}). Falls
+   * back to shell mode when no native executable is found.
+   */
+  readonly preferWindowsShimExecutable?: boolean;
+}
+
+const WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS = [".exe", ".com"] as const;
+
+function isExistingFile(filePath: string): boolean {
+  try {
+    return NodeFS.statSync(filePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Extracts the native executable a Windows `.cmd`/`.bat` shim wraps. npm shims
+ * name the real binary from a quoted `%dp0%`/`%~dp0`-relative path, e.g.
+ * `"%dp0%\node_modules\opencode-ai\bin\opencode.exe"   %*`. Only references
+ * whose basename matches the shim's own basename are accepted, which skips
+ * unrelated lookups such as the `node.exe` bootstrap in JavaScript-shim
+ * variants. Returns an absolute path, or undefined when the shim names no
+ * matching native executable.
+ */
+export function parseWindowsShimExecutable(shimPath: string, contents: string): string | undefined {
+  const shimDirectory = NodePath.win32.dirname(shimPath);
+  const shimBasename = NodePath.win32.basename(shimPath, NodePath.win32.extname(shimPath));
+  for (const match of contents.matchAll(/"([^"\r\n]+)"/g)) {
+    const token = match[1];
+    if (token === undefined) continue;
+    const trimmedToken = token.trim();
+    // `%~dp0` is the shim's directory with a trailing separator already; a
+    // plain `%dp0%` is expanded the same way in the npm shim template.
+    const expanded = trimmedToken.replace(/%~?dp0%/gi, shimDirectory);
+    const extension = NodePath.win32.extname(expanded).toLowerCase();
+    if (!WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS.some((candidate) => candidate === extension)) {
+      continue;
+    }
+    if (NodePath.win32.basename(expanded, extension).toLowerCase() !== shimBasename.toLowerCase()) {
+      continue;
+    }
+    // `%~dp0` already ends in a separator, so the expanded token can contain a
+    // doubled one; normalize before handing the path to the spawner.
+    return NodePath.win32.normalize(
+      NodePath.win32.isAbsolute(expanded)
+        ? expanded
+        : NodePath.win32.resolve(shimDirectory, expanded),
+    );
+  }
+  return undefined;
+}
+
+/**
+ * Locates the native executable underlying a Windows `.cmd`/`.bat` shim: first
+ * a sibling `.exe`/`.com` with the same basename, then the executable named in
+ * the shim body via {@link parseWindowsShimExecutable}. Returns undefined when
+ * the shim wraps only a script (e.g. `node cli.js`), in which case the caller
+ * must keep running it through `cmd.exe`.
+ */
+export function resolveWindowsShimExecutable(shimPath: string): string | undefined {
+  const shimDirectory = NodePath.win32.dirname(shimPath);
+  const shimBasename = NodePath.win32.basename(shimPath, NodePath.win32.extname(shimPath));
+  for (const nativeExtension of WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS) {
+    const sibling = NodePath.win32.join(shimDirectory, `${shimBasename}${nativeExtension}`);
+    if (isExistingFile(sibling)) return sibling;
+  }
+
+  let contents: string;
+  try {
+    contents = NodeFS.readFileSync(shimPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  const parsed = parseWindowsShimExecutable(shimPath, contents);
+  return parsed !== undefined && isExistingFile(parsed) ? parsed : undefined;
+}
+
+export type WindowsShimExecutableResolver = (shimPath: string) => string | undefined;
+
+// Injectable like SpawnExecutableResolution so tests can exercise the shim
+// branch without touching the real filesystem.
+export const WindowsShimExecutableResolution = Context.Reference<WindowsShimExecutableResolver>(
+  "@t3tools/shared/shell/WindowsShimExecutableResolution",
+  {
+    defaultValue: () => resolveWindowsShimExecutable,
+  },
+);
+
 export type SpawnExecutableResolver = (
   command: string,
   platform: NodeJS.Platform,
@@ -629,7 +722,7 @@ export const resolveCommandPath = Effect.fn("shell.resolveCommandPath")(function
 export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(function* (
   command: string,
   args: ReadonlyArray<string>,
-  options: CommandAvailabilityOptions = {},
+  options: SpawnCommandOptions = {},
 ): Effect.fn.Return<ResolvedSpawnCommand> {
   const platform = yield* HostProcessPlatform;
   if (platform !== "win32") {
@@ -648,6 +741,17 @@ export const resolveSpawnCommand = Effect.fn("shell.resolveSpawnCommand")(functi
   const extension = NodePath.win32.extname(resolvedCommand).toLowerCase();
   if (extension !== ".cmd" && extension !== ".bat") {
     return { command: resolvedCommand, args: [...args], shell: false };
+  }
+
+  if (options.preferWindowsShimExecutable === true) {
+    const resolveShimExecutable = yield* WindowsShimExecutableResolution;
+    const nativeExecutable = resolveShimExecutable(resolvedCommand);
+    if (nativeExecutable !== undefined) {
+      return { command: nativeExecutable, args: [...args], shell: false };
+    }
+    yield* Effect.logWarning(
+      `Windows command shim '${resolvedCommand}' does not wrap a native executable; falling back to cmd.exe.`,
+    );
   }
 
   return {
