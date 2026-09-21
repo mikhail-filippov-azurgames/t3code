@@ -267,6 +267,64 @@ it.effect("cleans up an interrupted startup and allows a retry", () =>
   }),
 );
 
+it.effect("shares explicit borrowers and closes after the last release", () =>
+  Effect.gen(function* () {
+    const testRuntime = yield* makeRuntime;
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const owner = yield* OpenCodeServerOwner.make({
+          binaryPath: "opencode",
+          directory: "/project",
+        });
+        const first = yield* owner.borrow();
+        const second = yield* owner.borrow();
+        expect(first.url).toBe("http://127.0.0.1:1");
+        expect(second.url).toBe("http://127.0.0.1:1");
+        expect(yield* Ref.get(testRuntime.starts)).toBe(1);
+
+        yield* owner.release(first);
+        yield* TestClock.adjust(Duration.seconds(31));
+        expect(yield* Ref.get(testRuntime.closes)).toBe(0);
+
+        yield* owner.release(second);
+        yield* TestClock.adjust(Duration.seconds(31));
+        yield* Deferred.await(testRuntime.closed);
+        expect(yield* Ref.get(testRuntime.closes)).toBe(1);
+      }),
+    ).pipe(Effect.provideService(OpenCodeRuntime, testRuntime.runtime));
+  }).pipe(Effect.provide(TestClock.layer())),
+);
+
+it.effect("registry resolves one owner per (binary, password, directory) key", () =>
+  Effect.gen(function* () {
+    const testRuntime = yield* makeRuntime;
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* OpenCodeServerOwner.makeRegistry();
+        const same = yield* registry.resolve({ binaryPath: "opencode", directory: "/project" });
+        const sameAgain = yield* registry.resolve({
+          binaryPath: "opencode",
+          directory: "/project",
+        });
+        const otherDirectory = yield* registry.resolve({
+          binaryPath: "opencode",
+          directory: "/other",
+        });
+
+        expect(same).toBe(sameAgain);
+        expect(same).not.toBe(otherDirectory);
+
+        const first = yield* same.borrow();
+        const second = yield* sameAgain.borrow();
+        const third = yield* otherDirectory.borrow();
+        expect(first.url).toBe(second.url);
+        expect(third.url).not.toBe(first.url);
+        expect(yield* Ref.get(testRuntime.starts)).toBe(2);
+      }),
+    ).pipe(Effect.provideService(OpenCodeRuntime, testRuntime.runtime));
+  }),
+);
+
 it.effect("releases an interrupted borrower and closes after the idle TTL", () =>
   Effect.gen(function* () {
     const testRuntime = yield* makeRuntime;

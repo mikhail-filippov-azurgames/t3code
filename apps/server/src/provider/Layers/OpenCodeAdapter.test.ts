@@ -26,6 +26,7 @@ import type {
 
 import {
   ApprovalRequestId,
+  EnvironmentId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -34,6 +35,7 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { ServerConfig } from "../../config.ts";
+import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -135,6 +137,7 @@ const runtimeMock = {
     questionListImplementation: null as (() => Promise<Array<QuestionRequest>>) | null,
     sessionUpdateCalls: [] as Array<{ sessionID: string; permission: unknown }>,
     forkCalls: [] as Array<{ sessionID: string; directory?: string; messageID?: string }>,
+    mcpAddCalls: [] as Array<{ name: string; config?: unknown }>,
   },
   reset() {
     this.state.startCalls.length = 0;
@@ -192,6 +195,7 @@ const runtimeMock = {
     this.state.questionListImplementation = null;
     this.state.sessionUpdateCalls.length = 0;
     this.state.forkCalls.length = 0;
+    this.state.mcpAddCalls.length = 0;
   },
 };
 
@@ -541,6 +545,12 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           );
         },
       },
+      mcp: {
+        add: async (input: { name: string; config?: unknown }) => {
+          runtimeMock.state.mcpAddCalls.push(input);
+          return { data: {} };
+        },
+      },
     }) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
   loadOpenCodeInventory: () =>
     Effect.fail(
@@ -583,6 +593,21 @@ const openCodeAdapterTestSettings = Schema.decodeSync(OpenCodeSettings)({
   serverUrl: "http://127.0.0.1:9999",
   serverPassword: "secret-password",
 });
+
+// No `serverUrl`: the adapter owns the local server, so these tests exercise
+// the shared refcounted owner path.
+const openCodeAdapterLocalTestSettings = Schema.decodeSync(OpenCodeSettings)({
+  binaryPath: "fake-opencode",
+});
+
+const makeLocalOpenCodeAdapterLayer = () =>
+  Layer.effect(OpenCodeAdapter, makeOpenCodeAdapter(openCodeAdapterLocalTestSettings)).pipe(
+    Layer.provideMerge(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  );
 
 const OpenCodeAdapterTestLayer = Layer.effect(
   OpenCodeAdapter,
@@ -673,6 +698,74 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       NodeAssert.deepEqual(runtimeMock.state.authHeaders, [
         `Basic ${btoa("opencode:secret-password")}`,
       ]);
+    }),
+  );
+
+  it.effect("shares one local server across sessions in the same directory", () =>
+    Effect.gen(function* () {
+      yield* Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+
+        const first = yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId: asThreadId("thread-shared-a"),
+          runtimeMode: "full-access",
+        });
+        const second = yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId: asThreadId("thread-shared-b"),
+          runtimeMode: "full-access",
+        });
+
+        NodeAssert.equal(first.threadId, "thread-shared-a");
+        NodeAssert.equal(second.threadId, "thread-shared-b");
+        // One spawn for two sessions; the second borrow reuses the process.
+        NodeAssert.deepEqual(runtimeMock.state.startCalls, ["fake-opencode"]);
+        NodeAssert.equal(runtimeMock.state.closeCalls.length, 0);
+
+        yield* adapter.stopSession(asThreadId("thread-shared-a"));
+        yield* adapter.stopSession(asThreadId("thread-shared-b"));
+        // Releasing the last borrower starts the idle TTL; nothing yet.
+        NodeAssert.equal(runtimeMock.state.closeCalls.length, 0);
+        yield* advanceTestClock(31_000);
+        NodeAssert.deepEqual(runtimeMock.state.closeCalls, ["http://127.0.0.1:4301"]);
+      }).pipe(Effect.provide(makeLocalOpenCodeAdapterLayer()));
+    }),
+  );
+
+  it.effect("keeps a dedicated server for a session with a per-thread MCP session", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-shared-mcp");
+      yield* Effect.gen(function* () {
+        yield* Effect.sync(() =>
+          McpProviderSession.setMcpProviderSession({
+            environmentId: EnvironmentId.make("env-shared-test"),
+            threadId,
+            providerSessionId: "provider-session-shared-mcp",
+            providerInstanceId: ProviderInstanceId.make("opencode"),
+            endpoint: "http://127.0.0.1:1234/mcp",
+            authorizationHeader: "Bearer shared-test",
+            capabilities: new Set(["orchestration"]),
+          }),
+        );
+
+        const adapter = yield* OpenCodeAdapter;
+        const session = yield* adapter.startSession({
+          provider: ProviderDriverKind.make("opencode"),
+          threadId,
+          runtimeMode: "full-access",
+        });
+
+        NodeAssert.equal(session.threadId, threadId);
+        // The shared owner was never touched; the dedicated server path ran and
+        // the per-thread MCP connection was injected into it.
+        NodeAssert.deepEqual(runtimeMock.state.startCalls, []);
+        NodeAssert.equal(runtimeMock.state.mcpAddCalls.length, 1);
+        NodeAssert.equal(runtimeMock.state.mcpAddCalls[0]?.name, "t3-code");
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => McpProviderSession.clearMcpProviderSession(threadId))),
+        Effect.provide(makeLocalOpenCodeAdapterLayer()),
+      );
     }),
   );
 

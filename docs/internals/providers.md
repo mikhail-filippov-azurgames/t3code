@@ -11,10 +11,13 @@ session or catalog state.
 
 ## Process and account isolation
 
-T3-managed OpenCode chat uses one server per thread. Its MCP registrations are directory-scoped, while
-T3's MCP connection is thread-scoped. Sharing a chat server between threads in one directory would
-let them replace each other's connection. Catalog and text-generation work can share the
-[instance-owned helper](../../apps/server/src/provider/OpenCodeServerOwner.ts), which closes
+T3-managed OpenCode chat with an MCP session uses one server per thread. Its MCP registrations
+are directory-scoped, while T3's MCP connection is thread-scoped. Sharing a chat server between
+threads in one directory would let them replace each other's connection, so MCP-bearing sessions
+keep a dedicated server. Sessions started without a per-thread MCP session share one refcounted
+local server per (binary, cwd) and are multiplexed by OpenCode session id. Catalog and
+text-generation work uses its own instance-owned
+[owner](../../apps/server/src/provider/OpenCodeServerOwner.ts) of the same type, which closes
 after an idle period. External OpenCode servers remain externally owned and can require an
 external restart to pick up configuration changes.
 

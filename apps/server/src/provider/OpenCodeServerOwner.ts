@@ -17,14 +17,33 @@ interface OpenCodeServerOwnerState {
   idleCloseFiber: Fiber.Fiber<void, never> | null;
 }
 
+interface OpenCodeServerOwnerShape {
+  readonly withServer: <A, E, R>(
+    use: (server: OpenCodeRuntime.OpenCodeServerProcess) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
+  /**
+   * Takes one reference without releasing it. Pair every borrow with exactly
+   * one `release` — the server closes on the idle TTL after the last one.
+   * Prefer `withServer` when acquire/use/release fit in one effect; this is
+   * for lifetimes that outlive a single effect, such as a provider session.
+   */
+  readonly borrow: () => Effect.Effect<
+    OpenCodeRuntime.OpenCodeServerProcess,
+    OpenCodeRuntime.OpenCodeRuntimeError
+  >;
+  readonly release: (server: OpenCodeRuntime.OpenCodeServerProcess) => Effect.Effect<void>;
+}
+
 export class OpenCodeServerOwner extends Context.Service<
   OpenCodeServerOwner,
-  {
-    readonly withServer: <A, E, R>(
-      use: (server: OpenCodeRuntime.OpenCodeServerProcess) => Effect.Effect<A, E, R>,
-    ) => Effect.Effect<A, E | OpenCodeRuntime.OpenCodeRuntimeError, R>;
-  }
+  OpenCodeServerOwnerShape
 >()("t3/provider/OpenCodeServerOwner") {}
+
+/** A refcounted handle to one owner's shared server. */
+export interface OpenCodeServerOwnerHandle {
+  readonly borrow: OpenCodeServerOwnerShape["borrow"];
+  readonly release: OpenCodeServerOwnerShape["release"];
+}
 
 /** Owns the lazy local OpenCode server shared by one provider instance. */
 export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
@@ -173,7 +192,60 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
           ),
         ),
       ),
+    borrow: () => Effect.uninterruptibleMask((restore) => restore(acquireServer)),
+    release: releaseServer,
   });
+});
+
+/**
+ * One refcounted owner per (binaryPath, serverPassword, directory). Owners live
+ * until the registry's scope closes; each owned server still closes on its own
+ * idle TTL when the last borrower releases. Chat sessions that can share a
+ * server resolve the same key and therefore reuse one process.
+ */
+export interface OpenCodeServerOwnerRegistry {
+  readonly resolve: (input: {
+    readonly binaryPath: string;
+    readonly directory: string;
+    readonly serverPassword?: string;
+    readonly environment?: NodeJS.ProcessEnv;
+  }) => Effect.Effect<OpenCodeServerOwnerHandle>;
+}
+
+const ownerKey = (input: {
+  readonly binaryPath: string;
+  readonly directory: string;
+  readonly serverPassword?: string;
+}): string => `${input.binaryPath}\u0000${input.serverPassword ?? ""}\u0000${input.directory}`;
+
+export const makeRegistry = Effect.fn("OpenCodeServerOwner.makeRegistry")(function* () {
+  const runtime = yield* OpenCodeRuntime.OpenCodeRuntime;
+  const ownersScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+    Scope.close(scope, Exit.void),
+  );
+  const mutex = yield* Semaphore.make(1);
+  const owners = new Map<string, OpenCodeServerOwnerHandle>();
+
+  const resolve: OpenCodeServerOwnerRegistry["resolve"] = (input) =>
+    mutex.withPermit(
+      Effect.gen(function* () {
+        const key = ownerKey(input);
+        const existing = owners.get(key);
+        if (existing !== undefined) {
+          return existing;
+        }
+        // Bind every owner to the registry scope so owners outlive individual
+        // borrowers and only close when the adapter layer shuts down.
+        const owner = yield* make(input).pipe(
+          Effect.provideService(Scope.Scope, ownersScope),
+          Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        );
+        owners.set(key, owner);
+        return owner;
+      }),
+    );
+
+  return { resolve } satisfies OpenCodeServerOwnerRegistry;
 });
 
 /** @public Service construction is part of the canonical Effect module API. */

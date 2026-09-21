@@ -58,6 +58,7 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import * as OpenCodeServerOwner from "../OpenCodeServerOwner.ts";
 import * as Option from "effect/Option";
 
 const PROVIDER = ProviderDriverKind.make("opencode");
@@ -405,7 +406,8 @@ interface OpenCodeSessionContext {
    *     (cancels the in-flight `event.subscribe` fetch),
    *   - interrupts the event-pump and server-exit fibers forked
    *     via `Effect.forkIn(sessionScope)`,
-   *   - tears down the OpenCode server process for scope-owned servers.
+   *   - releases this session's borrow of the shared local server (which then
+   *     closes on its idle TTL) or tears down a dedicated scope-owned server.
    */
   readonly sessionScope: Scope.Closeable;
 }
@@ -1093,6 +1095,11 @@ export function makeOpenCodeAdapter(
     const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("opencode");
     const serverConfig = yield* ServerConfig;
     const openCodeRuntime = yield* OpenCodeRuntime;
+    const baseEnvironment = options?.environment ?? process.env;
+    // Local chat servers that carry no per-thread MCP registration are shared
+    // through one refcounted owner per (binary, cwd), so sessions in one project
+    // reuse a single `opencode serve` process.
+    const sharedServerOwners = yield* OpenCodeServerOwner.makeRegistry();
     const crypto = yield* Crypto.Crypto;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -3005,20 +3012,48 @@ export function makeOpenCodeAdapter(
           const sessionScope = yield* Scope.make();
           const startedExit = yield* Effect.exit(
             Effect.gen(function* () {
-              // The runtime binds the server's lifetime to the Scope.Scope
-              // we provide below — closing `sessionScope` kills the child
-              // process automatically. No manual `server.close()` needed.
               const mcpSession = McpProviderSession.readMcpProviderSession(input.threadId);
-              const server = yield* openCodeRuntime.connectToOpenCodeServer({
-                binaryPath,
-                directory,
-                serverUrl,
-                ...(serverPassword ? { serverPassword } : {}),
-                environment: McpProviderSession.withAgentDeviceEnvironment(
-                  options?.environment ?? process.env,
-                  mcpSession,
-                ),
-              });
+              const isExternalServer = serverUrl.trim().length > 0;
+              // External servers are externally owned; MCP-bearing sessions keep
+              // a dedicated server because OpenCode MCP registrations are
+              // directory-scoped while T3's MCP connection is thread-scoped, so
+              // two threads sharing a directory would replace each other's
+              // connection (see docs/internals/providers.md). Every other local
+              // session borrows a refcounted server keyed by (binary, cwd); the
+              // borrow is released when `sessionScope` closes and the owner's
+              // idle TTL then closes the process.
+              const server: OpenCodeServerConnection =
+                isExternalServer || mcpSession !== undefined
+                  ? yield* openCodeRuntime.connectToOpenCodeServer({
+                      binaryPath,
+                      directory,
+                      serverUrl,
+                      ...(serverPassword ? { serverPassword } : {}),
+                      environment: McpProviderSession.withAgentDeviceEnvironment(
+                        baseEnvironment,
+                        mcpSession,
+                      ),
+                    })
+                  : yield* Effect.gen(function* () {
+                      const owner = yield* sharedServerOwners.resolve({
+                        binaryPath,
+                        directory,
+                        ...(serverPassword ? { serverPassword } : {}),
+                        environment: baseEnvironment,
+                      });
+                      const process = yield* Effect.acquireRelease(owner.borrow(), (borrowed) =>
+                        owner.release(borrowed),
+                      );
+                      return {
+                        url: process.url,
+                        ...(process.serverPassword !== undefined
+                          ? { serverPassword: process.serverPassword }
+                          : {}),
+                        version: process.version,
+                        exitCode: process.exitCode,
+                        external: false,
+                      } satisfies OpenCodeServerConnection;
+                    });
               const client = openCodeRuntime.createOpenCodeSdkClient({
                 baseUrl: server.url,
                 directory,
