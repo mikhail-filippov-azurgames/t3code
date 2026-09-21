@@ -64,6 +64,13 @@ const DELEGATION_MODEL_OBSERVED_ACTIVITY = "delegation.model-observed";
 const DELEGATION_COMPLETED_ACTIVITY = "delegation.completed";
 const DELEGATION_WAKE_MESSAGE_PREFIX = "delegation-wake:";
 const DELEGATION_WAKE_DELIVERED_ACTIVITY = "delegation.wake-delivered";
+const BOARD_START_MESSAGE_PREFIX = "board-start:";
+const BOARD_START_TURN_MESSAGE_PREFIX = "board-start-turn:";
+const BOARD_START_DRAIN_MESSAGE_PREFIX = "board-start-drain:";
+// Mirrors BOARD_START_TURN_TEXT in ws.ts. Duplicated on purpose: ingestion
+// must not import from the WS layer.
+const BOARD_START_TURN_TEXT =
+  "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -1057,20 +1064,32 @@ const make = Effect.gen(function* () {
   // A running/starting orchestration session (including waiting-for-input),
   // a still-active projected turn (running), or a queued start (pending
   // placeholder) means the thread gets the queued wake on its next natural
-  // turn instead of an auto-start.
-  const delegationWakeTargetIsIdle = Effect.fnUntraced(function* (threadId: ThreadId) {
+  // turn instead of an auto-start. A caller finishing a turn passes its own
+  // turnId so the projection lagging that turn behind is not mistaken for a
+  // still-busy thread.
+  const delegationWakeTargetIsIdle = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    ignoreTurnId?: TurnId,
+  ) {
     const turns = yield* projectionTurnRepository.listByThreadId({ threadId });
     const shell = Option.getOrUndefined(
       yield* projectionSnapshotQuery.getThreadShellById(threadId),
     );
     const session = shell?.session ?? null;
-    return !(
-      (session !== null &&
-        (session.activeTurnId !== null ||
-          session.status === "running" ||
-          session.status === "starting")) ||
-      turns.some((turn) => turn.state === "pending" || turn.state === "running")
+    const activeTurnIsIgnored =
+      ignoreTurnId !== undefined && sameId(session?.activeTurnId ?? null, ignoreTurnId);
+    const sessionBusy =
+      session !== null &&
+      !activeTurnIsIgnored &&
+      (session.activeTurnId !== null ||
+        session.status === "running" ||
+        session.status === "starting");
+    const turnBusy = turns.some(
+      (turn) =>
+        (turn.state === "pending" || turn.state === "running") &&
+        !(ignoreTurnId !== undefined && sameId(turn.turnId, ignoreTurnId)),
     );
+    return !(sessionBusy || turnBusy);
   });
 
   const dispatchDelegationWakeAutoTurn = Effect.fnUntraced(function* (input: {
@@ -1240,15 +1259,14 @@ const make = Effect.gen(function* () {
   });
 
   // A wake that arrived while its thread was busy waits for the busy turn to
-  // settle, then starts here instead of a later natural turn.
-  const drainDelegationWakes = Effect.fnUntraced(function* (threadId: ThreadId, now: string) {
+  // settle, then starts here instead of a later natural turn. A board-start
+  // notice queued while the orchestrator was busy drains through the same path.
+  const drainDelegationWakes = Effect.fnUntraced(function* (
+    threadId: ThreadId,
+    now: string,
+    ignoreTurnId?: TurnId,
+  ) {
     const messages = yield* projectionThreadMessages.listByThreadId({ threadId });
-    const wakeMessages = messages.filter(
-      (message) =>
-        message.role === "system" && message.messageId.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX),
-    );
-    if (wakeMessages.length === 0) return;
-
     const deliveredActivities = yield* projectionThreadActivityRepository.listByThreadId({
       threadId,
       activityKinds: [DELEGATION_WAKE_DELIVERED_ACTIVITY],
@@ -1262,16 +1280,33 @@ const make = Effect.gen(function* () {
           : [],
       ),
     );
-    const oldestUndelivered = wakeMessages.find(
-      (message) => !deliveredMessageIds.has(message.messageId),
-    );
-    if (oldestUndelivered === undefined) return;
-    if (!(yield* delegationWakeTargetIsIdle(threadId))) return;
+    const messageIds = new Set<MessageId>(messages.map((message) => message.messageId));
+    // A board-start notice counts as delivered once ws.ts (idle path) or this
+    // drain has started the turn for its card.
+    const boardStartDelivered = (cardId: string): boolean =>
+      messageIds.has(MessageId.make(`${BOARD_START_TURN_MESSAGE_PREFIX}${cardId}`)) ||
+      messageIds.has(MessageId.make(`${BOARD_START_DRAIN_MESSAGE_PREFIX}${threadId}:${cardId}`));
+    const undelivered = messages.find((message) => {
+      if (message.role !== "system") return false;
+      if (message.messageId.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX)) {
+        return !deliveredMessageIds.has(message.messageId);
+      }
+      if (message.messageId.startsWith(BOARD_START_MESSAGE_PREFIX)) {
+        return !boardStartDelivered(message.messageId.slice(BOARD_START_MESSAGE_PREFIX.length));
+      }
+      return false;
+    });
+    if (undelivered === undefined) return;
+    if (!(yield* delegationWakeTargetIsIdle(threadId, ignoreTurnId))) return;
 
-    const delegatedTurnId = String(oldestUndelivered.messageId).slice(
-      DELEGATION_WAKE_MESSAGE_PREFIX.length,
-    );
-    const drainId = `delegation-wake-drain:${threadId}:${delegatedTurnId}`;
+    const isDelegationWake = undelivered.messageId.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX);
+    const drainId = isDelegationWake
+      ? `delegation-wake-drain:${threadId}:${String(undelivered.messageId).slice(
+          DELEGATION_WAKE_MESSAGE_PREFIX.length,
+        )}`
+      : `${BOARD_START_DRAIN_MESSAGE_PREFIX}${threadId}:${String(undelivered.messageId).slice(
+          BOARD_START_MESSAGE_PREFIX.length,
+        )}`;
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
       commandId: CommandId.make(drainId),
@@ -1279,7 +1314,7 @@ const make = Effect.gen(function* () {
       message: {
         messageId: MessageId.make(drainId),
         role: "user",
-        text: DELEGATION_WAKE_TURN_MESSAGE_TEXT,
+        text: isDelegationWake ? DELEGATION_WAKE_TURN_MESSAGE_TEXT : BOARD_START_TURN_TEXT,
         attachments: [],
       },
       createdAt: now,
@@ -2368,7 +2403,7 @@ const make = Effect.gen(function* () {
               ),
             );
 
-            yield* drainDelegationWakes(thread.id, now).pipe(
+            yield* drainDelegationWakes(thread.id, now, turnId).pipe(
               Effect.catchCause((cause) =>
                 Cause.hasInterruptsOnly(cause)
                   ? Effect.failCause(cause)

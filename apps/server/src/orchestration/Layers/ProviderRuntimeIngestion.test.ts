@@ -1272,6 +1272,42 @@ describe("ProviderRuntimeIngestion", () => {
   const userMessageIds = (messages: ReadonlyArray<ProviderRuntimeTestMessage>) =>
     messages.filter((message) => message.role === "user").map((message) => message.id);
 
+  const BOARD_START_TURN_TEXT =
+    "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
+
+  async function seedBoardStartNotice(
+    harness: WakeHarness,
+    input: { readonly threadId: ThreadId; readonly cardId: string; readonly createdAt: string },
+  ) {
+    await harness.dispatch({
+      type: "thread.message.system.append",
+      commandId: CommandId.make(`board-start:${input.cardId}`),
+      threadId: input.threadId,
+      message: {
+        messageId: asMessageId(`board-start:${input.cardId}`),
+        text: `Board card "${input.cardId}" started by the human.`,
+      },
+      createdAt: input.createdAt,
+    });
+  }
+
+  async function markBoardStartDelivered(
+    harness: WakeHarness,
+    input: { readonly threadId: ThreadId; readonly cardId: string; readonly createdAt: string },
+  ) {
+    await harness.dispatch({
+      type: "thread.message.user.append",
+      commandId: CommandId.make(`board-start-turn:${input.cardId}`),
+      threadId: input.threadId,
+      message: {
+        messageId: asMessageId(`board-start-turn:${input.cardId}`),
+        text: BOARD_START_TURN_TEXT,
+        attachments: [],
+      },
+      createdAt: input.createdAt,
+    });
+  }
+
   it.each(["turn.completed", "turn.aborted"] as const)(
     "drains an undelivered wake with an auto-turn once the occupying %s settles",
     async (terminalType) => {
@@ -1530,6 +1566,151 @@ describe("ProviderRuntimeIngestion", () => {
     const pendingStart = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStart)).toBe(true);
     expect(pendingStart.value.messageId).toBe(drainB);
+  });
+
+  it("drains an undelivered wake exactly once when the occupying turn completes", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedTurnId = asTurnId("delegated-turn-1");
+    const drainMessageId = asMessageId(
+      `delegation-wake-drain:${parentThreadId}:${delegatedTurnId}`,
+    );
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("delegated-message-1"),
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(parent?.messages.filter((message) => message.id === drainMessageId)).toHaveLength(1);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainMessageId]);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(drainMessageId);
+  });
+
+  it("does not drain while another queued turn still occupies the thread", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const queuedMessageId = asMessageId("queued-parent-message");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("queued-parent-turn"),
+      threadId: parentThreadId,
+      message: {
+        messageId: queuedMessageId,
+        role: "user",
+        text: "Queued follow-up.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+    await seedDelegatedChild(harness, {
+      childThreadId: asThreadId("child-thread-1"),
+      parentThreadId,
+      delegatedMessageId: asMessageId("delegated-message-1"),
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId: asThreadId("child-thread-1"),
+      delegatedTurnId: asTurnId("delegated-turn-1"),
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(
+      parent?.messages.some((message) => String(message.id).startsWith("delegation-wake-drain:")),
+    ).toBe(false);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(queuedMessageId);
+  });
+
+  it("drains a board-start notice queued while the orchestrator was busy", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const drainMessageId = asMessageId(`board-start-drain:${parentThreadId}:card-1`);
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedBoardStartNotice(harness, {
+      threadId: parentThreadId,
+      cardId: "card-1",
+      createdAt: now,
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([drainMessageId]);
+    const drainMessage = parent?.messages.find((message) => message.id === drainMessageId);
+    expect(drainMessage?.text).toBe(BOARD_START_TURN_TEXT);
+    const pendingStart = await harness.readPendingTurnStart(parentThreadId);
+    expect(Option.isSome(pendingStart)).toBe(true);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(drainMessageId);
+  });
+
+  it("does not drain a board-start notice already delivered by ws.ts", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedBoardStartNotice(harness, {
+      threadId: parentThreadId,
+      cardId: "card-1",
+      createdAt: now,
+    });
+    await markBoardStartDelivered(harness, {
+      threadId: parentThreadId,
+      cardId: "card-1",
+      createdAt: "2026-01-01T00:00:01.000Z",
+    });
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:02.000Z",
+    );
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(
+      parent?.messages.some((message) => String(message.id).startsWith("board-start-drain:")),
+    ).toBe(false);
+    expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
   });
 
   it.each([
