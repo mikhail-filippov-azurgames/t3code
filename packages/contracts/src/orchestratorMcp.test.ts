@@ -81,7 +81,7 @@ const taskResult = {
 } as const;
 
 describe("orchestrator MCP contracts", () => {
-  it("freezes the accepted six-tool protocol surface", () => {
+  it("freezes the accepted orchestrator MCP tool surface", () => {
     expect(ORCHESTRATOR_MCP_PROTOCOL_VERSION).toBe(3);
     expect(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES)).toEqual([
       "orchestrator_capabilities",
@@ -90,6 +90,10 @@ describe("orchestrator MCP contracts", () => {
       "task_wait",
       "task_cancel",
       "switch_provider",
+      "board_create_card",
+      "board_update_card",
+      "board_delete_card",
+      "board_list_cards",
     ]);
   });
 

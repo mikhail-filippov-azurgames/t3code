@@ -12,6 +12,14 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas.ts";
+import {
+  BoardCard,
+  BoardCardEvent,
+  BoardCardOutcome,
+  BoardCardStatus,
+  BoardCreatedBy,
+  ExecutorRole,
+} from "./boardShared.ts";
 import { ProviderOptionDescriptor, ProviderOptionSelection } from "./model.ts";
 import { ModelSelection, ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
@@ -56,14 +64,7 @@ export const OrchestratorMcpOclDocumentRef = TrimmedNonEmptyString.check(
 );
 export type OrchestratorMcpOclDocumentRef = typeof OrchestratorMcpOclDocumentRef.Type;
 
-export const OrchestratorMcpTaskRole = Schema.Literals([
-  "architecture",
-  "implementation",
-  "review",
-  "test",
-  "research",
-  "general",
-]);
+export const OrchestratorMcpTaskRole = ExecutorRole;
 export type OrchestratorMcpTaskRole = typeof OrchestratorMcpTaskRole.Type;
 
 export const OrchestratorMcpTaskStatus = Schema.Literals([
@@ -307,60 +308,22 @@ export type OrchestratorMcpTaskLineage = typeof OrchestratorMcpTaskLineage.Type;
 
 /**
  * Board tools let a marked orchestrator thread manage its own kanban cards.
- * The card/event shapes mirror `board.ts` because that module already imports
- * `OrchestratorMcpTaskRole` from here; importing it back would create a value
- * cycle at module init. Keep the two in sync by hand when the board model moves.
+ * Card, event, and enum shapes are the canonical board definitions, aliased
+ * here so the MCP tool schema cannot drift from the board contract.
  */
-export const OrchestratorMcpBoardCardStatus = Schema.Literals([
-  "todo",
-  "orchestrator",
-  "in_progress",
-  "review",
-  "done",
-]);
+export const OrchestratorMcpBoardCardStatus = BoardCardStatus;
 export type OrchestratorMcpBoardCardStatus = typeof OrchestratorMcpBoardCardStatus.Type;
 
-export const OrchestratorMcpBoardCreatedBy = Schema.Literals(["human", "orchestrator"]);
+export const OrchestratorMcpBoardCreatedBy = BoardCreatedBy;
 export type OrchestratorMcpBoardCreatedBy = typeof OrchestratorMcpBoardCreatedBy.Type;
 
-export const OrchestratorMcpBoardCardOutcome = Schema.Literals([
-  "succeeded",
-  "failed",
-  "cancelled",
-]);
+export const OrchestratorMcpBoardCardOutcome = BoardCardOutcome;
 export type OrchestratorMcpBoardCardOutcome = typeof OrchestratorMcpBoardCardOutcome.Type;
 
-export const OrchestratorMcpBoardCard = Schema.Struct({
-  cardId: BoundedIdempotencyKey,
-  orchestratorThreadId: ThreadId,
-  title: TrimmedNonEmptyString,
-  body: Schema.String,
-  status: OrchestratorMcpBoardCardStatus,
-  createdBy: OrchestratorMcpBoardCreatedBy,
-  assignee: Schema.NullOr(ModelSelection),
-  executorRole: OrchestratorMcpTaskRole,
-  executorThreadId: Schema.NullOr(ThreadId),
-  outcome: Schema.NullOr(OrchestratorMcpBoardCardOutcome),
-  lastError: Schema.NullOr(Schema.String),
-  failureStreak: NonNegativeInt,
-  order: NonNegativeInt,
-  archived: Schema.Boolean,
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
-});
+export const OrchestratorMcpBoardCard = BoardCard;
 export type OrchestratorMcpBoardCard = typeof OrchestratorMcpBoardCard.Type;
 
-export const OrchestratorMcpBoardCardEvent = Schema.Struct({
-  entryId: BoundedIdempotencyKey,
-  cardId: BoundedIdempotencyKey,
-  at: IsoDateTime,
-  status: OrchestratorMcpBoardCardStatus,
-  executorRole: OrchestratorMcpTaskRole,
-  model: Schema.NullOr(TrimmedNonEmptyString),
-  effort: Schema.NullOr(TrimmedNonEmptyString),
-  body: Schema.optional(TrimmedNonEmptyString),
-  source: Schema.Literal("system"),
-});
+export const OrchestratorMcpBoardCardEvent = BoardCardEvent;
 export type OrchestratorMcpBoardCardEvent = typeof OrchestratorMcpBoardCardEvent.Type;
 
 export const OrchestratorMcpBoardCreateCardInput = Schema.Struct({

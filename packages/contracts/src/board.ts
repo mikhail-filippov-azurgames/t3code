@@ -13,40 +13,35 @@ import * as Schema from "effect/Schema";
 
 import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ModelSelection } from "./orchestration.ts";
-import { OrchestratorMcpTaskRole } from "./orchestratorMcp.ts";
+import {
+  BoardCard,
+  BoardCardEvent,
+  BoardCardEventId,
+  BoardCardEventSource,
+  BoardCardId,
+  BoardCardOutcome,
+  BoardCardStatus,
+  BoardCreatedBy,
+  ExecutorRole,
+} from "./boardShared.ts";
 
-export const BoardCardId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardId"));
-export type BoardCardId = typeof BoardCardId.Type;
-
-export const BoardCardEventId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardEventId"));
-export type BoardCardEventId = typeof BoardCardEventId.Type;
-
-export const BoardCardStatus = Schema.Literals([
-  "todo",
-  "orchestrator",
-  "in_progress",
-  "review",
-  "done",
-]);
-export type BoardCardStatus = typeof BoardCardStatus.Type;
-
-/** Who created the orchestrator mark or the card. */
-export const BoardCreatedBy = Schema.Literals(["human", "orchestrator"]);
-export type BoardCreatedBy = typeof BoardCreatedBy.Type;
+export {
+  BoardCard,
+  BoardCardEvent,
+  BoardCardEventId,
+  BoardCardEventSource,
+  BoardCardId,
+  BoardCardOutcome,
+  BoardCardStatus,
+  BoardCreatedBy,
+};
 
 /**
  * Executor role vocabulary is shared with the delegation policy; alias keeps
  * the two from drifting apart.
  */
-export const BoardExecutorRole = OrchestratorMcpTaskRole;
+export const BoardExecutorRole = ExecutorRole;
 export type BoardExecutorRole = typeof BoardExecutorRole.Type;
-
-export const BoardCardOutcome = Schema.Literals(["succeeded", "failed", "cancelled"]);
-export type BoardCardOutcome = typeof BoardCardOutcome.Type;
-
-/** Source of a progress-history entry. Phase 1 only emits system entries. */
-export const BoardCardEventSource = Schema.Literal("system");
-export type BoardCardEventSource = typeof BoardCardEventSource.Type;
 
 /** A thread a human has marked as an orchestrator. */
 export const BoardOrchestrator = Schema.Struct({
@@ -55,43 +50,6 @@ export const BoardOrchestrator = Schema.Struct({
   createdAt: IsoDateTime,
 });
 export type BoardOrchestrator = typeof BoardOrchestrator.Type;
-
-export const BoardCard = Schema.Struct({
-  cardId: BoardCardId,
-  orchestratorThreadId: ThreadId,
-  title: TrimmedNonEmptyString,
-  body: Schema.String,
-  status: BoardCardStatus,
-  createdBy: BoardCreatedBy,
-  assignee: Schema.NullOr(ModelSelection),
-  executorRole: BoardExecutorRole,
-  executorThreadId: Schema.NullOr(ThreadId),
-  outcome: Schema.NullOr(BoardCardOutcome),
-  lastError: Schema.NullOr(Schema.String),
-  failureStreak: NonNegativeInt,
-  order: NonNegativeInt,
-  archived: Schema.Boolean,
-  createdAt: IsoDateTime,
-  updatedAt: IsoDateTime,
-});
-export type BoardCard = typeof BoardCard.Type;
-
-/**
- * Append-only progress entry. `model` and `effort` are null until an executor
- * is assigned; `body` carries the short system fact for the event.
- */
-export const BoardCardEvent = Schema.Struct({
-  entryId: BoardCardEventId,
-  cardId: BoardCardId,
-  at: IsoDateTime,
-  status: BoardCardStatus,
-  executorRole: BoardExecutorRole,
-  model: Schema.NullOr(TrimmedNonEmptyString),
-  effort: Schema.NullOr(TrimmedNonEmptyString),
-  body: Schema.optional(TrimmedNonEmptyString),
-  source: BoardCardEventSource,
-});
-export type BoardCardEvent = typeof BoardCardEvent.Type;
 
 export const BoardOrchestratorsListInput = Schema.Struct({});
 export type BoardOrchestratorsListInput = typeof BoardOrchestratorsListInput.Type;
