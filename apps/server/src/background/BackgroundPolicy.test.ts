@@ -5,20 +5,32 @@ import {
   type HostPowerSnapshot,
   type ClientActivityReportInput,
 } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import { CalendarEventRepository } from "../persistence/Services/CalendarEvents.ts";
+import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as BackgroundPolicy from "./BackgroundPolicy.ts";
+import * as CalendarReactor from "./CalendarReactor.ts";
 import * as HostPowerMonitor from "./HostPowerMonitor.ts";
 
 const TEST_NOW = DateTime.makeUnsafe("2026-05-13T00:00:00.000Z");
+
+const testCrypto = Crypto.make({
+  randomBytes: (size) => new Uint8Array(size).fill(1),
+  digest: (_algorithm, data) => Effect.succeed(data),
+});
 
 const nominalHostPower: HostPowerSnapshot = {
   source: "unknown",
@@ -382,5 +394,71 @@ describe("BackgroundPolicy", () => {
         ),
       ),
     ),
+  );
+});
+
+describe("HostPowerMonitor layer sharing", () => {
+  class MonitorProbeOne extends Context.Service<MonitorProbeOne, { readonly monitor: unknown }>()(
+    "t3/background/BackgroundPolicy.test/MonitorProbeOne",
+  ) {}
+  class MonitorProbeTwo extends Context.Service<MonitorProbeTwo, { readonly monitor: unknown }>()(
+    "t3/background/BackgroundPolicy.test/MonitorProbeTwo",
+  ) {}
+
+  const makeShared = (subscriptions: Ref.Ref<number>) => {
+    const receiver = DesktopTelemetryReceiver.layerTest({
+      subscribe: Ref.updateAndGet(subscriptions, (count) => count + 1).pipe(
+        Effect.as({ latest: Option.none(), changes: Stream.empty }),
+      ),
+    });
+    return HostPowerMonitor.layer.pipe(Layer.provide(receiver));
+  };
+
+  const makeGraph = (shared: Layer.Layer<HostPowerMonitor.HostPowerMonitor>) =>
+    Layer.mergeAll(
+      BackgroundPolicy.layer.pipe(
+        Layer.provide(shared),
+        Layer.provide(ServerSettingsService.layerTest()),
+      ),
+      CalendarReactor.layer.pipe(
+        Layer.provide(shared),
+        Layer.provide(Layer.mock(CalendarEventRepository)({})),
+        Layer.provide(Layer.mock(OrchestrationEngine.OrchestrationEngineService)({})),
+        Layer.provide(Layer.succeed(Crypto.Crypto, testCrypto)),
+      ),
+      Layer.effect(
+        MonitorProbeOne,
+        Effect.map(HostPowerMonitor.HostPowerMonitor, (monitor) => ({ monitor })),
+      ).pipe(Layer.provide(shared)),
+      Layer.effect(
+        MonitorProbeTwo,
+        Effect.map(HostPowerMonitor.HostPowerMonitor, (monitor) => ({ monitor })),
+      ).pipe(Layer.provide(shared)),
+    );
+
+  it.effect("builds one HostPowerMonitor instance shared by both consumers", () =>
+    Effect.gen(function* () {
+      const subscriptions = yield* Ref.make(0);
+      const shared = makeShared(subscriptions);
+      const context = yield* Layer.build(makeGraph(shared));
+
+      // One HostPowerMonitor construction, observed by every consumer.
+      assert.equal(yield* Ref.get(subscriptions), 1);
+      assert.equal(
+        Context.get(context, MonitorProbeOne).monitor,
+        Context.get(context, MonitorProbeTwo).monitor,
+      );
+    }),
+  );
+
+  it.effect("a fresh layer bypasses memoization and builds per consumer", () =>
+    Effect.gen(function* () {
+      const subscriptions = yield* Ref.make(0);
+      const fresh = makeShared(subscriptions).pipe(Layer.fresh);
+      yield* Layer.build(makeGraph(fresh));
+
+      // Four consumers, four constructions: fresh opts out of memoization.
+      assert.equal(yield* Ref.get(subscriptions), 4);
+    }),
   );
 });
