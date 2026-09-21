@@ -13,11 +13,14 @@ import { useEffect } from "react";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 import { useCalendarStore } from "../../state/calendar";
+import { useNotificationsStore } from "../../state/notifications";
 import { calendarEnvironment } from "./useCalendarBackend";
+import { calendarRunNoticeToAppNotice } from "./calendar.logic";
 
 export function useCalendarNoticesBackend(): void {
   const environmentId = usePrimaryEnvironmentId();
   const replaceNotices = useCalendarStore((state) => state.replaceNotices);
+  const mergeNotices = useNotificationsStore((state) => state.mergeNotices);
   const query = useEnvironmentQuery(
     environmentId === null ? null : calendarEnvironment.notices({ environmentId, input: {} }),
   );
@@ -27,6 +30,12 @@ export function useCalendarNoticesBackend(): void {
       replaceNotices([]);
       return;
     }
-    replaceNotices((query.data?.notices ?? []).map((notice) => ({ environmentId, notice })));
-  }, [environmentId, query.data, replaceNotices]);
+    const envelopes = (query.data?.notices ?? []).map((notice) => ({ environmentId, notice }));
+    replaceNotices(envelopes);
+    // The inbox outlives the server list; merge keeps one row per notice and
+    // lets retention, not the server's 200-item cap, decide when it disappears.
+    mergeNotices(
+      envelopes.map(({ environmentId: env, notice }) => calendarRunNoticeToAppNotice(env, notice)),
+    );
+  }, [environmentId, query.data, replaceNotices, mergeNotices]);
 }

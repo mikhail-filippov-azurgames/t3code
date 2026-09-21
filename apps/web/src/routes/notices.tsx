@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { CalendarNoticesPage } from "../components/calendar/CalendarNoticesPage";
+import { NoticesPage } from "../components/calendar/NoticesPage";
 
 /**
  * The notices page is a root-level route like `/calendar`, so it carries the
@@ -15,5 +15,5 @@ export const Route = createFileRoute("/notices")({
       throw redirect({ to: "/pair", replace: true });
     }
   },
-  component: CalendarNoticesPage,
+  component: NoticesPage,
 });

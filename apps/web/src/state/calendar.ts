@@ -19,7 +19,6 @@ import { create } from "zustand";
 
 export type CalendarTransport = "offline" | "live";
 
-const READ_AT_KEY = "t3code.calendar.notices.readAt";
 const NOTIFIED_AT_KEY = "t3code.calendar.notices.notifiedAt";
 
 /**
@@ -92,8 +91,6 @@ function laterObservedAt(
 export interface CalendarStoreState {
   readonly events: ReadonlyArray<CalendarEvent>;
   readonly notices: ReadonlyArray<CalendarRunNoticeEnvelope>;
-  /** Device-local instant through which notices have been read. */
-  readonly lastReadAt: string | null;
   /** Device-local instant through which notices have been shown as alerts. */
   readonly lastNotifiedAt: string | null;
   readonly transport: CalendarTransport;
@@ -104,14 +101,12 @@ export interface CalendarStoreState {
   readonly upsertEvent: (event: CalendarEvent) => void;
   readonly removeEvent: (eventId: string) => void;
   readonly replaceNotices: (notices: ReadonlyArray<CalendarRunNoticeEnvelope>) => void;
-  readonly markAllNoticesRead: () => void;
   readonly markNoticesNotified: () => void;
 }
 
 export const useCalendarStore = create<CalendarStoreState>((set) => ({
   events: [],
   notices: [],
-  lastReadAt: readStoredTimestamp(READ_AT_KEY),
   lastNotifiedAt: readStoredTimestamp(NOTIFIED_AT_KEY),
   transport: "offline",
   error: null,
@@ -135,12 +130,6 @@ export const useCalendarStore = create<CalendarStoreState>((set) => ({
       events: state.events.filter((event) => (event.eventId as string) !== eventId),
     })),
   replaceNotices: (notices) => set({ notices }),
-  markAllNoticesRead: () =>
-    set((state) => {
-      const lastReadAt = laterObservedAt(state.notices, state.lastReadAt);
-      writeStoredTimestamp(READ_AT_KEY, lastReadAt);
-      return { lastReadAt };
-    }),
   markNoticesNotified: () =>
     set((state) => {
       const lastNotifiedAt = laterObservedAt(state.notices, state.lastNotifiedAt);
@@ -148,30 +137,3 @@ export const useCalendarStore = create<CalendarStoreState>((set) => ({
       return { lastNotifiedAt };
     }),
 }));
-
-/** Unread notices for the sidebar badge; every notice is unread before the first read. */
-export function selectUnreadNoticeCount(state: CalendarStoreState): number {
-  let count = 0;
-  for (const { notice } of state.notices) {
-    if (isNoticeUnread(notice, state.lastReadAt)) count += 1;
-  }
-  return count;
-}
-
-/** Notices for the page, newest first. Pure so callers can memoize the sort. */
-export function sortNoticesNewestFirst(
-  notices: ReadonlyArray<CalendarRunNoticeEnvelope>,
-): ReadonlyArray<CalendarRunNoticeEnvelope> {
-  return [...notices].sort((left, right) =>
-    isAfter(left.notice.observedAt, right.notice.observedAt)
-      ? -1
-      : isAfter(right.notice.observedAt, left.notice.observedAt)
-        ? 1
-        : 0,
-  );
-}
-
-/** Whether a notice is newer than the device's read cursor. */
-export function isNoticeUnread(notice: CalendarRunNotice, lastReadAt: string | null): boolean {
-  return isAfter(notice.observedAt, lastReadAt);
-}

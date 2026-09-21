@@ -9,6 +9,11 @@ import { useEnvironments } from "../state/environments";
 import { environmentShell } from "../state/shell";
 import { useCalendarStore } from "../state/calendar";
 import {
+  threadNotice,
+  useNotificationsStore,
+  type ThreadNoticeEvent,
+} from "../state/notifications";
+import {
   hasDesktopNotifications,
   hasNotificationSound,
   playNotificationSound,
@@ -22,9 +27,6 @@ import { toastManager } from "./ui/toast";
 export function ThreadNotificationCoordinator() {
   const { environments } = useEnvironments();
   const mode = useClientSettings((settings) => settings.notificationMode);
-  const inAppNotificationsEnabled = useClientSettings(
-    (settings) => settings.inAppNotificationsEnabled,
-  );
   const pending = useRef(
     new Map<string, { environmentId: EnvironmentId; notification: Notification }>(),
   );
@@ -72,8 +74,8 @@ export function ThreadNotificationCoordinator() {
     };
   }, [mode]);
 
-  if (mode === "off" && !inAppNotificationsEnabled) return null;
-
+  // Detection always runs so the device inbox collects every transition; each
+  // child gates its own toast, sound and desktop alert on the current settings.
   return (
     <>
       <CalendarStartNotifications onNotification={onNotification} />
@@ -198,6 +200,7 @@ function EnvironmentNotifications({
   const inAppNotificationsEnabled = useClientSettings(
     (settings) => settings.inAppNotificationsEnabled,
   );
+  const appendNotice = useNotificationsStore((state) => state.appendNotice);
   const navigate = useNavigate();
   const { environmentId: activeEnvironmentId, threadId: activeThreadId } = useParams({
     strict: false,
@@ -244,6 +247,30 @@ function EnvironmentNotifications({
             : status === "failed"
               ? "Thread failed"
               : "Input needed";
+      // Same event point as the alert: the inbox records every observed
+      // transition, even when focus or preferences suppress the popup.
+      const event: ThreadNoticeEvent =
+        kind === "completion"
+          ? "completed"
+          : status === "failed"
+            ? "failed"
+            : status === "approval"
+              ? "approval"
+              : "input";
+      appendNotice(
+        threadNotice({
+          environmentId,
+          threadId: thread.id,
+          event,
+          token: kind === "completion" ? (thread.latestTurn?.turnId ?? null) : attention,
+          at:
+            kind === "completion" && Number.isFinite(completedAt)
+              ? new Date(completedAt).toISOString()
+              : new Date().toISOString(),
+          title,
+          body: thread.title,
+        }),
+      );
       if (hasNotificationSound(mode)) {
         void playNotificationSound(kind, () =>
           hasNotificationSound(getClientSettings().notificationMode),
@@ -303,6 +330,7 @@ function EnvironmentNotifications({
   }, [
     activeEnvironmentId,
     activeThreadId,
+    appendNotice,
     environmentId,
     inAppNotificationsEnabled,
     mode,

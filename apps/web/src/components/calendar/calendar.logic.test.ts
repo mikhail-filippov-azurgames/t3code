@@ -1,7 +1,9 @@
 import {
   CalendarEventId,
+  EnvironmentId,
   ProjectId,
   ProviderInstanceId,
+  ThreadId,
   type CalendarEvent,
   type CalendarRunNotice,
 } from "@t3tools/contracts";
@@ -11,6 +13,7 @@ import { assert, describe, it, vi } from "vite-plus/test";
 import {
   addDays,
   browserTimeZone,
+  calendarRunNoticeToAppNotice,
   composeCron,
   cronMatchesDay,
   describeCalendarRunNotice,
@@ -23,7 +26,6 @@ import {
   parseCron,
   startOfDay,
   startOfWeek,
-  toCalendarNoticeCard,
 } from "./calendar.logic";
 
 function makeEvent(cronExpression: string): CalendarEvent {
@@ -236,30 +238,37 @@ describe("describeCalendarRunNotice", () => {
   });
 });
 
-describe("toCalendarNoticeCard", () => {
+describe("calendarRunNoticeToAppNotice", () => {
   const notice: CalendarRunNotice = {
     version: 1,
     eventId: CalendarEventId.make("event-test"),
-    status: "skipped-missed",
+    status: "started",
     scheduledAt: "2026-01-05T16:00:00.000Z",
     observedAt: "2026-01-05T16:01:00.000Z",
     name: "Daily review",
   };
 
-  it("labels the status and carries the unread flag", () => {
-    const card = toCalendarNoticeCard(notice, true);
-    assert.equal(card.key, noticeKey(notice));
-    assert.equal(card.name, "Daily review");
-    assert.equal(card.statusLabel, "Skipped (missed)");
-    assert.equal(card.scheduledAt, "2026-01-05T16:00:00.000Z");
-    assert.equal(card.observedAt, "2026-01-05T16:01:00.000Z");
-    assert.equal(card.unread, true);
+  it("converts a run notice into a calendar inbox entry", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const app = calendarRunNoticeToAppNotice(environmentId, notice);
+    assert.equal(app.kind, "calendar");
+    assert.equal(app.key, `environment-1:calendar:${noticeKey(notice)}`);
+    assert.equal(app.at, "2026-01-05T16:01:00.000Z");
+    assert.equal(app.title, "Scheduled task started");
+    assert.ok(app.body?.includes("Daily review"));
+    assert.equal(app.environmentId, environmentId);
+    assert.equal(app.threadId, null);
   });
 
-  it("labels a started run", () => {
-    const card = toCalendarNoticeCard({ ...notice, status: "started" }, false);
-    assert.equal(card.statusLabel, "Started");
-    assert.equal(card.unread, false);
+  it("carries the thread the run created when the server supplies one", () => {
+    const app = calendarRunNoticeToAppNotice(EnvironmentId.make("environment-1"), {
+      ...notice,
+      status: "skipped-missed",
+      threadId: ThreadId.make("thread-test"),
+    });
+    assert.equal(app.kind, "calendar");
+    assert.equal(app.title, "Scheduled task skipped");
+    assert.equal(app.threadId, ThreadId.make("thread-test"));
   });
 });
 

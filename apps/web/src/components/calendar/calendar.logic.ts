@@ -20,10 +20,12 @@ import {
   type CalendarEvent,
   type CalendarEventMode,
   type CalendarRunNotice,
-  type CalendarRunNoticeStatus,
+  type EnvironmentId,
   type ParsedCalendarCron,
   parseCalendarCron,
 } from "@t3tools/contracts";
+
+import type { AppNotice } from "../../state/notifications";
 
 export type CalendarRepeat = "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "custom";
 
@@ -318,28 +320,22 @@ export function noticeKey(notice: CalendarRunNotice): string {
   return calendarRunNoticeKey(notice);
 }
 
-export interface CalendarNoticeCard {
-  readonly key: string;
-  readonly name: string;
-  readonly status: CalendarRunNoticeStatus;
-  readonly statusLabel: string;
-  readonly scheduledAt: string;
-  readonly observedAt: string;
-  readonly unread: boolean;
-}
-
-/** One notice prepared for the list page; `unread` is the device's read cursor. */
-export function toCalendarNoticeCard(
+/**
+ * Inbox entry for one server run notice. The key is prefixed with the
+ * environment because `calendarRunNoticeKey` is only unique within one server.
+ */
+export function calendarRunNoticeToAppNotice(
+  environmentId: EnvironmentId,
   notice: CalendarRunNotice,
-  unread: boolean,
-): CalendarNoticeCard {
+): AppNotice {
+  const { title, body } = describeCalendarRunNotice(notice);
   return {
-    key: noticeKey(notice),
-    name: notice.name,
-    status: notice.status,
-    statusLabel: notice.status === "started" ? "Started" : "Skipped (missed)",
-    scheduledAt: notice.scheduledAt,
-    observedAt: notice.observedAt,
-    unread,
+    key: `${environmentId}:calendar:${noticeKey(notice)}`,
+    kind: "calendar",
+    title,
+    body,
+    at: notice.observedAt,
+    environmentId,
+    threadId: notice.threadId ?? null,
   };
 }

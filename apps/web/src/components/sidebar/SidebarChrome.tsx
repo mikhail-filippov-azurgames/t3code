@@ -13,7 +13,11 @@ import { Link, useCanGoBack, useLocation, useNavigate } from "@tanstack/react-ro
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { selectUnreadNoticeCount, useCalendarStore } from "../../state/calendar";
+import {
+  selectUnreadNoticeCount,
+  useNoticeRetention,
+  useNotificationsStore,
+} from "../../state/notifications";
 import { useEnvironments } from "../../state/environments";
 import { useCalendarNoticesBackend } from "../calendar/useCalendarNotices";
 import { T3Wordmark } from "../T3Wordmark";
@@ -166,11 +170,12 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   // The sidebar is mounted on every route, so the notice stream stays live even
   // when the notices and calendar pages are not.
   useCalendarNoticesBackend();
+  useNoticeRetention();
   const navigate = useNavigate();
   const canGoBack = useCanGoBack();
   const { isMobile, setOpenMobile } = useSidebar();
-  const unreadNoticeCount = useCalendarStore(selectUnreadNoticeCount);
-  const markAllNoticesRead = useCalendarStore((state) => state.markAllNoticesRead);
+  const unreadNoticeCount = useNotificationsStore(selectUnreadNoticeCount);
+  const markAllRead = useNotificationsStore((state) => state.markAllRead);
   const currentFooterPage = useLocation({
     select: (location) =>
       /^\/settings(?:\/|$)/.test(location.pathname)
@@ -225,14 +230,14 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   }, [closeMobileSidebar, navigate]);
 
   const handleNoticesClick = useCallback(() => {
-    markAllNoticesRead();
+    markAllRead();
     closeMobileSidebar();
     void navigate({ to: "/notices" });
-  }, [closeMobileSidebar, markAllNoticesRead, navigate]);
+  }, [closeMobileSidebar, markAllRead, navigate]);
 
   const handleNoticesMarkRead = useCallback(() => {
-    markAllNoticesRead();
-  }, [markAllNoticesRead]);
+    markAllRead();
+  }, [markAllRead]);
 
   const handleBoardClick = useCallback(() => {
     closeMobileSidebar();
