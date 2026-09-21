@@ -3,6 +3,7 @@ import {
   calendarCronMatchesDay,
   type CalendarEvent,
   CalendarEventId,
+  type CalendarRunNotice,
   type CalendarUpdateInput,
   type HostPowerSnapshot,
   type OrchestrationCommand,
@@ -28,7 +29,9 @@ import {
   type RecordCalendarFireInput,
   type RecordCalendarMissInput,
 } from "../persistence/Services/CalendarEvents.ts";
+import { CalendarNotices } from "./CalendarNotices.ts";
 import {
+  CALENDAR_FIRE_GRACE_MS,
   FIRE_PER_SWEEP_LIMIT,
   make as makeCalendarReactor,
   nextCalendarFireAt,
@@ -232,6 +235,7 @@ function makeStartupHarness(...seeds: ReadonlyArray<CalendarEvent>) {
     const events = yield* Ref.make<ReadonlyArray<CalendarEvent>>(seeds);
     const missed = yield* Ref.make<ReadonlyArray<RecordCalendarMissInput>>([]);
     const fired = yield* Ref.make<ReadonlyArray<RecordCalendarFireInput>>([]);
+    const notices = yield* Ref.make<ReadonlyArray<CalendarRunNotice>>([]);
     const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
     const listDueCount = yield* Ref.make(0);
     const sweepRan = yield* Deferred.make<void>();
@@ -297,14 +301,19 @@ function makeStartupHarness(...seeds: ReadonlyArray<CalendarEvent>) {
       }),
     );
 
+    const noticeChannel = Layer.mock(CalendarNotices)({
+      record: (notice) => Ref.update(notices, (all) => [...all, notice]).pipe(Effect.asVoid),
+    });
+
     const deps = Layer.mergeAll(
       repository,
       engine,
       hostPower,
+      noticeChannel,
       Layer.succeed(Crypto.Crypto, testCrypto),
     );
     const reactor = yield* makeCalendarReactor.pipe(Effect.provide(deps));
-    return { events, missed, fired, commands, listDueCount, sweepRan, reactor };
+    return { events, missed, fired, notices, commands, listDueCount, sweepRan, reactor };
   });
 }
 
@@ -356,8 +365,9 @@ describe("CalendarReactor startup miss semantics", () => {
     }),
   );
 
-  it.effect("a restart exactly at the slot instant treats the slot as missed", () =>
+  it.effect("a restart exactly at the slot instant fires the slot inside grace", () =>
     Effect.gen(function* () {
+      assert.equal(CALENDAR_FIRE_GRACE_MS, 5 * 60 * 1000);
       yield* TestClock.setTime(Date.UTC(2026, 0, 15, 14, 0, 0));
       const harness = yield* makeStartupHarness(
         makeCalendarEvent({
@@ -368,11 +378,53 @@ describe("CalendarReactor startup miss semantics", () => {
       );
       yield* harness.reactor.start();
 
+      const fired = yield* Ref.get(harness.fired);
+      assert.equal(fired.length, 1);
+      assert.equal(fired[0]?.nextFireAt, "2026-01-15T15:00:00.000Z");
+      assert.equal((yield* Ref.get(harness.missed)).length, 0);
+      const notices = yield* Ref.get(harness.notices);
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0]?.status, "started");
+      assert.equal(notices[0]?.scheduledAt, "2026-01-15T14:00:00.000Z");
+    }),
+  );
+
+  it.effect("fires a slot two minutes late at boot", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 13, 2, 0));
+      const harness = yield* makeStartupHarness(
+        makeCalendarEvent({
+          nextFireAt: "2026-01-15T13:00:00.000Z",
+          mode: "continue",
+          threadId: ThreadId.make("thread-1"),
+        }),
+      );
+      yield* harness.reactor.start();
+
+      const fired = yield* Ref.get(harness.fired);
+      assert.equal(fired.length, 1);
+      assert.equal(fired[0]?.nextFireAt, "2026-01-15T14:00:00.000Z");
+      assert.equal((yield* Ref.get(harness.missed)).length, 0);
+    }),
+  );
+
+  it.effect("collapses a slot ten minutes late into one miss and advances", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 13, 10, 0));
+      const harness = yield* makeStartupHarness(
+        makeCalendarEvent({
+          nextFireAt: "2026-01-15T13:00:00.000Z",
+          mode: "continue",
+          threadId: ThreadId.make("thread-1"),
+        }),
+      );
+      yield* harness.reactor.start();
+
+      assert.equal((yield* Ref.get(harness.fired)).length, 0);
       const missed = yield* Ref.get(harness.missed);
       assert.equal(missed.length, 1);
-      assert.equal(missed[0]?.missedAt, "2026-01-15T14:00:00.000Z");
-      assert.equal(missed[0]?.nextFireAt, "2026-01-15T15:00:00.000Z");
-      assert.equal((yield* Ref.get(harness.fired)).length, 0);
+      assert.equal(missed[0]?.missedAt, "2026-01-15T13:00:00.000Z");
+      assert.equal(missed[0]?.nextFireAt, "2026-01-15T14:00:00.000Z");
     }),
   );
 
@@ -423,10 +475,17 @@ describe("CalendarReactor startup miss semantics", () => {
           "Scheduled run skipped (missed at 2026-01-15T13:00:00.000Z)",
         );
       }
+
+      const notices = yield* Ref.get(harness.notices);
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0]?.status, "skipped-missed");
+      assert.equal(notices[0]?.scheduledAt, "2026-01-15T13:00:00.000Z");
+      assert.equal(notices[0]?.threadId, threadId);
+      assert.equal(notices[0]?.name, "Standup");
     }),
   );
 
-  it.effect("a missed new-thread event warns and dispatches no notice", () => {
+  it.effect("a missed new-thread event records a notice but no thread message", () => {
     const logs: Array<unknown> = [];
     const logger = Logger.make(({ message }) => {
       logs.push(Array.isArray(message) ? message.join(" ") : message);
@@ -444,6 +503,10 @@ describe("CalendarReactor startup miss semantics", () => {
 
       assert.equal((yield* Ref.get(harness.missed)).length, 1);
       assert.equal((yield* Ref.get(harness.commands)).length, 0);
+      const notices = yield* Ref.get(harness.notices);
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0]?.status, "skipped-missed");
+      assert.equal(notices[0]?.threadId, undefined);
       assert.isTrue(
         logs.some(
           (message) =>
@@ -467,43 +530,52 @@ describe("CalendarReactor sweep fire cap", () => {
       })),
     );
 
-  it.effect("caps fires per sweep and finishes the backlog on the next sweep", () =>
+  it.effect("fires recent slots up to the cap while stale slots collapse to one miss", () =>
     Effect.gen(function* () {
       assert.equal(FIRE_PER_SWEEP_LIMIT, 3);
-      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 7, 30, 0));
+      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 12, 30, 0));
       const harness = yield* makeStartupHarness(
-        makeCalendarEvent({ nextFireAt: "2026-01-15T08:00:00.000Z" }),
+        makeCalendarEvent({ eventId: "e-a", nextFireAt: "2026-01-16T00:00:00.000Z" }),
+        makeCalendarEvent({ eventId: "e-b", nextFireAt: "2026-01-16T00:00:00.000Z" }),
+        makeCalendarEvent({ eventId: "e-c", nextFireAt: "2026-01-16T00:00:00.000Z" }),
+        makeCalendarEvent({ eventId: "e-d", nextFireAt: "2026-01-16T00:00:00.000Z" }),
+        makeCalendarEvent({ eventId: "e-stale", nextFireAt: "2026-01-16T00:00:00.000Z" }),
       );
       yield* harness.reactor.start();
-      yield* backdate(harness.events, new Map([["event-1", "2026-01-15T03:00:00.000Z"]]));
+      yield* backdate(
+        harness.events,
+        new Map([
+          ["e-a", "2026-01-15T12:25:30.000Z"], // exactly at the grace boundary (sweep runs at :30)
+          ["e-b", "2026-01-15T12:27:00.000Z"],
+          ["e-c", "2026-01-15T12:28:00.000Z"],
+          ["e-d", "2026-01-15T12:29:00.000Z"],
+          ["e-stale", "2026-01-15T11:00:00.000Z"],
+        ]),
+      );
 
       yield* TestClock.adjust("30 seconds");
       const firstFires = yield* Ref.get(harness.fired);
-      assert.equal(firstFires.length, FIRE_PER_SWEEP_LIMIT);
+      // The stale slot collapses without spending the fire budget.
       assert.deepEqual(
-        firstFires.map((fire) => fire.nextFireAt),
-        ["2026-01-15T04:00:00.000Z", "2026-01-15T05:00:00.000Z", "2026-01-15T06:00:00.000Z"],
+        firstFires.map((fire) => fire.eventId),
+        ["e-a", "e-b", "e-c"],
+      );
+      const missed = yield* Ref.get(harness.missed);
+      assert.equal(missed.length, 1);
+      assert.equal(missed[0]?.eventId, "e-stale");
+      assert.equal(missed[0]?.missedAt, "2026-01-15T11:00:00.000Z");
+      assert.equal(missed[0]?.nextFireAt, "2026-01-15T13:00:00.000Z");
+      const afterFirst = yield* Ref.get(harness.events);
+      assert.equal(
+        afterFirst.find((row) => row.eventId === "e-d")?.nextFireAt,
+        "2026-01-15T12:29:00.000Z",
       );
 
       yield* TestClock.adjust("30 seconds");
-      const allFires = yield* Ref.get(harness.fired);
-      assert.equal(allFires.length, 5);
       assert.deepEqual(
-        allFires.map((fire) => fire.nextFireAt),
-        [
-          "2026-01-15T04:00:00.000Z",
-          "2026-01-15T05:00:00.000Z",
-          "2026-01-15T06:00:00.000Z",
-          "2026-01-15T07:00:00.000Z",
-          "2026-01-15T08:00:00.000Z",
-        ],
+        (yield* Ref.get(harness.fired)).map((fire) => fire.eventId),
+        ["e-a", "e-b", "e-c", "e-d"],
       );
-      const commands = yield* Ref.get(harness.commands);
-      assert.equal(countCommands(commands, "thread.turn.start"), 5);
-      const turnMessageIds = commands
-        .filter((command) => command.type === "thread.turn.start")
-        .map((command) => (command.type === "thread.turn.start" ? command.message.messageId : ""));
-      assert.equal(new Set(turnMessageIds).size, 5);
     }),
   );
 
@@ -514,7 +586,7 @@ describe("CalendarReactor sweep fire cap", () => {
         makeCalendarEvent({ nextFireAt: "2026-01-15T08:00:00.000Z" }),
       );
       yield* harness.reactor.start();
-      yield* backdate(harness.events, new Map([["event-1", "2026-01-15T07:00:00.000Z"]]));
+      yield* backdate(harness.events, new Map([["event-1", "2026-01-15T07:28:00.000Z"]]));
 
       yield* TestClock.adjust("30 seconds");
       const fired = yield* Ref.get(harness.fired);
@@ -523,6 +595,31 @@ describe("CalendarReactor sweep fire cap", () => {
 
       yield* TestClock.adjust("30 seconds");
       assert.equal((yield* Ref.get(harness.fired)).length, 1);
+    }),
+  );
+
+  it.effect("records a started notice when an event fires", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 7, 30, 0));
+      const threadId = ThreadId.make("thread-1");
+      const harness = yield* makeStartupHarness(
+        makeCalendarEvent({
+          nextFireAt: "2026-01-15T08:00:00.000Z",
+          mode: "continue",
+          threadId,
+        }),
+      );
+      yield* harness.reactor.start();
+      yield* backdate(harness.events, new Map([["event-1", "2026-01-15T07:28:00.000Z"]]));
+
+      yield* TestClock.adjust("30 seconds");
+
+      assert.equal((yield* Ref.get(harness.fired)).length, 1);
+      const notices = yield* Ref.get(harness.notices);
+      assert.equal(notices.length, 1);
+      assert.equal(notices[0]?.status, "started");
+      assert.equal(notices[0]?.scheduledAt, "2026-01-15T07:28:00.000Z");
+      assert.equal(notices[0]?.threadId, threadId);
     }),
   );
 
@@ -555,10 +652,10 @@ describe("CalendarReactor sweep fire cap", () => {
       yield* backdate(
         harness.events,
         new Map([
-          ["event-1", "2026-01-15T03:00:00.000Z"],
-          ["event-2", "2026-01-15T04:00:00.000Z"],
-          ["event-3", "2026-01-15T05:00:00.000Z"],
-          ["event-4", "2026-01-15T06:00:00.000Z"],
+          ["event-1", "2026-01-15T07:26:00.000Z"],
+          ["event-2", "2026-01-15T07:27:00.000Z"],
+          ["event-3", "2026-01-15T07:28:00.000Z"],
+          ["event-4", "2026-01-15T07:29:00.000Z"],
         ]),
       );
 
@@ -570,7 +667,7 @@ describe("CalendarReactor sweep fire cap", () => {
       const afterFirst = yield* Ref.get(harness.events);
       assert.equal(
         afterFirst.find((row) => row.eventId === "event-4")?.nextFireAt,
-        "2026-01-15T06:00:00.000Z",
+        "2026-01-15T07:29:00.000Z",
       );
 
       yield* TestClock.adjust("30 seconds");
@@ -604,9 +701,9 @@ describe("CalendarReactor sweep fire cap", () => {
       yield* backdate(
         harness.events,
         new Map([
-          ["event-z", "2026-01-15T05:00:00.000Z"],
-          ["event-b", "2026-01-15T04:00:00.000Z"],
-          ["event-a", "2026-01-15T04:00:00.000Z"],
+          ["event-z", "2026-01-15T07:28:00.000Z"],
+          ["event-b", "2026-01-15T07:27:00.000Z"],
+          ["event-a", "2026-01-15T07:27:00.000Z"],
         ]),
       );
 

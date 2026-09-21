@@ -1,13 +1,15 @@
 /**
  * CalendarReactor - fires scheduled calendar events.
  *
- * One sweep reads rows whose persisted `next_fire_at` is due and dispatches a
- * `thread.turn.start` into the target thread, earliest slot first and at most
- * `FIRE_PER_SWEEP_LIMIT` fires total; unfired due rows keep their schedule. A
- * separate startup branch treats any slot already in the past as missed (host
- * asleep or server restart), skips it, posts a notification, and advances the
- * schedule from now. No scheduler dependency is used: repeats are 5-field
- * local-time cron expressions and the next absolute instant is stored per row.
+ * One sweep reads rows whose persisted `next_fire_at` is due. A slot at most
+ * `CALENDAR_FIRE_GRACE_MS` in the past runs late ("as if" it just came due),
+ * earliest slot first and at most `FIRE_PER_SWEEP_LIMIT` fires total; unfired
+ * recent rows keep their schedule. An older slot collapses into a single miss
+ * and advances the schedule from now, the same way the startup branch handles a
+ * restart: the startup partition is the sweep partition, not "every past slot
+ * is missed". Collapsing misses never spends fire budget. No scheduler
+ * dependency is used: repeats are 5-field local-time cron expressions and the
+ * next absolute instant is stored per row.
  *
  * @module CalendarReactor
  */
@@ -20,6 +22,7 @@ import {
   calendarNameExcerpt,
   type CalendarUpdateInput,
   CommandId,
+  type HostPowerSnapshot,
   MessageId,
   parseCalendarCron,
   ThreadId,
@@ -36,6 +39,7 @@ import type * as Scope from "effect/Scope";
 
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import { CalendarEventRepository } from "../persistence/Services/CalendarEvents.ts";
+import { CalendarNotices } from "./CalendarNotices.ts";
 import * as HostPowerMonitor from "./HostPowerMonitor.ts";
 
 const SWEEP_INTERVAL = "30 seconds";
@@ -48,8 +52,25 @@ const DUE_LIMIT = 50;
  */
 export const FIRE_PER_SWEEP_LIMIT = 3;
 
+/**
+ * How long after its slot a due event may still run late. Inside the window the
+ * slot fires (catch-up preserved); outside it is collapsed into one miss and the
+ * schedule advances from now, so a long host sleep does not replay the backlog.
+ */
+export const CALENDAR_FIRE_GRACE_MS = 5 * 60 * 1000;
+
 /** Schedule exhausted because no future slot matched; never treated as due. */
 const EXHAUSTED_NEXT_FIRE_AT = "9999-12-31T23:59:59.000Z";
+
+/**
+ * True when a due `scheduledAt` is at most `CALENDAR_FIRE_GRACE_MS` behind
+ * `observedAt` (boundary inclusive). Shared by the sweep and startup branches so
+ * both use the same window.
+ */
+const isWithinFireGrace = (scheduledAt: string, observedAt: string): boolean =>
+  DateTime.toEpochMillis(DateTime.makeUnsafe(observedAt)) -
+    DateTime.toEpochMillis(DateTime.makeUnsafe(scheduledAt)) <=
+  CALENDAR_FIRE_GRACE_MS;
 
 /** Earliest slot first, then event id, so the cap never starves a due event. */
 function compareDueCalendarEvents(left: CalendarEvent, right: CalendarEvent): number {
@@ -163,6 +184,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const hostPower = yield* HostPowerMonitor.HostPowerMonitor;
+  const notices = yield* CalendarNotices;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -189,6 +211,24 @@ export const make = Effect.gen(function* () {
             : `Scheduled run skipped (missed at ${scheduledAt}): ${calendarNameExcerpt(event.title)}`,
       },
       createdAt: observedAt,
+    });
+
+  // The client-facing channel behind the notices list and its unread badge.
+  const recordNotice = (
+    event: CalendarEvent,
+    status: "started" | "skipped-missed",
+    scheduledAt: string,
+    observedAt: string,
+    threadId: ThreadId | null,
+  ) =>
+    notices.record({
+      version: 1,
+      eventId: event.eventId,
+      status,
+      scheduledAt,
+      observedAt,
+      name: calendarNameExcerpt(event.title),
+      threadId,
     });
 
   const fire = Effect.fn("CalendarReactor.fire")(function* (event: CalendarEvent) {
@@ -238,6 +278,7 @@ export const make = Effect.gen(function* () {
     });
 
     yield* notify(threadId, event, "started", scheduledAt, firedAt);
+    yield* recordNotice(event, "started", scheduledAt, firedAt, threadId);
     yield* repository.recordFire({
       eventId: event.eventId,
       firedAt,
@@ -246,57 +287,98 @@ export const make = Effect.gen(function* () {
     });
   });
 
+  // Collapse a stale slot: one miss, the schedule advanced from now, and the
+  // notice/thread channels updated the same way boot has always done it.
+  const collapseMissedSlot = Effect.fn("CalendarReactor.collapseMissedSlot")(function* (
+    event: CalendarEvent,
+    observedAt: string,
+    power: HostPowerSnapshot,
+  ) {
+    const scheduledAt = event.nextFireAt;
+    const nextFireAt = nextFireAtFor(event, observedAt);
+    yield* repository.recordMissed({
+      eventId: event.eventId,
+      missedAt: scheduledAt,
+      nextFireAt,
+      updatedAt: observedAt,
+    });
+    if (event.threadId === null) {
+      // A new-thread event has no target thread yet; the notice channel still
+      // carries the miss, and the persisted last_missed_at is the event history.
+      yield* recordNotice(event, "skipped-missed", scheduledAt, observedAt, null);
+      yield* Effect.logWarning("calendar event missed before a thread existed", {
+        eventId: event.eventId,
+        scheduledAt,
+        hostSuspended: power.suspended,
+        hostStale: power.stale,
+      });
+      return;
+    }
+    yield* notify(event.threadId, event, "skipped-missed", scheduledAt, observedAt);
+    yield* recordNotice(event, "skipped-missed", scheduledAt, observedAt, event.threadId);
+  });
+
+  const fireOnSweep = (event: CalendarEvent, label: string, failed?: Set<string>) =>
+    fire(event).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+        failed?.add(event.eventId);
+        return Effect.logWarning(label, {
+          eventId: event.eventId,
+          cause: Cause.pretty(cause),
+        });
+      }),
+    );
+
   const skipMissedAtStartup = Effect.fn("CalendarReactor.skipMissedAtStartup")(function* () {
     const observedAt = yield* nowIso;
     const power = yield* hostPower.snapshot;
     const events = yield* repository.listAll();
+    let budget = FIRE_PER_SWEEP_LIMIT;
     for (const event of events) {
       if (compareDateTimeStrings(event.nextFireAt, observedAt) > 0) continue;
-      const scheduledAt = event.nextFireAt;
-      const nextFireAt = nextFireAtFor(event, observedAt);
-      yield* repository.recordMissed({
-        eventId: event.eventId,
-        missedAt: scheduledAt,
-        nextFireAt,
-        updatedAt: observedAt,
-      });
-      if (event.threadId === null) {
-        // A new-thread event has no target thread yet; the persisted
-        // last_missed_at is the notification the UI reads on launch.
-        yield* Effect.logWarning("calendar event missed before a thread existed", {
-          eventId: event.eventId,
-          scheduledAt,
-          hostSuspended: power.suspended,
-          hostStale: power.stale,
-        });
+      if (isWithinFireGrace(event.nextFireAt, observedAt)) {
+        // A slot inside the grace window runs late; when the cap is spent it
+        // stays due for the first sweep instead of being recorded as missed.
+        if (budget <= 0) continue;
+        budget -= 1;
+        yield* fireOnSweep(event, "calendar event fire failed at startup");
         continue;
       }
-      yield* notify(event.threadId, event, "skipped-missed", scheduledAt, observedAt);
+      yield* collapseMissedSlot(event, observedAt, power);
     }
   });
 
   const sweep = Effect.fn("CalendarReactor.sweep")(function* () {
     const observedAt = yield* nowIso;
+    const power = yield* hostPower.snapshot;
     const failed = new Set<string>();
     let budget = FIRE_PER_SWEEP_LIMIT;
-    // Re-query each pass: a backlogged event advances slot by slot while the
-    // budget caps the sweep, and a failed event cannot burn the whole budget.
-    while (budget > 0) {
+    // Re-query each pass: catch-up within the grace window advances slot by
+    // slot while the budget caps the sweep, and a failed event cannot burn the
+    // whole budget. Stale slots collapse first so a backlog never starves the
+    // recent slots the fire budget exists to bound.
+    while (true) {
       const due = yield* repository.listDue({ nowIso: observedAt, limit: DUE_LIMIT });
-      const next = [...due]
-        .filter((event) => !failed.has(event.eventId))
+      const pending = due.filter((event) => !failed.has(event.eventId));
+      for (const event of pending) {
+        if (isWithinFireGrace(event.nextFireAt, observedAt)) continue;
+        yield* collapseMissedSlot(event, observedAt, power).pipe(
+          Effect.catchCause((cause) => {
+            if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+            failed.add(event.eventId);
+            return Effect.logWarning("calendar event miss collapse failed", {
+              eventId: event.eventId,
+              cause: Cause.pretty(cause),
+            });
+          }),
+        );
+      }
+      const next = pending
+        .filter((event) => isWithinFireGrace(event.nextFireAt, observedAt))
         .sort(compareDueCalendarEvents)[0];
-      if (next === undefined) break;
-      yield* fire(next).pipe(
-        Effect.catchCause((cause) => {
-          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
-          failed.add(next.eventId);
-          return Effect.logWarning("calendar event fire failed", {
-            eventId: next.eventId,
-            cause: Cause.pretty(cause),
-          });
-        }),
-      );
+      if (next === undefined || budget <= 0) break;
+      yield* fireOnSweep(next, "calendar event fire failed", failed);
       budget -= 1;
     }
   });
