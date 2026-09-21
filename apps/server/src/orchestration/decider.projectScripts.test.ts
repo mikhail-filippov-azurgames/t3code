@@ -6,6 +6,7 @@ import {
   ProjectId,
   ThreadId,
   ProviderInstanceId,
+  TurnId,
   type ProjectScript,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
@@ -19,6 +20,86 @@ import { createEmptyReadModel, projectEvent } from "./projector.ts";
 const asEventId = (value: string): EventId => EventId.make(value);
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
+
+const buildTurnInterruptReadModel = (activeTurnId: TurnId | null) =>
+  Effect.gen(function* () {
+    const now = "2026-01-01T00:00:00.000Z";
+    const projectId = asProjectId("project-turn-interrupt");
+    const threadId = ThreadId.make("thread-turn-interrupt");
+    const withProject = yield* projectEvent(createEmptyReadModel(now), {
+      sequence: 1,
+      eventId: asEventId("evt-project-turn-interrupt"),
+      aggregateKind: "project",
+      aggregateId: projectId,
+      type: "project.created",
+      occurredAt: now,
+      commandId: CommandId.make("cmd-project-turn-interrupt"),
+      causationEventId: null,
+      correlationId: CommandId.make("cmd-project-turn-interrupt"),
+      metadata: {},
+      payload: {
+        projectId,
+        title: "Turn interrupt",
+        workspaceRoot: "/tmp/turn-interrupt",
+        defaultModelSelection: null,
+        scripts: [],
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    const withThread = yield* projectEvent(withProject, {
+      sequence: 2,
+      eventId: asEventId("evt-thread-turn-interrupt"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      type: "thread.created",
+      occurredAt: now,
+      commandId: CommandId.make("cmd-thread-turn-interrupt"),
+      causationEventId: null,
+      correlationId: CommandId.make("cmd-thread-turn-interrupt"),
+      metadata: {},
+      payload: {
+        threadId,
+        projectId,
+        title: "Turn interrupt",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+    });
+    return yield* projectEvent(withThread, {
+      sequence: 3,
+      eventId: asEventId("evt-session-turn-interrupt"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      type: "thread.session-set",
+      occurredAt: now,
+      commandId: CommandId.make("cmd-session-turn-interrupt"),
+      causationEventId: null,
+      correlationId: CommandId.make("cmd-session-turn-interrupt"),
+      metadata: {},
+      payload: {
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+      },
+    });
+  });
+
 it.layer(NodeServices.layer)("decider project scripts", (it) => {
   it.effect("emits empty scripts on project.create", () =>
     Effect.gen(function* () {
@@ -558,6 +639,76 @@ it.layer(NodeServices.layer)("decider project scripts", (it) => {
       };
       expect(interruptEvent.type).toBe("thread.turn-interrupt-requested");
       expect(interruptEvent.payload).toMatchObject({ threadId, pendingMessageId: messageId });
+    }),
+  );
+
+  it.effect("downgrades a stale turnId to a session-level stop when no turn is active", () =>
+    Effect.gen(function* () {
+      const readModel = yield* buildTurnInterruptReadModel(null);
+      const threadId = ThreadId.make("thread-turn-interrupt");
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-interrupt-stale-idle"),
+          threadId,
+          turnId: TurnId.make("turn-stale"),
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+        readModel,
+      });
+
+      expect(Array.isArray(result)).toBe(false);
+      const interruptEvent = (Array.isArray(result) ? result[0] : result) as {
+        readonly type: string;
+        readonly payload: Record<string, unknown>;
+      };
+      expect(interruptEvent.type).toBe("thread.turn-interrupt-requested");
+      expect(interruptEvent.payload.threadId).toBe(threadId);
+      expect(interruptEvent.payload).not.toHaveProperty("turnId");
+    }),
+  );
+
+  it.effect("ignores a stale turnId when a different turn is active", () =>
+    Effect.gen(function* () {
+      const activeTurnId = TurnId.make("turn-current");
+      const readModel = yield* buildTurnInterruptReadModel(activeTurnId);
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-interrupt-stale-active"),
+          threadId: ThreadId.make("thread-turn-interrupt"),
+          turnId: TurnId.make("turn-stale"),
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+        readModel,
+      });
+
+      expect(result).toEqual([]);
+    }),
+  );
+
+  it.effect("emits the requested turnId when it still matches the active turn", () =>
+    Effect.gen(function* () {
+      const activeTurnId = TurnId.make("turn-current");
+      const readModel = yield* buildTurnInterruptReadModel(activeTurnId);
+      const result = yield* decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.interrupt",
+          commandId: CommandId.make("cmd-interrupt-matching"),
+          threadId: ThreadId.make("thread-turn-interrupt"),
+          turnId: activeTurnId,
+          createdAt: "2026-01-02T00:00:00.000Z",
+        },
+        readModel,
+      });
+
+      expect(Array.isArray(result)).toBe(false);
+      const interruptEvent = (Array.isArray(result) ? result[0] : result) as {
+        readonly type: string;
+        readonly payload: Record<string, unknown>;
+      };
+      expect(interruptEvent.type).toBe("thread.turn-interrupt-requested");
+      expect(interruptEvent.payload.turnId).toBe(activeTurnId);
     }),
   );
 

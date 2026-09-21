@@ -1606,11 +1606,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: "turnId and pendingMessageId cannot both be specified",
         });
       }
+      // Stale turnId: stop an idle session, but never touch a newer active turn.
+      let interruptTurnId = command.turnId;
       if (command.turnId !== undefined && thread.session?.activeTurnId !== command.turnId) {
-        return yield* new OrchestrationCommandInvariantError({
-          commandType: command.type,
-          detail: `turn ${command.turnId} is not the active turn for thread ${command.threadId}`,
-        });
+        if (thread.session?.activeTurnId !== null) {
+          return [];
+        }
+        interruptTurnId = undefined;
       }
       if (
         command.pendingMessageId !== undefined &&
@@ -1632,7 +1634,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.turn-interrupt-requested",
         payload: {
           threadId: command.threadId,
-          ...(command.turnId !== undefined ? { turnId: command.turnId } : {}),
+          ...(interruptTurnId !== undefined ? { turnId: interruptTurnId } : {}),
           ...(command.pendingMessageId !== undefined
             ? { pendingMessageId: command.pendingMessageId }
             : {}),
