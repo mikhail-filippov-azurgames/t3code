@@ -33,6 +33,7 @@ import { CalendarNotices } from "./CalendarNotices.ts";
 import {
   CALENDAR_FIRE_GRACE_MS,
   FIRE_PER_SWEEP_LIMIT,
+  formatCalendarRunMessage,
   make as makeCalendarReactor,
   nextCalendarFireAt,
   planCalendarEventUpdate,
@@ -319,6 +320,41 @@ function makeStartupHarness(...seeds: ReadonlyArray<CalendarEvent>) {
 
 const countCommands = (commands: ReadonlyArray<OrchestrationCommand>, type: string): number =>
   commands.filter((command) => command.type === type).length;
+
+describe("scheduled run identity", () => {
+  it("names the calendar event and marks the run automatic", () => {
+    const event = makeCalendarEvent({ nextFireAt: "2026-01-15T13:00:00.000Z" });
+    const text = formatCalendarRunMessage(event, "2026-01-15T13:00:00.000Z");
+    assert.ok(text.includes(`Calendar event id: ${event.eventId}`));
+    assert.ok(text.includes("started automatically"));
+    assert.ok(text.includes("do not create, edit, or delete calendar events"));
+    assert.ok(text.endsWith(event.message));
+  });
+
+  it.effect("the fired turn and created thread carry the automatic-run identity", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.UTC(2026, 0, 15, 13, 0, 0));
+      const harness = yield* makeStartupHarness(
+        makeCalendarEvent({ nextFireAt: "2026-01-15T13:00:00.000Z" }),
+      );
+      yield* harness.reactor.start();
+
+      const commands = yield* Ref.get(harness.commands);
+      const created = commands.find((command) => command.type === "thread.create");
+      assert.ok(created !== undefined && created.type === "thread.create");
+      assert.ok(created.title.startsWith("Scheduled · "));
+
+      const turn = commands.find((command) => command.type === "thread.turn.start");
+      assert.ok(turn !== undefined && turn.type === "thread.turn.start");
+      assert.ok(turn.message.text.includes("Calendar event id: event-1"));
+      assert.ok(turn.message.text.includes("started automatically"));
+
+      const system = commands.find((command) => command.type === "thread.message.system.append");
+      assert.ok(system !== undefined && system.type === "thread.message.system.append");
+      assert.ok(system.message.text.includes("(calendar event event-1)"));
+    }),
+  );
+});
 
 describe("CalendarReactor startup miss semantics", () => {
   it.effect("a due slot at boot records one miss and advances without firing", () =>

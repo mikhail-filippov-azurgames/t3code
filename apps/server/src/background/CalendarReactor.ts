@@ -80,6 +80,23 @@ function compareDueCalendarEvents(left: CalendarEvent, right: CalendarEvent): nu
 }
 
 /**
+ * Prompt header for a fired slot. A scheduled run must be self-describing even
+ * in a long `continue` thread: the agent learns which calendar event started
+ * the run and that no human typed the message, and the run bans are repeated
+ * where the model actually reads them.
+ *
+ * @internal Exported for tests.
+ */
+export function formatCalendarRunMessage(event: CalendarEvent, scheduledAt: string): string {
+  return [
+    `This thread was started automatically by the T3 Code calendar, not by a human. Calendar event id: ${event.eventId}. Scheduled time: ${scheduledAt}.`,
+    "As an automatic scheduled run, do not create, edit, or delete calendar events and do not delegate work.",
+    "",
+    event.message,
+  ].join("\n");
+}
+
+/**
  * First local wall-clock slot strictly after `fromIso`, expressed as an
  * absolute ISO instant. `null` when the expression is invalid or no slot
  * matches within the lookahead window.
@@ -207,8 +224,8 @@ export const make = Effect.gen(function* () {
         messageId: MessageId.make(`calendar:notice:${status}:${event.eventId}:${scheduledAt}`),
         text:
           status === "started"
-            ? `Scheduled run started at ${observedAt}: ${calendarNameExcerpt(event.title)}`
-            : `Scheduled run skipped (missed at ${scheduledAt}): ${calendarNameExcerpt(event.title)}`,
+            ? `Scheduled run started at ${observedAt}: ${calendarNameExcerpt(event.title)} (calendar event ${event.eventId})`
+            : `Scheduled run skipped (missed at ${scheduledAt}): ${calendarNameExcerpt(event.title)} (calendar event ${event.eventId})`,
       },
       createdAt: observedAt,
     });
@@ -247,7 +264,7 @@ export const make = Effect.gen(function* () {
         commandId: CommandId.make(`calendar:create:${slotKey}`),
         threadId,
         projectId: event.projectId,
-        title: calendarNameExcerpt(event.title) || "Scheduled run",
+        title: `Scheduled · ${calendarNameExcerpt(event.title) || "run"}`,
         modelSelection: event.modelSelection,
         runtimeMode: event.runtimeMode,
         interactionMode: event.interactionMode,
@@ -267,7 +284,7 @@ export const make = Effect.gen(function* () {
       message: {
         messageId: MessageId.make(`calendar:turn:${slotKey}`),
         role: "user",
-        text: event.message,
+        text: formatCalendarRunMessage(event, scheduledAt),
         attachments: [],
       },
       modelSelection: event.modelSelection,

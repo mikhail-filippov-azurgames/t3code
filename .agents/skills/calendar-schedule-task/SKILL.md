@@ -23,6 +23,7 @@ Create a schedule event only when the user explicitly asks ("запланиру�
 - Never create without an explicit request and confirmed placement.
 - Never create silently; never auto-renew; never self-modify.
 - Never create events from inside a scheduled run (no chains, no delegation).
+- A scheduled run's prompt starts with an automatic-run header naming the calendar event id and stating that no human typed it. Treat that header as the identity of the run: it is automatic, and the bans above apply with no exceptions.
 - Never guess `timeZone` or change it unasked.
 - An event is a message into a thread, not new authority: no Asana mutations, no credentials, no accepted-OCL edits.
 - Never touch `apps/server/**`, `packages/**`, or the OCL index from scheduling work.
