@@ -13,7 +13,7 @@ import {
   TurnId,
 } from "./baseSchemas.ts";
 import { ProviderOptionDescriptor, ProviderOptionSelection } from "./model.ts";
-import { ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
+import { ModelSelection, ProviderInteractionMode, RuntimeMode } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 3 as const;
@@ -26,6 +26,10 @@ export const ORCHESTRATOR_MCP_TOOL_NAMES = {
   taskWait: "task_wait",
   taskCancel: "task_cancel",
   switchProvider: "switch_provider",
+  boardCreateCard: "board_create_card",
+  boardUpdateCard: "board_update_card",
+  boardDeleteCard: "board_delete_card",
+  boardListCards: "board_list_cards",
 } as const;
 
 const BoundedIdempotencyKey = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
@@ -301,6 +305,116 @@ export const OrchestratorMcpTaskLineage = Schema.Struct({
 });
 export type OrchestratorMcpTaskLineage = typeof OrchestratorMcpTaskLineage.Type;
 
+/**
+ * Board tools let a marked orchestrator thread manage its own kanban cards.
+ * The card/event shapes mirror `board.ts` because that module already imports
+ * `OrchestratorMcpTaskRole` from here; importing it back would create a value
+ * cycle at module init. Keep the two in sync by hand when the board model moves.
+ */
+export const OrchestratorMcpBoardCardStatus = Schema.Literals([
+  "todo",
+  "orchestrator",
+  "in_progress",
+  "review",
+  "done",
+]);
+export type OrchestratorMcpBoardCardStatus = typeof OrchestratorMcpBoardCardStatus.Type;
+
+export const OrchestratorMcpBoardCreatedBy = Schema.Literals(["human", "orchestrator"]);
+export type OrchestratorMcpBoardCreatedBy = typeof OrchestratorMcpBoardCreatedBy.Type;
+
+export const OrchestratorMcpBoardCardOutcome = Schema.Literals([
+  "succeeded",
+  "failed",
+  "cancelled",
+]);
+export type OrchestratorMcpBoardCardOutcome = typeof OrchestratorMcpBoardCardOutcome.Type;
+
+export const OrchestratorMcpBoardCard = Schema.Struct({
+  cardId: BoundedIdempotencyKey,
+  orchestratorThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  body: Schema.String,
+  status: OrchestratorMcpBoardCardStatus,
+  createdBy: OrchestratorMcpBoardCreatedBy,
+  assignee: Schema.NullOr(ModelSelection),
+  executorRole: OrchestratorMcpTaskRole,
+  executorThreadId: Schema.NullOr(ThreadId),
+  outcome: Schema.NullOr(OrchestratorMcpBoardCardOutcome),
+  lastError: Schema.NullOr(Schema.String),
+  failureStreak: NonNegativeInt,
+  order: NonNegativeInt,
+  archived: Schema.Boolean,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type OrchestratorMcpBoardCard = typeof OrchestratorMcpBoardCard.Type;
+
+export const OrchestratorMcpBoardCardEvent = Schema.Struct({
+  entryId: BoundedIdempotencyKey,
+  cardId: BoundedIdempotencyKey,
+  at: IsoDateTime,
+  status: OrchestratorMcpBoardCardStatus,
+  executorRole: OrchestratorMcpTaskRole,
+  model: Schema.NullOr(TrimmedNonEmptyString),
+  effort: Schema.NullOr(TrimmedNonEmptyString),
+  body: Schema.optional(TrimmedNonEmptyString),
+  source: Schema.Literal("system"),
+});
+export type OrchestratorMcpBoardCardEvent = typeof OrchestratorMcpBoardCardEvent.Type;
+
+export const OrchestratorMcpBoardCreateCardInput = Schema.Struct({
+  title: BoundedTitle,
+  body: Schema.String,
+  executorRole: OrchestratorMcpTaskRole,
+  assignee: Schema.optional(Schema.NullOr(ModelSelection)),
+  status: Schema.optional(Schema.Literals(["todo", "orchestrator"])),
+});
+export type OrchestratorMcpBoardCreateCardInput = typeof OrchestratorMcpBoardCreateCardInput.Type;
+
+export const OrchestratorMcpBoardCreateCardResult = OrchestratorMcpBoardCard;
+export type OrchestratorMcpBoardCreateCardResult = typeof OrchestratorMcpBoardCreateCardResult.Type;
+
+export const OrchestratorMcpBoardUpdateCardInput = Schema.Struct({
+  cardId: BoundedIdempotencyKey,
+  title: Schema.optional(BoundedTitle),
+  body: Schema.optional(Schema.String),
+  status: Schema.optional(OrchestratorMcpBoardCardStatus),
+  executorRole: Schema.optional(OrchestratorMcpTaskRole),
+  assignee: Schema.optional(Schema.NullOr(ModelSelection)),
+  executorThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  outcome: Schema.optional(Schema.NullOr(OrchestratorMcpBoardCardOutcome)),
+  lastError: Schema.optional(Schema.NullOr(Schema.String)),
+  failureStreak: Schema.optional(NonNegativeInt),
+  order: Schema.optional(NonNegativeInt),
+  archived: Schema.optional(Schema.Boolean),
+});
+export type OrchestratorMcpBoardUpdateCardInput = typeof OrchestratorMcpBoardUpdateCardInput.Type;
+
+export const OrchestratorMcpBoardUpdateCardResult = OrchestratorMcpBoardCard;
+export type OrchestratorMcpBoardUpdateCardResult = typeof OrchestratorMcpBoardUpdateCardResult.Type;
+
+export const OrchestratorMcpBoardDeleteCardInput = Schema.Struct({ cardId: BoundedIdempotencyKey });
+export type OrchestratorMcpBoardDeleteCardInput = typeof OrchestratorMcpBoardDeleteCardInput.Type;
+
+export const OrchestratorMcpBoardDeleteCardResult = Schema.Struct({});
+export type OrchestratorMcpBoardDeleteCardResult = typeof OrchestratorMcpBoardDeleteCardResult.Type;
+
+// Same empty-record trick as capabilities: MCP requires a root object schema.
+export const OrchestratorMcpBoardListCardsInput = Schema.Record(Schema.String, Schema.Never);
+export type OrchestratorMcpBoardListCardsInput = typeof OrchestratorMcpBoardListCardsInput.Type;
+
+export const OrchestratorMcpBoardCardEntry = Schema.Struct({
+  card: OrchestratorMcpBoardCard,
+  events: Schema.Array(OrchestratorMcpBoardCardEvent),
+});
+export type OrchestratorMcpBoardCardEntry = typeof OrchestratorMcpBoardCardEntry.Type;
+
+export const OrchestratorMcpBoardListCardsResult = Schema.Struct({
+  cards: Schema.Array(OrchestratorMcpBoardCardEntry),
+});
+export type OrchestratorMcpBoardListCardsResult = typeof OrchestratorMcpBoardListCardsResult.Type;
+
 export const OrchestratorMcpFailureCode = Schema.Literals([
   "capability_denied",
   "parent_not_active",
@@ -314,6 +428,7 @@ export const OrchestratorMcpFailureCode = Schema.Literals([
   "idempotency_conflict",
   "task_not_found",
   "task_not_cancellable",
+  "executor_required",
   "provider_handoff_unsupported",
   "thread_has_no_history",
   "orchestration_error",

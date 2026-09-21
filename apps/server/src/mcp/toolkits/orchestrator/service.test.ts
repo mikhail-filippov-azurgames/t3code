@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
+  BoardCard,
+  BoardCardEvent,
+  BoardCardEventId,
+  BoardCardId,
+  BoardOrchestrator,
   CheckpointRef,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
@@ -322,6 +327,7 @@ interface HarnessOptions {
   readonly interruptOutcomes?: ReadonlyArray<"failure" | "success">;
   readonly failAfterOnce?: "thread.create" | "thread.activity.append";
   readonly patchParentShell?: (shell: OrchestrationThreadShell) => OrchestrationThreadShell;
+  readonly board?: NonNullable<OrchestratorMcpDependencies["board"]>;
 }
 
 function makeHarness(options: HarnessOptions = {}): {
@@ -547,6 +553,7 @@ function makeHarness(options: HarnessOptions = {}): {
         normalizeDelegationPermissionEnvelope({ ...input, providerConfigurationFiles: [] }),
       ),
     now: Effect.succeed(now),
+    ...(options.board === undefined ? {} : { board: options.board }),
   };
   return {
     service: __testing.makeService(dependencies),
@@ -595,6 +602,94 @@ function bindDelegatedTurn(
     },
   });
   return turnId;
+}
+
+type FakeBoardRepository = NonNullable<OrchestratorMcpDependencies["board"]>;
+
+function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
+  readonly repo: FakeBoardRepository;
+  readonly orchestrators: Map<ThreadId, BoardOrchestrator>;
+  readonly cards: Map<BoardCardId, BoardCard>;
+  readonly events: Map<BoardCardId, Array<BoardCardEvent>>;
+} {
+  const orchestrators = new Map<ThreadId, BoardOrchestrator>(
+    initialOrchestrators.map((threadId) => [
+      threadId,
+      { threadId, createdBy: "human" as const, createdAt: now },
+    ]),
+  );
+  const cards = new Map<BoardCardId, BoardCard>();
+  const events = new Map<BoardCardId, Array<BoardCardEvent>>();
+  const repo: FakeBoardRepository = {
+    listOrchestrators: () => Effect.succeed([...orchestrators.values()]),
+    addOrchestrator: (input) =>
+      Effect.sync(() => {
+        const orchestrator: BoardOrchestrator = {
+          threadId: input.threadId,
+          createdBy: input.createdBy,
+          createdAt: input.createdAt,
+        };
+        orchestrators.set(orchestrator.threadId, orchestrator);
+        return orchestrator;
+      }),
+    removeOrchestrator: (threadId) =>
+      Effect.sync(() => {
+        orchestrators.delete(threadId);
+      }),
+    listCards: () => Effect.succeed([...cards.values()]),
+    getCard: (cardId) => {
+      const card = cards.get(cardId);
+      return Effect.succeed(card === undefined ? Option.none() : Option.some(card));
+    },
+    createCard: (card) =>
+      Effect.sync(() => {
+        cards.set(card.cardId, card);
+        events.set(card.cardId, []);
+      }),
+    updateCard: (card) =>
+      Effect.sync(() => {
+        cards.set(card.cardId, card);
+      }),
+    deleteCard: (cardId) =>
+      Effect.sync(() => {
+        cards.delete(cardId);
+        events.delete(cardId);
+      }),
+    listEvents: () => Effect.succeed([...events.values()].flat()),
+    appendEvent: (event) =>
+      Effect.sync(() => {
+        events.set(event.cardId, [...(events.get(event.cardId) ?? []), event]);
+      }),
+  };
+  return { repo, orchestrators, cards, events };
+}
+
+function seedBoardCard(
+  board: ReturnType<typeof makeFakeBoard>,
+  overrides: Partial<BoardCard> = {},
+): BoardCard {
+  const card: BoardCard = {
+    cardId: BoardCardId.make(`card-${board.cards.size + 1}`),
+    orchestratorThreadId: parentThreadId,
+    title: "Seeded card",
+    body: "",
+    status: "orchestrator",
+    createdBy: "orchestrator",
+    assignee: null,
+    executorRole: "general",
+    executorThreadId: null,
+    outcome: null,
+    lastError: null,
+    failureStreak: 0,
+    order: 0,
+    archived: false,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+  board.cards.set(card.cardId, card);
+  board.events.set(card.cardId, []);
+  return card;
 }
 
 describe("OrchestratorMcpService", () => {
@@ -1382,6 +1477,195 @@ describe("OrchestratorMcpService", () => {
         .pipe(Effect.flip);
       expect(error.code).toBe("task_not_found");
       expect(harness.dispatched).toHaveLength(dispatchCount);
+    }),
+  );
+
+  it.effect("creates a card for the calling orchestrator with provenance and history", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+
+      const card = yield* harness.service.boardCreateCard(makeScope(), {
+        title: "Implement the board toolkits",
+        body: "Add the four board tools.",
+        executorRole: "implementation",
+      });
+
+      expect(card).toMatchObject({
+        orchestratorThreadId: parentThreadId,
+        status: "orchestrator",
+        createdBy: "orchestrator",
+        executorRole: "implementation",
+        assignee: null,
+        failureStreak: 0,
+        archived: false,
+      });
+      expect(board.cards.size).toBe(1);
+      const events = board.events.get(BoardCardId.make(card.cardId)) ?? [];
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        cardId: card.cardId,
+        status: "orchestrator",
+        source: "system",
+      });
+    }),
+  );
+
+  it.effect("rejects creation from a thread that is not a registered orchestrator", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard();
+      const harness = makeHarness({ board: board.repo });
+
+      const error = yield* harness.service
+        .boardCreateCard(makeScope(), {
+          title: "Not allowed",
+          body: "",
+          executorRole: "general",
+        })
+        .pipe(Effect.flip);
+
+      expect(error.code).toBe("capability_denied");
+      expect(board.cards.size).toBe(0);
+    }),
+  );
+
+  it.effect("appends history only when status or executor changes", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const scope = makeScope();
+      const card = seedBoardCard(board);
+
+      const renamed = yield* harness.service.boardUpdateCard(scope, {
+        cardId: card.cardId,
+        body: "Updated context only.",
+      });
+      expect(renamed.body).toBe("Updated context only.");
+      expect((board.events.get(card.cardId) ?? []).length).toBe(0);
+
+      const reviewed = yield* harness.service.boardUpdateCard(scope, {
+        cardId: card.cardId,
+        status: "review",
+      });
+      expect(reviewed.status).toBe("review");
+      const afterReview = board.events.get(card.cardId) ?? [];
+      expect(afterReview).toHaveLength(1);
+      expect(afterReview[0]).toMatchObject({ status: "review", body: "status -> review" });
+
+      const repeated = yield* harness.service.boardUpdateCard(scope, {
+        cardId: card.cardId,
+        status: "review",
+      });
+      expect(repeated.status).toBe("review");
+      expect((board.events.get(card.cardId) ?? []).length).toBe(1);
+
+      const reassigned = yield* harness.service.boardUpdateCard(scope, {
+        cardId: card.cardId,
+        executorRole: "review",
+      });
+      expect(reassigned.executorRole).toBe("review");
+      const afterExecutor = board.events.get(card.cardId) ?? [];
+      expect(afterExecutor).toHaveLength(2);
+      expect(afterExecutor[1]).toMatchObject({ executorRole: "review" });
+    }),
+  );
+
+  it.effect("requires a linked executor before a card can be in progress", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const scope = makeScope();
+      const card = seedBoardCard(board);
+
+      const missing = yield* harness.service
+        .boardUpdateCard(scope, { cardId: card.cardId, status: "in_progress" })
+        .pipe(Effect.flip);
+      expect(missing.code).toBe("executor_required");
+      expect(board.cards.get(card.cardId)).toMatchObject({ status: "orchestrator" });
+
+      const linked = yield* harness.service.boardUpdateCard(scope, {
+        cardId: card.cardId,
+        status: "in_progress",
+        assignee: {
+          instanceId: ProviderInstanceId.make("opencode"),
+          model: "opencode-go/deepseek-v4.1-flash",
+        },
+        executorThreadId: ThreadId.make("delegated-task:child-1"),
+      });
+      expect(linked.status).toBe("in_progress");
+      expect(linked.executorThreadId).toBe("delegated-task:child-1");
+    }),
+  );
+
+  it.effect("hides another orchestrator's card from update and delete", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId, ThreadId.make("other-orchestrator")]);
+      const harness = makeHarness({ board: board.repo });
+      const foreign = seedBoardCard(board, {
+        orchestratorThreadId: ThreadId.make("other-orchestrator"),
+      });
+
+      const updateError = yield* harness.service
+        .boardUpdateCard(makeScope(), { cardId: foreign.cardId, status: "done" })
+        .pipe(Effect.flip);
+      expect(updateError.code).toBe("task_not_found");
+
+      const deleteError = yield* harness.service
+        .boardDeleteCard(makeScope(), { cardId: foreign.cardId })
+        .pipe(Effect.flip);
+      expect(deleteError.code).toBe("task_not_found");
+      expect(board.cards.get(foreign.cardId)).toMatchObject({ status: "orchestrator" });
+    }),
+  );
+
+  it.effect("deletes its own card and its history", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const scope = makeScope();
+      const card = seedBoardCard(board);
+
+      const result = yield* harness.service.boardDeleteCard(scope, { cardId: card.cardId });
+      expect(result).toEqual({});
+      expect(board.cards.has(card.cardId)).toBe(false);
+      expect(board.events.has(card.cardId)).toBe(false);
+
+      const second = yield* harness.service
+        .boardDeleteCard(scope, { cardId: card.cardId })
+        .pipe(Effect.flip);
+      expect(second.code).toBe("task_not_found");
+    }),
+  );
+
+  it.effect("lists only the calling orchestrator's cards with their events", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId, ThreadId.make("other-orchestrator")]);
+      const harness = makeHarness({ board: board.repo });
+      const own = seedBoardCard(board, { order: 2 });
+      const ownFirst = seedBoardCard(board, { order: 1, title: "First" });
+      seedBoardCard(board, {
+        orchestratorThreadId: ThreadId.make("other-orchestrator"),
+        title: "Foreign",
+      });
+      board.events.set(own.cardId, [
+        {
+          entryId: BoardCardEventId.make("entry-1"),
+          cardId: own.cardId,
+          at: now,
+          status: "orchestrator",
+          executorRole: "general",
+          model: null,
+          effort: null,
+          source: "system",
+        },
+      ]);
+
+      const listed = yield* harness.service.boardListCards(makeScope());
+      expect(listed.cards.map((entry) => entry.card.cardId)).toEqual([ownFirst.cardId, own.cardId]);
+      expect(listed.cards[1]?.events).toHaveLength(1);
+      expect(
+        listed.cards.every((entry) => entry.card.orchestratorThreadId === parentThreadId),
+      ).toBe(true);
     }),
   );
 });

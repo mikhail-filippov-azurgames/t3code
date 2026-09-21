@@ -1,5 +1,13 @@
 import {
   ORCHESTRATOR_MCP_TOOL_NAMES,
+  OrchestratorMcpBoardCreateCardInput,
+  OrchestratorMcpBoardCreateCardResult,
+  OrchestratorMcpBoardDeleteCardInput,
+  OrchestratorMcpBoardDeleteCardResult,
+  OrchestratorMcpBoardListCardsInput,
+  OrchestratorMcpBoardListCardsResult,
+  OrchestratorMcpBoardUpdateCardInput,
+  OrchestratorMcpBoardUpdateCardResult,
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpDelegateTaskInput,
@@ -106,6 +114,62 @@ export const SwitchProviderTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.switchPr
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const BoardCreateCardTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardCreateCard, {
+  description:
+    "Create a kanban card owned by this orchestrator thread. createdBy is always orchestrator. status is todo or orchestrator and defaults to orchestrator (plan-first). The card is created and a system progress-history entry is appended without an LLM call. There is no idempotency key: a repeated call creates another card.",
+  parameters: OrchestratorMcpBoardCreateCardInput,
+  success: OrchestratorMcpBoardCreateCardResult,
+  failure: OrchestratorMcpFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "Create board card")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const BoardUpdateCardTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardUpdateCard, {
+  description:
+    "Update one card owned by this orchestrator thread. Only the calling orchestrator's cards are reachable; another orchestrator's card is reported as not found. A change to status or executor appends a system progress-history entry. Omitted fields are left unchanged. Moving a card to in_progress requires both assignee and executorThreadId (the delegated child thread); otherwise the call fails with executor_required.",
+  parameters: OrchestratorMcpBoardUpdateCardInput,
+  success: OrchestratorMcpBoardUpdateCardResult,
+  failure: OrchestratorMcpFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "Update board card")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const BoardDeleteCardTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardDeleteCard, {
+  description:
+    "Delete one card owned by this orchestrator thread. Another orchestrator's card is reported as not found. The card's progress history is deleted with it.",
+  parameters: OrchestratorMcpBoardDeleteCardInput,
+  success: OrchestratorMcpBoardDeleteCardResult,
+  failure: OrchestratorMcpFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "Delete board card")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+export const BoardListCardsTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardListCards, {
+  description:
+    "List every card owned by this orchestrator thread with its append-only progress history, ordered by card order then id. Cards are never returned across orchestrator ownership.",
+  parameters: OrchestratorMcpBoardListCardsInput,
+  success: OrchestratorMcpBoardListCardsResult,
+  failure: OrchestratorMcpFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "List board cards")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const OrchestratorMcpToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
@@ -113,4 +177,8 @@ export const OrchestratorMcpToolkit = Toolkit.make(
   TaskWaitTool,
   TaskCancelTool,
   SwitchProviderTool,
+  BoardCreateCardTool,
+  BoardUpdateCardTool,
+  BoardDeleteCardTool,
+  BoardListCardsTool,
 );

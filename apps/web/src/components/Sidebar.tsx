@@ -1,4 +1,7 @@
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
+import { readSkipOrchestratorUnmarkConfirmation } from "./board/boardPreferences";
+import { boardEnvironment, useBoardOrchestratorThreadKeys } from "./board/useBoardBackend";
+import { OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "./board/boardRoleIcons";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
@@ -1006,6 +1009,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   // Title of the delegating parent thread for the marker tooltip; null when
   // the thread is not a delegated child or the parent is not visible.
   delegationParentTitle: string | null;
+  // True when this chat is marked as a board orchestrator (design §6).
+  isOrchestrator: boolean;
   // Direct delegated children that finished after the user last opened them.
   // Derived from the shell forest, not a server event; 0 hides the marker.
   delegatedChildrenReturned: number;
@@ -1638,6 +1643,21 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         <TooltipPopup>{delegationLabel}</TooltipPopup>
       </Tooltip>
     ) : null;
+  const orchestratorMarker = props.isOrchestrator ? (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            aria-label="Orchestrator"
+            className={`inline-flex shrink-0 items-center ${ORCHESTRATOR_ICON_CLASS}`}
+          />
+        }
+      >
+        <OrchestratorIcon aria-hidden className="size-3 shrink-0" />
+      </TooltipTrigger>
+      <TooltipPopup>Orchestrator</TooltipPopup>
+    </Tooltip>
+  ) : null;
   // Parent wake-up marker: direct delegated children finished and not opened
   // yet. The count + corner glyph keep it distinct from the parent's own Done
   // pill; a running child never contributes. No animation, no live region.
@@ -1786,6 +1806,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {title}
             {pinIndicator}
             {delegationMarker}
+            {orchestratorMarker}
             {delegatedChildrenReturnedMarker}
             {delegatedChildrenWorkingMarker}
             {forestCollapsedCount}
@@ -1950,6 +1971,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               )}
               {pinIndicator}
               {delegationMarker}
+              {orchestratorMarker}
               {forestCollapsedCount}
               {delegatedChildrenReturnedMarker}
               {delegatedChildrenWorkingMarker}
@@ -2398,6 +2420,13 @@ export default function Sidebar() {
   );
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const orchestratorThreadKeys = useBoardOrchestratorThreadKeys();
+  const addOrchestrator = useAtomCommand(boardEnvironment.orchestratorAdd, {
+    reportFailure: false,
+  });
+  const removeOrchestrator = useAtomCommand(boardEnvironment.orchestratorRemove, {
+    reportFailure: false,
+  });
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -4566,30 +4595,60 @@ export default function Sidebar() {
         const isPinned = thread.pinnedAt != null;
         // Presets resolve at menu-open time (same as the popover).
         const snoozePresets = resolveSnoozePresets(new Date(), timestampFormat);
+        // The board lives on the primary environment; only its chats can be
+        // orchestrators. Child threads never can (design §3.1).
+        const boardEligible = thread.environmentId === primaryEnvironmentId;
+        const isOrchestrator = orchestratorThreadKeys.has(thread.id as string);
+        // Non-destructive board actions lead the menu; the destructive unmark
+        // stays with Archive/Delete at the bottom.
+        const boardTopItems = boardEligible
+          ? [
+              ...(thread.delegationParent == null && !isOrchestrator
+                ? [{ id: "board-make-orchestrator" as const, label: "Make orchestrator" }]
+                : []),
+              ...(isOrchestrator
+                ? [{ id: "board-create-task" as const, label: "Create task" }]
+                : []),
+            ]
+          : [];
+        const boardDestructiveItems =
+          boardEligible && isOrchestrator
+            ? [
+                {
+                  id: "board-unmark-orchestrator" as const,
+                  label: "Unmark orchestrator",
+                  destructive: true,
+                },
+              ]
+            : [];
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
-            buildThreadActionMenuItems({
-              branch: thread.branch ?? null,
-              isPinned,
-              canSwitchProvider: canSwitchThreadProvider(thread),
-              isSettled,
-              isSnoozed,
-              canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
-              isRegeneratingTitle,
-              isRunning:
-                thread.session?.status === "running" && thread.session.activeTurnId != null,
-              staleDelegatedChildCount: selectStaleDelegatedChildren({
-                parent: threadRef,
-                threads: readThreadShells(),
-              }).stale.length,
-              supports: {
-                settlement: supportsSettlement,
-                snooze: supportsSnooze,
-                pinning: supportsPinning,
-                titleRegeneration: supportsTitleRegeneration,
-              },
-              snoozePresets,
-            }),
+            [
+              ...boardTopItems,
+              ...buildThreadActionMenuItems({
+                branch: thread.branch ?? null,
+                isPinned,
+                canSwitchProvider: canSwitchThreadProvider(thread),
+                isSettled,
+                isSnoozed,
+                canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
+                isRegeneratingTitle,
+                isRunning:
+                  thread.session?.status === "running" && thread.session.activeTurnId != null,
+                staleDelegatedChildCount: selectStaleDelegatedChildren({
+                  parent: threadRef,
+                  threads: readThreadShells(),
+                }).stale.length,
+                supports: {
+                  settlement: supportsSettlement,
+                  snooze: supportsSnooze,
+                  pinning: supportsPinning,
+                  titleRegeneration: supportsTitleRegeneration,
+                },
+                snoozePresets,
+              }),
+              ...boardDestructiveItems,
+            ],
             position,
           ),
         );
@@ -4718,6 +4777,57 @@ export default function Sidebar() {
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
+          case "board-make-orchestrator": {
+            if (primaryEnvironmentId === null) return;
+            const result = await addOrchestrator({
+              environmentId: primaryEnvironmentId,
+              input: { threadId: threadRef.threadId },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Could not mark the orchestrator",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
+          case "board-create-task":
+            void router.navigate({
+              to: "/board",
+              search: { orchestrator: threadRef.threadId, create: true },
+            });
+            return;
+          case "board-unmark-orchestrator": {
+            if (primaryEnvironmentId === null) return;
+            if (!readSkipOrchestratorUnmarkConfirmation()) {
+              const confirmed = await settlePromise(() =>
+                api.dialogs.confirm(
+                  "Unmark this orchestrator? Its cards and delegated chats are deleted.",
+                  { variant: "destructive" },
+                ),
+              );
+              if (confirmed._tag === "Failure" || !confirmed.value) return;
+            }
+            const result = await removeOrchestrator({
+              environmentId: primaryEnvironmentId,
+              input: { threadId: threadRef.threadId },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Could not unmark the orchestrator",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
           case "archive-old-children":
           case "delete-old-children": {
             const cleanupAction = clicked.value === "delete-old-children" ? "delete" : "archive";
@@ -4901,6 +5011,7 @@ export default function Sidebar() {
       })();
     },
     [
+      addOrchestrator,
       archiveThread,
       archiveThreadChildren,
       attemptPin,
@@ -4920,7 +5031,11 @@ export default function Sidebar() {
       handleMultiSelectContextMenu,
       markThreadUnread,
       openProjectSettings,
+      orchestratorThreadKeys,
+      primaryEnvironmentId,
       projectByKey,
+      removeOrchestrator,
+      router,
       serverConfigs,
       startThreadRename,
       updateThreadMetadata,
@@ -5349,6 +5464,7 @@ export default function Sidebar() {
                             }
                             isPinned={thread.pinnedAt != null}
                             delegationParentTitle={delegationParentTitle}
+                            isOrchestrator={orchestratorThreadKeys.has(thread.id as string)}
                             delegatedChildrenReturned={
                               unseenDelegatedChildCounts.get(threadKey) ?? 0
                             }

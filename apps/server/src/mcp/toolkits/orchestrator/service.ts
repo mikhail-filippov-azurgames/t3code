@@ -1,6 +1,9 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  BoardCard,
+  BoardCardId,
+  BoardCardEvent,
   CommandId,
   EventId,
   isProviderDriverKind,
@@ -8,6 +11,13 @@ import {
   ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
   ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
   ORCHESTRATOR_MCP_PROTOCOL_VERSION,
+  OrchestratorMcpBoardCreateCardInput,
+  OrchestratorMcpBoardCreateCardResult,
+  OrchestratorMcpBoardDeleteCardInput,
+  OrchestratorMcpBoardDeleteCardResult,
+  OrchestratorMcpBoardListCardsResult,
+  OrchestratorMcpBoardUpdateCardInput,
+  OrchestratorMcpBoardUpdateCardResult,
   OrchestratorMcpFailure,
   ProjectId,
   ThreadId,
@@ -41,6 +51,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -57,6 +68,11 @@ import type { DelegationPermissionEnvelopeInput } from "../../../provider/Delega
 import { deriveProviderInstanceConfigMap } from "../../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import type { ProjectionTurn } from "../../../persistence/Services/ProjectionTurns.ts";
 import * as ProjectionTurns from "../../../persistence/Services/ProjectionTurns.ts";
+import {
+  BoardRepository,
+  buildBoardCardEvent,
+  type BoardRepositoryShape,
+} from "../../../persistence/Services/Board.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettingsService from "../../../serverSettings.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
@@ -192,6 +208,8 @@ export interface OrchestratorMcpDependencies {
     input: DelegationPermissionEnvelopeInput,
   ) => Effect.Effect<OrchestratorMcpPermissionEnvelopeSummary>;
   readonly now: Effect.Effect<string>;
+  /** Optional so non-MCP constructors keep working; board tools fail closed without it. */
+  readonly board?: BoardRepositoryShape;
 }
 
 export interface OrchestratorMcpServiceShape {
@@ -219,6 +237,21 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpSwitchProviderInput,
   ) => Effect.Effect<OrchestratorMcpSwitchProviderResult, OrchestratorMcpFailure>;
+  readonly boardCreateCard: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpBoardCreateCardInput,
+  ) => Effect.Effect<OrchestratorMcpBoardCreateCardResult, OrchestratorMcpFailure>;
+  readonly boardUpdateCard: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpBoardUpdateCardInput,
+  ) => Effect.Effect<OrchestratorMcpBoardUpdateCardResult, OrchestratorMcpFailure>;
+  readonly boardDeleteCard: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpBoardDeleteCardInput,
+  ) => Effect.Effect<OrchestratorMcpBoardDeleteCardResult, OrchestratorMcpFailure>;
+  readonly boardListCards: (
+    scope: McpInvocationScope,
+  ) => Effect.Effect<OrchestratorMcpBoardListCardsResult, OrchestratorMcpFailure>;
 }
 
 export class OrchestratorMcpService extends Context.Service<
@@ -1312,6 +1345,55 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       .pipe(Effect.mapError(orchestrationFailure("record delegated-task cancellation")));
   });
 
+  const requireBoardRepository = (): Effect.Effect<BoardRepositoryShape, OrchestratorMcpFailure> =>
+    dependencies.board === undefined
+      ? Effect.fail(
+          failure(
+            "orchestration_error",
+            "The board repository is unavailable in this server composition.",
+          ),
+        )
+      : Effect.succeed(dependencies.board);
+
+  // Creating a card is the one board write a non-orchestrator could otherwise
+  // reach, so the caller must be a marked orchestrator before any card exists.
+  const requireRegisteredOrchestrator = (
+    repo: BoardRepositoryShape,
+    scope: McpInvocationScope,
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
+    repo.listOrchestrators().pipe(
+      Effect.mapError(orchestrationFailure("list board orchestrators")),
+      Effect.flatMap((orchestrators) =>
+        orchestrators.some((orchestrator) => orchestrator.threadId === scope.threadId)
+          ? Effect.void
+          : Effect.fail(
+              failure(
+                "capability_denied",
+                "This thread is not a registered board orchestrator, so it has no board.",
+              ),
+            ),
+      ),
+    );
+
+  // Ownership failure is reported as task_not_found so a card's existence never
+  // leaks across orchestrator threads.
+  const requireOwnedCard = (
+    repo: BoardRepositoryShape,
+    scope: McpInvocationScope,
+    cardId: BoardCardId,
+  ): Effect.Effect<BoardCard, OrchestratorMcpFailure> =>
+    repo.getCard(cardId).pipe(
+      Effect.mapError(orchestrationFailure(`read board card ${cardId}`)),
+      Effect.flatMap((option) => {
+        if (Option.isNone(option) || option.value.orchestratorThreadId !== scope.threadId) {
+          return Effect.fail(failure("task_not_found", "The board card was not found."));
+        }
+        return Effect.succeed(option.value);
+      }),
+    );
+
+  const nowIso = () => dependencies.now;
+
   return {
     capabilities: (scope) =>
       Effect.gen(function* () {
@@ -1852,6 +1934,127 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           task,
         };
       }),
+    boardCreateCard: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const repo = yield* requireBoardRepository();
+        yield* requireRegisteredOrchestrator(repo, scope);
+        const at = yield* nowIso();
+        const card: BoardCard = {
+          cardId: BoardCardId.make(NodeCrypto.randomUUID()),
+          orchestratorThreadId: scope.threadId,
+          title: input.title,
+          body: input.body,
+          status: input.status ?? "orchestrator",
+          createdBy: "orchestrator",
+          assignee: input.assignee ?? null,
+          executorRole: input.executorRole,
+          executorThreadId: null,
+          outcome: null,
+          lastError: null,
+          failureStreak: 0,
+          order: 0,
+          archived: false,
+          createdAt: at,
+          updatedAt: at,
+        };
+        yield* repo
+          .createCard(card)
+          .pipe(Effect.mapError(orchestrationFailure("create board card")));
+        yield* repo
+          .appendEvent(buildBoardCardEvent(card, { at }))
+          .pipe(Effect.mapError(orchestrationFailure("append board card event")));
+        return card;
+      }),
+    boardUpdateCard: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const repo = yield* requireBoardRepository();
+        const card = yield* requireOwnedCard(repo, scope, BoardCardId.make(input.cardId));
+        const at = yield* nowIso();
+        const statusChanged = input.status !== undefined && input.status !== card.status;
+        const executorChanged =
+          (input.executorRole !== undefined && input.executorRole !== card.executorRole) ||
+          (input.executorThreadId !== undefined &&
+            input.executorThreadId !== card.executorThreadId) ||
+          (input.assignee !== undefined && !Equal.equals(input.assignee, card.assignee));
+        const next: BoardCard = {
+          ...card,
+          ...(input.title === undefined ? {} : { title: input.title }),
+          ...(input.body === undefined ? {} : { body: input.body }),
+          ...(input.status === undefined ? {} : { status: input.status }),
+          ...(input.executorRole === undefined ? {} : { executorRole: input.executorRole }),
+          ...(input.assignee === undefined ? {} : { assignee: input.assignee }),
+          ...(input.executorThreadId === undefined
+            ? {}
+            : { executorThreadId: input.executorThreadId }),
+          ...(input.outcome === undefined ? {} : { outcome: input.outcome }),
+          ...(input.lastError === undefined ? {} : { lastError: input.lastError }),
+          ...(input.failureStreak === undefined ? {} : { failureStreak: input.failureStreak }),
+          ...(input.order === undefined ? {} : { order: input.order }),
+          ...(input.archived === undefined ? {} : { archived: input.archived }),
+          updatedAt: at,
+        };
+        // The reactor matches cards by executor thread; without a linked
+        // executor and model a card would sit in progress forever.
+        if (
+          next.status === "in_progress" &&
+          (next.executorThreadId === null || next.assignee === null)
+        ) {
+          return yield* failure(
+            "executor_required",
+            "Link assignee and executorThreadId before moving a card to in_progress.",
+          );
+        }
+        yield* repo
+          .updateCard(next)
+          .pipe(Effect.mapError(orchestrationFailure("update board card")));
+        if (statusChanged || executorChanged) {
+          const body = statusChanged
+            ? `status -> ${next.status}`
+            : `executor -> ${next.executorRole}`;
+          yield* repo
+            .appendEvent(buildBoardCardEvent(next, { at, body }))
+            .pipe(Effect.mapError(orchestrationFailure("append board card event")));
+        }
+        return next;
+      }),
+    boardDeleteCard: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const repo = yield* requireBoardRepository();
+        const cardId = BoardCardId.make(input.cardId);
+        yield* requireOwnedCard(repo, scope, cardId);
+        yield* repo
+          .deleteCard(cardId)
+          .pipe(Effect.mapError(orchestrationFailure("delete board card")));
+        return {};
+      }),
+    boardListCards: (scope) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        const repo = yield* requireBoardRepository();
+        const [cards, events] = yield* Effect.all([
+          repo.listCards().pipe(Effect.mapError(orchestrationFailure("list board cards"))),
+          repo.listEvents().pipe(Effect.mapError(orchestrationFailure("list board card events"))),
+        ]);
+        const eventsByCard = new Map<BoardCardId, Array<BoardCardEvent>>();
+        for (const event of events) {
+          const bucket = eventsByCard.get(event.cardId);
+          if (bucket === undefined) eventsByCard.set(event.cardId, [event]);
+          else bucket.push(event);
+        }
+        const owned = cards
+          .filter((card) => card.orchestratorThreadId === scope.threadId)
+          .toSorted((left, right) =>
+            left.order === right.order
+              ? left.cardId.localeCompare(right.cardId)
+              : left.order - right.order,
+          );
+        return {
+          cards: owned.map((card) => ({ card, events: eventsByCard.get(card.cardId) ?? [] })),
+        };
+      }),
   };
 }
 
@@ -1863,6 +2066,11 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettingsService.ServerSettingsService;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  // serviceOption keeps the toolkit bootable when the board persistence layer
+  // is absent; the board tools then fail closed at call time.
+  const board = yield* Effect.serviceOption(BoardRepository).pipe(
+    Effect.map(Option.getOrUndefined),
+  );
   return OrchestratorMcpService.of(
     makeService({
       dispatch: engine.dispatch,
@@ -1881,6 +2089,7 @@ const make = Effect.gen(function* () {
           Effect.provideService(Path.Path, path),
         ),
       now: DateTime.now.pipe(Effect.map(DateTime.formatIso)),
+      ...(board === undefined ? {} : { board }),
     }),
   );
 });

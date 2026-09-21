@@ -4,6 +4,10 @@ import * as Context from "effect/Context";
 import * as Tool from "effect/unstable/ai/Tool";
 
 import {
+  BoardCreateCardTool,
+  BoardDeleteCardTool,
+  BoardListCardsTool,
+  BoardUpdateCardTool,
   DelegateTaskTool,
   OrchestratorCapabilitiesTool,
   SwitchProviderTool,
@@ -20,9 +24,13 @@ describe("orchestrator MCP tools", () => {
     TaskWaitTool,
     TaskCancelTool,
     SwitchProviderTool,
+    BoardCreateCardTool,
+    BoardUpdateCardTool,
+    BoardDeleteCardTool,
+    BoardListCardsTool,
   ];
 
-  it("publishes exactly the accepted six-tool surface", () => {
+  it("publishes exactly the accepted ten-tool surface", () => {
     expect(tools.map(({ name }) => name)).toEqual(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES));
   });
 
@@ -48,6 +56,27 @@ describe("orchestrator MCP tools", () => {
     expect(Context.get(TaskCancelTool.annotations, Tool.Readonly)).toBe(false);
     expect(Context.get(TaskCancelTool.annotations, Tool.Destructive)).toBe(true);
     expect(Context.get(TaskCancelTool.annotations, Tool.Idempotent)).toBe(true);
+  });
+
+  it("annotates the board tools and states their ownership boundary", () => {
+    expect(Context.get(BoardCreateCardTool.annotations, Tool.Readonly)).toBe(false);
+    expect(Context.get(BoardCreateCardTool.annotations, Tool.Destructive)).toBe(false);
+    expect(Context.get(BoardCreateCardTool.annotations, Tool.Idempotent)).toBe(false);
+    expect(Context.get(BoardUpdateCardTool.annotations, Tool.Idempotent)).toBe(true);
+    expect(Context.get(BoardDeleteCardTool.annotations, Tool.Readonly)).toBe(false);
+    expect(Context.get(BoardDeleteCardTool.annotations, Tool.Destructive)).toBe(true);
+    expect(Context.get(BoardDeleteCardTool.annotations, Tool.Idempotent)).toBe(false);
+    expect(Context.get(BoardListCardsTool.annotations, Tool.Readonly)).toBe(true);
+    for (const tool of [
+      BoardCreateCardTool,
+      BoardUpdateCardTool,
+      BoardDeleteCardTool,
+      BoardListCardsTool,
+    ]) {
+      expect(Tool.getDescription(tool), tool.name).toContain("orchestrator thread");
+    }
+    expect(Tool.getDescription(BoardUpdateCardTool)).toContain("reported as not found");
+    expect(Tool.getDescription(BoardCreateCardTool)).toContain("defaults to orchestrator");
   });
 
   it("describes inherited workspace, exact-turn isolation, and non-cancelling waits", () => {

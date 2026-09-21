@@ -4,6 +4,7 @@ import {
   ChartNoAxesColumnIcon,
   GitPullRequestIcon,
   SettingsIcon,
+  SquareKanbanIcon,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { memo, useCallback } from "react";
@@ -147,9 +148,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             ? "usage"
             : location.pathname === "/calendar"
               ? "calendar"
-              : location.pathname === "/pull-requests"
-                ? "pull-requests"
-                : null,
+              : location.pathname === "/board"
+                ? "board"
+                : location.pathname === "/pull-requests"
+                  ? "pull-requests"
+                  : null,
   });
   const { environments } = useEnvironments();
   // The page reads every connected server, so one of them offering pull requests is enough for
@@ -184,6 +187,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const handleCalendarClick = useCallback(() => {
     closeMobileSidebar();
     void navigate({ to: "/calendar" });
+  }, [closeMobileSidebar, navigate]);
+
+  const handleBoardClick = useCallback(() => {
+    closeMobileSidebar();
+    void navigate({ to: "/board", search: {} });
   }, [closeMobileSidebar, navigate]);
 
   const handleBackClick = useCallback(() => {
@@ -227,6 +235,11 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             icon={<CalendarDaysIcon />}
             label="Calendar"
             onClick={handleCalendarClick}
+          />
+          <SidebarUtilityItem
+            icon={<SquareKanbanIcon />}
+            label="Board"
+            onClick={handleBoardClick}
           />
         </>
       )}

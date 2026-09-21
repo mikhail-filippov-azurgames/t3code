@@ -29,6 +29,22 @@ const make = Effect.gen(function* () {
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.switchProvider(scope, input),
       ),
+    board_create_card: (input) =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.boardCreateCard(scope, input),
+      ),
+    board_update_card: (input) =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.boardUpdateCard(scope, input),
+      ),
+    board_delete_card: (input) =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.boardDeleteCard(scope, input),
+      ),
+    board_list_cards: () =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.boardListCards(scope),
+      ),
   });
 });
 
