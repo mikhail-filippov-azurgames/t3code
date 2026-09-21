@@ -277,11 +277,33 @@ import {
   CalendarError,
   CalendarListInput,
   CalendarListResult,
+  CalendarUpdateInput,
+  CalendarUpdateResult,
 } from "./calendar.ts";
+import {
+  BoardCreateInput,
+  BoardCreateResult,
+  BoardDeleteInput,
+  BoardDeleteResult,
+  BoardError,
+  BoardListInput,
+  BoardListResult,
+  BoardOrchestratorAddInput,
+  BoardOrchestratorAddResult,
+  BoardOrchestratorRemoveInput,
+  BoardOrchestratorRemoveResult,
+  BoardOrchestratorsListInput,
+  BoardOrchestratorsListResult,
+  BoardStartInput,
+  BoardStartResult,
+  BoardUpdateInput,
+  BoardUpdateResult,
+} from "./board.ts";
 
 // Calendar contract types are re-exported here so the package barrel surfaces
 // them without a separate index entry.
 export * from "./calendar.ts";
+export * from "./board.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -428,7 +450,18 @@ export const WS_METHODS = {
   // Calendar methods
   calendarList: "calendar.list",
   calendarCreate: "calendar.create",
+  calendarUpdate: "calendar.update",
   calendarDelete: "calendar.delete",
+
+  // Board methods
+  boardOrchestratorsList: "board.orchestrators.list",
+  boardOrchestratorAdd: "board.orchestrator.add",
+  boardOrchestratorRemove: "board.orchestrator.remove",
+  boardList: "board.list",
+  boardCreate: "board.create",
+  boardStart: "board.start",
+  boardUpdate: "board.update",
+  boardDelete: "board.delete",
 
   // Source control methods
   sourceControlLookupRepository: "sourceControl.lookupRepository",
@@ -1397,13 +1430,83 @@ const WsCalendarCreateRpc = Rpc.make(WS_METHODS.calendarCreate, {
   error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
 });
 
+const WsCalendarUpdateRpc = Rpc.make(WS_METHODS.calendarUpdate, {
+  payload: CalendarUpdateInput,
+  success: CalendarUpdateResult,
+  error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
+});
+
 const WsCalendarDeleteRpc = Rpc.make(WS_METHODS.calendarDelete, {
   payload: CalendarDeleteInput,
   success: CalendarDeleteResult,
   error: Schema.Union([CalendarError, EnvironmentAuthorizationError]),
 });
 
-export const CalendarRpcs = [WsCalendarListRpc, WsCalendarCreateRpc, WsCalendarDeleteRpc] as const;
+export const CalendarRpcs = [
+  WsCalendarListRpc,
+  WsCalendarCreateRpc,
+  WsCalendarUpdateRpc,
+  WsCalendarDeleteRpc,
+] as const;
+
+const WsBoardOrchestratorsListRpc = Rpc.make(WS_METHODS.boardOrchestratorsList, {
+  payload: BoardOrchestratorsListInput,
+  success: BoardOrchestratorsListResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardOrchestratorAddRpc = Rpc.make(WS_METHODS.boardOrchestratorAdd, {
+  payload: BoardOrchestratorAddInput,
+  success: BoardOrchestratorAddResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardOrchestratorRemoveRpc = Rpc.make(WS_METHODS.boardOrchestratorRemove, {
+  payload: BoardOrchestratorRemoveInput,
+  success: BoardOrchestratorRemoveResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardListRpc = Rpc.make(WS_METHODS.boardList, {
+  payload: BoardListInput,
+  success: BoardListResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardCreateRpc = Rpc.make(WS_METHODS.boardCreate, {
+  payload: BoardCreateInput,
+  success: BoardCreateResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardStartRpc = Rpc.make(WS_METHODS.boardStart, {
+  payload: BoardStartInput,
+  success: BoardStartResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardUpdateRpc = Rpc.make(WS_METHODS.boardUpdate, {
+  payload: BoardUpdateInput,
+  success: BoardUpdateResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+const WsBoardDeleteRpc = Rpc.make(WS_METHODS.boardDelete, {
+  payload: BoardDeleteInput,
+  success: BoardDeleteResult,
+  error: Schema.Union([BoardError, EnvironmentAuthorizationError]),
+});
+
+export const BoardRpcs = [
+  WsBoardOrchestratorsListRpc,
+  WsBoardOrchestratorAddRpc,
+  WsBoardOrchestratorRemoveRpc,
+  WsBoardListRpc,
+  WsBoardCreateRpc,
+  WsBoardStartRpc,
+  WsBoardUpdateRpc,
+  WsBoardDeleteRpc,
+] as const;
 
 export const WsRpcGroup = RpcGroup.make(
   WsServerProbeRpc,
@@ -1468,6 +1571,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPullRequestsLabelCandidatesRpc,
   WsPullRequestsSetLabelsRpc,
   ...CalendarRpcs,
+  ...BoardRpcs,
   WsSourceControlLookupRepositoryRpc,
   WsSourceControlCloneRepositoryRpc,
   WsSourceControlPublishRepositoryRpc,

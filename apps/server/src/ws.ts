@@ -72,6 +72,29 @@ import {
   CalendarError,
   type CalendarEvent,
   CalendarEventId,
+  BoardCardId,
+  BoardError,
+  type BoardCard,
+  type BoardCreateInput,
+  type BoardCreateResult,
+  type BoardDeleteInput,
+  type BoardDeleteResult,
+  type BoardListInput,
+  type BoardListResult,
+  type BoardOrchestrator,
+  type BoardOrchestratorAddInput,
+  type BoardOrchestratorAddResult,
+  type BoardOrchestratorRemoveInput,
+  type BoardOrchestratorRemoveResult,
+  type BoardOrchestratorsListInput,
+  type BoardOrchestratorsListResult,
+  type BoardStartInput,
+  type BoardStartResult,
+  type BoardUpdateInput,
+  type BoardUpdateResult,
+  MessageId,
+  type OrchestrationShellSnapshot,
+  type OrchestrationThreadShell,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -113,7 +136,13 @@ import {
   CalendarEventRepository,
   CalendarEventRepositoryLive,
 } from "./persistence/Services/CalendarEvents.ts";
-import { nextCalendarFireAt } from "./background/CalendarReactor.ts";
+import { nextCalendarFireAt, planCalendarEventUpdate } from "./background/CalendarReactor.ts";
+import {
+  BoardRepository,
+  buildBoardCardEvent,
+  type BoardRepositoryShape,
+} from "./persistence/Services/Board.ts";
+import { BoardRepositoryLive } from "./persistence/Layers/Board.ts";
 import { loadDelegationPermissionEnvelope } from "./provider/DelegationPermissionEnvelope.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
@@ -507,6 +536,330 @@ function readClientAnalyticsProps(request: HttpServerRequest.HttpServerRequest) 
   };
 }
 
+/**
+ * Board RPC handler dependencies, injected so the handlers stay unit-testable
+ * without the WS layer. `ws.ts` supplies live services; tests supply fakes.
+ */
+export interface BoardRpcDependencies {
+  readonly repository: BoardRepositoryShape;
+  readonly dispatch: (
+    command: OrchestrationCommand,
+  ) => Effect.Effect<{ readonly sequence: number }, Error>;
+  readonly getThreadShell: (
+    threadId: ThreadId,
+  ) => Effect.Effect<Option.Option<OrchestrationThreadShell>, Error>;
+  readonly getShellSnapshot: () => Effect.Effect<OrchestrationShellSnapshot, Error>;
+  readonly getArchivedShellSnapshot: () => Effect.Effect<OrchestrationShellSnapshot, Error>;
+  readonly listTurns: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<ProjectionTurns.ProjectionTurn>, Error>;
+  readonly newId: () => Effect.Effect<string, Error>;
+  readonly now: Effect.Effect<string>;
+}
+
+export interface BoardRpcHandlers {
+  readonly orchestratorsList: (
+    input: BoardOrchestratorsListInput,
+  ) => Effect.Effect<BoardOrchestratorsListResult, BoardError>;
+  readonly orchestratorAdd: (
+    input: BoardOrchestratorAddInput,
+  ) => Effect.Effect<BoardOrchestratorAddResult, BoardError>;
+  readonly orchestratorRemove: (
+    input: BoardOrchestratorRemoveInput,
+  ) => Effect.Effect<BoardOrchestratorRemoveResult, BoardError>;
+  readonly list: (input: BoardListInput) => Effect.Effect<BoardListResult, BoardError>;
+  readonly create: (input: BoardCreateInput) => Effect.Effect<BoardCreateResult, BoardError>;
+  readonly start: (input: BoardStartInput) => Effect.Effect<BoardStartResult, BoardError>;
+  readonly update: (input: BoardUpdateInput) => Effect.Effect<BoardUpdateResult, BoardError>;
+  readonly delete: (input: BoardDeleteInput) => Effect.Effect<BoardDeleteResult, BoardError>;
+}
+
+const toBoardError =
+  (operation: string) =>
+  (cause: unknown): BoardError =>
+    new BoardError({
+      operation,
+      detail: cause instanceof Error ? cause.message : String(cause),
+    });
+
+/**
+ * Fields the orchestrator owns. A human update may carry only `archived`; any
+ * other field is refused with INV-2 rather than silently ignored.
+ */
+const HUMAN_BOARD_UPDATE_FIELDS = [
+  "title",
+  "body",
+  "status",
+  "executorRole",
+  "assignee",
+  "executorThreadId",
+  "outcome",
+  "lastError",
+  "failureStreak",
+  "order",
+] as const satisfies ReadonlyArray<keyof BoardUpdateInput>;
+
+const assertHumanBoardUpdateAllowed = (input: BoardUpdateInput): BoardError | null => {
+  const rejected = HUMAN_BOARD_UPDATE_FIELDS.filter((field) => input[field] !== undefined);
+  return rejected.length === 0
+    ? null
+    : new BoardError({
+        operation: "board.update",
+        detail: `Human clients may only change 'archived'; rejected fields: ${[...rejected].sort().join(", ")}.`,
+      });
+};
+
+const assertBoardCardStartable = (card: BoardCard): BoardError | null =>
+  card.status === "todo"
+    ? null
+    : new BoardError({
+        operation: "board.start",
+        detail: `Board card ${card.cardId} is '${card.status}'; only 'todo' cards can start.`,
+      });
+
+const buildHumanBoardCard = (
+  input: BoardCreateInput,
+  cardId: BoardCardId,
+  at: string,
+): BoardCard => ({
+  cardId,
+  orchestratorThreadId: input.orchestratorThreadId,
+  title: input.title,
+  body: input.body,
+  status: "todo",
+  createdBy: "human",
+  assignee: input.assignee ?? null,
+  executorRole: input.executorRole,
+  executorThreadId: null,
+  outcome: null,
+  lastError: null,
+  failureStreak: 0,
+  order: 0,
+  archived: false,
+  createdAt: at,
+  updatedAt: at,
+});
+
+const boardStartTaskText = (card: BoardCard): string =>
+  `Board card "${card.title}" (${card.cardId}) started by the human. Executor role: ${card.executorRole}.\n\n${card.body}`;
+
+const BOARD_START_TURN_TEXT =
+  "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
+
+const findExecutorChildThreadIds = (
+  deps: BoardRpcDependencies,
+  orchestratorThreadId: ThreadId,
+): Effect.Effect<ReadonlyArray<ThreadId>, BoardError> =>
+  Effect.gen(function* () {
+    const [active, archived] = yield* Effect.all(
+      [deps.getShellSnapshot(), deps.getArchivedShellSnapshot()],
+      { concurrency: 2 },
+    ).pipe(Effect.mapError(toBoardError("board.orchestrator.remove")));
+    return [...active.threads, ...archived.threads]
+      .filter((thread) => thread.delegationParent?.parentThreadId === orchestratorThreadId)
+      .map((thread) => thread.id);
+  });
+
+/** @public Board RPC handlers; wired into the WS group in `makeWsRpcLayer`. */
+export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandlers => {
+  const { repository } = deps;
+
+  const orchestratorsList: BoardRpcHandlers["orchestratorsList"] = (_input) =>
+    repository.listOrchestrators().pipe(
+      Effect.map((orchestrators) => ({ orchestrators })),
+      Effect.mapError(toBoardError("board.orchestrators.list")),
+    );
+
+  const orchestratorAdd: BoardRpcHandlers["orchestratorAdd"] = (input) =>
+    Effect.gen(function* () {
+      const shell = yield* deps
+        .getThreadShell(input.threadId)
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+      if (Option.isNone(shell)) {
+        return yield* new BoardError({
+          operation: "board.orchestrator.add",
+          detail: `Thread ${input.threadId} was not found.`,
+        });
+      }
+      if (shell.value.delegationParent != null) {
+        return yield* new BoardError({
+          operation: "board.orchestrator.add",
+          detail: `Delegated child thread ${input.threadId} cannot be marked as an orchestrator.`,
+        });
+      }
+      const createdAt = yield* deps.now;
+      const created: BoardOrchestrator = {
+        threadId: input.threadId,
+        createdBy: "human",
+        createdAt,
+      };
+      yield* repository
+        .addOrchestrator(created)
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.add")));
+      return created;
+    });
+
+  const orchestratorRemove: BoardRpcHandlers["orchestratorRemove"] = (input) =>
+    Effect.gen(function* () {
+      yield* repository
+        .removeOrchestrator(input.threadId)
+        .pipe(Effect.mapError(toBoardError("board.orchestrator.remove")));
+      const childThreadIds = yield* findExecutorChildThreadIds(deps, input.threadId);
+      yield* Effect.forEach(
+        childThreadIds,
+        (threadId) =>
+          deps
+            .dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make(`board:orchestrator-remove:child:${threadId}`),
+              threadId,
+            })
+            .pipe(Effect.asVoid, Effect.mapError(toBoardError("board.orchestrator.remove"))),
+        { discard: true },
+      );
+      return {};
+    });
+
+  const list: BoardRpcHandlers["list"] = (_input) =>
+    Effect.gen(function* () {
+      const [cards, events] = yield* Effect.all([repository.listCards(), repository.listEvents()], {
+        concurrency: 2,
+      }).pipe(Effect.mapError(toBoardError("board.list")));
+      return { cards, events };
+    });
+
+  const create: BoardRpcHandlers["create"] = (input) =>
+    Effect.gen(function* () {
+      const at = yield* deps.now;
+      const cardId = BoardCardId.make(
+        yield* deps.newId().pipe(Effect.mapError(toBoardError("board.create"))),
+      );
+      const card = buildHumanBoardCard(input, cardId, at);
+      yield* repository.createCard(card).pipe(Effect.mapError(toBoardError("board.create")));
+      yield* repository
+        .appendEvent(buildBoardCardEvent(card, { at, body: "created by human" }))
+        .pipe(Effect.mapError(toBoardError("board.create")));
+      return card;
+    });
+
+  const start: BoardRpcHandlers["start"] = (input) =>
+    Effect.gen(function* () {
+      const current = yield* repository
+        .getCard(input.cardId)
+        .pipe(Effect.mapError(toBoardError("board.start")));
+      if (Option.isNone(current)) {
+        return yield* new BoardError({
+          operation: "board.start",
+          detail: `Board card ${input.cardId} was not found.`,
+        });
+      }
+      const card = current.value;
+      const notStartable = assertBoardCardStartable(card);
+      if (notStartable !== null) {
+        return yield* notStartable;
+      }
+      const at = yield* deps.now;
+      const next: BoardCard = { ...card, status: "orchestrator", updatedAt: at };
+      yield* repository.updateCard(next).pipe(Effect.mapError(toBoardError("board.start")));
+      yield* repository
+        .appendEvent(buildBoardCardEvent(next, { at, body: "started by human" }))
+        .pipe(Effect.mapError(toBoardError("board.start")));
+
+      const [shell, turns] = yield* Effect.all(
+        [deps.getThreadShell(card.orchestratorThreadId), deps.listTurns(card.orchestratorThreadId)],
+        { concurrency: 2 },
+      ).pipe(Effect.mapError(toBoardError("board.start")));
+      const orchestrator = Option.getOrUndefined(shell);
+      const session = orchestrator?.session ?? null;
+      const idle = !(
+        (session !== null &&
+          (session.activeTurnId !== null ||
+            session.status === "running" ||
+            session.status === "starting")) ||
+        turns.some((turn) => turn.state === "pending" || turn.state === "running")
+      );
+
+      // Durable task notice: delivered even when the orchestrator is busy (INV-4).
+      yield* deps
+        .dispatch({
+          type: "thread.message.system.append",
+          commandId: CommandId.make(`board-start:${card.cardId}`),
+          threadId: card.orchestratorThreadId,
+          message: {
+            messageId: MessageId.make(`board-start:${card.cardId}`),
+            text: boardStartTaskText(card),
+          },
+          createdAt: at,
+        })
+        .pipe(Effect.mapError(toBoardError("board.start")));
+
+      if (orchestrator !== undefined && idle) {
+        yield* deps
+          .dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`board-start-turn:${card.cardId}`),
+            threadId: card.orchestratorThreadId,
+            message: {
+              messageId: MessageId.make(`board-start-turn:${card.cardId}`),
+              role: "user",
+              text: BOARD_START_TURN_TEXT,
+              attachments: [],
+            },
+            runtimeMode: orchestrator.runtimeMode,
+            interactionMode: orchestrator.interactionMode,
+            createdAt: at,
+          })
+          .pipe(Effect.mapError(toBoardError("board.start")));
+      }
+      return next;
+    });
+
+  const update: BoardRpcHandlers["update"] = (input) =>
+    Effect.gen(function* () {
+      const rejected = assertHumanBoardUpdateAllowed(input);
+      if (rejected !== null) {
+        return yield* rejected;
+      }
+      const current = yield* repository
+        .getCard(input.cardId)
+        .pipe(Effect.mapError(toBoardError("board.update")));
+      if (Option.isNone(current)) {
+        return yield* new BoardError({
+          operation: "board.update",
+          detail: `Board card ${input.cardId} was not found.`,
+        });
+      }
+      const at = yield* deps.now;
+      const next: BoardCard = {
+        ...current.value,
+        archived: input.archived ?? current.value.archived,
+        updatedAt: at,
+      };
+      yield* repository.updateCard(next).pipe(Effect.mapError(toBoardError("board.update")));
+      return next;
+    });
+
+  const remove: BoardRpcHandlers["delete"] = (_input) =>
+    Effect.fail(
+      new BoardError({
+        operation: "board.delete",
+        detail:
+          "Human clients cannot delete board cards; the orchestrator deletes cards through MCP.",
+      }),
+    );
+
+  return {
+    orchestratorsList,
+    orchestratorAdd,
+    orchestratorRemove,
+    list,
+    create,
+    start,
+    update,
+    delete: remove,
+  };
+};
+
 const makeWsRpcLayer = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   clientOrigin: OrchestrationClientOrigin,
@@ -726,6 +1079,8 @@ const makeWsRpcLayer = (
       const usage = yield* UsageService.UsageService;
       const relayClient = yield* RelayClient.RelayClient;
       const calendarEvents = yield* CalendarEventRepository;
+      const boardRepository = yield* BoardRepository;
+      const projectionTurns = yield* ProjectionTurns.ProjectionTurnRepository;
       const toCalendarError = (operation: string, cause: unknown) =>
         new CalendarError({
           operation,
@@ -1881,6 +2236,17 @@ const makeWsRpcLayer = (
           .refreshStatus(cwd)
           .pipe(Effect.ignoreCause({ log: true }), Effect.forkDetach, Effect.asVoid);
 
+      const boardHandlers = makeBoardRpcHandlers({
+        repository: boardRepository,
+        dispatch: dispatchFromClient,
+        getThreadShell: projectionSnapshotQuery.getThreadShellById,
+        getShellSnapshot: projectionSnapshotQuery.getShellSnapshot,
+        getArchivedShellSnapshot: projectionSnapshotQuery.getArchivedShellSnapshot,
+        listTurns: (threadId) => projectionTurns.listByThreadId({ threadId }),
+        newId: () => crypto.randomUUIDv4,
+        now: nowIso,
+      });
+
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
           observeRpcEffect(
@@ -2979,6 +3345,34 @@ const makeWsRpcLayer = (
             }),
             { "rpc.aggregate": "calendar" },
           ),
+        [WS_METHODS.calendarUpdate]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.calendarUpdate,
+            Effect.gen(function* () {
+              const current = yield* calendarEvents
+                .getById({ eventId: input.eventId })
+                .pipe(Effect.mapError((cause) => toCalendarError("calendar.update", cause)));
+              if (Option.isNone(current)) {
+                return yield* new CalendarError({
+                  operation: "calendar.update",
+                  detail: "Calendar event not found.",
+                });
+              }
+              const updatedAt = yield* nowIso;
+              const updated = planCalendarEventUpdate(current.value, input, updatedAt);
+              if (updated === null) {
+                return yield* new CalendarError({
+                  operation: "calendar.update",
+                  detail: "Cron expression has no upcoming fire time.",
+                });
+              }
+              yield* calendarEvents
+                .update(updated)
+                .pipe(Effect.mapError((cause) => toCalendarError("calendar.update", cause)));
+              return updated;
+            }),
+            { "rpc.aggregate": "calendar" },
+          ),
         [WS_METHODS.calendarDelete]: (input) =>
           observeRpcEffect(
             WS_METHODS.calendarDelete,
@@ -2988,6 +3382,42 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "calendar" },
           ),
+        [WS_METHODS.boardOrchestratorsList]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.boardOrchestratorsList,
+            boardHandlers.orchestratorsList(input),
+            { "rpc.aggregate": "board" },
+          ),
+        [WS_METHODS.boardOrchestratorAdd]: (input) =>
+          observeRpcEffect(WS_METHODS.boardOrchestratorAdd, boardHandlers.orchestratorAdd(input), {
+            "rpc.aggregate": "board",
+          }),
+        [WS_METHODS.boardOrchestratorRemove]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.boardOrchestratorRemove,
+            boardHandlers.orchestratorRemove(input),
+            { "rpc.aggregate": "board" },
+          ),
+        [WS_METHODS.boardList]: (input) =>
+          observeRpcEffect(WS_METHODS.boardList, boardHandlers.list(input), {
+            "rpc.aggregate": "board",
+          }),
+        [WS_METHODS.boardCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.boardCreate, boardHandlers.create(input), {
+            "rpc.aggregate": "board",
+          }),
+        [WS_METHODS.boardStart]: (input) =>
+          observeRpcEffect(WS_METHODS.boardStart, boardHandlers.start(input), {
+            "rpc.aggregate": "board",
+          }),
+        [WS_METHODS.boardUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.boardUpdate, boardHandlers.update(input), {
+            "rpc.aggregate": "board",
+          }),
+        [WS_METHODS.boardDelete]: (input) =>
+          observeRpcEffect(WS_METHODS.boardDelete, boardHandlers.delete(input), {
+            "rpc.aggregate": "board",
+          }),
         [WS_METHODS.sourceControlLookupRepository]: (input) =>
           observeRpcEffect(
             WS_METHODS.sourceControlLookupRepository,
@@ -3868,6 +4298,8 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               Layer.provideMerge(RpcSerialization.layerJson),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(CalendarEventRepositoryLive),
+              Layer.provide(BoardRepositoryLive),
+              Layer.provide(ProjectionTurnRepositoryLive),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
