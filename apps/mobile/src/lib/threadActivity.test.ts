@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 
 import {
+  LIVE_ACTIVITY_ROW_ID,
   agentSpawnSummary,
   buildPendingUserInputAnswers,
   buildThreadFeed,
@@ -1979,6 +1980,122 @@ describe("buildThreadFeed", () => {
       turnId: firstTurnId,
       label: "Worked for 12s",
     });
+  });
+
+  it("moves the thinking row to the steering turn and settles the superseded one", () => {
+    // Steer: turn-1 was interrupted and turn-2 is running with no tool rows
+    // or messages yet. The live "thinking" row must follow turn-2 instead of
+    // hanging on turn-1, and turn-1 folds as settled.
+    const firstTurnId = TurnId.make("turn-1");
+    const secondTurnId = TurnId.make("turn-2");
+    const thread = makeThread({
+      id: ThreadId.make("thread-steer-thinking"),
+      projectId: ProjectId.make("project-1"),
+      title: "Steered thinking",
+      latestTurn: {
+        turnId: secondTurnId,
+        state: "running",
+        requestedAt: "2026-04-01T00:00:14.000Z",
+        startedAt: "2026-04-01T00:00:14.000Z",
+        completedAt: null,
+        assistantMessageId: null,
+      },
+      messages: [
+        {
+          id: MessageId.make("user-1"),
+          role: "user",
+          text: "Do it.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:00.000Z",
+          updatedAt: "2026-04-01T00:00:00.000Z",
+        },
+        {
+          id: MessageId.make("assistant-partial"),
+          role: "assistant",
+          text: "Kicking off call 1.",
+          turnId: firstTurnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:09.000Z",
+          updatedAt: "2026-04-01T00:00:09.000Z",
+        },
+        {
+          id: MessageId.make("user-2"),
+          role: "user",
+          text: "Actually do 15.",
+          turnId: null,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:14.000Z",
+          updatedAt: "2026-04-01T00:00:14.000Z",
+        },
+      ],
+      activities: [
+        makeActivity({
+          id: EventId.make("work-1"),
+          kind: "tool.completed",
+          tone: "tool",
+          summary: "Ran command",
+          createdAt: "2026-04-01T00:00:12.000Z",
+          turnId: firstTurnId,
+          payload: {
+            title: "Ran command",
+            itemType: "command_execution",
+            status: "completed",
+          },
+        }),
+      ],
+    });
+
+    const feed = buildThreadFeed(thread);
+    // The shell reports the steering turn as the live work, started when its
+    // terminal-free handoff began.
+    const collapsed = deriveThreadFeedPresentation(
+      feed,
+      thread.latestTurn,
+      new Set(),
+      new Set(),
+      thread.latestTurn?.startedAt ?? null,
+    );
+    expect(collapsed.find((entry) => entry.type === "thinking")).toMatchObject({
+      id: LIVE_ACTIVITY_ROW_ID,
+      turnId: secondTurnId,
+    });
+    expect(collapsed.find((entry) => entry.type === "turn-fold")).toMatchObject({
+      turnId: firstTurnId,
+    });
+  });
+
+  it("drops the thinking row once the steering turn settles", () => {
+    const secondTurnId = TurnId.make("turn-2");
+    const thread = makeThread({
+      id: ThreadId.make("thread-steer-settled"),
+      projectId: ProjectId.make("project-1"),
+      title: "Steered and settled",
+      latestTurn: {
+        turnId: secondTurnId,
+        state: "interrupted",
+        requestedAt: "2026-04-01T00:00:14.000Z",
+        startedAt: "2026-04-01T00:00:14.000Z",
+        completedAt: "2026-04-01T00:00:47.000Z",
+        assistantMessageId: MessageId.make("assistant-final"),
+      },
+      messages: [
+        {
+          id: MessageId.make("assistant-final"),
+          role: "assistant",
+          text: "Done",
+          turnId: secondTurnId,
+          streaming: false,
+          createdAt: "2026-04-01T00:00:20.000Z",
+          updatedAt: "2026-04-01T00:00:22.000Z",
+        },
+      ],
+      activities: [],
+    });
+
+    const feed = buildThreadFeed(thread);
+    const collapsed = deriveThreadFeedPresentation(feed, thread.latestTurn, new Set());
+    expect(collapsed.some((entry) => entry.type === "thinking")).toBe(false);
   });
 
   it("keeps an active turn expanded and classifies error-shaped tool output", () => {

@@ -7,6 +7,7 @@ import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  DelegationCompletedActivityPayload,
   type ChatImageAttachment,
   ClientOrchestrationCommand,
   ModelSelection,
@@ -69,6 +70,37 @@ const decodeOrchestrationEvent = Schema.decodeUnknownEffect(OrchestrationEvent);
 const decodeThreadMetaUpdatedPayload = Schema.decodeUnknownEffect(ThreadMetaUpdatedPayload);
 const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispatchCommandError);
 const decodeSnapShotAccessibility = Schema.decodeUnknownEffect(SnapShotAccessibility);
+const decodeDelegationCompletedActivityPayload = Schema.decodeUnknownEffect(
+  DelegationCompletedActivityPayload,
+);
+
+it.effect("decodes delegation completion activity payloads", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeDelegationCompletedActivityPayload({
+      version: 1,
+      childThreadId: "child-thread",
+      delegatedTurnId: "child-turn",
+      status: "failed",
+      completedAt: "2026-01-01T00:00:00.000Z",
+      terminalError: "provider failed",
+    });
+    assert.strictEqual(parsed.status, "failed");
+    assert.strictEqual(parsed.terminalError, "provider failed");
+  }),
+);
+
+it.effect("decodes the internal system message append command", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationCommand({
+      type: "thread.message.system.append",
+      commandId: "wake-command",
+      threadId: "parent-thread",
+      message: { messageId: "wake-message", text: "Child completed." },
+      createdAt: "2026-09-19T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.type, "thread.message.system.append");
+  }),
+);
 
 it.effect("decodes a dispatch error after its bootstrap thread was deleted", () =>
   Effect.gen(function* () {
@@ -1249,7 +1281,20 @@ it.effect(
       assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
+      assert.strictEqual(parsed.followUpBehavior, undefined);
     }),
+);
+
+it.effect("decodes thread.turn-start-requested followUpBehavior when present", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadTurnStartRequestedPayload({
+      threadId: "thread-3",
+      messageId: "msg-3",
+      followUpBehavior: "steer",
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.followUpBehavior, "steer");
+  }),
 );
 
 it.effect("decodes thread.turn-start-requested source proposed plan metadata when present", () =>
