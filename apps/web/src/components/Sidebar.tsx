@@ -280,6 +280,8 @@ const SETTLED_TAIL_PAGE_COUNT = 25;
 // Fresh keys deliberately reset both shelves to collapsed for existing users.
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
+// Child thread forests start collapsed and only remember the rows a human expanded.
+const EXPANDED_FOREST_KEYS_KEY = "t3code:sidebar:forest-expanded";
 
 function compactSidebarTimeLabel(label: string): string {
   if (label === "just now") return "now";
@@ -3003,17 +3005,24 @@ export default function Sidebar() {
   // row-memoization reason as threadByKeyRef below.
   const sectionForestsRef = useRef(sectionForests);
   sectionForestsRef.current = sectionForests;
-  const [collapsedForestKeys, setCollapsedForestKeys] = useState<ReadonlySet<string>>(
-    () => new Set<string>(),
+  // Forests are collapsed by default: we persist the expanded keys so a restart
+  // (or remount) never re-expands every delegated child at once.
+  const [expandedForestKeys, setExpandedForestKeys] = useLocalStorage(
+    EXPANDED_FOREST_KEYS_KEY,
+    [] as readonly string[],
+    Schema.Array(Schema.String),
   );
-  const toggleForestCollapsed = useCallback((key: string) => {
-    setCollapsedForestKeys((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
+  const expandedForestKeySet = useMemo(() => new Set(expandedForestKeys), [expandedForestKeys]);
+  const toggleForestCollapsed = useCallback(
+    (key: string) => {
+      setExpandedForestKeys((current) =>
+        current.includes(key)
+          ? current.filter((candidate) => candidate !== key)
+          : [...current, key],
+      );
+    },
+    [setExpandedForestKeys],
+  );
   // A selected descendant temporarily expands its ancestor path.
   useEffect(() => {
     if (routeThreadKey === null) return;
@@ -3026,13 +3035,13 @@ export default function Sidebar() {
       cursor = sectionForests.parentByKey.get(cursor) ?? null;
     }
     if (ancestors.length === 0) return;
-    setCollapsedForestKeys((current) => {
-      if (ancestors.every((key) => !current.has(key))) return current;
+    setExpandedForestKeys((current) => {
+      if (ancestors.every((key) => current.includes(key))) return current;
       const next = new Set(current);
-      for (const key of ancestors) next.delete(key);
-      return next;
+      for (const key of ancestors) next.add(key);
+      return [...next];
     });
-  }, [routeThreadKey, sectionForests]);
+  }, [routeThreadKey, sectionForests, setExpandedForestKeys]);
   const orderedThreads = useMemo(
     () => [...pinnedThreads, ...activeThreads, ...visibleSnoozedThreads, ...renderedSettledThreads],
     [pinnedThreads, activeThreads, visibleSnoozedThreads, renderedSettledThreads],
@@ -3806,16 +3815,19 @@ export default function Sidebar() {
     const rowsOf = (
       forest: readonly SidebarForestEntry<EnvironmentThreadShell>[],
       section: SidebarSection,
-    ): SidebarListItem[] =>
-      filterCollapsedSidebarForest({ entries: forest, collapsedKeys: collapsedForestKeys }).map(
-        (entry) => ({
-          kind: "thread",
-          key: entry.key,
-          section,
-          depth: entry.depth,
-          descendantCount: entry.descendantCount,
-        }),
-      );
+    ): SidebarListItem[] => {
+      const collapsedKeys = new Set<string>();
+      for (const entry of forest) {
+        if (!expandedForestKeySet.has(entry.key)) collapsedKeys.add(entry.key);
+      }
+      return filterCollapsedSidebarForest({ entries: forest, collapsedKeys }).map((entry) => ({
+        kind: "thread",
+        key: entry.key,
+        section,
+        depth: entry.depth,
+        descendantCount: entry.descendantCount,
+      }));
+    };
     if (
       pinnedThreads.length +
         activeThreads.length +
@@ -3843,7 +3855,7 @@ export default function Sidebar() {
     return items;
   }, [
     activeThreads,
-    collapsedForestKeys,
+    expandedForestKeySet,
     pinnedThreads,
     renderedSettledThreads,
     sectionForests,
@@ -5509,7 +5521,7 @@ export default function Sidebar() {
                             }
                             depth={forest?.depth ?? 0}
                             forestToggleKey={(forest?.descendantCount ?? 0) > 0 ? threadKey : null}
-                            forestCollapsed={collapsedForestKeys.has(threadKey)}
+                            forestCollapsed={!expandedForestKeySet.has(threadKey)}
                             forestDescendantCount={forest?.descendantCount ?? 0}
                             onToggleForestCollapse={toggleForestCollapsed}
                             sortable={sortable}
