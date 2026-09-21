@@ -534,6 +534,16 @@ OTLP export:
 
 If the OTLP URLs are unset, local tracing still works and metrics stay in-process only.
 
+Provider session reaper:
+
+- `T3CODE_PROVIDER_SESSION_IDLE_MS`: reap a provider session after this much
+  inactivity, in milliseconds, default `1800000` (30 minutes)
+- `T3CODE_PROVIDER_SESSION_REAPER_INTERVAL_MS`: how often the reaper sweeps, in
+  milliseconds, default `300000` (5 minutes)
+
+An invalid or non-positive value for either warns and falls back to the default,
+so the reaper cannot be disabled by a typo.
+
 ### What Is Instrumented Today
 
 Current high-value span and metric boundaries include:
