@@ -136,6 +136,7 @@ function SidebarUtilityItem({
           render={
             <SidebarMenuButton
               aria-label={label}
+              className="size-6 overflow-visible [&>svg]:size-3.5"
               onClick={onClick}
               onContextMenu={
                 onContextMenu === undefined
@@ -152,7 +153,7 @@ function SidebarUtilityItem({
               <span className="relative inline-flex items-center justify-center">
                 {icon}
                 {badgeCount > 0 ? (
-                  <span className="absolute -top-1 -right-1 inline-flex min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[9px] font-semibold leading-3.5 text-primary-foreground">
+                  <span className="absolute -top-0.5 -right-0.5 inline-flex h-3 min-w-3 items-center justify-center rounded-full bg-primary px-0.5 text-[8px] font-semibold leading-none text-primary-foreground">
                     {badgeCount > 99 ? "99+" : badgeCount}
                   </span>
                 ) : null}
@@ -254,7 +255,7 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   }, [canGoBack, closeMobileSidebar, navigate]);
 
   return (
-    <SidebarMenu className="flex-row items-center">
+    <SidebarMenu className="flex-row flex-wrap items-center gap-0.5">
       {currentFooterPage ? (
         <SidebarMenuItem className="min-w-0 flex-1">
           <SidebarMenuButton onClick={handleBackClick}>
