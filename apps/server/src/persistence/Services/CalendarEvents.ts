@@ -64,6 +64,12 @@ export type DeleteCalendarEventInput = typeof DeleteCalendarEventInput.Type;
 
 export interface CalendarEventRepositoryShape {
   readonly create: (event: CalendarEvent) => Effect.Effect<void, ProjectionRepositoryError>;
+  /**
+   * Replace an existing event's editable fields and schedule. Run history
+   * (`last_fired_at`, `last_missed_at`, `thread_id`) and `created_at` are left
+   * untouched so an edit never resets what the reactor has recorded.
+   */
+  readonly update: (event: CalendarEvent) => Effect.Effect<void, ProjectionRepositoryError>;
   readonly getById: (
     input: GetCalendarEventInput,
   ) => Effect.Effect<Option.Option<CalendarEvent>, ProjectionRepositoryError>;
@@ -72,7 +78,9 @@ export interface CalendarEventRepositoryShape {
     input: ListDueCalendarEventsInput,
   ) => Effect.Effect<ReadonlyArray<CalendarEvent>, ProjectionRepositoryError>;
   /** Persist a successful fire and the next absolute fire instant. */
-  readonly recordFire: (input: RecordCalendarFireInput) => Effect.Effect<void, ProjectionRepositoryError>;
+  readonly recordFire: (
+    input: RecordCalendarFireInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
   /** Persist a skipped (missed) slot and the next absolute fire instant. */
   readonly recordMissed: (
     input: RecordCalendarMissInput,
@@ -158,6 +166,26 @@ const makeCalendarEventRepository = Effect.gen(function* () {
           interaction_mode = excluded.interaction_mode,
           created_at = excluded.created_at,
           updated_at = excluded.updated_at
+      `,
+  });
+
+  const updateCalendarEventRow = SqlSchema.void({
+    Request: CalendarEvent,
+    execute: (row) =>
+      sql`
+        UPDATE calendar_events
+        SET project_id = ${row.projectId},
+            title = ${row.title},
+            message = ${row.message},
+            mode = ${row.mode},
+            cron_expression = ${row.cronExpression},
+            time_zone = ${row.timeZone},
+            next_fire_at = ${row.nextFireAt},
+            model_selection_json = ${JSON.stringify(row.modelSelection)},
+            runtime_mode = ${row.runtimeMode},
+            interaction_mode = ${row.interactionMode},
+            updated_at = ${row.updatedAt}
+        WHERE event_id = ${row.eventId}
       `,
   });
 
@@ -293,6 +321,11 @@ const makeCalendarEventRepository = Effect.gen(function* () {
       Effect.mapError(toPersistenceSqlError("CalendarEventRepository.create:query")),
     );
 
+  const update: CalendarEventRepositoryShape["update"] = (event) =>
+    updateCalendarEventRow(event).pipe(
+      Effect.mapError(toPersistenceSqlError("CalendarEventRepository.update:query")),
+    );
+
   const getById: CalendarEventRepositoryShape["getById"] = (input) =>
     getCalendarEventRow(input).pipe(
       Effect.mapError(toPersistenceSqlError("CalendarEventRepository.getById:query")),
@@ -330,6 +363,7 @@ const makeCalendarEventRepository = Effect.gen(function* () {
 
   return {
     create,
+    update,
     getById,
     listAll,
     listDue,

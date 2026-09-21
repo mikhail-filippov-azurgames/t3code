@@ -2,20 +2,26 @@
  * CalendarReactor - fires scheduled calendar events.
  *
  * One sweep reads rows whose persisted `next_fire_at` is due and dispatches a
- * `thread.turn.start` into the target thread. A separate startup branch treats
- * any slot already in the past as missed (host asleep or server restart), skips
- * it, posts a notification, and advances the schedule from now. No scheduler
- * dependency is used: repeats are 5-field local-time cron expressions and the
- * next absolute instant is stored per row.
+ * `thread.turn.start` into the target thread, earliest slot first and at most
+ * `FIRE_PER_SWEEP_LIMIT` fires total; unfired due rows keep their schedule. A
+ * separate startup branch treats any slot already in the past as missed (host
+ * asleep or server restart), skips it, posts a notification, and advances the
+ * schedule from now. No scheduler dependency is used: repeats are 5-field
+ * local-time cron expressions and the next absolute instant is stored per row.
  *
  * @module CalendarReactor
  */
 // @effect-diagnostics globalDate:off -- Cron day arithmetic uses UTC calendar fields; wall-clock math goes through Effect DateTime.
 import {
+  CALENDAR_CRON_LOOKAHEAD_DAYS,
   CalendarEvent,
+  calendarCronMatchesDay,
+  calendarCronSortedValues,
   calendarNameExcerpt,
+  type CalendarUpdateInput,
   CommandId,
   MessageId,
+  parseCalendarCron,
   ThreadId,
 } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
@@ -34,92 +40,22 @@ import * as HostPowerMonitor from "./HostPowerMonitor.ts";
 
 const SWEEP_INTERVAL = "30 seconds";
 const DUE_LIMIT = 50;
-const MAX_LOOKAHEAD_DAYS = 366 * 8;
+
+/**
+ * Most fires one sweep may dispatch across all events. Bounds the burst a
+ * delayed tick (host sleep) can emit; leftover due work waits for the next
+ * sweep with its schedule untouched.
+ */
+export const FIRE_PER_SWEEP_LIMIT = 3;
 
 /** Schedule exhausted because no future slot matched; never treated as due. */
 const EXHAUSTED_NEXT_FIRE_AT = "9999-12-31T23:59:59.000Z";
 
-interface ParsedCronField {
-  readonly values: ReadonlySet<number>;
-  readonly restricted: boolean;
-}
-
-interface ParsedCalendarCron {
-  readonly minute: ParsedCronField;
-  readonly hour: ParsedCronField;
-  readonly dayOfMonth: ParsedCronField;
-  readonly month: ParsedCronField;
-  readonly dayOfWeek: ParsedCronField;
-}
-
-function parseCronField(raw: string, min: number, max: number): ParsedCronField | null {
-  const field = raw.trim();
-  if (field.length === 0) return null;
-  const values = new Set<number>();
-  for (const token of field.split(",")) {
-    const piece = token.trim();
-    if (piece.length === 0) return null;
-    const slashIndex = piece.indexOf("/");
-    if (slashIndex !== -1 && piece.indexOf("/", slashIndex + 1) !== -1) return null;
-    const rangePart = slashIndex === -1 ? piece : piece.slice(0, slashIndex);
-    const stepPart = slashIndex === -1 ? undefined : piece.slice(slashIndex + 1);
-    let step = 1;
-    if (stepPart !== undefined) {
-      if (!/^\d+$/.test(stepPart)) return null;
-      step = Number(stepPart);
-      if (step < 1) return null;
-    }
-    let start: number;
-    let end: number;
-    if (rangePart === "*") {
-      start = min;
-      end = max;
-    } else {
-      const dashIndex = rangePart.indexOf("-");
-      if (dashIndex === -1) {
-        if (!/^\d+$/.test(rangePart)) return null;
-        start = Number(rangePart);
-        end = stepPart === undefined ? start : max;
-      } else {
-        const startPart = rangePart.slice(0, dashIndex);
-        const endPart = rangePart.slice(dashIndex + 1);
-        if (!/^\d+$/.test(startPart) || !/^\d+$/.test(endPart)) return null;
-        start = Number(startPart);
-        end = Number(endPart);
-      }
-    }
-    if (start < min || end > max || start > end) return null;
-    for (let value = start; value <= end; value += step) {
-      // Cron accepts both 0 and 7 for Sunday.
-      values.add(max === 7 && value === 7 ? 0 : value);
-    }
-  }
-  return { values, restricted: field !== "*" };
-}
-
-/** @internal Exported for tests. */
-export function parseCalendarCron(expression: string): ParsedCalendarCron | null {
-  const fields = expression.trim().split(/\s+/);
-  if (fields.length !== 5) return null;
-  const minute = parseCronField(fields[0]!, 0, 59);
-  const hour = parseCronField(fields[1]!, 0, 23);
-  const dayOfMonth = parseCronField(fields[2]!, 1, 31);
-  const month = parseCronField(fields[3]!, 1, 12);
-  const dayOfWeek = parseCronField(fields[4]!, 0, 7);
-  if (!minute || !hour || !dayOfMonth || !month || !dayOfWeek) return null;
-  return { minute, hour, dayOfMonth, month, dayOfWeek };
-}
-
-function matchesCalendarDay(parsed: ParsedCalendarCron, day: number, weekday: number): boolean {
-  const dayOfMonthMatch = parsed.dayOfMonth.values.has(day);
-  const dayOfWeekMatch = parsed.dayOfWeek.values.has(weekday);
-  // Standard cron: when both day fields are restricted, either may match.
-  if (parsed.dayOfMonth.restricted && parsed.dayOfWeek.restricted) {
-    return dayOfMonthMatch || dayOfWeekMatch;
-  }
-  if (parsed.dayOfMonth.restricted) return dayOfMonthMatch;
-  if (parsed.dayOfWeek.restricted) return dayOfWeekMatch;
-  return true;
+/** Earliest slot first, then event id, so the cap never starves a due event. */
+function compareDueCalendarEvents(left: CalendarEvent, right: CalendarEvent): number {
+  const byTime = compareDateTimeStrings(left.nextFireAt, right.nextFireAt);
+  if (byTime !== 0) return byTime;
+  return left.eventId < right.eventId ? -1 : left.eventId > right.eventId ? 1 : 0;
 }
 
 /**
@@ -140,18 +76,18 @@ export function nextCalendarFireAt(
   const base = DateTime.setZoneNamed(from, timeZone);
   if (Option.isNone(base)) return null;
   const baseParts = DateTime.toParts(base.value);
-  const hours = [...parsed.hour.values].sort((left, right) => left - right);
-  const minutes = [...parsed.minute.values].sort((left, right) => left - right);
+  const hours = calendarCronSortedValues(parsed.hour);
+  const minutes = calendarCronSortedValues(parsed.minute);
   // Calendar-day arithmetic on UTC fields is zone-independent and DST-safe.
   const startDay = Date.UTC(baseParts.year, baseParts.month - 1, baseParts.day);
-  for (let dayOffset = 0; dayOffset <= MAX_LOOKAHEAD_DAYS; dayOffset += 1) {
+  for (let dayOffset = 0; dayOffset <= CALENDAR_CRON_LOOKAHEAD_DAYS; dayOffset += 1) {
     const cursor = new Date(startDay + dayOffset * 86_400_000);
     const year = cursor.getUTCFullYear();
     const month = cursor.getUTCMonth() + 1;
     const day = cursor.getUTCDate();
     const weekday = cursor.getUTCDay();
     if (!parsed.month.values.has(month)) continue;
-    if (!matchesCalendarDay(parsed, day, weekday)) continue;
+    if (!calendarCronMatchesDay(parsed, day, weekday)) continue;
     for (const hour of hours) {
       for (const minute of minutes) {
         const candidate = DateTime.makeZoned(
@@ -177,6 +113,41 @@ export function nextCalendarFireAt(
     }
   }
   return null;
+}
+
+/**
+ * Merge an edit into an existing event. The editable fields are replaced;
+ * `projectId` and the run history are kept. A changed cron or zone recomputes
+ * `nextFireAt` from `updatedAt`, while a text/model-only edit leaves the
+ * current schedule in place. Returns `null` when a changed schedule has no
+ * upcoming slot.
+ *
+ * @internal Exported for tests.
+ */
+export function planCalendarEventUpdate(
+  current: CalendarEvent,
+  input: CalendarUpdateInput,
+  updatedAt: string,
+): CalendarEvent | null {
+  const scheduleChanged =
+    input.cronExpression !== current.cronExpression || input.timeZone !== current.timeZone;
+  const nextFireAt = scheduleChanged
+    ? nextCalendarFireAt(input.cronExpression, input.timeZone, updatedAt)
+    : current.nextFireAt;
+  if (nextFireAt === null) return null;
+  return {
+    ...current,
+    title: input.title,
+    message: input.message,
+    mode: input.mode,
+    cronExpression: input.cronExpression,
+    timeZone: input.timeZone,
+    modelSelection: input.modelSelection,
+    runtimeMode: input.runtimeMode,
+    interactionMode: input.interactionMode,
+    nextFireAt,
+    updatedAt,
+  };
 }
 
 export class CalendarReactor extends Context.Service<
@@ -306,22 +277,28 @@ export const make = Effect.gen(function* () {
 
   const sweep = Effect.fn("CalendarReactor.sweep")(function* () {
     const observedAt = yield* nowIso;
-    const due = yield* repository.listDue({ nowIso: observedAt, limit: DUE_LIMIT });
-    yield* Effect.forEach(
-      due,
-      (event) =>
-        fire(event).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.interrupt
-              : Effect.logWarning("calendar event fire failed", {
-                  eventId: event.eventId,
-                  cause: Cause.pretty(cause),
-                }),
-          ),
-        ),
-      { concurrency: 1, discard: true },
-    );
+    const failed = new Set<string>();
+    let budget = FIRE_PER_SWEEP_LIMIT;
+    // Re-query each pass: a backlogged event advances slot by slot while the
+    // budget caps the sweep, and a failed event cannot burn the whole budget.
+    while (budget > 0) {
+      const due = yield* repository.listDue({ nowIso: observedAt, limit: DUE_LIMIT });
+      const next = [...due]
+        .filter((event) => !failed.has(event.eventId))
+        .sort(compareDueCalendarEvents)[0];
+      if (next === undefined) break;
+      yield* fire(next).pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+          failed.add(next.eventId);
+          return Effect.logWarning("calendar event fire failed", {
+            eventId: next.eventId,
+            cause: Cause.pretty(cause),
+          });
+        }),
+      );
+      budget -= 1;
+    }
   });
 
   const start: CalendarReactor["Service"]["start"] = Effect.fn("CalendarReactor.start")(
