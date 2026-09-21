@@ -75,12 +75,18 @@ export const make = Effect.fn("makeProcessDiagnostics")(function* () {
           depth: Math.max(0, entry.depth - 1),
           childPids: entry.childPids,
         }));
+      // The native sampler tracks the server subtree plus the desktop shell
+      // (attached as external roots), so `allT3` is the whole-app total and
+      // already de-duplicates the server. The filtered `processes` above stay
+      // the signalable descendants only.
       return {
         serverPid: process.pid,
         readAt: snapshot.readAt,
         processCount: processes.length,
         totalRssBytes: processes.reduce((total, entry) => total + entry.rssBytes, 0),
         totalCpuPercent: processes.reduce((total, entry) => total + entry.cpuPercent, 0),
+        appTotalRssBytes: snapshot.groups.allT3.currentRssBytes,
+        appProcessCount: snapshot.groups.allT3.processCount,
         processes,
         error: Option.map(snapshot.health.native.lastError, (message) => ({ message })),
       };

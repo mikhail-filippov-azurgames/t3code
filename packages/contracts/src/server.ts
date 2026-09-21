@@ -371,6 +371,11 @@ export const ServerProcessDiagnosticsResult = Schema.Struct({
   processCount: NonNegativeInt,
   totalRssBytes: NonNegativeInt,
   totalCpuPercent: Schema.Number,
+  // Whole-app totals add the desktop shell and any other processes the sampler
+  // tracks alongside the server subtree. Optional so a newer client can still
+  // decode diagnostics from an older server.
+  appTotalRssBytes: Schema.optional(NonNegativeInt),
+  appProcessCount: Schema.optional(NonNegativeInt),
   processes: Schema.Array(ServerProcessDiagnosticsEntry),
   error: Schema.Option(
     Schema.Struct({

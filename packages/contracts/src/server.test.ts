@@ -1,3 +1,5 @@
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -5,6 +7,7 @@ import { ExecutionEnvironmentDescriptor } from "./environment.ts";
 import {
   resolveEnvironmentMachineKind,
   ServerConfig,
+  ServerProcessDiagnosticsResult,
   ServerProvider,
   ServerProviders,
   ServerUpsertKeybindingResult,
@@ -15,6 +18,7 @@ const decodeServerProvider = Schema.decodeUnknownSync(ServerProvider);
 const decodeServerProviders = Schema.decodeUnknownSync(ServerProviders);
 const decodeUpsertKeybindingResult = Schema.decodeUnknownSync(ServerUpsertKeybindingResult);
 const decodeAvailableEditors = Schema.decodeUnknownSync(ServerConfig.fields.availableEditors);
+const decodeProcessDiagnostics = Schema.decodeUnknownSync(ServerProcessDiagnosticsResult);
 
 const baseProviderSnapshot = {
   instanceId: "codex",
@@ -117,6 +121,36 @@ describe("ServerProvider", () => {
     });
 
     expect(parsed.models[0]?.isLegacy).toBe(true);
+  });
+});
+
+describe("ServerProcessDiagnosticsResult", () => {
+  const base = {
+    serverPid: 100,
+    readAt: DateTime.makeUnsafe("2026-04-10T00:00:00.000Z"),
+    processCount: 1,
+    totalRssBytes: 2_048,
+    totalCpuPercent: 1.5,
+    processes: [],
+    error: Option.none(),
+  };
+
+  it("decodes whole-app totals when the server reports them", () => {
+    const parsed = decodeProcessDiagnostics({
+      ...base,
+      appTotalRssBytes: 1_152_048,
+      appProcessCount: 4,
+    });
+
+    expect(parsed.appTotalRssBytes).toBe(1_152_048);
+    expect(parsed.appProcessCount).toBe(4);
+  });
+
+  it("accepts diagnostics from a server that predates whole-app totals", () => {
+    const parsed = decodeProcessDiagnostics(base);
+
+    expect(parsed.appTotalRssBytes).toBeUndefined();
+    expect(parsed.appProcessCount).toBeUndefined();
   });
 });
 

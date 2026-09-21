@@ -110,6 +110,132 @@ describe("ProcessDiagnostics", () => {
       expect(diagnostics.processes[0]?.startTimeMs).toBe(2_000);
       expect(diagnostics.processes[0]?.cpuPercent).toBe(1.5);
       expect(diagnostics.processes[0]?.rssBytes).toBe(2_048);
+      expect(diagnostics.appTotalRssBytes).toBe(2_048 + 1_024);
+      expect(diagnostics.appProcessCount).toBe(2);
+    }),
+  );
+
+  it.effect("sums the whole app tree including processes above the server", () =>
+    Effect.gen(function* () {
+      const shellPid = 4_000;
+      const sampledAtUnixMs = DateTime.toEpochMillis(
+        DateTime.makeUnsafe("2026-05-05T10:00:00.000Z"),
+      );
+      const snapshot = makeNativeSnapshot([
+        {
+          pid: shellPid,
+          ppid: 1,
+          startTimeMs: 1_000,
+          runTimeMs: 90_000,
+          name: "electron",
+          command: "electron",
+          status: "Running",
+          cpuPercent: 0.5,
+          cpuTimeMs: 500,
+          residentBytes: 800_000,
+          virtualBytes: 4_096,
+          ioReadBytes: 0,
+          ioWriteBytes: 0,
+          ioSemantics: "storage",
+        },
+        {
+          pid: process.pid,
+          ppid: shellPid,
+          startTimeMs: 1_100,
+          runTimeMs: 80_000,
+          name: "node",
+          command: "t3 server",
+          status: "Running",
+          cpuPercent: 0.2,
+          cpuTimeMs: 200,
+          residentBytes: 50_000,
+          virtualBytes: 2_048,
+          ioReadBytes: 0,
+          ioWriteBytes: 0,
+          ioSemantics: "storage",
+        },
+        {
+          pid: 4_242,
+          ppid: process.pid,
+          startTimeMs: 2_000,
+          runTimeMs: 4_000,
+          name: "agent",
+          command: "codex app-server",
+          status: "Running",
+          cpuPercent: 1.5,
+          cpuTimeMs: 60,
+          residentBytes: 2_048,
+          virtualBytes: 4_096,
+          ioReadBytes: 300,
+          ioWriteBytes: 400,
+          ioSemantics: "storage",
+        },
+        {
+          pid: 4_243,
+          ppid: shellPid,
+          startTimeMs: 1_200,
+          runTimeMs: 70_000,
+          name: "electron",
+          command: "electron --type=renderer",
+          status: "Running",
+          cpuPercent: 1,
+          cpuTimeMs: 300,
+          residentBytes: 300_000,
+          virtualBytes: 8_192,
+          ioReadBytes: 0,
+          ioWriteBytes: 0,
+          ioSemantics: "storage",
+        },
+      ]);
+      const sampledAt = DateTime.makeUnsafe(sampledAtUnixMs);
+      const telemetryLayer = makeTelemetryLayer(snapshot, {
+        version: 1,
+        type: "desktopTelemetry",
+        sequence: 1,
+        sampledAtUnixMs,
+        electronPid: shellPid,
+        power: {
+          source: "electron-main",
+          idle: "false",
+          idleSeconds: 0,
+          locked: "false",
+          suspended: false,
+          onBattery: "false",
+          lowPowerMode: "unknown",
+          thermalState: "nominal",
+          stale: false,
+          updatedAt: sampledAt,
+        },
+        speedLimitPercent: Option.none(),
+        electronProcesses: [
+          {
+            pid: shellPid,
+            creationTimeMs: 1_000,
+            type: "Browser",
+            name: "electron",
+            cpuPercent: 0.5,
+            idleWakeupsPerSecond: 0,
+            workingSetBytes: 800_000,
+            peakWorkingSetBytes: 800_000,
+          },
+        ],
+      });
+      const layer = ProcessDiagnostics.layer.pipe(Layer.provide(telemetryLayer));
+
+      const diagnostics = yield* Effect.service(ProcessDiagnostics.ProcessDiagnostics).pipe(
+        Effect.flatMap((processDiagnostics) => processDiagnostics.read),
+        Effect.provide(layer),
+      );
+
+      // Signalable rows stay server descendants only; the shell, the server and
+      // the renderer are not actionable rows.
+      expect(diagnostics.processes.map((process) => process.pid)).not.toContain(shellPid);
+      expect(diagnostics.processes.map((process) => process.pid)).not.toContain(process.pid);
+      // The shell, the server, the provider and the renderer are each counted
+      // once: the server also sits inside the shell subtree and must not be
+      // added a second time.
+      expect(diagnostics.appTotalRssBytes).toBe(800_000 + 50_000 + 2_048 + 300_000);
+      expect(diagnostics.appProcessCount).toBe(4);
     }),
   );
 
