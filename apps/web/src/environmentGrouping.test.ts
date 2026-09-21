@@ -458,3 +458,84 @@ describe("environment grouping", () => {
     expect(groups.map((group) => group.displayName)).toEqual(["separate", "shared-repo"]);
   });
 });
+
+describe("sidebar project display names", () => {
+  const separateSettings = {
+    sidebarProjectGroupingMode: "separate" as const,
+    sidebarProjectGroupingOverrides: {},
+  };
+
+  it("disambiguates projects that share a title but live at different workspace roots", () => {
+    const roots = [
+      "E:\\kick-the-buddy",
+      "E:\\Unity 2025\\kick-the-buddy",
+      "E:\\Unity 2025\\kick-the-buddy sk",
+      "E:\\Unity 2025\\kick-the-buddy forever",
+    ];
+    const projects = roots.map((workspaceRoot, index) =>
+      makeProject({
+        id: ProjectId.make(`kick-${index}`),
+        title: "azur-games/kick-the-buddy",
+        workspaceRoot,
+        repositoryIdentity,
+      }),
+    );
+
+    const snapshots = buildSidebarProjectSnapshots({
+      projects,
+      settings: separateSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    const displayNames = snapshots.map((snapshot) => snapshot.displayName);
+    expect(displayNames).toHaveLength(4);
+    expect(new Set(displayNames).size).toBe(4);
+    expect(displayNames).toEqual([
+      "azur-games/kick-the-buddy · E:/kick-the-buddy",
+      "azur-games/kick-the-buddy · Unity 2025/kick-the-buddy",
+      "azur-games/kick-the-buddy · kick-the-buddy sk",
+      "azur-games/kick-the-buddy · kick-the-buddy forever",
+    ]);
+  });
+
+  it("leaves unambiguous project titles untouched", () => {
+    const projects = [
+      makeProject({ id: ProjectId.make("alpha"), title: "alpha", workspaceRoot: "/tmp/alpha" }),
+      makeProject({ id: ProjectId.make("beta"), title: "beta", workspaceRoot: "/tmp/beta" }),
+    ];
+
+    const snapshots = buildSidebarProjectSnapshots({
+      projects,
+      settings: separateSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+
+    expect(snapshots.map((snapshot) => snapshot.displayName)).toEqual(["alpha", "beta"]);
+  });
+
+  it("falls back to the environment label when identical titles share one path", () => {
+    const projects = [
+      makeProject({ id: ProjectId.make("local"), title: "shared" }),
+      makeProject({
+        id: ProjectId.make("remote"),
+        environmentId: remoteEnvironmentId,
+        title: "shared",
+      }),
+    ];
+
+    const snapshots = buildSidebarProjectSnapshots({
+      projects,
+      settings: separateSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: (environmentId) =>
+        environmentId === remoteEnvironmentId ? "remote" : "primary",
+    });
+
+    const displayNames = snapshots.map((snapshot) => snapshot.displayName);
+    expect(displayNames).toHaveLength(2);
+    expect(new Set(displayNames).size).toBe(2);
+    expect(displayNames).toEqual(["shared · primary", "shared · remote"]);
+  });
+});

@@ -416,7 +416,9 @@ function ProjectDetail({
                 size="sm"
                 className="w-full sm:w-64"
                 aria-label="Project name"
-                defaultValue={group.displayName}
+                defaultValue={
+                  hasMultipleCheckouts ? group.displayName : group.memberProjects[0]!.title
+                }
                 onChange={() => {
                   projectNameEditedRef.current = true;
                 }}

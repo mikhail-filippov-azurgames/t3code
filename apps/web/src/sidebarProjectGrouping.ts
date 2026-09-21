@@ -45,6 +45,62 @@ export interface SidebarProjectPickerEntry {
   isPreferred: boolean;
 }
 
+function normalizeDisplayPath(path: string): string {
+  return path.trim().replace(/\\+/g, "/").replace(/\/+$/, "");
+}
+
+function trailingDisplayPath(path: string, segmentCount: number): string {
+  const segments = normalizeDisplayPath(path)
+    .split("/")
+    .filter((segment) => segment.length > 0);
+  return segments.slice(Math.max(0, segments.length - segmentCount)).join("/");
+}
+
+// Shortest trailing path suffix that tells apart checkouts sharing one title;
+// falls back to the full path, then the environment label, so the label is
+// never blank.
+function projectPathDisambiguator(
+  snapshot: Pick<SidebarProjectSnapshot, "workspaceRoot" | "memberProjects">,
+  peers: ReadonlyArray<Pick<SidebarProjectSnapshot, "workspaceRoot" | "memberProjects">>,
+): string {
+  const segments = normalizeDisplayPath(snapshot.workspaceRoot).split("/").filter(Boolean);
+  for (let count = 1; count <= segments.length; count += 1) {
+    const suffix = trailingDisplayPath(snapshot.workspaceRoot, count);
+    if (
+      peers.filter((peer) => trailingDisplayPath(peer.workspaceRoot, count) === suffix).length === 1
+    ) {
+      return suffix;
+    }
+  }
+  const fullPath = normalizeDisplayPath(snapshot.workspaceRoot);
+  if (peers.filter((peer) => normalizeDisplayPath(peer.workspaceRoot) === fullPath).length === 1) {
+    return fullPath;
+  }
+  return snapshot.memberProjects[0]?.environmentLabel ?? fullPath;
+}
+
+function disambiguateProjectDisplayNames(
+  snapshots: ReadonlyArray<SidebarProjectSnapshot>,
+): SidebarProjectSnapshot[] {
+  const byDisplayName = new Map<string, SidebarProjectSnapshot[]>();
+  for (const snapshot of snapshots) {
+    const existing = byDisplayName.get(snapshot.displayName);
+    if (existing) {
+      existing.push(snapshot);
+    } else {
+      byDisplayName.set(snapshot.displayName, [snapshot]);
+    }
+  }
+  return snapshots.map((snapshot) => {
+    const peers = byDisplayName.get(snapshot.displayName) ?? [];
+    if (peers.length <= 1) return snapshot;
+    return {
+      ...snapshot,
+      displayName: `${snapshot.displayName} · ${projectPathDisambiguator(snapshot, peers)}`,
+    };
+  });
+}
+
 export function buildPhysicalToLogicalProjectKeyMap(input: {
   projects: ReadonlyArray<Project>;
   settings: ProjectGroupingSettings;
@@ -76,61 +132,64 @@ export function buildSidebarProjectSnapshots(input: {
   isDesktopLocalEnvironment?: (environmentId: EnvironmentId) => boolean;
   isWslEnvironment?: (environmentId: EnvironmentId) => boolean;
 }): SidebarProjectSnapshot[] {
-  return buildProjectGroups({
-    projects: input.projects,
-    settings: input.settings,
-    preferredEnvironmentId: input.primaryEnvironmentId,
-  }).map((group): SidebarProjectSnapshot => {
-    const members = group.members.map(
-      ({ physicalProjectKey, project }): SidebarProjectGroupMember => ({
-        ...project,
-        physicalProjectKey,
-        environmentLabel: input.resolveEnvironmentLabel(project.environmentId),
-      }),
-    );
-    const representative =
-      members.find(
+  return disambiguateProjectDisplayNames(
+    buildProjectGroups({
+      projects: input.projects,
+      settings: input.settings,
+      preferredEnvironmentId: input.primaryEnvironmentId,
+    }).map((group): SidebarProjectSnapshot => {
+      const members = group.members.map(
+        ({ physicalProjectKey, project }): SidebarProjectGroupMember => ({
+          ...project,
+          physicalProjectKey,
+          environmentLabel: input.resolveEnvironmentLabel(project.environmentId),
+        }),
+      );
+      const representative =
+        members.find(
+          (member) =>
+            member.environmentId === group.representative.environmentId &&
+            member.id === group.representative.id,
+        ) ?? members[0]!;
+
+      const hasLocal =
+        input.primaryEnvironmentId !== null &&
+        members.some((member) => member.environmentId === input.primaryEnvironmentId);
+      const hasRemote =
+        input.primaryEnvironmentId !== null
+          ? members.some((member) => member.environmentId !== input.primaryEnvironmentId)
+          : false;
+      const remoteMembers = members.filter(
         (member) =>
-          member.environmentId === group.representative.environmentId &&
-          member.id === group.representative.id,
-      ) ?? members[0]!;
+          input.primaryEnvironmentId !== null &&
+          member.environmentId !== input.primaryEnvironmentId,
+      );
+      const remoteEnvironmentLabels = remoteMembers
+        .flatMap((member) => (member.environmentLabel ? [member.environmentLabel] : []))
+        .filter((label, index, labels) => labels.indexOf(label) === index);
+      const isDesktopLocal = input.isDesktopLocalEnvironment ?? (() => false);
+      const isWsl = input.isWslEnvironment ?? (() => false);
+      const allRemoteMembersAreDesktopLocal =
+        remoteMembers.length > 0 &&
+        remoteMembers.every((member) => isDesktopLocal(member.environmentId));
+      const allRemoteMembersAreWsl =
+        remoteMembers.length > 0 && remoteMembers.every((member) => isWsl(member.environmentId));
 
-    const hasLocal =
-      input.primaryEnvironmentId !== null &&
-      members.some((member) => member.environmentId === input.primaryEnvironmentId);
-    const hasRemote =
-      input.primaryEnvironmentId !== null
-        ? members.some((member) => member.environmentId !== input.primaryEnvironmentId)
-        : false;
-    const remoteMembers = members.filter(
-      (member) =>
-        input.primaryEnvironmentId !== null && member.environmentId !== input.primaryEnvironmentId,
-    );
-    const remoteEnvironmentLabels = remoteMembers
-      .flatMap((member) => (member.environmentLabel ? [member.environmentLabel] : []))
-      .filter((label, index, labels) => labels.indexOf(label) === index);
-    const isDesktopLocal = input.isDesktopLocalEnvironment ?? (() => false);
-    const isWsl = input.isWslEnvironment ?? (() => false);
-    const allRemoteMembersAreDesktopLocal =
-      remoteMembers.length > 0 &&
-      remoteMembers.every((member) => isDesktopLocal(member.environmentId));
-    const allRemoteMembersAreWsl =
-      remoteMembers.length > 0 && remoteMembers.every((member) => isWsl(member.environmentId));
-
-    return {
-      ...representative,
-      projectKey: group.key,
-      displayName: group.label,
-      groupedProjectCount: members.length,
-      environmentPresence:
-        hasLocal && hasRemote ? "mixed" : hasRemote ? "remote-only" : "local-only",
-      allRemoteMembersAreDesktopLocal,
-      allRemoteMembersAreWsl,
-      memberProjects: members,
-      memberProjectRefs: group.memberProjectRefs,
-      remoteEnvironmentLabels,
-    };
-  });
+      return {
+        ...representative,
+        projectKey: group.key,
+        displayName: group.label,
+        groupedProjectCount: members.length,
+        environmentPresence:
+          hasLocal && hasRemote ? "mixed" : hasRemote ? "remote-only" : "local-only",
+        allRemoteMembersAreDesktopLocal,
+        allRemoteMembersAreWsl,
+        memberProjects: members,
+        memberProjectRefs: group.memberProjectRefs,
+        remoteEnvironmentLabels,
+      };
+    }),
+  );
 }
 
 export function buildSidebarProjectPickerEntries(input: {
