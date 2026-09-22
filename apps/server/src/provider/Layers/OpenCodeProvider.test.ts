@@ -7,6 +7,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
+import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { beforeEach } from "vite-plus/test";
 
 import { OpenCodeSettings } from "@t3tools/contracts";
@@ -163,10 +164,24 @@ beforeEach(() => {
   runtimeMock.reset();
 });
 
-const testLayer = Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble).pipe(
+const testLayer = Layer.mergeAll(
+  Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble),
+  Layer.succeed(
+    HttpClient.HttpClient,
+    HttpClient.make((request) =>
+      Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({}, { status: 500 }))),
+    ),
+  ),
+).pipe(
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
   Layer.provideMerge(NodeServices.layer),
 );
+
+/**
+ * The Go usage probe reads OpenCode's own auth store. Point it at a path that
+ * does not exist so these status tests stay offline and deterministic.
+ */
+const NO_GO_DATA_HOME = `${process.env.TEMP ?? process.cwd()}/t3-opencode-provider-no-go`;
 
 const makeOpenCodeSettings = (overrides?: Partial<OpenCodeSettings>): OpenCodeSettings =>
   decodeOpenCodeSettings({
@@ -191,9 +206,10 @@ const checkProvider = Effect.fn("checkProvider")(function* (
         ...(settings.serverPassword ? { serverPassword: settings.serverPassword } : {}),
         ...(environment ? { environment } : {}),
       });
-      return yield* checkOpenCodeProviderStatus(settings, cwd, environment).pipe(
-        Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-      );
+      return yield* checkOpenCodeProviderStatus(settings, cwd, {
+        XDG_DATA_HOME: NO_GO_DATA_HOME,
+        ...environment,
+      }).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
     }),
   );
 });
