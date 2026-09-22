@@ -470,3 +470,26 @@ export function listMuseModels(
       }),
   });
 }
+
+/** The host's last-observed subscription usage, with no model call. */
+export const MUSE_USAGE_READ_METHOD = "usage/read" as const;
+
+/**
+ * Raw `usage/read` query. The pinned SDK typings predate the method, but
+ * `Connection.command` takes a plain method string, so it is called generically
+ * and the payload is read structurally by the usage mapper.
+ */
+export function readMuseUsage(
+  host: Pick<MuseHost, "connection">,
+): Effect.Effect<Record<string, unknown>, ProviderAdapterRequestError> {
+  return Effect.tryPromise({
+    try: () => host.connection.command(MUSE_USAGE_READ_METHOD, {}),
+    catch: (cause) =>
+      new ProviderAdapterRequestError({
+        provider: DRIVER,
+        method: MUSE_USAGE_READ_METHOD,
+        detail: `Could not read Muse usage: ${cause instanceof Error ? cause.message : String(cause)}`,
+        ...(cause instanceof Error ? { cause } : {}),
+      }),
+  });
+}

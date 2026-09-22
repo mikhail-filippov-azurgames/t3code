@@ -37,14 +37,17 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
 import {
   listMuseModels,
+  readMuseUsage,
   readMuseVersionPin,
   resolveMuseServeBinary,
   spawnMuseHost,
   stripMuseApiKeys,
   type MuseModelRow,
 } from "./MuseMspRuntime.ts";
+import { museUsageToLimits } from "./museUsageLimits.ts";
 
 const MUSE_PRESENTATION = {
   displayName: "Muse Code",
@@ -275,17 +278,39 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
     });
     const host = yield* spawnMuseHost({ museBin, env: hostEnv.env });
     yield* Effect.addFinalizer(() => Effect.promise(() => host.close()));
-    return yield* listMuseModels(host);
+    // One host serves both reads, and each tolerates the other's failure: a
+    // failed model list must not hide usage, and a failed usage read must not
+    // fail the catalog probe.
+    const models = yield* listMuseModels(host).pipe(Effect.exit);
+    const usage = yield* readMuseUsage(host).pipe(Effect.result);
+    return { models, usage };
   }).pipe(Effect.scoped, Effect.timeoutOption(CATALOG_PROBE_TIMEOUT_MS), Effect.exit);
-  const catalogRows = Exit.isSuccess(catalogExit)
-    ? Option.getOrElse(catalogExit.value, () => [])
-    : [];
-  const catalogFailed = Exit.isFailure(catalogExit) || Option.isNone(catalogExit.value);
+  const catalogProbe = Exit.isSuccess(catalogExit)
+    ? Option.getOrUndefined(catalogExit.value)
+    : undefined;
+  const catalogRows =
+    catalogProbe !== undefined && Exit.isSuccess(catalogProbe.models)
+      ? catalogProbe.models.value
+      : [];
+  const catalogFailed = catalogProbe === undefined || Exit.isFailure(catalogProbe.models);
   if (catalogFailed) {
     yield* Effect.logWarning("Muse MSP catalog probe failed or timed out.", {
       errorTag: Exit.isFailure(catalogExit) ? causeErrorTag(catalogExit.cause) : "Timeout",
     });
   }
+
+  // Subscription windows ride the same host. An API-key environment cannot
+  // report them, and a failed or empty read publishes `probeFailed` so the
+  // pipeline keeps the last good bars instead of clearing them.
+  const usageLimits = hostEnv.hadApiKey
+    ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
+    : museUsageToLimits({
+        usage:
+          catalogProbe !== undefined && Result.isSuccess(catalogProbe.usage)
+            ? catalogProbe.usage.success
+            : undefined,
+        checkedAt,
+      });
 
   const discoveredModels = museModelsFromRows(catalogRows);
   const models =
@@ -310,6 +335,7 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
         auth: { status: "unknown" },
         message:
           "Muse instance environment carries an API key; subscription provenance is unclear.",
+        usageLimits,
       },
     });
   }
@@ -328,6 +354,7 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
         auth,
         message:
           "Muse CLI is installed but the subscription host did not answer. Run `muse login`.",
+        usageLimits,
       },
     });
   }
@@ -347,6 +374,7 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
       version,
       status: "ready",
       auth,
+      usageLimits,
     },
   });
 });

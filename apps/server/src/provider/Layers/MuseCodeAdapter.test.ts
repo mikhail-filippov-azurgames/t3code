@@ -1,15 +1,27 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 
+import type { TurnOutcome } from "@muse-code/sdk";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
+import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
+  MUSE_LIVENESS_PROBE_METHOD,
+  MUSE_LIVENESS_PROBE_TIMEOUT_MS,
+  MUSE_MAX_CONSECUTIVE_RESPAWNS,
+  MUSE_TURN_SILENCE_TIMEOUT_MS,
+  awaitMuseHostStall,
+  awaitMuseTurn,
   makeMuseTurnIdleWatchdog,
   museApprovalModeForRuntimeMode,
   museChoiceForDecision,
   museEffortForSelection,
+  museHostLivenessProbe,
+  museRespawnDecision,
+  museStallOutcome,
   mspErrorText,
   museItemLifecycle,
   museNeedsElevatedHost,
@@ -256,6 +268,155 @@ describe("makeMuseTurnIdleWatchdog", () => {
       expect(fiber.pollUnsafe()).toBeUndefined();
       yield* TestClock.adjust("1000 millis");
       expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
+});
+
+describe("museRespawnDecision", () => {
+  it("allows a respawn up to the cap, then reports the provider unhealthy", () => {
+    expect(museRespawnDecision(0)).toEqual({ respawn: true, unhealthy: false });
+    expect(museRespawnDecision(MUSE_MAX_CONSECUTIVE_RESPAWNS - 1)).toEqual({
+      respawn: true,
+      unhealthy: false,
+    });
+    expect(museRespawnDecision(MUSE_MAX_CONSECUTIVE_RESPAWNS)).toEqual({
+      respawn: false,
+      unhealthy: true,
+    });
+    expect(museRespawnDecision(MUSE_MAX_CONSECUTIVE_RESPAWNS + 4)).toEqual({
+      respawn: false,
+      unhealthy: true,
+    });
+  });
+});
+
+describe("museStallOutcome", () => {
+  it("names the stall and the continuation when the host will be respawned", () => {
+    const outcome = museStallOutcome({ dedicated: true, respawn: true, priorRespawns: 0 });
+    expect(outcome.stopReason).toBe("Muse host stalled.");
+    expect(outcome.unhealthy).toBe(false);
+    expect(outcome.detail).toContain("continuing the turn");
+  });
+
+  it("surfaces provider-unhealthy once the respawn cap is reached", () => {
+    const outcome = museStallOutcome({ dedicated: true, respawn: false, priorRespawns: 3 });
+    expect(outcome.stopReason).toBe("Muse host stalled (provider unhealthy).");
+    expect(outcome.unhealthy).toBe(true);
+    expect(outcome.detail).toContain("provider unhealthy");
+  });
+
+  it("keeps the stall reason when a shared host cannot be restarted", () => {
+    const outcome = museStallOutcome({ dedicated: false, respawn: true, priorRespawns: 0 });
+    expect(outcome.stopReason).toBe("Muse host stalled.");
+    expect(outcome.unhealthy).toBe(false);
+    expect(outcome.detail).toContain("shared");
+  });
+});
+
+describe("museHostLivenessProbe", () => {
+  it.effect("treats an answered probe as alive", () =>
+    Effect.gen(function* () {
+      const methods: Array<string> = [];
+      const alive = yield* museHostLivenessProbe({
+        connection: {
+          command: (method) => {
+            methods.push(method);
+            return Promise.resolve({ ok: true });
+          },
+        },
+      });
+      expect(alive).toBe(true);
+      expect(methods).toEqual([MUSE_LIVENESS_PROBE_METHOD]);
+    }),
+  );
+
+  it.effect("treats a rejected probe as alive: the host still answered", () =>
+    Effect.gen(function* () {
+      const alive = yield* museHostLivenessProbe({
+        connection: { command: () => Promise.reject(new Error("unsupported method")) },
+      });
+      expect(alive).toBe(true);
+    }),
+  );
+
+  it.effect("reports an unanswered probe as unresponsive after the deadline", () =>
+    Effect.gen(function* () {
+      const fiber = yield* museHostLivenessProbe({
+        connection: { command: () => new Promise<never>(() => {}) },
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.millis(MUSE_LIVENESS_PROBE_TIMEOUT_MS - 1));
+      expect(fiber.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust(Duration.millis(1));
+      expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
+});
+
+describe("awaitMuseHostStall", () => {
+  it.effect("does not settle while a long-running host keeps answering the probe", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(MUSE_TURN_SILENCE_TIMEOUT_MS);
+      const fiber = yield* awaitMuseHostStall({
+        watchdog,
+        probeHostLiveness: Effect.succeed(true),
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS * 6));
+      expect(fiber.pollUnsafe()).toBeUndefined();
+    }),
+  );
+
+  it.effect("settles once the silence window elapses with an unanswered probe", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(MUSE_TURN_SILENCE_TIMEOUT_MS);
+      const fiber = yield* awaitMuseHostStall({
+        watchdog,
+        probeHostLiveness: Effect.succeed(false),
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS - 1));
+      expect(fiber.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust(Duration.millis(1));
+      expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
+});
+
+describe("awaitMuseTurn", () => {
+  it.effect("returns the host terminal when the turn completes", () =>
+    Effect.gen(function* () {
+      const outcome = yield* awaitMuseTurn({
+        drainDeltas: Effect.void,
+        awaitTerminal: Effect.succeed({ kind: "terminalUnknown" } as TurnOutcome),
+        awaitStall: Effect.never,
+      });
+      expect(outcome.source).toBe("terminal");
+    }),
+  );
+
+  it.effect("settles a failed delta stream instead of waiting forever", () =>
+    Effect.gen(function* () {
+      const outcome = yield* awaitMuseTurn({
+        drainDeltas: Effect.fail(
+          new ProviderAdapterRequestError({
+            provider: "museCode",
+            method: "item/delta",
+            detail: "stream broke",
+          }),
+        ),
+        awaitTerminal: Effect.never,
+        awaitStall: Effect.never,
+      });
+      expect(outcome.source).toBe("streamFailed");
+    }),
+  );
+
+  it.effect("prefers the host-stall outcome over a hanging stream", () =>
+    Effect.gen(function* () {
+      const outcome = yield* awaitMuseTurn({
+        drainDeltas: Effect.never,
+        awaitTerminal: Effect.never,
+        awaitStall: Effect.succeed("stalled"),
+      });
+      expect(outcome.source).toBe("stalled");
     }),
   );
 });
