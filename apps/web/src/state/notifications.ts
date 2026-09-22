@@ -4,8 +4,9 @@
  * The inbox unifies every notice the client can observe: calendar run notices
  * arrive on the server stream, and thread events are derived from shell
  * transitions. There is no server read cursor or history, so read state and
- * durability belong to this browser. Each entry expires 24 hours after it was
- * observed, whether it came from the server or a local transition.
+ * durability belong to this browser. Important entries expire 24 hours after
+ * they were observed; routine ones (a thread completing, a run merely starting)
+ * expire sooner and are capped, so they cannot bury the important kinds.
  *
  * @module state/notifications
  */
@@ -14,6 +15,9 @@ import { useEffect } from "react";
 import { create } from "zustand";
 
 export type AppNoticeKind = "calendar" | "thread-completed" | "error" | "other";
+
+/** Routine notices are informational volume; important notices are the reason the inbox exists. */
+export type AppNoticePriority = "routine" | "important";
 
 export interface AppNotice {
   /** Stable identity; a redelivered or repeated event must not duplicate a row. */
@@ -25,10 +29,20 @@ export interface AppNotice {
   readonly at: string;
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId | null;
+  /** Omitted means important: keep the full retention and never cap it away. */
+  readonly priority?: AppNoticePriority;
+  /** Collapsed routine events this row summarizes; absent means a single event. */
+  readonly count?: number;
 }
 
-/** Entries live this long after `at`; the boundary instant itself is expired. */
+/** Important entries live this long after `at`; the boundary instant itself is expired. */
 export const NOTICE_RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** Routine entries expire on the short timer instead. */
+export const ROUTINE_NOTICE_RETENTION_MS = 2 * 60 * 60 * 1000;
+
+/** Newest routine rows kept; important kinds are never capped. */
+export const MAX_ROUTINE_NOTICES = 20;
 
 /** Sweep cadence for the retention timer mounted by {@link useNoticeRetention}. */
 export const NOTICE_PURGE_INTERVAL_MS = 60 * 60 * 1000;
@@ -42,10 +56,18 @@ const APP_NOTICE_KINDS: ReadonlySet<string> = new Set([
   "other",
 ]);
 
+export function isRoutineNotice(notice: AppNotice): boolean {
+  return notice.priority === "routine";
+}
+
+export function noticeRetentionMs(notice: AppNotice): number {
+  return isRoutineNotice(notice) ? ROUTINE_NOTICE_RETENTION_MS : NOTICE_RETENTION_MS;
+}
+
 export function isNoticeExpired(notice: AppNotice, now: number): boolean {
   const at = Date.parse(notice.at);
   if (!Number.isFinite(at)) return true;
-  return now - at >= NOTICE_RETENTION_MS;
+  return now - at >= noticeRetentionMs(notice);
 }
 
 function compareInstantsDesc(left: string, right: string): number {
@@ -62,6 +84,18 @@ export function sortNoticesNewestFirst(notices: ReadonlyArray<AppNotice>): AppNo
     if (order !== 0) return order;
     return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
   });
+}
+
+/**
+ * Keeps at most {@link MAX_ROUTINE_NOTICES} routine rows, dropping the oldest.
+ * Important rows are never dropped, which is the point of the priority split.
+ */
+export function capRoutineNotices(notices: ReadonlyArray<AppNotice>): AppNotice[] {
+  const routine = notices.filter(isRoutineNotice);
+  if (routine.length <= MAX_ROUTINE_NOTICES) return [...notices];
+  const keptRoutine = sortNoticesNewestFirst(routine).slice(0, MAX_ROUTINE_NOTICES);
+  const important = notices.filter((notice) => !isRoutineNotice(notice));
+  return sortNoticesNewestFirst([...important, ...keptRoutine]);
 }
 
 /** Whether a notice is newer than the device's read cursor; null means everything. */
@@ -95,7 +129,14 @@ function isAppNotice(value: unknown): value is AppNotice {
     typeof candidate.kind === "string" &&
     APP_NOTICE_KINDS.has(candidate.kind) &&
     typeof candidate.title === "string" &&
-    typeof candidate.at === "string"
+    typeof candidate.at === "string" &&
+    (candidate.priority === undefined ||
+      candidate.priority === "routine" ||
+      candidate.priority === "important") &&
+    (candidate.count === undefined ||
+      (typeof candidate.count === "number" &&
+        Number.isFinite(candidate.count) &&
+        candidate.count > 0))
   );
 }
 
@@ -120,7 +161,9 @@ export function readPersistedInbox(): NoticeInbox {
       : [];
     const lastReadAt = typeof parsed.lastReadAt === "string" ? parsed.lastReadAt : null;
     return {
-      notices: sortNoticesNewestFirst(notices.filter((notice) => !isNoticeExpired(notice, now))),
+      notices: capRoutineNotices(
+        sortNoticesNewestFirst(notices.filter((notice) => !isNoticeExpired(notice, now))),
+      ),
       lastReadAt,
     };
   } catch {
@@ -149,6 +192,27 @@ export interface NotificationsStoreState extends NoticeInbox {
   readonly purgeExpired: () => void;
 }
 
+/**
+ * Collapses a routine group row: the incoming event adds to the existing count
+ * and, when it is the newest, replaces the "latest name" a summary shows.
+ */
+function collapseGroupNotice(prior: AppNotice | undefined, incoming: AppNotice): AppNotice {
+  const count = (prior?.count ?? 0) + (incoming.count ?? 1);
+  const priorMs = prior === undefined ? Number.NaN : Date.parse(prior.at);
+  const incomingMs = Date.parse(incoming.at);
+  const incomingIsNewest =
+    prior === undefined || !Number.isFinite(priorMs) || !Number.isFinite(incomingMs)
+      ? true
+      : incomingMs >= priorMs;
+  return {
+    ...incoming,
+    count,
+    title: formatThreadCompletedGroupTitle(count),
+    body: incomingIsNewest ? incoming.body : (prior?.body ?? incoming.body),
+    at: incomingIsNewest ? incoming.at : (prior?.at ?? incoming.at),
+  };
+}
+
 export const useNotificationsStore = create<NotificationsStoreState>((set) => {
   const persisted = readPersistedInbox();
   return {
@@ -158,12 +222,19 @@ export const useNotificationsStore = create<NotificationsStoreState>((set) => {
       set((state) => {
         const now = Date.now();
         if (isNoticeExpired(notice, now)) return state;
-        const notices = sortNoticesNewestFirst([
-          notice,
-          ...state.notices.filter(
-            (candidate) => candidate.key !== notice.key && !isNoticeExpired(candidate, now),
-          ),
-        ]);
+        const rest = state.notices.filter(
+          (candidate) => candidate.key !== notice.key && !isNoticeExpired(candidate, now),
+        );
+        // A row that carries a count is a summary; a repeated key accumulates
+        // instead of replacing, so many children collapse into one row.
+        const entry =
+          notice.count === undefined
+            ? notice
+            : collapseGroupNotice(
+                state.notices.find((candidate) => candidate.key === notice.key),
+                notice,
+              );
+        const notices = capRoutineNotices(sortNoticesNewestFirst([entry, ...rest]));
         writePersistedInbox({ notices, lastReadAt: state.lastReadAt });
         return { notices };
       }),
@@ -180,7 +251,7 @@ export const useNotificationsStore = create<NotificationsStoreState>((set) => {
         for (const notice of incoming) {
           if (!isNoticeExpired(notice, now)) byKey.set(notice.key, notice);
         }
-        const notices = sortNoticesNewestFirst([...byKey.values()]);
+        const notices = capRoutineNotices(sortNoticesNewestFirst([...byKey.values()]));
         writePersistedInbox({ notices, lastReadAt: state.lastReadAt });
         return { notices };
       }),
@@ -200,8 +271,9 @@ export const useNotificationsStore = create<NotificationsStoreState>((set) => {
     purgeExpired: () =>
       set((state) => {
         const now = Date.now();
-        const notices = state.notices.filter((notice) => !isNoticeExpired(notice, now));
-        if (notices.length === state.notices.length) return state;
+        const surviving = state.notices.filter((notice) => !isNoticeExpired(notice, now));
+        if (surviving.length === state.notices.length) return state;
+        const notices = capRoutineNotices(surviving);
         writePersistedInbox({ notices, lastReadAt: state.lastReadAt });
         return { notices };
       }),
@@ -226,6 +298,7 @@ export function threadNotice(input: {
   readonly at: string;
   readonly title: string;
   readonly body?: string | null;
+  readonly priority?: AppNoticePriority;
 }): AppNotice {
   return {
     key: `${input.environmentId}:${input.threadId}:${input.event}:${input.token ?? input.at}`,
@@ -235,6 +308,45 @@ export function threadNotice(input: {
     at: input.at,
     environmentId: input.environmentId,
     threadId: input.threadId,
+    ...(input.priority === undefined ? {} : { priority: input.priority }),
+  };
+}
+
+export const THREAD_COMPLETED_GROUP_KEY_PREFIX = "thread-completed-group:";
+
+/** One row per parent thread; children of the same parent collapse into it. */
+export function threadCompletedGroupKey(
+  parentEnvironmentId: EnvironmentId,
+  parentThreadId: ThreadId,
+): string {
+  return `${THREAD_COMPLETED_GROUP_KEY_PREFIX}${parentEnvironmentId}:${parentThreadId}`;
+}
+
+export function formatThreadCompletedGroupTitle(count: number): string {
+  return count === 1 ? "1 child thread completed" : `${count} child threads completed`;
+}
+
+/**
+ * Summary row for routine child completions. It stores the parent's own
+ * coordinates so the row's action opens the parent, and `count: 1` marks it as
+ * a group, which makes `appendNotice` accumulate into it instead of replacing.
+ */
+export function threadCompletedGroupNotice(input: {
+  readonly parentEnvironmentId: EnvironmentId;
+  readonly parentThreadId: ThreadId;
+  readonly childTitle: string;
+  readonly at: string;
+}): AppNotice {
+  return {
+    key: threadCompletedGroupKey(input.parentEnvironmentId, input.parentThreadId),
+    kind: "thread-completed",
+    title: formatThreadCompletedGroupTitle(1),
+    body: input.childTitle,
+    at: input.at,
+    environmentId: input.parentEnvironmentId,
+    threadId: input.parentThreadId,
+    priority: "routine",
+    count: 1,
   };
 }
 

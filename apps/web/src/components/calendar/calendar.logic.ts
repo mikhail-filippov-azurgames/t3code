@@ -377,5 +377,7 @@ export function calendarRunNoticeToAppNotice(
     at: notice.observedAt,
     environmentId,
     threadId: notice.threadId ?? null,
+    // A run merely starting is routine; a missed run is the important kind.
+    ...(notice.status === "started" ? { priority: "routine" as const } : {}),
   };
 }

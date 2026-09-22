@@ -2,12 +2,16 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
+  MAX_ROUTINE_NOTICES,
   NOTICE_RETENTION_MS,
+  ROUTINE_NOTICE_RETENTION_MS,
   isNoticeExpired,
   isNoticeUnread,
   readPersistedInbox,
   selectUnreadNoticeCount,
   sortNoticesNewestFirst,
+  threadCompletedGroupKey,
+  threadCompletedGroupNotice,
   threadNotice,
   useNotificationsStore,
   type AppNotice,
@@ -205,5 +209,72 @@ describe("persisted inbox", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("routine completion grouping", () => {
+  const parentEnvironmentId = EnvironmentId.make("env-1");
+  const parentThreadId = ThreadId.make("parent-1");
+  const group = (childTitle: string, at: string) =>
+    threadCompletedGroupNotice({ parentEnvironmentId, parentThreadId, childTitle, at });
+
+  it("collapses three completions under one parent into one row with count and latest name", () => {
+    const first = ago(3_000);
+    const second = ago(2_000);
+    const third = ago(1_000);
+    const append = useNotificationsStore.getState().appendNotice;
+    append(group("Child one", first));
+    append(group("Child two", second));
+    append(group("Child three", third));
+
+    const notices = useNotificationsStore.getState().notices;
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.key).toBe(threadCompletedGroupKey(parentEnvironmentId, parentThreadId));
+    expect(notices[0]?.count).toBe(3);
+    expect(notices[0]?.title).toBe("3 child threads completed");
+    expect(notices[0]?.body).toBe("Child three");
+    expect(notices[0]?.at).toBe(third);
+  });
+
+  it("counts grouped rows, not children, in the unread badge", () => {
+    const append = useNotificationsStore.getState().appendNotice;
+    append(group("Child one", ago(3_000)));
+    append(group("Child two", ago(2_000)));
+    append(group("Child three", ago(1_000)));
+    append(notice("failure", ago(500), { kind: "error" }));
+
+    expect(selectUnreadNoticeCount(useNotificationsStore.getState())).toBe(2);
+  });
+
+  it("keeps important notices as their own row instead of merging them into the group", () => {
+    const append = useNotificationsStore.getState().appendNotice;
+    append(group("Child one", ago(3_000)));
+    append(group("Child two", ago(2_000)));
+    append(notice("env-1:child-9:failed:turn-9", ago(1_000), { kind: "error" }));
+
+    const notices = useNotificationsStore.getState().notices;
+    expect(notices).toHaveLength(2);
+    expect(notices.find((entry) => entry.count !== undefined)?.count).toBe(2);
+    expect(notices.some((entry) => entry.key === "env-1:child-9:failed:turn-9")).toBe(true);
+  });
+
+  it("caps routine rows but never prunes an important one", () => {
+    const append = useNotificationsStore.getState().appendNotice;
+    append(notice("failure", ago(60_000), { kind: "error" }));
+    for (let index = 0; index < MAX_ROUTINE_NOTICES + 5; index += 1) {
+      append(notice(`routine-${index}`, ago(120_000 - index * 1_000), { priority: "routine" }));
+    }
+
+    const notices = useNotificationsStore.getState().notices;
+    expect(notices.some((entry) => entry.key === "failure")).toBe(true);
+    expect(notices.filter((entry) => entry.priority === "routine")).toHaveLength(
+      MAX_ROUTINE_NOTICES,
+    );
+  });
+
+  it("expires routine notices at two hours but important ones at twenty-four", () => {
+    const past = new Date(NOW - ROUTINE_NOTICE_RETENTION_MS - 1).toISOString();
+    expect(isNoticeExpired(notice("important", past, { kind: "error" }), NOW)).toBe(false);
+    expect(isNoticeExpired(notice("routine", past, { priority: "routine" }), NOW)).toBe(true);
   });
 });

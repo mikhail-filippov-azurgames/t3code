@@ -2,9 +2,10 @@
  * Notices page: the durable device inbox, newest first.
  *
  * Every notice the client observed — calendar runs, thread completions,
- * failures and other attention states — lands here and expires 24 hours after
- * it was observed. The sidebar badge is cleared when it is pressed, not when
- * this page is opened.
+ * failures and other attention states — lands here. Important ones expire 24
+ * hours after they were observed; routine completions expire sooner and child
+ * completions under one parent collapse into a single summary row. The sidebar
+ * badge is cleared when it is pressed, not when this page is opened.
  *
  * @module components/calendar/NoticesPage
  */
@@ -110,6 +111,11 @@ export function NoticesPage() {
                         <Badge size="sm" variant={presentation.variant}>
                           {presentation.label}
                         </Badge>
+                        {notice.count !== undefined && notice.count > 1 ? (
+                          <Badge size="sm" variant="secondary">
+                            {`${notice.count}×`}
+                          </Badge>
+                        ) : null}
                       </div>
                       {notice.body ? (
                         <span className="truncate text-xs text-muted-foreground">
@@ -131,7 +137,7 @@ export function NoticesPage() {
                               })
                             }
                           >
-                            Open thread
+                            {notice.count === undefined ? "Open thread" : "Open parent"}
                           </Button>
                         ) : null}
                       </div>

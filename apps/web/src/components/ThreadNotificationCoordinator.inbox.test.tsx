@@ -9,6 +9,12 @@ const state = vi.hoisted(() => ({
   focused: true,
   turnState: "running" as string,
   completedAt: null as string | null,
+  delegationParent: null as null | {
+    parentThreadId: string;
+    parentEnvironmentId: string;
+    role: string;
+  },
+  threads: null as null | Array<Record<string, unknown>>,
   toast: vi.fn(() => "toast-1"),
   navigate: vi.fn(),
   sound: vi.fn(),
@@ -18,7 +24,7 @@ vi.mock("@effect/atom-react", () => ({
   useAtomValue: () => ({
     status: "live",
     snapshot: Option.some({
-      threads: [
+      threads: state.threads ?? [
         {
           id: "thread-1",
           title: "Fix the login form",
@@ -31,6 +37,7 @@ vi.mock("@effect/atom-react", () => ({
             state: state.turnState,
             completedAt: state.completedAt,
           },
+          delegationParent: state.delegationParent,
         },
       ],
     }),
@@ -58,7 +65,7 @@ vi.mock("../threadNotifications", async (importOriginal) => ({
 vi.mock("./ui/toast", () => ({ toastManager: { add: state.toast, close: vi.fn() } }));
 
 import { ThreadNotificationCoordinator } from "./ThreadNotificationCoordinator";
-import { useNotificationsStore } from "../state/notifications";
+import { selectUnreadNoticeCount, useNotificationsStore } from "../state/notifications";
 
 let renderer: ReactTestRenderer | undefined;
 
@@ -76,6 +83,8 @@ beforeEach(() => {
   state.focused = true;
   state.turnState = "running";
   state.completedAt = null;
+  state.delegationParent = null;
+  state.threads = null;
   useNotificationsStore.setState({ notices: [], lastReadAt: null });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("window", new EventTarget());
@@ -146,4 +155,76 @@ it("keeps collecting notices while all alerts are off", async () => {
   expect(notices[0]?.key).toBe("env-1:thread-1:completed:turn-1");
   expect(state.toast).not.toHaveBeenCalled();
   expect(state.sound).not.toHaveBeenCalled();
+});
+
+function child(id: string, title: string, completedAt: string | null) {
+  return {
+    id,
+    title,
+    archivedAt: null,
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    session: null,
+    latestTurn: {
+      turnId: `turn-${id}`,
+      state: completedAt === null ? "running" : "completed",
+      completedAt,
+    },
+    delegationParent: {
+      parentThreadId: "parent-1",
+      parentEnvironmentId: "env-1",
+      role: "implementation",
+    },
+  };
+}
+
+it("collapses three delegated child completions into one summary row with the latest name", async () => {
+  state.threads = [
+    child("child-1", "Child one", null),
+    child("child-2", "Child two", null),
+    child("child-3", "Child three", null),
+  ];
+  await render();
+  state.threads = [
+    child("child-1", "Child one", new Date(Date.now() - 3_000).toISOString()),
+    child("child-2", "Child two", new Date(Date.now() - 2_000).toISOString()),
+    child("child-3", "Child three", new Date(Date.now() - 1_000).toISOString()),
+  ];
+  await render();
+
+  const notices = useNotificationsStore.getState().notices;
+  expect(notices).toHaveLength(1);
+  expect(notices[0]?.count).toBe(3);
+  expect(notices[0]?.title).toBe("3 child threads completed");
+  expect(notices[0]?.body).toBe("Child three");
+  expect(notices[0]?.key).toBe("thread-completed-group:env-1:parent-1");
+  expect(selectUnreadNoticeCount(useNotificationsStore.getState())).toBe(1);
+});
+
+it("keeps a delegated child failure as its own row beside the completion group", async () => {
+  state.threads = [
+    child("child-1", "Child one", null),
+    child("child-2", "Child two", null),
+    child("child-3", "Child three", null),
+    child("child-4", "Child four", null),
+  ];
+  await render();
+  state.threads = [
+    child("child-1", "Child one", new Date(Date.now() - 3_000).toISOString()),
+    child("child-2", "Child two", new Date(Date.now() - 2_000).toISOString()),
+    child("child-3", "Child three", new Date(Date.now() - 1_000).toISOString()),
+    {
+      ...child("child-4", "Child four", null),
+      latestTurn: { turnId: "turn-child-4", state: "error", completedAt: null },
+    },
+  ];
+  await render();
+
+  const notices = useNotificationsStore.getState().notices;
+  expect(notices).toHaveLength(2);
+  expect(notices.find((entry) => entry.count !== undefined)?.count).toBe(3);
+  expect(notices.some((entry) => entry.kind === "error" && entry.title === "Thread failed")).toBe(
+    true,
+  );
+  expect(selectUnreadNoticeCount(useNotificationsStore.getState())).toBe(2);
 });

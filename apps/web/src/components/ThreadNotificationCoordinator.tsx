@@ -9,6 +9,7 @@ import { useEnvironments } from "../state/environments";
 import { environmentShell } from "../state/shell";
 import { useCalendarStore } from "../state/calendar";
 import {
+  threadCompletedGroupNotice,
   threadNotice,
   useNotificationsStore,
   type ThreadNoticeEvent,
@@ -257,20 +258,38 @@ function EnvironmentNotifications({
             : status === "approval"
               ? "approval"
               : "input";
-      appendNotice(
-        threadNotice({
-          environmentId,
-          threadId: thread.id,
-          event,
-          token: kind === "completion" ? (thread.latestTurn?.turnId ?? null) : attention,
-          at:
-            kind === "completion" && Number.isFinite(completedAt)
-              ? new Date(completedAt).toISOString()
-              : new Date().toISOString(),
-          title,
-          body: thread.title,
-        }),
-      );
+      const at =
+        kind === "completion" && Number.isFinite(completedAt)
+          ? new Date(completedAt).toISOString()
+          : new Date().toISOString();
+      const delegationParent = thread.delegationParent ?? null;
+      // A delegated child's completion is routine orchestration volume: every
+      // completion under one parent collapses into a single summary row, so the
+      // parent subtree cannot drown the important kinds. Only the direct child
+      // event groups; failures, input and approvals stay individual rows.
+      if (kind === "completion" && delegationParent !== null) {
+        appendNotice(
+          threadCompletedGroupNotice({
+            parentEnvironmentId: delegationParent.parentEnvironmentId as EnvironmentId,
+            parentThreadId: delegationParent.parentThreadId,
+            childTitle: thread.title,
+            at,
+          }),
+        );
+      } else {
+        appendNotice(
+          threadNotice({
+            environmentId,
+            threadId: thread.id,
+            event,
+            token: kind === "completion" ? (thread.latestTurn?.turnId ?? null) : attention,
+            at,
+            title,
+            body: thread.title,
+            ...(kind === "completion" ? { priority: "routine" as const } : {}),
+          }),
+        );
+      }
       if (hasNotificationSound(mode)) {
         void playNotificationSound(kind, () =>
           hasNotificationSound(getClientSettings().notificationMode),
