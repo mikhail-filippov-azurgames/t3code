@@ -6,6 +6,7 @@ import ReactMarkdown from "react-markdown";
 import {
   extractMarkdownLinkHrefs,
   isWindowsDrivePathHref,
+  mightBeDirectoryTargetPath,
   resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
   resolveMarkdownFileLinkTarget,
@@ -210,14 +211,21 @@ describe("resolveMarkdownFileLinkTarget", () => {
   });
 
   it("resolves relative spaced folders from the markdown renderer", () => {
+    const href = renderMarkdownLinkHref("[folder](<docs/My Folder/checklist.xml>)");
+
+    expect(href).toBe("docs/My%20Folder/checklist.xml");
+    expect(resolveMarkdownFileLinkMeta(href, "/repo/project")).toMatchObject({
+      targetPath: "/repo/project/docs/My Folder/checklist.xml",
+      workspaceRelativePath: "docs/My Folder/checklist.xml",
+      basename: "checklist.xml",
+    });
+  });
+
+  it("leaves an extensionless relative folder as plain text", () => {
     const href = renderMarkdownLinkHref("[folder](<docs/My Folder>)");
 
     expect(href).toBe("docs/My%20Folder");
-    expect(resolveMarkdownFileLinkMeta(href, "/repo/project")).toMatchObject({
-      targetPath: "/repo/project/docs/My Folder",
-      workspaceRelativePath: "docs/My Folder",
-      basename: "My Folder",
-    });
+    expect(resolveMarkdownFileLinkMeta(href, "/repo/project")).toBeNull();
   });
 
   it.each(["md", "html", "xml"])(
@@ -520,5 +528,55 @@ describe("directory paths with a trailing separator", () => {
   it("does not produce an empty label for the filesystem root", () => {
     const meta = resolveMarkdownFileLinkMeta("/tmp/", "/repo/project");
     expect(meta?.basename).not.toBe("");
+  });
+});
+
+describe("relative multi-segment evidence", () => {
+  it("does not link a model id with a version-like tail", () => {
+    expect(resolveInlineCodeFileLinkMeta("opencode-go/deepseek-v4.1-flash", "/repo")).toBeNull();
+    expect(resolveMarkdownFileLinkMeta("opencode-go/deepseek-v4.1-flash", "/repo")).toBeNull();
+  });
+
+  it("links relative paths with a known extension or an explicit prefix", () => {
+    expect(resolveMarkdownFileLinkMeta("docs/plan.md", "/repo/project")).toMatchObject({
+      targetPath: "/repo/project/docs/plan.md",
+    });
+    expect(
+      resolveMarkdownFileLinkMeta("packages/client-runtime/src/markdownLinks.ts", "/repo/project"),
+    ).toMatchObject({
+      targetPath: "/repo/project/packages/client-runtime/src/markdownLinks.ts",
+    });
+    expect(resolveInlineCodeFileLinkMeta("./scripts/deploy", "/repo/project")).toMatchObject({
+      targetPath: "/repo/project/./scripts/deploy",
+      basename: "deploy",
+    });
+    expect(resolveInlineCodeFileLinkMeta("script.ts:10", "/repo/project")).toMatchObject({
+      targetPath: "/repo/project/script.ts:10",
+    });
+    expect(resolveMarkdownFileLinkMeta("Makefile", "/repo/project")).toMatchObject({
+      targetPath: "/repo/project/Makefile",
+    });
+    expect(resolveInlineCodeFileLinkMeta("Makefile", "/repo/project")).toMatchObject({
+      targetPath: "/repo/project/Makefile",
+    });
+  });
+
+  it("does not link extensionless relative directories or git refs", () => {
+    expect(resolveMarkdownFileLinkMeta("origin/main", "/repo/project")).toBeNull();
+    expect(resolveMarkdownFileLinkMeta("apps/web", "/repo/project")).toBeNull();
+  });
+});
+
+describe("mightBeDirectoryTargetPath", () => {
+  it("flags an extensionless host path as a possible directory", () => {
+    expect(mightBeDirectoryTargetPath("C:\\Users\\User\\.opencontext")).toBe(true);
+    expect(mightBeDirectoryTargetPath("/Users/dara/Downloads/Bike Receipts")).toBe(true);
+    expect(mightBeDirectoryTargetPath("/tmp/favicons/")).toBe(true);
+  });
+
+  it("leaves known files alone", () => {
+    expect(mightBeDirectoryTargetPath("C:\\Users\\User\\.opencontext\\notes.md")).toBe(false);
+    expect(mightBeDirectoryTargetPath("/tmp/Makefile")).toBe(false);
+    expect(mightBeDirectoryTargetPath("/tmp/report.pdf")).toBe(false);
   });
 });
