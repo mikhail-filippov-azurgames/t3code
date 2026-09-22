@@ -192,6 +192,7 @@ import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
+import { resolveOpenContextDoc } from "./opencontext/openContextDocs.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -3802,6 +3803,12 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "workspace" },
+          ),
+        [WS_METHODS.openContextResolveDoc]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.openContextResolveDoc,
+            Effect.promise(() => resolveOpenContextDoc(input.stableId)),
             { "rpc.aggregate": "workspace" },
           ),
         [WS_METHODS.attachmentsCreateUploadUrl]: (input) =>

@@ -28,6 +28,7 @@ import {
   FilesystemBrowseResult,
   FilesystemBrowseError,
 } from "./filesystem.ts";
+import { OpenContextResolveDocInput, OpenContextResolveDocResult } from "./openContext.ts";
 import {
   AgentSessionImportInput,
   AgentSessionImportProjectChangedError,
@@ -330,6 +331,9 @@ export const WS_METHODS = {
   assetsCreateUrl: "assets.createUrl",
   attachmentsCreateUploadUrl: "attachments.createUploadUrl",
   attachmentsDelete: "attachments.delete",
+
+  // OpenContext methods
+  openContextResolveDoc: "openContext.resolveDoc",
 
   // Provider methods
   providerUploadFeedback: "provider.uploadFeedback",
@@ -990,6 +994,12 @@ const WsFilesystemBrowseRpc = Rpc.make(WS_METHODS.filesystemBrowse, {
   error: Schema.Union([FilesystemBrowseError, EnvironmentAuthorizationError]),
 });
 
+const WsOpenContextResolveDocRpc = Rpc.make(WS_METHODS.openContextResolveDoc, {
+  payload: OpenContextResolveDocInput,
+  success: OpenContextResolveDocResult,
+  error: EnvironmentAuthorizationError,
+});
+
 const WsAgentSessionsScanRpc = Rpc.make(WS_METHODS.agentSessionsScan, {
   payload: AgentSessionScanInput,
   success: AgentSessionScanResult,
@@ -1607,6 +1617,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsWriteFileRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
+  WsOpenContextResolveDocRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
   WsAssetsCreateUrlRpc,
