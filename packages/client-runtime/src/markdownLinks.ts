@@ -1,6 +1,10 @@
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
 
 const SLASH_PREFIXED_WINDOWS_DRIVE_PATTERN = /^\/[A-Za-z]:[\\/]/;
+// Agents sometimes put a literal `/absolute/path` marker in front of a host
+// path (`/absolute/path/C:/Users/...`). The marker is not part of the path, so
+// strip it before the drive-slash normalisation reads the target.
+const ABSOLUTE_PATH_MARKER_PATTERN = /^\/absolute\/path\/(?=[A-Za-z]:[\\/])/;
 const RELATIVE_PATH_PREFIX_PATTERN = /^(~\/|\.{1,2}\/)/;
 const RELATIVE_FILE_PATH_PATTERN =
   /^(?:[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*\/)+[A-Za-z0-9._-]+(?: +[A-Za-z0-9._-]+)*(?::\d+){0,2}$/;
@@ -13,7 +17,6 @@ const POSITION_HASH_PATTERN = /^#L(\d+)(?:C(\d+))?$/i;
 const POSITION_ONLY_PATTERN = /^\d+(?::\d+)?$/;
 const INLINE_CODE_DISQUALIFIER_PATTERN = /[\s`]/;
 const PATH_SEPARATOR_PATTERN = /[\\/]/;
-const FILE_EXTENSION_PATTERN = /\.[A-Za-z0-9_-]+$/;
 const NUMERIC_DOTTED_PATTERN = /^\d+(?:\.\d+)+$/;
 // Standard OS and dev-container roots; deliberately excludes app-route-ish
 // prefixes like /app/ or /chat/ so SPA routes never read as files.
@@ -73,6 +76,218 @@ const EXTENSIONLESS_FILE_NAMES = new Set([
   "README",
   "CODEOWNERS",
 ]);
+// Multi-segment relative paths need positive file evidence before they become
+// chips. A loose `/\.[A-Za-z0-9_-]+$/` accepts version-ish tails such as the
+// `1-flash` in a model id (`opencode-go/deepseek-v4.1-flash`), so a relative
+// path without an explicit prefix, a `:line`, or a known extensionless name
+// only counts when its extension is on this list.
+const KNOWN_FILE_EXTENSIONS = new Set([
+  "ai",
+  "apk",
+  "asm",
+  "asp",
+  "aspx",
+  "astro",
+  "avif",
+  "bash",
+  "bat",
+  "bmp",
+  "bz2",
+  "c",
+  "cc",
+  "cfg",
+  "cjs",
+  "class",
+  "clj",
+  "cljs",
+  "cmd",
+  "cob",
+  "conf",
+  "cpp",
+  "cr",
+  "crt",
+  "cs",
+  "csh",
+  "cshtml",
+  "csr",
+  "css",
+  "csv",
+  "cxx",
+  "dart",
+  "db",
+  "der",
+  "dll",
+  "dmg",
+  "doc",
+  "docx",
+  "dylib",
+  "ejs",
+  "el",
+  "elm",
+  "env",
+  "erl",
+  "ex",
+  "exe",
+  "exs",
+  "fish",
+  "flac",
+  "flv",
+  "f90",
+  "f95",
+  "gemspec",
+  "gif",
+  "go",
+  "gql",
+  "gradle",
+  "graphql",
+  "groovy",
+  "gz",
+  "h",
+  "hbs",
+  "hcl",
+  "hh",
+  "hpp",
+  "hrl",
+  "hs",
+  "htm",
+  "html",
+  "hxx",
+  "ico",
+  "ics",
+  "ini",
+  "ipa",
+  "ipynb",
+  "jar",
+  "java",
+  "jl",
+  "jpeg",
+  "jpg",
+  "js",
+  "json",
+  "json5",
+  "jsonc",
+  "jsp",
+  "jsx",
+  "jks",
+  "key",
+  "kt",
+  "kts",
+  "less",
+  "lhs",
+  "lib",
+  "lisp",
+  "lock",
+  "log",
+  "lua",
+  "m",
+  "m4a",
+  "map",
+  "markdown",
+  "md",
+  "mdx",
+  "mjs",
+  "mkv",
+  "mm",
+  "mov",
+  "mp3",
+  "mp4",
+  "mpeg",
+  "mpg",
+  "nim",
+  "nix",
+  "njk",
+  "o",
+  "obj",
+  "ogg",
+  "ogv",
+  "opus",
+  "org",
+  "pas",
+  "pdf",
+  "pem",
+  "php",
+  "p12",
+  "pl",
+  "pm",
+  "png",
+  "pp",
+  "prisma",
+  "proto",
+  "ps1",
+  "psd",
+  "psd1",
+  "psm1",
+  "pt",
+  "pub",
+  "py",
+  "pyi",
+  "r",
+  "rar",
+  "rb",
+  "rkt",
+  "rmd",
+  "rs",
+  "rst",
+  "s",
+  "sass",
+  "scala",
+  "scm",
+  "scss",
+  "sh",
+  "sig",
+  "sql",
+  "sqlite",
+  "sqlite3",
+  "svelte",
+  "svg",
+  "swift",
+  "tar",
+  "tex",
+  "tf",
+  "tfvars",
+  "tgz",
+  "tif",
+  "tiff",
+  "toml",
+  "ts",
+  "tsv",
+  "tsx",
+  "ttf",
+  "txt",
+  "vb",
+  "vbs",
+  "vim",
+  "vue",
+  "war",
+  "wasm",
+  "wav",
+  "webm",
+  "webp",
+  "wma",
+  "wmv",
+  "woff",
+  "woff2",
+  "xls",
+  "xlsx",
+  "xml",
+  "xz",
+  "yaml",
+  "yml",
+  "zsh",
+  "zip",
+  "zst",
+]);
+
+export function isKnownFileExtension(basename: string): boolean {
+  const dotIndex = basename.lastIndexOf(".");
+  if (dotIndex <= 0 || dotIndex === basename.length - 1) return false;
+  return KNOWN_FILE_EXTENSIONS.has(basename.slice(dotIndex + 1).toLowerCase());
+}
+
+export function isKnownExtensionlessFileName(path: string): boolean {
+  return EXTENSIONLESS_FILE_NAMES.has(fileBasename(path));
+}
+
 const SINGLE_LABEL_HOSTNAMES = new Set(["localhost"]);
 // These allowlists avoid classifying dotted directories such as `conf.d/`
 // or filenames such as `Makefile.in:12` as hosts.
@@ -161,13 +376,18 @@ export function inlineCodeFilePathCandidate(codeText: string): string | null {
 
   const candidate = isWindowsAbsolutePath(trimmed) ? trimmed : trimmed.replaceAll("\\", "/");
   const hasPosition = POSITION_SUFFIX_PATTERN.test(candidate);
-  if (!hasPosition && !PATH_SEPARATOR_PATTERN.test(candidate)) return null;
+  const hasSeparator = PATH_SEPARATOR_PATTERN.test(candidate);
 
   const hasExplicitPathShape =
     RELATIVE_PATH_PREFIX_PATTERN.test(candidate) ||
     candidate.startsWith("/") ||
     isWindowsAbsolutePath(candidate);
   if (!hasExplicitPathShape) {
+    // A bare token is only a file reference when it names a conventional
+    // extensionless file; everything else (`node.meta`, `origin/main`) is code.
+    if (!hasPosition && !hasSeparator) {
+      return EXTENSIONLESS_FILE_NAMES.has(candidate) ? candidate : null;
+    }
     const withoutPosition = candidate.replace(POSITION_SUFFIX_PATTERN, "");
     const firstSegment = withoutPosition.split("/")[0] ?? withoutPosition;
     if (looksLikeHostname(firstSegment, hasPosition)) return null;
@@ -176,7 +396,9 @@ export function inlineCodeFilePathCandidate(codeText: string): string | null {
         .replace(/[/\\]+$/, "")
         .split(/[\\/]/)
         .at(-1) ?? "";
-    if (!hasPosition && !FILE_EXTENSION_PATTERN.test(basename)) return null;
+    const hasFileEvidence =
+      hasPosition || isKnownFileExtension(basename) || EXTENSIONLESS_FILE_NAMES.has(basename);
+    if (!hasFileEvidence) return null;
   }
   return candidate;
 }
@@ -273,7 +495,21 @@ function looksLikePosixFilesystemPath(path: string): boolean {
   if (POSIX_FILE_ROOT_PREFIXES.some((prefix) => path.startsWith(prefix))) return true;
   if (POSITION_SUFFIX_PATTERN.test(path)) return true;
   const basename = path.slice(path.lastIndexOf("/") + 1);
-  return EXTENSIONLESS_FILE_NAMES.has(basename) || FILE_EXTENSION_PATTERN.test(basename);
+  return EXTENSIONLESS_FILE_NAMES.has(basename) || isKnownFileExtension(basename);
+}
+
+/**
+ * A relative path with more than one segment must carry file evidence: a
+ * conventional extension, a known extensionless name, or an authored `:line`.
+ * Without one it is prose or a model/route token, not a file.
+ */
+function looksLikeRelativeMultiSegmentFilePath(path: string, authoredPath: string): boolean {
+  if (!RELATIVE_FILE_PATH_PATTERN.test(path)) return false;
+  return (
+    isKnownFileExtension(fileBasename(path)) ||
+    isKnownExtensionlessFileName(path) ||
+    POSITION_SUFFIX_PATTERN.test(authoredPath)
+  );
 }
 
 /**
@@ -284,8 +520,10 @@ function looksLikePosixFilesystemPath(path: string): boolean {
 function looksLikeFilePath(path: string, authoredPath: string): boolean {
   if (isWindowsAbsolutePath(path) || RELATIVE_PATH_PREFIX_PATTERN.test(path)) return true;
   if (path.startsWith("/")) return looksLikePosixFilesystemPath(authoredPath);
-  if (EXTENSIONLESS_FILE_NAMES.has(path)) return true;
-  return RELATIVE_FILE_PATH_PATTERN.test(authoredPath) || RELATIVE_FILE_NAME_PATTERN.test(path);
+  if (!PATH_SEPARATOR_PATTERN.test(path)) {
+    return isKnownExtensionlessFileName(path) || RELATIVE_FILE_NAME_PATTERN.test(path);
+  }
+  return looksLikeRelativeMultiSegmentFilePath(path, authoredPath);
 }
 
 function hasExternalScheme(path: string): boolean {
@@ -307,7 +545,11 @@ export function parseMarkdownFileLink(href: string): FilePathPosition | null {
     (normalized.toLowerCase().startsWith("file:") ? parseFileUrlHref(normalized) : null) ??
     splitMarkdownLinkSearchAndHash(normalized);
   // A percent-encoded drive colon (`/c%3A/`) only becomes strippable once decoded.
-  const path = stripSlashPrefixedWindowsDrive(safeDecodeURIComponent(source.path.trim()));
+  const decodedPath = safeDecodeURIComponent(source.path.trim()).replace(
+    ABSOLUTE_PATH_MARKER_PATTERN,
+    "",
+  );
+  const path = stripSlashPrefixedWindowsDrive(decodedPath);
   const hash = safeDecodeURIComponent(source.hash.trim());
   if (path.length === 0 || hasExternalScheme(path)) return null;
 

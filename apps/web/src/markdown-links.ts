@@ -2,6 +2,8 @@ import {
   fileBasename,
   formatFilePathPosition,
   inlineCodeFilePathCandidate,
+  isKnownExtensionlessFileName,
+  isKnownFileExtension,
   isRelativeFilePath,
   normalizeMarkdownLinkDestination,
   parseFileUrlHref,
@@ -51,6 +53,18 @@ export function shouldOpenMarkdownFileLinkInBrowserByDefault(path: string): bool
 
 export function isWindowsDrivePathHref(href: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(safeDecodeURIComponent(href));
+}
+
+/**
+ * Cheap guard for the click-time directory probe: a path whose basename is a
+ * known file (by extension or by convention) is never worth a server listing.
+ * The probe, not this predicate, decides what is actually a directory.
+ */
+export function mightBeDirectoryTargetPath(path: string): boolean {
+  const withoutTrailingSeparators = path.replace(/[/\\]+$/, "");
+  if (withoutTrailingSeparators.length === 0) return false;
+  const basename = fileBasename(withoutTrailingSeparators);
+  return !isKnownFileExtension(basename) && !isKnownExtensionlessFileName(basename);
 }
 
 export function rewriteMarkdownFileUriHref(href: string | undefined): string | null {

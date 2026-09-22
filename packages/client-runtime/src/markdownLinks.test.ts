@@ -17,6 +17,8 @@ describe("inlineCodeFilePathCandidate", () => {
     ["conf.d/nginx.conf", "conf.d/nginx.conf"],
     ["script.pl:10", "script.pl:10"],
     ["node.meta", null],
+    ["Makefile", "Makefile"],
+    ["opencode-go/deepseek-v4.1-flash", null],
     ["Recorded evidence here: /tmp/image.png", null],
     ["origin/main", null],
     ["127.0.0.1:3000", null],
@@ -80,11 +82,20 @@ describe("parseMarkdownFileLink", () => {
     ["C:%5Crepo%5Cimage.png", "C:\\repo\\image.png"],
     ["\\\\server\\share\\image.png", "\\\\server\\share\\image.png"],
     ["/D:/Programme/t3code/OpenInPicker.tsx", "D:/Programme/t3code/OpenInPicker.tsx"],
+    [
+      "/absolute/path/C:/Users/User/.opencontext/contexts/notes.md",
+      "C:/Users/User/.opencontext/contexts/notes.md",
+    ],
     ["</D:/Programme/t3code/ChatMarkdown.tsx:1>", "D:/Programme/t3code/ChatMarkdown.tsx"],
     ["file:///Users/julius/project/file%2520name.md", "/Users/julius/project/file%20name.md"],
     ["file://server/share/workspace-image.svg", "\\\\server\\share\\workspace-image.svg"],
     ["file://localhost/home/me/notes.md", "/home/me/notes.md"],
     ["apps/mobile/src/index.ts:10", "apps/mobile/src/index.ts"],
+    ["docs/plan.md", "docs/plan.md"],
+    [
+      "packages/client-runtime/src/markdownLinks.ts",
+      "packages/client-runtime/src/markdownLinks.ts",
+    ],
     ["docs/My%20Folder/checklist.xml", "docs/My Folder/checklist.xml"],
     ["Updated%20cutover%20checklist.md", "Updated cutover checklist.md"],
     ["./scripts/deploy", "./scripts/deploy"],
@@ -108,6 +119,9 @@ describe("parseMarkdownFileLink", () => {
     "/app#L1",
     "readme",
     "TODO:12",
+    "opencode-go/deepseek-v4.1-flash",
+    "origin/main",
+    "apps/web",
   ])("does not treat %s as a file", (href) => {
     expect(parseMarkdownFileLink(href)).toBeNull();
   });
@@ -128,6 +142,19 @@ describe("parseMarkdownFileLink", () => {
       path: "\\\\server\\share\\src\\main.ts",
       line: 42,
       column: 7,
+    });
+  });
+
+  it("drops the /absolute/path marker agents put in front of a host path", () => {
+    expect(
+      parseMarkdownFileLink(
+        "/absolute/path/C:/Users/User/.opencontext/contexts/castle-masters/session-findings/report.md",
+      ),
+    ).toEqual({
+      path: "C:/Users/User/.opencontext/contexts/castle-masters/session-findings/report.md",
+    });
+    expect(parseMarkdownFileLink("/absolute/path/C:\\Users\\User\\notes.md")).toEqual({
+      path: "C:\\Users\\User\\notes.md",
     });
   });
 });

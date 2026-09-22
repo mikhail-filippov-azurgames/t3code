@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
@@ -34,7 +34,10 @@ vi.mock("./ui/tooltip", async () => {
     TooltipPopup: () => null,
   };
 });
-vi.mock("../state/use-atom-query-runner", () => ({ useAtomQueryRunner: () => vi.fn() }));
+vi.mock("../state/use-atom-query-runner", () => ({
+  useAtomQueryRunner: () =>
+    vi.fn(async () => ({ _tag: "Success", value: { entries: [], truncated: false } })),
+}));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("../state/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/session")>()),
@@ -793,6 +796,27 @@ describe("ChatMarkdown Windows file links", () => {
   });
 
   it.each([true, false])(
+    "keeps the separator before dot-prefixed segments with parseRawHtml=%s",
+    (parseRawHtml) => {
+      const path = String.raw`C:\Users\User\.opencontext\contexts\kick-the-buddy\execution-plans\in-progress\china-build-migration\chn-02-dependency-foundation-implementation-plan.md`;
+      const html = renderToStaticMarkup(
+        <ChatMarkdown
+          cwd="C:/Users/User/project"
+          environmentId={environmentId}
+          text={`[plan](${path})`}
+          lineBreaks={!parseRawHtml}
+          parseRawHtml={parseRawHtml}
+        />,
+      );
+
+      expect(html).toContain(
+        'href="C:/Users/User/.opencontext/contexts/kick-the-buddy/execution-plans/in-progress/china-build-migration/chn-02-dependency-foundation-implementation-plan.md"',
+      );
+      expect(html).toContain("chat-markdown-file-link");
+    },
+  );
+
+  it.each([true, false])(
     "distinguishes same-named backslash paths with parseRawHtml=%s",
     (parseRawHtml) => {
       const html = renderToStaticMarkup(
@@ -858,5 +882,76 @@ describe("ChatMarkdown Windows file links", () => {
     expect(html).not.toContain("javascript:");
     expect(html).not.toContain("d:alert");
     expect(html).not.toContain("chat-markdown-file-link");
+  });
+});
+
+describe("ChatMarkdown OpenContext document links", () => {
+  const environmentId = EnvironmentId.make("env-opencontext");
+  const stableId = "11111111-1111-1111-1111-111111111111";
+
+  it.each([true, false])(
+    "keeps oc:// links as OpenContext chips instead of external links with parseRawHtml=%s",
+    (parseRawHtml) => {
+      const html = renderToStaticMarkup(
+        <ChatMarkdown
+          cwd="C:/Users/shawn/project"
+          environmentId={environmentId}
+          text={`[ced policy](oc://doc/${stableId})`}
+          lineBreaks={!parseRawHtml}
+          parseRawHtml={parseRawHtml}
+        />,
+      );
+
+      expect(html).toContain(`href="oc://doc/${stableId}"`);
+      expect(html).toContain('data-opencontext-doc-status="idle"');
+      expect(html).toContain("ced policy");
+      // An external link would have fetched a favicon or rendered a plain anchor.
+      expect(html).not.toContain("s2/favicons");
+      expect(html).not.toContain("chat-markdown-file-link");
+    },
+  );
+});
+
+describe("ChatMarkdown missing file links", () => {
+  const environmentId = EnvironmentId.make("env-missing");
+  const threadRef = { environmentId, threadId: ThreadId.make("thread-1") };
+
+  it("shows a not-found state instead of the raw read error when the target is missing", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            cwd="/tmp/project"
+            threadRef={threadRef}
+            text="[plan](Tests/Architecture/README.md)"
+          />,
+        );
+      });
+      const anchor = renderer!.root.findByType("a");
+      await act(async () => {
+        anchor.props.onClick({
+          preventDefault: () => undefined,
+          stopPropagation: () => undefined,
+          metaKey: false,
+          ctrlKey: false,
+          shiftKey: false,
+          altKey: false,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(renderer!.root.findAllByProps({ "data-markdown-file-missing": "true" })).toHaveLength(
+        1,
+      );
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
   });
 });

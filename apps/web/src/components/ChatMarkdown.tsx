@@ -29,6 +29,7 @@ import {
 import type {
   AssetResource,
   EnvironmentId,
+  OpenContextResolveDocResult,
   ScopedThreadRef,
   ServerProviderSkill,
   ThreadPullRequestKey,
@@ -114,6 +115,8 @@ import {
   resolveExternalWebLinkHost,
   showExternalLinkContextMenu,
 } from "./chat/externalLinkContextMenu";
+import { parseOpenContextDocHref } from "./chat/openContextDocLink";
+import { OpenContextDocChip } from "./chat/OpenContextDocChip";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../pierre-icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
@@ -143,10 +146,12 @@ import {
   serializeTableElementToCsv,
   serializeTableElementToMarkdown,
 } from "../markdown-clipboard";
+import { literalMarkdownLinkDestination } from "../markdown-link-destination";
 import { remarkNormalizeListItemIndentation } from "../markdown-list-indentation";
 import {
   extractMarkdownLinkHrefs,
   isWindowsDrivePathHref,
+  mightBeDirectoryTargetPath,
   normalizeMarkdownLinkDestination,
   resolveInlineCodeFileLinkMeta,
   resolveMarkdownFileLinkMeta,
@@ -169,11 +174,18 @@ import { previewEnvironment } from "../state/preview";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { projectEnvironment } from "../state/projects";
+import { filesystemEnvironment } from "../state/filesystem";
+import { openContextEnvironment } from "../state/openContext";
 import {
+  cacheWorkspaceMatch,
   claimWorkspaceBasenameLookup,
   needsWorkspaceBasenameLookup,
-  pickWorkspaceBasenameMatch,
+  pickWorkspaceRelativeMatch,
+  readCachedWorkspaceMatch,
   WORKSPACE_BASENAME_LOOKUP_LIMIT,
+  workspaceLookupQuery,
+  workspaceMatchCacheKey,
+  workspaceParentDirectory,
 } from "../workspaceBasenameLookup";
 import {
   findProjectForChangeRequest,
@@ -475,7 +487,7 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", "t3-citation", "t3-context"],
+    href: [...(defaultSchema.protocols?.href ?? []), "file", "oc", "t3-citation", "t3-context"],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },
 } satisfies Parameters<typeof rehypeSanitize>[0];
@@ -586,8 +598,16 @@ type MarkdownAstNode = {
   data?: {
     hProperties?: Record<string, unknown>;
   };
+  position?: {
+    start?: { offset?: number };
+    end?: { offset?: number };
+  };
   children?: MarkdownAstNode[];
 };
+
+interface MarkdownFile {
+  readonly value?: unknown;
+}
 
 function remarkPreserveCodeMeta() {
   return (tree: MarkdownAstNode) => {
@@ -614,14 +634,19 @@ function remarkPreserveCodeMeta() {
  * from fenced code. Code inside links stays untagged to avoid nested anchors.
  */
 function remarkNormalizeLinksAndTagInlineCode() {
-  return (tree: MarkdownAstNode) => {
+  return (tree: MarkdownAstNode, file: MarkdownFile) => {
+    const markdown = typeof file.value === "string" ? file.value : null;
     const visit = (node: MarkdownAstNode, insideLink: boolean) => {
-      if (
-        (node.type === "link" || node.type === "definition") &&
-        typeof node.url === "string" &&
-        WINDOWS_DRIVE_PATH_REGEX.test(node.url)
-      ) {
-        node.url = `file:///${node.url.replaceAll("\\", "/")}`;
+      if ((node.type === "link" || node.type === "definition") && typeof node.url === "string") {
+        // Read the destination from source so Windows `\` separators survive
+        // CommonMark unescaping, then keep it as an allowed `file:` URL.
+        const destination =
+          markdown === null
+            ? node.url
+            : (literalMarkdownLinkDestination(markdown, node) ?? node.url);
+        if (WINDOWS_DRIVE_PATH_REGEX.test(destination)) {
+          node.url = `file:///${destination.replaceAll("\\", "/")}`;
+        }
       }
       if (node.type === "inlineCode" && !insideLink) {
         node.data = {
@@ -1126,6 +1151,13 @@ function UncachedShikiCodeBlock({
   );
 }
 
+/**
+ * What a panel open did: the panel opened, the target is a directory (reveal or
+ * message instead of a read error), or the target is missing so the chip shows
+ * a not-found state rather than the server's raw read error.
+ */
+export type MarkdownFilePanelOpenResult = "opened" | "directory" | "missing";
+
 interface MarkdownFileLinkProps {
   href: string;
   targetPath: string;
@@ -1140,7 +1172,10 @@ interface MarkdownFileLinkProps {
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef | undefined;
   onOpen?: ((targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
-  onOpenInPanel: (panelPath: string, line: number | undefined) => void;
+  onOpenInPanel: (
+    panelPath: string,
+    line: number | undefined,
+  ) => Promise<MarkdownFilePanelOpenResult>;
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenMedia?: (() => void) | undefined;
@@ -1158,6 +1193,10 @@ function pathParentSegments(path: string): string[] {
   const normalized = path.replaceAll("\\", "/");
   const segments = normalized.split("/").filter((segment) => segment.length > 0);
   return segments.slice(0, -1);
+}
+
+function normalizeWorkspaceRelativePath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+$/, "");
 }
 
 function buildFileLinkParentSuffixByPath(filePaths: ReadonlyArray<string>): Map<string, string> {
@@ -1859,6 +1898,8 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   revealLabel,
   className,
 }: MarkdownFileLinkProps) {
+  const [missing, setMissing] = useState(false);
+
   const handleOpenInEditor = useCallback(() => {
     if (!onOpen) {
       return;
@@ -1897,9 +1938,67 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     })();
   }, [onOpen, targetPath]);
 
+  const handleRevealInFileManager = useCallback(() => {
+    if (!onReveal) {
+      return;
+    }
+    void (async () => {
+      try {
+        const result = await onReveal();
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
+          return;
+        }
+        reportMarkdownActionFailure(
+          { operation: "reveal-file-in-file-manager", target: targetPath },
+          result.cause,
+        );
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to reveal file",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      } catch (cause) {
+        reportMarkdownActionFailure(
+          { operation: "reveal-file-in-file-manager", target: targetPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to reveal file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      }
+    })();
+  }, [onReveal, targetPath]);
+
   const handleOpenInFilePreview = useCallback(() => {
     if (threadRef && panelPath) {
-      onOpenInPanel(panelPath, line);
+      void (async () => {
+        const result = await onOpenInPanel(panelPath, line);
+        if (result === "missing") {
+          setMissing(true);
+          return;
+        }
+        setMissing(false);
+        if (result === "directory") {
+          if (onReveal) {
+            handleRevealInFileManager();
+          } else {
+            toastManager.add(
+              stackedThreadToast({
+                type: "info",
+                title: "This link points to a folder",
+                description: targetPath,
+              }),
+            );
+          }
+        }
+      })();
       return;
     }
     if (onOpenMedia) {
@@ -1907,7 +2006,17 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       return;
     }
     handleOpenInEditor();
-  }, [handleOpenInEditor, line, onOpenInPanel, onOpenMedia, panelPath, threadRef]);
+  }, [
+    handleOpenInEditor,
+    handleRevealInFileManager,
+    line,
+    onOpenInPanel,
+    onOpenMedia,
+    onReveal,
+    panelPath,
+    targetPath,
+    threadRef,
+  ]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1946,44 +2055,6 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       }
     })();
   }, [onOpenInBrowser, targetPath]);
-
-  const handleRevealInFileManager = useCallback(() => {
-    if (!onReveal) {
-      return;
-    }
-    void (async () => {
-      try {
-        const result = await onReveal();
-        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
-          return;
-        }
-        reportMarkdownActionFailure(
-          { operation: "reveal-file-in-file-manager", target: targetPath },
-          result.cause,
-        );
-        const error = squashAtomCommandFailure(result);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to reveal file",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          }),
-        );
-      } catch (cause) {
-        reportMarkdownActionFailure(
-          { operation: "reveal-file-in-file-manager", target: targetPath },
-          cause,
-        );
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Unable to reveal file",
-            description: cause instanceof Error ? cause.message : "An error occurred.",
-          }),
-        );
-      }
-    })();
-  }, [onReveal, targetPath]);
 
   const handleCopy = useCallback(
     (value: string, title: string) => {
@@ -2126,7 +2197,26 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     <Tooltip>
       <TooltipTrigger
         render={
-          hasPrimaryAction ? (
+          missing ? (
+            <button
+              type="button"
+              data-markdown-file-missing="true"
+              aria-label={`${label} not found`}
+              aria-haspopup="menu"
+              className={cn(
+                CHAT_FILE_TAG_CHIP_CLASS_NAME,
+                MARKDOWN_FILE_LINK_CLASS_NAME,
+                "select-text",
+                className,
+              )}
+              data-markdown-copy={copyMarkdown}
+              onClick={handleContextMenu}
+              onContextMenu={handleContextMenu}
+            >
+              <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
+              <span className="ms-1 shrink-0 text-destructive">Not found</span>
+            </button>
+          ) : hasPrimaryAction ? (
             <a
               href={href}
               className={cn(
@@ -2179,7 +2269,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         {/* The full path: the chip already shows the shortened form, and a link
             to the workspace root collapses to a bare label that repeats it. */}
         <div className="overflow-x-auto whitespace-nowrap [scrollbar-color:color-mix(in_srgb,var(--contrast-border)_78%,transparent)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--contrast-border)_78%,transparent)] [&::-webkit-scrollbar-track]:bg-transparent">
-          {targetPath}
+          {missing ? `${targetPath} (not found)` : targetPath}
         </div>
       </TooltipPopup>
     </Tooltip>
@@ -2243,6 +2333,15 @@ function useChatMarkdownState({
     refresh: true,
   });
   const searchProjectEntries = useAtomQueryRunner(projectEnvironment.searchEntries, {
+    reportFailure: false,
+  });
+  const listProjectEntries = useAtomQueryRunner(projectEnvironment.listEntries, {
+    reportFailure: false,
+  });
+  const browseFilesystem = useAtomQueryRunner(filesystemEnvironment.browse, {
+    reportFailure: false,
+  });
+  const resolveOpenContextDocQuery = useAtomQueryRunner(openContextEnvironment.resolveDoc, {
     reportFailure: false,
   });
   const openPreview = useAtomCommand(previewEnvironment.open, {
@@ -2370,6 +2469,9 @@ function useChatMarkdownState({
   const markdownUrlTransform = useCallback((href: string) => {
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
+    // `oc:` is not a web protocol: react-markdown's default transform would
+    // blank the href before the anchor renderer could recognise it.
+    if (parseOpenContextDocHref(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   }, []);
@@ -2486,42 +2588,114 @@ function useChatMarkdownState({
       if (!cwd || environmentId === null || !needsWorkspaceBasenameLookup(workspaceRelativePath)) {
         return null;
       }
+      const cacheKey = workspaceMatchCacheKey(cwd, workspaceRelativePath);
+      const cached = readCachedWorkspaceMatch(cacheKey);
+      if (cached.hit) return cached.value;
       const result = await searchProjectEntries({
         environmentId,
         input: {
           cwd,
-          query: workspaceRelativePath,
+          query: workspaceLookupQuery(workspaceRelativePath),
           limit: WORKSPACE_BASENAME_LOOKUP_LIMIT,
           kind: "file",
         },
       });
-      return result._tag === "Success"
-        ? pickWorkspaceBasenameMatch(workspaceRelativePath, result.value.entries)
-        : null;
+      if (result._tag !== "Success") return null;
+      const match = pickWorkspaceRelativeMatch(workspaceRelativePath, result.value.entries);
+      cacheWorkspaceMatch(cacheKey, match);
+      return match;
     },
     [cwd, environmentId, searchProjectEntries],
   );
-  // A bare filename resolves to the workspace root, which is rarely where the
-  // file is, so ask the index before opening. Absolute host paths open as-is.
+  // Authoritative directory probe for a host path: the browse endpoint lists
+  // directories only, so an entry for the path itself means it is one. Kept to
+  // a click so chips never stat during render.
+  const targetIsDirectory = useCallback(
+    async (absolutePath: string) => {
+      if (environmentId === null) return false;
+      const result = await browseFilesystem({
+        environmentId,
+        input: { partialPath: absolutePath, ...(cwd ? { cwd } : {}) },
+      });
+      if (result._tag !== "Success") return false;
+      const target = normalizeWorkspaceRelativePath(absolutePath);
+      return result.value.entries.some(
+        (entry) => normalizeWorkspaceRelativePath(entry.fullPath) === target,
+      );
+    },
+    [browseFilesystem, cwd, environmentId],
+  );
+  // The index can miss a file it has not scanned yet, so a lookup miss falls
+  // back to the direct path. Listing its parent separates a file that exists
+  // from a request that would surface the server's raw read error.
+  const findWorkspaceEntryKind = useCallback(
+    async (workspaceRelativePath: string): Promise<"file" | "directory" | null> => {
+      if (!cwd || environmentId === null) return null;
+      const result = await listProjectEntries({
+        environmentId,
+        input: {
+          cwd,
+          directoryPath: workspaceParentDirectory(workspaceRelativePath),
+        },
+      });
+      if (result._tag !== "Success") return null;
+      const target = normalizeWorkspaceRelativePath(workspaceRelativePath);
+      return (
+        result.value.entries.find((entry) => normalizeWorkspaceRelativePath(entry.path) === target)
+          ?.kind ?? null
+      );
+    },
+    [cwd, environmentId, listProjectEntries],
+  );
+  // A workspace-relative link anchors at the workspace root, which is rarely
+  // where the file is, so ask the index before opening. Absolute host paths
+  // open as-is unless they name a directory.
   const openFileInPanel = useCallback(
-    (panelPath: string, line: number | undefined) => {
-      if (!threadRef) return;
+    async (panelPath: string, line: number | undefined): Promise<MarkdownFilePanelOpenResult> => {
+      if (!threadRef) return "opened";
       // Claimed on every open so a synchronous one supersedes a lookup already
       // in flight.
       const isLatestLookup = claimWorkspaceBasenameLookup();
       const openAt = (path: string) =>
         useRightPanelStore.getState().openFile(threadRef, path, line);
+
       if (!cwd || !needsWorkspaceBasenameLookup(panelPath)) {
+        if (
+          isAbsolutePath(panelPath) &&
+          mightBeDirectoryTargetPath(panelPath) &&
+          (await targetIsDirectory(panelPath))
+        ) {
+          return isLatestLookup() ? "directory" : "opened";
+        }
         openAt(panelPath);
-        return;
+        return "opened";
       }
-      void (async () => {
-        const match = await findWorkspaceBasenameMatch(panelPath);
-        if (!isLatestLookup()) return;
-        openAt(match ?? panelPath);
-      })();
+
+      const match = await findWorkspaceBasenameMatch(panelPath);
+      if (!isLatestLookup()) return "opened";
+      if (match) {
+        openAt(match);
+        return "opened";
+      }
+      const kind = await findWorkspaceEntryKind(panelPath);
+      if (!isLatestLookup()) return "opened";
+      if (kind === "directory") return "directory";
+      if (kind === null) return "missing";
+      openAt(panelPath);
+      return "opened";
     },
-    [cwd, findWorkspaceBasenameMatch, threadRef],
+    [cwd, findWorkspaceBasenameMatch, findWorkspaceEntryKind, targetIsDirectory, threadRef],
+  );
+  // Resolution is a server-side read of the local OpenContext store; a null
+  // result means the environment could not be reached, which the link renders
+  // as its own unavailable state rather than as a store miss.
+  const resolveOpenContextDocForLink = useCallback(
+    async (stableId: string): Promise<OpenContextResolveDocResult | null> => {
+      if (environmentId === null) return null;
+      const result = await resolveOpenContextDocQuery({ environmentId, input: { stableId } });
+      return result._tag === "Success" ? result.value : null;
+    },
+    [environmentId, resolveOpenContextDocQuery],
   );
   const revealMarkdownFileInFileManager = useCallback(
     async (fileLinkMeta: MarkdownFileLinkMeta) => {
@@ -2635,9 +2809,11 @@ function useChatMarkdownState({
       openChangeRequestLink,
       openDeferredMarkdownLink,
       openExternalLinkInPreview,
+      openFileInPanel,
       openMarkdownMedia,
       projects,
       linkedThreadPullRequestFor,
+      resolveOpenContextDocForLink,
       resolveThreadPullRequest,
       resolvedTheme,
       serverConfig,
@@ -2664,9 +2840,11 @@ function useChatMarkdownState({
       openChangeRequestLink,
       openDeferredMarkdownLink,
       openExternalLinkInPreview,
+      openFileInPanel,
       openMarkdownMedia,
       projects,
       linkedThreadPullRequestFor,
+      resolveOpenContextDocForLink,
       resolveThreadPullRequest,
       resolvedTheme,
       serverConfig,
@@ -2816,6 +2994,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       fileLinkChip,
       renderContextReference,
+      openFileInPanel,
+      resolveOpenContextDocForLink,
     } = use(ChatMarkdownRendererContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
@@ -2826,6 +3006,23 @@ const CHAT_MARKDOWN_COMPONENTS = {
         renderContextReference({ ...contextReference, label })
       ) : (
         <span>{label}</span>
+      );
+    }
+    // `oc://doc/<stable_id>` is the OpenContext convention: a document
+    // reference with no web or filesystem meaning until it is resolved.
+    const openContextDoc = href ? parseOpenContextDocHref(href) : null;
+    if (openContextDoc) {
+      const label = hastPlainTextDeep(node).trim() || openContextDoc.stableId;
+      return (
+        <OpenContextDocChip
+          href={openContextDoc.href}
+          stableId={openContextDoc.stableId}
+          label={label}
+          className={props.className}
+          canOpenDocument={threadRef !== undefined}
+          resolveDoc={resolveOpenContextDocForLink}
+          onOpenDocument={(absolutePath) => openFileInPanel(absolutePath, undefined)}
+        />
       );
     }
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
