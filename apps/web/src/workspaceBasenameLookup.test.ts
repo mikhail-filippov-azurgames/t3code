@@ -7,6 +7,7 @@ import {
   needsWorkspaceBasenameLookup,
   pickWorkspaceRelativeMatch,
   readCachedWorkspaceMatch,
+  resolveWorkspaceRelativeMatch,
   workspaceLookupQuery,
   workspaceMatchCacheKey,
   workspaceParentDirectory,
@@ -127,6 +128,57 @@ describe("pickWorkspaceRelativeMatch", () => {
         { path: "apps/b/src/README.md", kind: "file" },
       ]),
     ).toBeNull();
+  });
+});
+
+describe("resolveWorkspaceRelativeMatch", () => {
+  it("resolves the single nested file that ends with the requested suffix", () => {
+    expect(
+      resolveWorkspaceRelativeMatch("apps/web/src/components/ChatMarkdown.tsx", [
+        { path: "t3code/apps/web/src/components/ChatMarkdown.tsx", kind: "file" },
+      ]),
+    ).toEqual({ kind: "resolved", path: "t3code/apps/web/src/components/ChatMarkdown.tsx" });
+  });
+
+  it("reports ambiguity instead of a miss when sibling copies share the suffix", () => {
+    expect(
+      resolveWorkspaceRelativeMatch("apps/web/src/components/ChatMarkdown.tsx", [
+        { path: "t3code/apps/web/src/components/ChatMarkdown.tsx", kind: "file" },
+        { path: "t3code-muse/apps/web/src/components/ChatMarkdown.tsx", kind: "file" },
+      ]),
+    ).toEqual({ kind: "ambiguous" });
+  });
+
+  it("prefers the strictly shallowest suffix match", () => {
+    expect(
+      resolveWorkspaceRelativeMatch("src/README.md", [
+        { path: "packages/app/src/README.md", kind: "file" },
+        { path: "app/src/README.md", kind: "file" },
+      ]),
+    ).toEqual({ kind: "resolved", path: "app/src/README.md" });
+  });
+
+  it("reports none when no indexed file carries the suffix", () => {
+    expect(
+      resolveWorkspaceRelativeMatch("src/README.md", [{ path: "docs/README.md", kind: "file" }]),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("treats a bare name with several same-named files as ambiguous", () => {
+    expect(
+      resolveWorkspaceRelativeMatch("index.ts", [
+        { path: "src/index.ts", kind: "file" },
+        { path: "test/index.ts", kind: "file" },
+      ]),
+    ).toEqual({ kind: "ambiguous" });
+  });
+
+  it("falls back to a lone case-insensitive suffix match", () => {
+    expect(
+      resolveWorkspaceRelativeMatch("apps/web/ChatMarkdown.tsx", [
+        { path: "t3code/Apps/Web/ChatMarkdown.tsx", kind: "file" },
+      ]),
+    ).toEqual({ kind: "resolved", path: "t3code/Apps/Web/ChatMarkdown.tsx" });
   });
 });
 

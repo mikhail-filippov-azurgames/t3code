@@ -2,12 +2,19 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create, type ReactTestRenderer } from "react-test-renderer";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
+import { clearWorkspaceMatchCache } from "../workspaceBasenameLookup";
 import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
+
+const projectQueryState = vi.hoisted(() => ({
+  entries: [] as ReadonlyArray<{ readonly path: string; readonly kind: "file" | "directory" }>,
+  failure: false,
+}));
+const rightPanelState = vi.hoisted(() => ({ openFile: vi.fn() }));
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
@@ -36,7 +43,11 @@ vi.mock("./ui/tooltip", async () => {
 });
 vi.mock("../state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () =>
-    vi.fn(async () => ({ _tag: "Success", value: { entries: [], truncated: false } })),
+    vi.fn(async () =>
+      projectQueryState.failure
+        ? { _tag: "Failure", cause: undefined }
+        : { _tag: "Success", value: { entries: projectQueryState.entries, truncated: false } },
+    ),
 }));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("../state/session", async (importOriginal) => ({
@@ -60,6 +71,9 @@ vi.mock("~/lib/openPullRequestLink", () => ({
   parseChangeRequestUrl: () => null,
   useOpenChangeRequestLink: () => vi.fn(),
 }));
+vi.mock("../rightPanelStore", () => ({
+  useRightPanelStore: { getState: () => ({ openFile: rightPanelState.openFile }) },
+}));
 
 import ChatMarkdown, {
   canUseMarkdownFileShellActions,
@@ -74,6 +88,13 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
   if (!button) throw new Error(`Missing code button: ${label}`);
   return button.props as ComponentProps<typeof Button>;
 }
+
+beforeEach(() => {
+  projectQueryState.entries = [];
+  projectQueryState.failure = false;
+  rightPanelState.openFile.mockClear();
+  clearWorkspaceMatchCache();
+});
 
 describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {
@@ -944,6 +965,121 @@ describe("ChatMarkdown missing file links", () => {
         await Promise.resolve();
         await Promise.resolve();
       });
+      expect(renderer!.root.findAllByProps({ "data-markdown-file-missing": "true" })).toHaveLength(
+        1,
+      );
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("ChatMarkdown workspace file resolution", () => {
+  const environmentId = EnvironmentId.make("env-workspace-resolution");
+  const threadRef = { environmentId, threadId: ThreadId.make("thread-resolution") };
+  const text = "[link](apps/web/src/components/ChatMarkdown.tsx)";
+
+  async function openChip(renderer: ReactTestRenderer) {
+    const anchor = renderer.root.findByType("a");
+    await act(async () => {
+      anchor.props.onClick({
+        preventDefault: () => undefined,
+        stopPropagation: () => undefined,
+        metaKey: false,
+        ctrlKey: false,
+        shiftKey: false,
+        altKey: false,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it("opens the one indexed file a nested link resolves to", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.entries = [
+      { path: "t3code/apps/web/src/components/ChatMarkdown.tsx", kind: "file" },
+    ];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/tmp/project" threadRef={threadRef} text={text} />);
+      });
+      await openChip(renderer!);
+      expect(renderer!.root.findAllByProps({ "data-markdown-file-missing": "true" })).toHaveLength(
+        0,
+      );
+      expect(rightPanelState.openFile).toHaveBeenCalledWith(
+        threadRef,
+        "t3code/apps/web/src/components/ChatMarkdown.tsx",
+        undefined,
+      );
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not claim Not found when two sibling copies make the suffix ambiguous", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.entries = [
+      { path: "t3code/apps/web/src/components/ChatMarkdown.tsx", kind: "file" },
+      { path: "t3code-muse/apps/web/src/components/ChatMarkdown.tsx", kind: "file" },
+    ];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/tmp/project" threadRef={threadRef} text={text} />);
+      });
+      await openChip(renderer!);
+      expect(renderer!.root.findAllByProps({ "data-markdown-file-missing": "true" })).toHaveLength(
+        0,
+      );
+      expect(rightPanelState.openFile).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not claim Not found when the index query fails", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.failure = true;
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/tmp/project" threadRef={threadRef} text={text} />);
+      });
+      await openChip(renderer!);
+      expect(renderer!.root.findAllByProps({ "data-markdown-file-missing": "true" })).toHaveLength(
+        0,
+      );
+      expect(rightPanelState.openFile).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows Not found only when the index and the parent listing both confirm absence", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/tmp/project" threadRef={threadRef} text={text} />);
+      });
+      await openChip(renderer!);
       expect(renderer!.root.findAllByProps({ "data-markdown-file-missing": "true" })).toHaveLength(
         1,
       );

@@ -97,43 +97,111 @@ export function clearWorkspaceMatchCache(): void {
 }
 
 /**
- * Picks the single indexed file that a requested relative path names.
+ * What an index lookup concluded: the one file a requested relative path names,
+ * several equally good files so nothing can be substituted, or no candidate.
+ * Callers must not collapse `ambiguous` and `none` into a single miss, because
+ * only `none` followed by a completed parent listing proves absence.
+ */
+export type WorkspaceRelativeMatchResolution =
+  | { readonly kind: "resolved"; readonly path: string }
+  | { readonly kind: "ambiguous" }
+  | { readonly kind: "none" };
+
+function segmentCount(path: string): number {
+  return normalizeWorkspacePath(path)
+    .split("/")
+    .filter((segment) => segment.length > 0).length;
+}
+
+/**
+ * `candidates` are the paths that already end with the requested suffix. The
+ * shallowest one is the least surprising interpretation of a nested link; a
+ * tie between two depths cannot be guessed, so it stays ambiguous.
+ */
+function pickClosestCandidate(candidates: ReadonlyArray<string>): WorkspaceRelativeMatchResolution {
+  const first = candidates[0];
+  if (first === undefined) return { kind: "none" };
+  let best = first;
+  let bestSegments = segmentCount(first);
+  let tied = false;
+  for (const candidate of candidates.slice(1)) {
+    const count = segmentCount(candidate);
+    if (count < bestSegments) {
+      best = candidate;
+      bestSegments = count;
+      tied = false;
+    } else if (count === bestSegments) {
+      tied = true;
+    }
+  }
+  return tied ? { kind: "ambiguous" } : { kind: "resolved", path: best };
+}
+
+function pickSingleCandidate(candidates: ReadonlyArray<string>): WorkspaceRelativeMatchResolution {
+  const first = candidates[0];
+  if (first === undefined) return { kind: "none" };
+  return candidates.length === 1 ? { kind: "resolved", path: first } : { kind: "ambiguous" };
+}
+
+/**
+ * Classifies the single indexed file that a requested relative path names.
  *
  * A bare name matches on its basename; a nested path must also end with the
  * requested suffix (`Tests/Architecture/README.md`), so a same-named file
- * higher in the tree is never substituted. Exact casing wins, a lone
- * case-insensitive match is the fallback, and an ambiguous match is no match.
+ * higher in the tree is never substituted. Exact casing wins and a lone
+ * case-insensitive match is the fallback. Among nested suffix matches the
+ * shallowest wins when it is strictly shallower; otherwise the result is
+ * ambiguous, never a miss.
+ */
+export function resolveWorkspaceRelativeMatch(
+  requestedRelativePath: string,
+  entries: ReadonlyArray<WorkspaceEntryCandidate>,
+): WorkspaceRelativeMatchResolution {
+  const normalizedTarget = normalizeWorkspacePath(requestedRelativePath);
+  if (!normalizedTarget) return { kind: "none" };
+  const targetSegments = normalizedTarget.split("/").filter((segment) => segment.length > 0);
+  const basename = targetSegments.at(-1);
+  if (!basename || basename === "." || basename === "..") return { kind: "none" };
+
+  const files = entries.filter((entry) => entry.kind === "file");
+  const isNested = targetSegments.length > 1;
+  const suffix = `/${targetSegments.join("/")}`;
+  const foldedBasename = basename.toLowerCase();
+  const foldedSuffix = suffix.toLowerCase();
+
+  const exact = files
+    .map((entry) => ({ path: entry.path, normalized: normalizeWorkspacePath(entry.path) }))
+    .filter(({ normalized }) =>
+      isNested
+        ? normalized === normalizedTarget || normalized.endsWith(suffix)
+        : basenameOfPath(normalized) === basename,
+    )
+    .map(({ path }) => path);
+  const exactResult = isNested ? pickClosestCandidate(exact) : pickSingleCandidate(exact);
+  if (exactResult.kind !== "none") return exactResult;
+
+  const folded = files
+    .map((entry) => ({
+      path: entry.path,
+      normalized: normalizeWorkspacePath(entry.path).toLowerCase(),
+    }))
+    .filter(({ normalized }) =>
+      isNested
+        ? normalized === normalizedTarget.toLowerCase() || normalized.endsWith(foldedSuffix)
+        : basenameOfPath(normalized) === foldedBasename,
+    )
+    .map(({ path }) => path);
+  return isNested ? pickClosestCandidate(folded) : pickSingleCandidate(folded);
+}
+
+/**
+ * Convenience view of {@link resolveWorkspaceRelativeMatch} for callers that
+ * only want a path: an ambiguous match reads as no match.
  */
 export function pickWorkspaceRelativeMatch(
   requestedRelativePath: string,
   entries: ReadonlyArray<WorkspaceEntryCandidate>,
 ): string | null {
-  const normalizedTarget = normalizeWorkspacePath(requestedRelativePath);
-  if (!normalizedTarget) return null;
-  const targetSegments = normalizedTarget.split("/").filter((segment) => segment.length > 0);
-  const basename = targetSegments.at(-1);
-  if (!basename || basename === "." || basename === "..") return null;
-
-  const files = entries.filter((entry) => entry.kind === "file");
-  const isBare = targetSegments.length === 1;
-  const suffix = `/${targetSegments.join("/")}`;
-  const foldedBasename = basename.toLowerCase();
-  const foldedSuffix = suffix.toLowerCase();
-
-  const exact = files.filter((entry) => {
-    const normalized = normalizeWorkspacePath(entry.path);
-    return isBare
-      ? basenameOfPath(normalized) === basename
-      : normalized === normalizedTarget || normalized.endsWith(suffix);
-  });
-  if (exact.length === 1) return exact[0]?.path ?? null;
-  if (exact.length > 1) return null;
-
-  const folded = files.filter((entry) => {
-    const normalized = normalizeWorkspacePath(entry.path).toLowerCase();
-    return isBare
-      ? basenameOfPath(normalized) === foldedBasename
-      : normalized === normalizedTarget.toLowerCase() || normalized.endsWith(foldedSuffix);
-  });
-  return folded.length === 1 ? (folded[0]?.path ?? null) : null;
+  const resolution = resolveWorkspaceRelativeMatch(requestedRelativePath, entries);
+  return resolution.kind === "resolved" ? resolution.path : null;
 }

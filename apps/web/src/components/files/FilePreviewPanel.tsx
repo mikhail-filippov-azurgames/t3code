@@ -40,6 +40,7 @@ import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
 import { cn } from "~/lib/utils";
 import { isPreviewSupportedInRuntime } from "~/previewStateStore";
 import { isAbsolutePath, resolvePathLinkTarget } from "~/terminal-links";
+import { Button } from "~/components/ui/button";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
@@ -903,6 +904,75 @@ function initialExplorerOpen(): boolean {
   }
 }
 
+/**
+ * A host file that cannot be shown as text (a binary file such as a SQLite
+ * database, or one the server refuses to read) used to surface the server's raw
+ * error. Say what happened plainly and keep the escape hatches: copy the path
+ * or hand it to an editor / file manager.
+ */
+function UnpreviewableHostFileSurface(props: {
+  readonly environmentId: EnvironmentId;
+  readonly keybindings: ResolvedKeybindingsConfig;
+  readonly availableEditors: ReadonlyArray<EditorId>;
+  readonly absolutePath: string;
+}) {
+  const handleCopyPath = useCallback(() => {
+    if (typeof navigator === "undefined" || navigator.clipboard?.writeText === undefined) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to copy path",
+          description: "Clipboard API unavailable.",
+        }),
+      );
+      return;
+    }
+    void navigator.clipboard.writeText(props.absolutePath).then(
+      () => {
+        toastManager.add({
+          type: "success",
+          title: "Path copied",
+          description: props.absolutePath,
+        });
+      },
+      (error: unknown) => {
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Failed to copy path",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      },
+    );
+  }, [props.absolutePath]);
+
+  return (
+    <div
+      role="alert"
+      className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-xs leading-relaxed"
+    >
+      <p className="text-muted-foreground">This file can&apos;t be previewed as text.</p>
+      <p className="max-w-full break-all font-mono text-[11px] text-muted-foreground/80">
+        {props.absolutePath}
+      </p>
+      <div className="flex items-center gap-2">
+        <Button type="button" size="xs" variant="outline" onClick={handleCopyPath}>
+          Copy path
+        </Button>
+        <OpenInPicker
+          environmentId={props.environmentId}
+          keybindings={props.keybindings}
+          availableEditors={props.availableEditors}
+          openInCwd={props.absolutePath}
+          compact
+          enableShortcut={false}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function FilePreviewPanel({
   environmentId,
   cwd,
@@ -1220,9 +1290,18 @@ export default function FilePreviewPanel({
               workspaceMutationId={workspaceMutationId}
             />
           ) : relativePath && file.error && file.data === null ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
-              {file.error}
-            </div>
+            isHostFile && absolutePath ? (
+              <UnpreviewableHostFileSurface
+                environmentId={environmentId}
+                keybindings={keybindings}
+                availableEditors={availableEditors}
+                absolutePath={absolutePath}
+              />
+            ) : (
+              <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+                {file.error}
+              </div>
+            )
           ) : relativePath && file.data === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
               <Spinner className="size-5" />

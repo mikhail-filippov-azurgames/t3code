@@ -180,12 +180,13 @@ import {
   cacheWorkspaceMatch,
   claimWorkspaceBasenameLookup,
   needsWorkspaceBasenameLookup,
-  pickWorkspaceRelativeMatch,
   readCachedWorkspaceMatch,
+  resolveWorkspaceRelativeMatch,
   WORKSPACE_BASENAME_LOOKUP_LIMIT,
   workspaceLookupQuery,
   workspaceMatchCacheKey,
   workspaceParentDirectory,
+  type WorkspaceRelativeMatchResolution,
 } from "../workspaceBasenameLookup";
 import {
   findProjectForChangeRequest,
@@ -1153,10 +1154,12 @@ function UncachedShikiCodeBlock({
 
 /**
  * What a panel open did: the panel opened, the target is a directory (reveal or
- * message instead of a read error), or the target is missing so the chip shows
- * a not-found state rather than the server's raw read error.
+ * message instead of a read error), the target is confidently missing so the
+ * chip shows a not-found state, or the lookup could not conclude (an ambiguous
+ * index hit or unavailable context) so the chip stays a plain link rather than
+ * a false "Not found".
  */
-export type MarkdownFilePanelOpenResult = "opened" | "directory" | "missing";
+export type MarkdownFilePanelOpenResult = "opened" | "directory" | "missing" | "unknown";
 
 interface MarkdownFileLinkProps {
   href: string;
@@ -2583,14 +2586,19 @@ function useChatMarkdownState({
     },
     [createAssetUrl, cwd, openPreview, preparedConnection, threadRef],
   );
-  const findWorkspaceBasenameMatch = useCallback(
-    async (workspaceRelativePath: string) => {
+  // A `null` result means the context could not answer (no workspace, no
+  // environment, or the index query failed), which is not the same as "no such
+  // file" and must never surface as a not-found chip.
+  const findWorkspaceMatchResolution = useCallback(
+    async (workspaceRelativePath: string): Promise<WorkspaceRelativeMatchResolution | null> => {
       if (!cwd || environmentId === null || !needsWorkspaceBasenameLookup(workspaceRelativePath)) {
         return null;
       }
       const cacheKey = workspaceMatchCacheKey(cwd, workspaceRelativePath);
       const cached = readCachedWorkspaceMatch(cacheKey);
-      if (cached.hit) return cached.value;
+      if (cached.hit) {
+        return cached.value !== null ? { kind: "resolved", path: cached.value } : { kind: "none" };
+      }
       const result = await searchProjectEntries({
         environmentId,
         input: {
@@ -2601,21 +2609,32 @@ function useChatMarkdownState({
         },
       });
       if (result._tag !== "Success") return null;
-      const match = pickWorkspaceRelativeMatch(workspaceRelativePath, result.value.entries);
-      cacheWorkspaceMatch(cacheKey, match);
-      return match;
+      const resolution = resolveWorkspaceRelativeMatch(workspaceRelativePath, result.value.entries);
+      // An ambiguous hit is not a stable answer to cache: a later index change
+      // can make it resolvable.
+      if (resolution.kind !== "ambiguous") {
+        cacheWorkspaceMatch(cacheKey, resolution.kind === "resolved" ? resolution.path : null);
+      }
+      return resolution;
     },
     [cwd, environmentId, searchProjectEntries],
+  );
+  const findWorkspaceBasenameMatch = useCallback(
+    async (workspaceRelativePath: string): Promise<string | null> => {
+      const resolution = await findWorkspaceMatchResolution(workspaceRelativePath);
+      return resolution?.kind === "resolved" ? resolution.path : null;
+    },
+    [findWorkspaceMatchResolution],
   );
   // Authoritative directory probe for a host path: the browse endpoint lists
   // directories only, so an entry for the path itself means it is one. Kept to
   // a click so chips never stat during render.
   const targetIsDirectory = useCallback(
     async (absolutePath: string) => {
-      if (environmentId === null) return false;
+      if (environmentId === null || !cwd) return false;
       const result = await browseFilesystem({
         environmentId,
-        input: { partialPath: absolutePath, ...(cwd ? { cwd } : {}) },
+        input: { partialPath: absolutePath, cwd },
       });
       if (result._tag !== "Success") return false;
       const target = normalizeWorkspaceRelativePath(absolutePath);
@@ -2626,11 +2645,14 @@ function useChatMarkdownState({
     [browseFilesystem, cwd, environmentId],
   );
   // The index can miss a file it has not scanned yet, so a lookup miss falls
-  // back to the direct path. Listing its parent separates a file that exists
-  // from a request that would surface the server's raw read error.
+  // back to the direct path. Only a completed parent listing proves absence:
+  // a failed listing (a parent that does not exist, or an unreachable
+  // environment) is "unknown" and keeps the chip from claiming "Not found".
   const findWorkspaceEntryKind = useCallback(
-    async (workspaceRelativePath: string): Promise<"file" | "directory" | null> => {
-      if (!cwd || environmentId === null) return null;
+    async (
+      workspaceRelativePath: string,
+    ): Promise<"file" | "directory" | "missing" | "unknown"> => {
+      if (!cwd || environmentId === null) return "unknown";
       const result = await listProjectEntries({
         environmentId,
         input: {
@@ -2638,11 +2660,11 @@ function useChatMarkdownState({
           directoryPath: workspaceParentDirectory(workspaceRelativePath),
         },
       });
-      if (result._tag !== "Success") return null;
+      if (result._tag !== "Success") return "unknown";
       const target = normalizeWorkspaceRelativePath(workspaceRelativePath);
       return (
         result.value.entries.find((entry) => normalizeWorkspaceRelativePath(entry.path) === target)
-          ?.kind ?? null
+          ?.kind ?? "missing"
       );
     },
     [cwd, environmentId, listProjectEntries],
@@ -2659,7 +2681,7 @@ function useChatMarkdownState({
       const openAt = (path: string) =>
         useRightPanelStore.getState().openFile(threadRef, path, line);
 
-      if (!cwd || !needsWorkspaceBasenameLookup(panelPath)) {
+      if (!needsWorkspaceBasenameLookup(panelPath)) {
         if (
           isAbsolutePath(panelPath) &&
           mightBeDirectoryTargetPath(panelPath) &&
@@ -2671,20 +2693,25 @@ function useChatMarkdownState({
         return "opened";
       }
 
-      const match = await findWorkspaceBasenameMatch(panelPath);
+      const resolution = await findWorkspaceMatchResolution(panelPath);
       if (!isLatestLookup()) return "opened";
-      if (match) {
-        openAt(match);
+      if (resolution === null) return "unknown";
+      if (resolution.kind === "resolved") {
+        openAt(resolution.path);
         return "opened";
       }
+      if (resolution.kind === "ambiguous") return "unknown";
+
       const kind = await findWorkspaceEntryKind(panelPath);
       if (!isLatestLookup()) return "opened";
       if (kind === "directory") return "directory";
-      if (kind === null) return "missing";
-      openAt(panelPath);
-      return "opened";
+      if (kind === "file") {
+        openAt(panelPath);
+        return "opened";
+      }
+      return kind === "missing" ? "missing" : "unknown";
     },
-    [cwd, findWorkspaceBasenameMatch, findWorkspaceEntryKind, targetIsDirectory, threadRef],
+    [findWorkspaceEntryKind, findWorkspaceMatchResolution, targetIsDirectory, threadRef],
   );
   // Resolution is a server-side read of the local OpenContext store; a null
   // result means the environment could not be reached, which the link renders
