@@ -39,6 +39,7 @@ import {
 } from "../providerSnapshot.ts";
 import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
 import {
+  lastObservedMuseUsage,
   listMuseModels,
   readMuseUsage,
   readMuseVersionPin,
@@ -299,16 +300,20 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
     });
   }
 
-  // Subscription windows ride the same host. An API-key environment cannot
-  // report them, and a failed or empty read publishes `probeFailed` so the
-  // pipeline keeps the last good bars instead of clearing them.
+  // Subscription windows ride the same host, but a fresh probe host has
+  // observed no model traffic and answers `usage/read` empty; the account's
+  // live hosts observe usage during turns, so fall back to their last
+  // observation. An API-key environment cannot report windows at all, and a
+  // failed or empty read publishes `probeFailed` so the pipeline keeps the
+  // last good bars instead of clearing them.
+  const hostUsage =
+    catalogProbe !== undefined && Result.isSuccess(catalogProbe.usage)
+      ? catalogProbe.usage.success
+      : undefined;
   const usageLimits = hostEnv.hadApiKey
     ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
     : museUsageToLimits({
-        usage:
-          catalogProbe !== undefined && Result.isSuccess(catalogProbe.usage)
-            ? catalogProbe.usage.success
-            : undefined,
+        usage: hostUsage ?? lastObservedMuseUsage(),
         checkedAt,
       });
 

@@ -262,6 +262,16 @@ export function spawnMuseHost(input: {
         clientInfo: input.clientInfo ?? MUSE_CLIENT_INFO,
       });
       const addNotificationHandler = installNotificationFanout(spawned.connection);
+      // A host observes subscription usage only after it serves model traffic,
+      // so a freshly spawned probe host always reports nothing. Cache every
+      // host's `usage/changed` so the provider probe can publish the last
+      // observation the account's live hosts actually saw.
+      addNotificationHandler((notification) => {
+        const observed = museUsageChangedFrom(notification);
+        if (observed !== undefined) {
+          lastObservedUsage = observed;
+        }
+      });
       const client = new MuseClient(spawned.connection, {
         durability: readSessionDurability(spawned.initializeResult),
         host: spawned,
@@ -475,15 +485,50 @@ export function listMuseModels(
 export const MUSE_USAGE_READ_METHOD = "usage/read" as const;
 
 /**
+ * The notification a host emits when it observes fresh subscription usage. Its
+ * params are the same payload `usage/read` returns under its `usage` member.
+ */
+export const MUSE_USAGE_CHANGED_METHOD = "usage/changed" as const;
+
+/**
+ * A host observes subscription usage only after it serves model traffic, so a
+ * freshly spawned probe host answers `usage/read` with no usage at all. The
+ * adapter's long-lived hosts observe it during turns; this keeps the latest
+ * observation any of them reported so the probe can publish real windows
+ * without a model call. Absent until some host has observed usage.
+ */
+let lastObservedUsage: Record<string, unknown> | undefined;
+
+/** The latest usage any spawned host reported, or undefined when none has. */
+export function lastObservedMuseUsage(): Record<string, unknown> | undefined {
+  return lastObservedUsage;
+}
+
+/** The usage payload a `usage/changed` notification carries, if it is one. */
+export function museUsageChangedFrom(notification: {
+  readonly method: string;
+  readonly params?: Record<string, unknown> | undefined;
+}): Record<string, unknown> | undefined {
+  if (notification.method !== MUSE_USAGE_CHANGED_METHOD) {
+    return undefined;
+  }
+  return isRecord(notification.params) ? notification.params : undefined;
+}
+
+/**
  * Raw `usage/read` query. The pinned SDK typings predate the method, but
- * `Connection.command` takes a plain method string, so it is called generically
- * and the payload is read structurally by the usage mapper.
+ * `Connection.command` takes a plain method string, so it is called
+ * generically. The result is the documented `{ usage? }` envelope: `usage` is
+ * omitted — never `null` — until the host has observed usage.
  */
 export function readMuseUsage(
   host: Pick<MuseHost, "connection">,
-): Effect.Effect<Record<string, unknown>, ProviderAdapterRequestError> {
+): Effect.Effect<Record<string, unknown> | undefined, ProviderAdapterRequestError> {
   return Effect.tryPromise({
-    try: () => host.connection.command(MUSE_USAGE_READ_METHOD, {}),
+    try: async () => {
+      const result = await host.connection.command(MUSE_USAGE_READ_METHOD, {});
+      return isRecord(result["usage"]) ? result["usage"] : undefined;
+    },
     catch: (cause) =>
       new ProviderAdapterRequestError({
         provider: DRIVER,

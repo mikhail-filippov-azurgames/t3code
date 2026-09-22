@@ -4,23 +4,32 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
-import { MUSE_USAGE_READ_METHOD, readMuseUsage, type MuseHost } from "./MuseMspRuntime.ts";
+import {
+  MUSE_USAGE_READ_METHOD,
+  museUsageChangedFrom,
+  readMuseUsage,
+  type MuseHost,
+} from "./MuseMspRuntime.ts";
 import { museUsageToLimits } from "./museUsageLimits.ts";
 
 const CHECKED_AT = "2026-09-22T00:00:00.000Z";
-const SESSION_RESET_MS = 1_759_000_000_123;
-const WEEKLY_RESET_MS = 1_759_500_000_456;
+/** Captured from a real host after it served one turn. */
+const SESSION_RESET_MS = 1_790_090_902_000;
+const WEEKLY_RESET_MS = 1_790_553_600_000;
 const WEEK_MINS = 7 * 24 * 60;
 
 /** The mapper formats resets through Effect's DateTime, not the global Date. */
 const isoOf = (ms: number): string => DateTime.formatIso(Option.getOrThrow(DateTime.make(ms)));
 
-/** The shape `usage/read` returns once the host has observed usage. */
+/**
+ * The `usage` member of `usage/read`'s `{ usage? }` result, verbatim from a
+ * live host: the host omits the member entirely until it observes usage.
+ */
 const liveUsage = {
-  observedAtMs: 1_758_999_999_000,
-  tier: "pro",
-  window: { usedPercent: 42, windowDurationMins: 300, resetsAtMs: SESSION_RESET_MS },
-  weekly: { usedPercent: 63, resetsAtMs: WEEKLY_RESET_MS },
+  observedAtMs: 1_790_081_742_245,
+  tier: "27681631238169137",
+  window: { usedPercent: 0, windowDurationMins: 300, resetsAtMs: SESSION_RESET_MS },
+  weekly: { usedPercent: 12, resetsAtMs: WEEKLY_RESET_MS },
 };
 
 describe("museUsageToLimits", () => {
@@ -32,7 +41,7 @@ describe("museUsageToLimits", () => {
         id: "window",
         kind: "session",
         label: "Session",
-        usedPercent: 42,
+        usedPercent: 0,
         windowDurationMins: 300,
         resetsAt: isoOf(SESSION_RESET_MS),
       },
@@ -40,7 +49,7 @@ describe("museUsageToLimits", () => {
         id: "weekly",
         kind: "weekly",
         label: "Weekly",
-        usedPercent: 63,
+        usedPercent: 12,
         windowDurationMins: WEEK_MINS,
         resetsAt: isoOf(WEEKLY_RESET_MS),
       },
@@ -103,12 +112,12 @@ describe("readMuseUsage", () => {
     command: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>,
   ) => ({ connection: { command } }) as unknown as Pick<MuseHost, "connection">;
 
-  it.effect("calls usage/read with no parameters and returns the payload", () =>
+  it.effect("calls usage/read and unwraps the documented usage member", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
       const host = mockHost(async (method, params) => {
         calls.push({ method, params });
-        return liveUsage;
+        return { usage: liveUsage };
       });
 
       const usage = yield* readMuseUsage(host);
@@ -116,6 +125,20 @@ describe("readMuseUsage", () => {
       expect(MUSE_USAGE_READ_METHOD).toBe("usage/read");
       expect(calls).toEqual([{ method: "usage/read", params: {} }]);
       expect(usage).toEqual(liveUsage);
+    }),
+  );
+
+  it.effect("reports nothing when the host has observed no usage", () =>
+    Effect.gen(function* () {
+      const host = mockHost(async () => ({}));
+      expect(yield* readMuseUsage(host)).toBeUndefined();
+    }),
+  );
+
+  it.effect("reports nothing when the usage member is not a record", () =>
+    Effect.gen(function* () {
+      const host = mockHost(async () => ({ usage: "nope" }));
+      expect(yield* readMuseUsage(host)).toBeUndefined();
     }),
   );
 
@@ -131,4 +154,19 @@ describe("readMuseUsage", () => {
       expect(failure.method).toBe("usage/read");
     }),
   );
+});
+
+describe("museUsageChangedFrom", () => {
+  it("extracts the usage payload from a usage/changed notification", () => {
+    expect(museUsageChangedFrom({ method: "usage/changed", params: liveUsage })).toEqual(liveUsage);
+  });
+
+  it("ignores other notifications and unusable params", () => {
+    expect(museUsageChangedFrom({ method: "turn/started", params: liveUsage })).toBeUndefined();
+    expect(museUsageChangedFrom({ method: "usage/changed" })).toBeUndefined();
+    expect(museUsageChangedFrom({ method: "usage/changed", params: undefined })).toBeUndefined();
+    expect(museUsageChangedFrom({ method: "usage/changed", params: { usage: liveUsage } })).toEqual(
+      { usage: liveUsage },
+    );
+  });
 });
