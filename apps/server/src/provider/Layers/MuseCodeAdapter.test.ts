@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { TurnOutcome } from "@muse-code/sdk";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { EventId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
@@ -24,6 +24,7 @@ import {
   museTurnProgressProbe,
   museRespawnDecision,
   museStallOutcome,
+  museUsageChangedEvent,
   mspErrorText,
   museItemLifecycle,
   museNeedsElevatedHost,
@@ -31,6 +32,46 @@ import {
   parseMuseEffort,
   shouldFoldDelta,
 } from "./MuseCodeAdapter.ts";
+
+describe("museUsageChangedEvent", () => {
+  const eventBase = {
+    providerInstanceId: ProviderInstanceId.make("muse-instance"),
+    threadId: ThreadId.make("muse-thread"),
+    eventId: EventId.make("muse-event"),
+    createdAt: "2026-09-23T00:00:00.000Z",
+  };
+
+  it("turns a host usage notification into an instance-scoped limits update", () => {
+    const event = museUsageChangedEvent({
+      ...eventBase,
+      notification: {
+        method: "usage/changed",
+        params: {
+          window: { usedPercent: 27, windowDurationMins: 300 },
+          weekly: { usedPercent: 8 },
+        },
+      },
+    });
+    expect(event?.type).toBe("account.rate-limits.updated");
+    expect(event?.providerInstanceId).toBe(eventBase.providerInstanceId);
+    expect(event?.threadId).toBe(eventBase.threadId);
+    if (event?.type === "account.rate-limits.updated") {
+      expect(event.payload.limits.windows.map((window) => window.usedPercent)).toEqual([27, 8]);
+    }
+  });
+
+  it("does not publish empty or unrelated notifications", () => {
+    expect(
+      museUsageChangedEvent({ ...eventBase, notification: { method: "usage/changed" } }),
+    ).toBeUndefined();
+    expect(
+      museUsageChangedEvent({
+        ...eventBase,
+        notification: { method: "turn/completed", params: { window: { usedPercent: 27 } } },
+      }),
+    ).toBeUndefined();
+  });
+});
 
 describe("museApprovalModeForRuntimeMode", () => {
   it("maps every thread runtime mode onto an MSP approval mode", () => {

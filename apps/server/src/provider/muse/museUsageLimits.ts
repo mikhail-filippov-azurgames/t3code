@@ -25,7 +25,7 @@ const WEEKLY_WINDOW_ID = "weekly";
 const SESSION_FALLBACK_MINS = 5 * 60;
 const WEEK_MINS = 7 * 24 * 60;
 const NOT_OBSERVED_MESSAGE =
-  "Muse Code has not observed subscription usage yet. Send a Muse message, then refresh limits.";
+  "Muse Code has not observed subscription usage yet. Limits will appear after a Muse turn.";
 const INVALID_USAGE_MESSAGE = "Muse Code returned usage without readable windows.";
 
 function recordOf(value: unknown): Record<string, unknown> | null {

@@ -63,10 +63,12 @@ import {
   isMspMissingRunText,
   isMspSessionInUseText,
   museScopedMcpSettingsDocument,
+  museUsageChangedFrom,
   resolveMuseConfigDir,
   spawnMuseHost,
   type MuseHost,
 } from "../muse/MuseMspRuntime.ts";
+import { museUsageToLimits } from "../muse/museUsageLimits.ts";
 import {
   STEER_TERMINAL_TIMEOUT,
   applyTurnSettled,
@@ -83,6 +85,29 @@ import type { MuseCodeAdapterShape } from "../Services/MuseCodeAdapter.ts";
 const PROVIDER = ProviderDriverKind.make("museCode");
 const MUSE_RESUME_VERSION = 1 as const;
 const RAW_SOURCE = "muse.msp.notification" as const;
+
+/** Publish a host usage observation through the same limits stream as other providers. */
+export function museUsageChangedEvent(input: {
+  readonly notification: { readonly method: string; readonly params?: Record<string, unknown> };
+  readonly providerInstanceId: ProviderInstanceId;
+  readonly threadId: ThreadId;
+  readonly eventId: EventId;
+  readonly createdAt: string;
+}): ProviderRuntimeEvent | undefined {
+  const usage = museUsageChangedFrom(input.notification);
+  if (usage === undefined) return undefined;
+  const limits = museUsageToLimits({ usage, checkedAt: input.createdAt });
+  if (limits.windows.length === 0) return undefined;
+  return {
+    type: "account.rate-limits.updated",
+    eventId: input.eventId,
+    createdAt: input.createdAt,
+    provider: PROVIDER,
+    providerInstanceId: input.providerInstanceId,
+    threadId: input.threadId,
+    payload: { limits: { windows: limits.windows } },
+  };
+}
 
 /** Silence triggers a bounded read of host and turn state. */
 export const MUSE_TURN_SILENCE_TIMEOUT_MS = 90_000;
@@ -798,13 +823,14 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           notification.method === "session/todoListChanged" ||
           notification.method === "item/started" ||
           notification.method === "item/completed";
+        const isUsageChanged = notification.method === "usage/changed";
         // Delta frames are the high-frequency tail; skip them synchronously so
         // the notification path stays allocation-light, and only pay for the
         // rest when the bridge or the native log actually wants them.
         if (notification.method.endsWith("/delta")) {
           return;
         }
-        if (!isBridged && nativeEventLogger === undefined) {
+        if (!isBridged && !isUsageChanged && nativeEventLogger === undefined) {
           return;
         }
         runPromise(
@@ -817,6 +843,20 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
                 ? undefined
                 : [...sessions.values()].find((entry) => entry.mspSessionId === sessionId);
             yield* logNative(record?.threadId ?? null, notification.method, notification.params);
+            if (isUsageChanged) {
+              const hostRecord = [...sessions.values()].find((entry) => entry.host === bridgeHost);
+              if (hostRecord !== undefined) {
+                const stamp = yield* makeEventStamp();
+                const event = museUsageChangedEvent({
+                  notification,
+                  providerInstanceId: boundInstanceId,
+                  threadId: hostRecord.threadId,
+                  ...stamp,
+                });
+                if (event !== undefined) yield* offerRuntimeEvent(event);
+              }
+              return;
+            }
             if (!isBridged || record === undefined) return;
             if (notification.method === "session/todoListChanged") {
               const items = readTodoItems(params?.items);

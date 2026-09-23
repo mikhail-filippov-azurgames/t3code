@@ -105,7 +105,7 @@ describe("museUsageToLimits", () => {
       expect(limits.unavailable?.reason).toBe("probeFailed");
       expect(limits.unavailable?.message).toBe(
         usage === undefined
-          ? "Muse Code has not observed subscription usage yet. Send a Muse message, then refresh limits."
+          ? "Muse Code has not observed subscription usage yet. Limits will appear after a Muse turn."
           : "Muse Code returned usage without readable windows.",
       );
     }
