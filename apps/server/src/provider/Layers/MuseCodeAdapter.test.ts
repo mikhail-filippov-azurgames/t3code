@@ -11,6 +11,7 @@ import { ProviderAdapterRequestError } from "../Errors.ts";
 import {
   MUSE_LIVENESS_PROBE_METHOD,
   MUSE_LIVENESS_PROBE_TIMEOUT_MS,
+  MUSE_MAX_PROGRESS_PROBE_FAILURES,
   MUSE_MAX_CONSECUTIVE_RESPAWNS,
   MUSE_TURN_SILENCE_TIMEOUT_MS,
   awaitMuseHostStall,
@@ -20,6 +21,7 @@ import {
   museChoiceForDecision,
   museEffortForSelection,
   museHostLivenessProbe,
+  museTurnProgressProbe,
   museRespawnDecision,
   museStallOutcome,
   mspErrorText,
@@ -291,11 +293,11 @@ describe("museRespawnDecision", () => {
 });
 
 describe("museStallOutcome", () => {
-  it("names the stall and the continuation when the host will be respawned", () => {
+  it("names the stall without replaying the turn when the host will be respawned", () => {
     const outcome = museStallOutcome({ dedicated: true, respawn: true, priorRespawns: 0 });
     expect(outcome.stopReason).toBe("Muse host stalled.");
     expect(outcome.unhealthy).toBe(false);
-    expect(outcome.detail).toContain("continuing the turn");
+    expect(outcome.detail).toContain("without replaying the turn");
   });
 
   it("surfaces provider-unhealthy once the respawn cap is reached", () => {
@@ -359,6 +361,7 @@ describe("awaitMuseHostStall", () => {
       const fiber = yield* awaitMuseHostStall({
         watchdog,
         probeHostLiveness: Effect.succeed(true),
+        probeTurnProgress: Effect.succeed({ kind: "active" }),
       }).pipe(Effect.forkChild);
       yield* TestClock.adjust(Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS * 6));
       expect(fiber.pollUnsafe()).toBeUndefined();
@@ -371,11 +374,132 @@ describe("awaitMuseHostStall", () => {
       const fiber = yield* awaitMuseHostStall({
         watchdog,
         probeHostLiveness: Effect.succeed(false),
+        probeTurnProgress: Effect.never,
       }).pipe(Effect.forkChild);
       yield* TestClock.adjust(Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS - 1));
       expect(fiber.pollUnsafe()).toBeUndefined();
       yield* TestClock.adjust(Duration.millis(1));
       expect(fiber.pollUnsafe()).toBeDefined();
+    }),
+  );
+
+  it.effect("reconciles a completed turn while the host continues answering", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(MUSE_TURN_SILENCE_TIMEOUT_MS);
+      const terminal = { kind: "terminalUnknown" } as TurnOutcome;
+      const fiber = yield* awaitMuseHostStall({
+        watchdog,
+        probeHostLiveness: Effect.succeed(true),
+        probeTurnProgress: Effect.succeed({ kind: "reconciled", terminal }),
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS));
+      expect(fiber.pollUnsafe()).toMatchObject({ _tag: "Success", value: { kind: "reconciled" } });
+    }),
+  );
+
+  it.effect("settles unknown progress after bounded failed reads", () =>
+    Effect.gen(function* () {
+      const watchdog = yield* makeMuseTurnIdleWatchdog(MUSE_TURN_SILENCE_TIMEOUT_MS);
+      const fiber = yield* awaitMuseHostStall({
+        watchdog,
+        probeHostLiveness: Effect.succeed(true),
+        probeTurnProgress: Effect.succeed({ kind: "unavailable" }),
+      }).pipe(Effect.forkChild);
+      yield* TestClock.adjust(
+        Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS * MUSE_MAX_PROGRESS_PROBE_FAILURES),
+      );
+      expect(fiber.pollUnsafe()).toMatchObject({ _tag: "Success", value: { kind: "unknown" } });
+    }),
+  );
+});
+
+describe("museTurnProgressProbe", () => {
+  it.effect("recovers only the matching durable turn terminal", () =>
+    Effect.gen(function* () {
+      const methods: string[] = [];
+      const progress = yield* museTurnProgressProbe(
+        {
+          connection: {
+            request(method) {
+              methods.push(method);
+              return Promise.resolve(
+                method === "session/read"
+                  ? { session: { sessionId: "session-1", activeTurnId: null } }
+                  : {
+                      events: [
+                        {
+                          method: "turn/completed",
+                          params: {
+                            sessionId: "session-1",
+                            turnId: "other-turn",
+                            terminal: "completed",
+                            sourceRange: {},
+                          },
+                        },
+                        {
+                          method: "turn/completed",
+                          params: {
+                            sessionId: "session-1",
+                            turnId: "turn-1",
+                            terminal: "completed",
+                            sourceRange: {},
+                          },
+                        },
+                      ],
+                      nextCursor: null,
+                    },
+              );
+            },
+          },
+        },
+        "session-1",
+        "turn-1",
+      );
+      expect(progress).toMatchObject({
+        kind: "reconciled",
+        terminal: { kind: "completed", params: { turnId: "turn-1" } },
+      });
+      expect(methods).toEqual(["session/read", "view/page"]);
+    }),
+  );
+
+  it.effect("keeps an active tool running without paging", () =>
+    Effect.gen(function* () {
+      const progress = yield* museTurnProgressProbe(
+        {
+          connection: {
+            request: (method) => {
+              expect(method).toBe("session/read");
+              return Promise.resolve({
+                session: { sessionId: "session-1", activeTurnId: "turn-1" },
+              });
+            },
+          },
+        },
+        "session-1",
+        "turn-1",
+      );
+      expect(progress).toEqual({ kind: "active" });
+    }),
+  );
+
+  it.effect("reports an unknown outcome when durable history omits the terminal", () =>
+    Effect.gen(function* () {
+      const progress = yield* museTurnProgressProbe(
+        {
+          connection: {
+            request: (method) =>
+              Promise.resolve(
+                method === "session/read"
+                  ? { session: { sessionId: "session-1", activeTurnId: null } }
+                  : { events: [], nextCursor: null },
+              ),
+          },
+        },
+        "session-1",
+        "turn-1",
+      );
+      expect(progress).toMatchObject({ kind: "unknown" });
     }),
   );
 });
@@ -417,6 +541,18 @@ describe("awaitMuseTurn", () => {
         awaitStall: Effect.succeed("stalled"),
       });
       expect(outcome.source).toBe("stalled");
+    }),
+  );
+
+  it.effect("returns a durable terminal when SDK streams remain pending", () =>
+    Effect.gen(function* () {
+      const terminal = { kind: "terminalUnknown" } as TurnOutcome;
+      const outcome = yield* awaitMuseTurn({
+        drainDeltas: Effect.never,
+        awaitTerminal: Effect.never,
+        awaitStall: Effect.succeed({ kind: "reconciled", terminal }),
+      });
+      expect(outcome).toEqual({ source: "reconciled", terminal });
     }),
   );
 });

@@ -84,25 +84,13 @@ const PROVIDER = ProviderDriverKind.make("museCode");
 const MUSE_RESUME_VERSION = 1 as const;
 const RAW_SOURCE = "muse.msp.notification" as const;
 
-/**
- * How long the host may stay silent before the adapter probes it for liveness.
- * A healthy Muse turn streams reasoning deltas, so silence this long means the
- * host is stuck. The SDK never times a turn out locally (facade/turn-handle.js,
- * INV-006), and the reaper skips sessions with an active turn
- * (ProviderSessionReaper), so without this bound a silent host would leave the
- * thread "thinking" until an app restart.
- */
+/** Silence triggers a bounded read of host and turn state. */
 export const MUSE_TURN_SILENCE_TIMEOUT_MS = 90_000;
 
-/**
- * Deadline for the liveness probe. `usage/read` is the host's cheap
- * subscription read: no side effects and no model call, so any answer
- * (including a rejection) proves the host is still processing. No answer inside
- * this window means the host is unresponsive and the turn is stalled. A
- * genuinely long-running tool that keeps answering must not be killed, so the
- * silence window only starts the probe — it never settles on its own.
- */
+/** An unanswered `usage/read` marks the host unresponsive. */
 export const MUSE_LIVENESS_PROBE_TIMEOUT_MS = 10_000;
+export const MUSE_PROGRESS_PROBE_TIMEOUT_MS = 10_000;
+export const MUSE_MAX_PROGRESS_PROBE_FAILURES = 3;
 
 /** The lightweight MSP request used only as a host liveness probe. */
 export const MUSE_LIVENESS_PROBE_METHOD = "usage/read" as const;
@@ -120,7 +108,7 @@ interface MuseSessionRecord {
   readonly model: string | undefined;
   readonly effort: MuseReasoningEffort | undefined;
   readonly createdAt: string;
-  /** The exact start input, replayed to spawn a fresh host session after a stall. */
+  /** The exact start input used to spawn a fresh host session after a stall. */
   readonly startInput: ProviderSessionStartInput;
   readonly turnIds: Array<string>;
   activeTurnId: string | undefined;
@@ -435,7 +423,7 @@ export function museStallOutcome(input: {
   const willRespawn = input.dedicated && input.respawn;
   return {
     detail: willRespawn
-      ? `Muse host stopped answering; restarting it and continuing the turn (attempt ${
+      ? `Muse host stopped answering; restarting it without replaying the turn (attempt ${
           input.priorRespawns + 1
         }).`
       : unhealthy
@@ -470,22 +458,110 @@ export function museHostLivenessProbe(
   );
 }
 
-export type MuseHostSilence = "stalled";
+export type MuseTurnProgress =
+  | { readonly kind: "active" }
+  | { readonly kind: "reconciled"; readonly terminal: TurnOutcome }
+  | { readonly kind: "unknown"; readonly reason: string }
+  | { readonly kind: "unavailable" };
 
-/**
- * Wait out the idle watchdog and probe the host each time its silence window
- * elapses. A host that answers is merely busy (a long tool) and the window
- * restarts; only a host that stops answering reports "stalled".
- */
+export interface MuseTurnReadTarget {
+  readonly connection: {
+    readonly request: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  };
+}
+
+/** Read durable host state when the notification stream has stopped advancing. */
+export function museTurnProgressProbe(
+  target: MuseTurnReadTarget,
+  sessionId: string,
+  turnId: string,
+  timeoutMs: number = MUSE_PROGRESS_PROBE_TIMEOUT_MS,
+): Effect.Effect<MuseTurnProgress> {
+  const bounded = (method: string, params: Record<string, unknown>) =>
+    Effect.promise(() => target.connection.request(method, params)).pipe(
+      Effect.exit,
+      Effect.timeoutOption(Duration.millis(timeoutMs)),
+    );
+  return Effect.gen(function* () {
+    const read = yield* bounded("session/read", { sessionId, excludeItems: true });
+    if (Option.isNone(read) || read.value._tag !== "Success" || !isRecord(read.value.value)) {
+      return { kind: "unavailable" } as const;
+    }
+    const session = read.value.value["session"];
+    if (!isRecord(session) || session["sessionId"] !== sessionId) {
+      return { kind: "unavailable" } as const;
+    }
+    if (session["activeTurnId"] === turnId) {
+      return { kind: "active" } as const;
+    }
+    if (session["activeTurnId"] !== null && typeof session["activeTurnId"] !== "string") {
+      return { kind: "unavailable" } as const;
+    }
+    let cursor: string | undefined;
+    for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
+      const page = yield* bounded("view/page", {
+        sessionId,
+        direction: "backward",
+        limit: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      });
+      if (Option.isNone(page) || page.value._tag !== "Success" || !isRecord(page.value.value)) {
+        return { kind: "unavailable" } as const;
+      }
+      const result = page.value.value;
+      if (!Array.isArray(result["events"])) return { kind: "unavailable" } as const;
+      for (const event of result["events"]) {
+        if (!isRecord(event) || event["method"] !== "turn/completed") continue;
+        const params = event["params"];
+        if (
+          isRecord(params) &&
+          params["sessionId"] === sessionId &&
+          params["turnId"] === turnId &&
+          typeof params["terminal"] === "string" &&
+          isRecord(params["sourceRange"])
+        ) {
+          return {
+            kind: "reconciled",
+            terminal: { kind: "completed", params, observedStart: true } as unknown as TurnOutcome,
+          } as const;
+        }
+      }
+      const next = result["nextCursor"];
+      if (next === null) break;
+      if (typeof next !== "string" || next === cursor) return { kind: "unavailable" } as const;
+      cursor = next;
+    }
+    return {
+      kind: "unknown",
+      reason: "Muse turn ended without a recoverable terminal event.",
+    } as const;
+  });
+}
+
+export type MuseHostSilence =
+  | "stalled"
+  | { readonly kind: "reconciled"; readonly terminal: TurnOutcome }
+  | { readonly kind: "unknown"; readonly reason: string };
+
+/** A live host must also account for this turn in durable state. */
 export const awaitMuseHostStall = (input: {
   readonly watchdog: MuseTurnIdleWatchdog;
   readonly probeHostLiveness: Effect.Effect<boolean>;
+  readonly probeTurnProgress: Effect.Effect<MuseTurnProgress>;
 }): Effect.Effect<MuseHostSilence> =>
   Effect.gen(function* () {
+    let failedProbes = 0;
     while (true) {
       yield* input.watchdog.awaitIdle;
       const alive = yield* input.probeHostLiveness;
       if (alive) {
+        const progress = yield* input.probeTurnProgress;
+        if (progress.kind === "reconciled") return progress;
+        if (progress.kind === "unknown") return progress;
+        failedProbes = progress.kind === "unavailable" ? failedProbes + 1 : 0;
+        if (failedProbes >= MUSE_MAX_PROGRESS_PROBE_FAILURES) {
+          return { kind: "unknown", reason: "Muse turn progress could not be verified." };
+        }
         yield* input.watchdog.markActivity;
         continue;
       }
@@ -495,14 +571,12 @@ export const awaitMuseHostStall = (input: {
 
 export type MuseTurnWaitOutcome =
   | { readonly source: "terminal"; readonly terminal: TurnOutcome }
+  | { readonly source: "reconciled"; readonly terminal: TurnOutcome }
+  | { readonly source: "progressUnknown"; readonly reason: string }
   | { readonly source: "stalled" }
   | { readonly source: "streamFailed"; readonly failure: unknown };
 
-/**
- * Race the turn's terminal against the host going silent. A delta stream that
- * fails (rather than hangs) settles as `streamFailed` instead of being
- * swallowed by `Effect.ignore`, so the caller always emits a terminal.
- */
+/** Race stream completion against bounded host reconciliation. */
 export const awaitMuseTurn = (input: {
   readonly drainDeltas: Effect.Effect<void, ProviderAdapterRequestError>;
   readonly awaitTerminal: Effect.Effect<TurnOutcome>;
@@ -520,7 +594,15 @@ export const awaitMuseTurn = (input: {
           Effect.succeed({ source: "streamFailed" as const, failure: cause }),
         ),
       ),
-      input.awaitStall.pipe(Effect.as({ source: "stalled" as const })),
+      input.awaitStall.pipe(
+        Effect.map((result): MuseTurnWaitOutcome =>
+          result === "stalled"
+            ? { source: "stalled" }
+            : result.kind === "reconciled"
+              ? { source: "reconciled", terminal: result.terminal }
+              : { source: "progressUnknown", reason: result.reason },
+        ),
+      ),
     );
   });
 
@@ -703,6 +785,14 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
       );
 
     const bridgeHostNotifications = (bridgeHost: MuseHost) => {
+      bridgeHost.connection.onProtocolError((error) => {
+        runPromise(
+          Effect.logWarning("Muse MSP protocol frame was rejected.", {
+            errorName: error.name,
+            errorMessage: error.message.slice(0, 200),
+          }),
+        );
+      });
       bridgeHost.addNotificationHandler((notification) => {
         const isBridged =
           notification.method === "session/todoListChanged" ||
@@ -1005,9 +1095,6 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
       turnSelection: {
         readonly model: string | undefined;
         readonly effort: MuseReasoningEffort | undefined;
-        /** The prompt, replayed if the host is respawned and the turn resumed. */
-        readonly prompt: string;
-        readonly modelSelection: ModelSelection | undefined;
       },
     ): Effect.Effect<void, never> =>
       Effect.gen(function* () {
@@ -1069,12 +1156,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             }),
           ),
         );
-        // The SDK never settles a turn on its own (facade/turn-handle.js,
-        // INV-006). `awaitMuseTurn` races the real terminal against the host
-        // going silent, and a failing delta stream settles as `streamFailed`
-        // instead of being swallowed: a host that hangs *or* fails must never
-        // leave the turn "running". `raceFirst` interrupts the loser, so the
-        // delta drain fiber is stopped either way.
+        // A missing SDK terminal must not leave the turn running forever.
         const awaited = yield* awaitMuseTurn({
           drainDeltas,
           awaitTerminal: Effect.promise(() => turn.completed).pipe(
@@ -1083,13 +1165,15 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           awaitStall: awaitMuseHostStall({
             watchdog: idleWatchdog,
             probeHostLiveness: museHostLivenessProbe(record.host),
+            probeTurnProgress: museTurnProgressProbe(record.host, record.mspSessionId, turn.turnId),
           }),
         });
         if (awaited.source === "stalled") {
-          yield* handleStalledTurn(record, turn.turnId, {
-            prompt: turnSelection.prompt,
-            modelSelection: turnSelection.modelSelection,
-          });
+          yield* handleStalledTurn(record, turn.turnId);
+          return;
+        }
+        if (awaited.source === "progressUnknown") {
+          yield* handleProgressUnknownTurn(record, turn.turnId, awaited.reason);
           return;
         }
         if (awaited.source === "streamFailed") {
@@ -1097,6 +1181,12 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           return;
         }
         const outcome: TurnOutcome = awaited.terminal;
+        if (awaited.source === "reconciled") {
+          yield* Effect.logWarning("Recovered a Muse turn terminal from durable history.", {
+            threadId: record.threadId,
+            turnId: turn.turnId,
+          });
+        }
         // A steer that timed out waiting for this terminal already settled it
         // synthetically: re-emitting would double-close the turn downstream.
         const live = (yield* Ref.get(sessionsRef)).get(record.threadId);
@@ -1128,7 +1218,12 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
                   ? { errorMessage: mspErrorText(outcome.params.error) }
                   : {}),
               },
-              raw: { source: RAW_SOURCE, method: "turn/completed", payload: outcome.params },
+              raw: {
+                source: RAW_SOURCE,
+                method: "turn/completed",
+                payload: outcome.params,
+                ...(awaited.source === "reconciled" ? { reconciled: true } : {}),
+              },
             });
           } else {
             yield* offerRuntimeEvent({
@@ -1159,7 +1254,29 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         yield* settleRecordTurn(record, turn.turnId);
         // A real terminal ends the streak: the next stall starts counting fresh.
         yield* clearRespawnCount(record.threadId);
-      }).pipe(Effect.ignore);
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            yield* Effect.logWarning("Muse turn pump failed unexpectedly.", {
+              threadId: record.threadId,
+              turnId: turn.turnId,
+              cause,
+            });
+            const live = (yield* Ref.get(sessionsRef)).get(record.threadId);
+            if (live !== undefined && !live.settledTurnIds.has(turn.turnId)) {
+              yield* emitStreamFailedTerminal(record, turn.turnId, cause);
+            }
+          }).pipe(
+            Effect.catchCause((settlementCause) =>
+              Effect.logError("Could not settle failed Muse turn pump.", {
+                threadId: record.threadId,
+                turnId: turn.turnId,
+                cause: settlementCause,
+              }),
+            ),
+          ),
+        ),
+      );
 
     const startSession: MuseCodeAdapterShape["startSession"] = (input) =>
       sessionStartLock.withPermits(1)(
@@ -1347,6 +1464,15 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             terminals,
             turnLock,
           };
+          session.onGapError((failure) => {
+            runPromise(
+              Effect.logWarning("Muse MSP view gap could not be filled.", {
+                threadId: record.threadId,
+                sessionId: record.mspSessionId,
+                reason: failure.reason,
+              }),
+            );
+          });
           registerApprovalHandler(record);
           yield* Ref.update(sessionsRef, (sessions) =>
             new Map(sessions).set(input.threadId, record),
@@ -1527,11 +1653,37 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           providerInstanceId: boundInstanceId,
           threadId: record.threadId,
           turnId: TurnId.make(mspTurnId),
-          payload: { reason: `Muse host stream failed: ${mspErrorText(failure)}` },
-          raw: { source: RAW_SOURCE, method: "turn/aborted", payload: { streamFailed: true } },
+          payload: {
+            reason:
+              typeof failure === "string"
+                ? failure
+                : `Muse host stream failed: ${mspErrorText(failure)}`,
+          },
+          raw: {
+            source: RAW_SOURCE,
+            method: "turn/aborted",
+            payload:
+              typeof failure === "string" ? { progressUnknown: true } : { streamFailed: true },
+          },
         });
         yield* record.terminals.noteTerminal(mspTurnId);
         yield* settleRecordTurn(record, mspTurnId);
+      });
+
+    const handleProgressUnknownTurn = (
+      record: MuseSessionRecord,
+      mspTurnId: string,
+      reason: string,
+    ) =>
+      Effect.gen(function* () {
+        const live = (yield* Ref.get(sessionsRef)).get(record.threadId);
+        if (live === undefined || live.settledTurnIds.has(mspTurnId)) return;
+        yield* Effect.logWarning("Muse turn notifications stopped without a verifiable terminal.", {
+          threadId: record.threadId,
+          turnId: mspTurnId,
+          reason,
+        });
+        yield* emitStreamFailedTerminal(record, mspTurnId, reason);
       });
 
     // Only a thread's own dedicated orchestration host may be killed and
@@ -1562,18 +1714,8 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         ),
       );
 
-    // A turn whose host stopped answering the liveness probe is wedged. Settle
-    // it visibly, replace the host, and resume the interrupted turn on the
-    // fresh host so the user's work is not lost. Respawning is capped so a host
-    // that keeps wedging surfaces "provider unhealthy" instead of looping.
-    const handleStalledTurn = (
-      record: MuseSessionRecord,
-      mspTurnId: string,
-      continuation: {
-        readonly prompt: string;
-        readonly modelSelection: ModelSelection | undefined;
-      },
-    ) =>
+    // The original turn may have committed side effects, so never replay its prompt.
+    const handleStalledTurn = (record: MuseSessionRecord, mspTurnId: string) =>
       Effect.gen(function* () {
         const plan = yield* planHostRecovery(record);
         const willRespawn = plan.dedicated && plan.respawn;
@@ -1596,23 +1738,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         if (!willRespawn) {
           return;
         }
-        yield* Effect.gen(function* () {
-          yield* respawnDedicatedHost(record, plan.priorRespawns);
-          yield* sendTurn({
-            threadId: record.threadId,
-            input: continuation.prompt,
-            ...(continuation.modelSelection === undefined
-              ? {}
-              : { modelSelection: continuation.modelSelection }),
-          });
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Muse stall recovery could not continue the turn.", {
-              threadId: record.threadId,
-              cause,
-            }),
-          ),
-        );
+        yield* respawnDedicatedHost(record, plan.priorRespawns);
       });
 
     // A failed delta stream means the session's host is unusable. Settle the
@@ -1787,8 +1913,6 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
               pumpTurn(record, turn, turnId, {
                 model: record.model,
                 effort,
-                prompt,
-                modelSelection: input.modelSelection,
               }),
             );
             const result: ProviderTurnStartResult = {
