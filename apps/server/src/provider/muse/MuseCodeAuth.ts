@@ -30,6 +30,8 @@ export interface MuseCodeAuthOptions {
   readonly instanceId: ProviderInstanceId;
   readonly museBin: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly onLogin?: Effect.Effect<void>;
+  readonly onLogout?: Effect.Effect<void>;
 }
 
 const idleState = (instanceId: ProviderInstanceId): ProviderAuthState => ({
@@ -43,13 +45,17 @@ const idleState = (instanceId: ProviderInstanceId): ProviderAuthState => ({
 
 export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
   options: MuseCodeAuthOptions,
-): Effect.fn.Return<ProviderAuthController, never, Crypto.Crypto | ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.fn.Return<
+  ProviderAuthController,
+  never,
+  Crypto.Crypto | ChildProcessSpawner.ChildProcessSpawner
+> {
   const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const stateRef = yield* SubscriptionRef.make(idleState(options.instanceId));
-  const activeFlowRef = yield* Ref.make<{ readonly flowId: string; readonly owner: string } | undefined>(
-    undefined,
-  );
+  const activeFlowRef = yield* Ref.make<
+    { readonly flowId: string; readonly owner: string } | undefined
+  >(undefined);
 
   const setupError = (operation: string, detail: string) =>
     new ProviderSetupError({ instanceId: options.instanceId, operation, detail });
@@ -60,7 +66,10 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
     Effect.gen(function* () {
       const active = yield* Ref.get(activeFlowRef);
       if (active === undefined || active.flowId !== flowId || active.owner !== ownerSessionId) {
-        return yield* setupError(operation, "This Muse sign-in is no longer active in this client.");
+        return yield* setupError(
+          operation,
+          "This Muse sign-in is no longer active in this client.",
+        );
       }
       return active;
     });
@@ -73,7 +82,7 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
   }).pipe(
     Effect.scoped,
     Effect.timeoutOption(VERIFY_TIMEOUT_MS),
-    Effect.map((rows) => rows._tag === "Some"),
+    Effect.map((rows) => rows._tag === "Some" && rows.value),
     Effect.orElseSucceed(() => false),
   );
 
@@ -81,7 +90,9 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
     Effect.gen(function* () {
       if (stopSessions) {
         yield* stopSessions.pipe(
-          Effect.mapError((cause) => setupError("start", `Failed to stop sessions: ${String(cause)}`)),
+          Effect.mapError((cause) =>
+            setupError("start", `Failed to stop sessions: ${String(cause)}`),
+          ),
         );
       }
       const active = yield* Ref.get(activeFlowRef);
@@ -89,14 +100,17 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
         return yield* setupError("start", "Muse sign-in is already in progress.");
       }
       const flowId = yield* crypto.randomUUIDv4.pipe(
-        Effect.mapError((cause) => setupError("start", `Failed to open sign-in flow: ${String(cause)}`)),
+        Effect.mapError((cause) =>
+          setupError("start", `Failed to open sign-in flow: ${String(cause)}`),
+        ),
       );
       yield* Ref.set(activeFlowRef, { flowId, owner: ownerSessionId });
       const state: ProviderAuthState = {
         ...idleState(options.instanceId),
         phase: "waiting",
         flowId,
-        message: "Run `muse login` in a terminal and approve the Meta account, then choose Continue.",
+        message:
+          "Run `muse login` in a terminal and approve the Meta account, then choose Continue.",
       };
       yield* publish(state);
       return state;
@@ -113,6 +127,7 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
       };
       yield* publish(verifying);
       const ok = yield* verifySubscription;
+      if (ok && options.onLogin !== undefined) yield* options.onLogin;
       yield* Ref.set(activeFlowRef, undefined);
       const done: ProviderAuthState = ok
         ? {
@@ -146,23 +161,35 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
   const logout: ProviderAuthController["logout"] = (stopSessions) =>
     Effect.gen(function* () {
       yield* stopSessions.pipe(
-        Effect.mapError((cause) => setupError("logout", `Failed to stop sessions: ${String(cause)}`)),
+        Effect.mapError((cause) =>
+          setupError("logout", `Failed to stop sessions: ${String(cause)}`),
+        ),
       );
       const spawnCommand = yield* resolveSpawnCommand(options.museBin, ["logout"], {
         env: options.env,
-      }).pipe(Effect.mapError((cause) => setupError("logout", `Failed to resolve Muse spawn: ${String(cause)}`)));
+      }).pipe(
+        Effect.mapError((cause) =>
+          setupError("logout", `Failed to resolve Muse spawn: ${String(cause)}`),
+        ),
+      );
       const exitCode = yield* Effect.scoped(
         Effect.gen(function* () {
-          const child = yield* spawner.spawn(
-            ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-              env: options.env,
-              shell: spawnCommand.shell,
-            }),
-          ).pipe(
-            Effect.mapError((cause) => setupError("logout", `Failed to spawn Muse logout: ${String(cause)}`)),
-          );
+          const child = yield* spawner
+            .spawn(
+              ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+                env: options.env,
+                shell: spawnCommand.shell,
+              }),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                setupError("logout", `Failed to spawn Muse logout: ${String(cause)}`),
+              ),
+            );
           return yield* child.exitCode.pipe(
-            Effect.mapError((cause) => setupError("logout", `Muse logout failed: ${String(cause)}`)),
+            Effect.mapError((cause) =>
+              setupError("logout", `Muse logout failed: ${String(cause)}`),
+            ),
           );
         }),
       ).pipe(
@@ -176,6 +203,7 @@ export const makeMuseCodeAuth = Effect.fn("makeMuseCodeAuth")(function* (
       if (exitCode !== 0) {
         return yield* setupError("logout", "Muse CLI logout failed.");
       }
+      if (options.onLogout !== undefined) yield* options.onLogout;
       yield* Ref.set(activeFlowRef, undefined);
       const state = idleState(options.instanceId);
       yield* publish(state);

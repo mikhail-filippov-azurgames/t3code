@@ -39,7 +39,6 @@ import {
 } from "../providerSnapshot.ts";
 import { makeUnavailableUsageLimits } from "../providerUsageLimits.ts";
 import {
-  lastObservedMuseUsage,
   listMuseModels,
   readMuseUsage,
   readMuseVersionPin,
@@ -49,6 +48,7 @@ import {
   type MuseModelRow,
 } from "./MuseMspRuntime.ts";
 import { museUsageToLimits } from "./museUsageLimits.ts";
+import type { MuseUsageCache } from "./MuseUsageCache.ts";
 
 const MUSE_PRESENTATION = {
   displayName: "Muse Code",
@@ -166,6 +166,7 @@ const runMuseCliCommand = (
 export interface MuseProbeInput {
   readonly binaryPath: string;
   readonly environment: NodeJS.ProcessEnv;
+  readonly usageCache?: MuseUsageCache;
 }
 
 function museHostEnvironment(environment: NodeJS.ProcessEnv): {
@@ -300,22 +301,23 @@ export const checkMuseCodeProviderStatus = Effect.fn("checkMuseCodeProviderStatu
     });
   }
 
-  // Subscription windows ride the same host, but a fresh probe host has
-  // observed no model traffic and answers `usage/read` empty; the account's
-  // live hosts observe usage during turns, so fall back to their last
-  // observation. An API-key environment cannot report windows at all, and a
-  // failed or empty read publishes `probeFailed` so the pipeline keeps the
-  // last good bars instead of clearing them.
+  // A fresh probe host usually has no observation. Reuse the last observation
+  // for this instance, including one saved before a server restart. A failed
+  // probe never clears the last good bars already published by this process.
   const hostUsage =
     catalogProbe !== undefined && Result.isSuccess(catalogProbe.usage)
       ? catalogProbe.usage.success
       : undefined;
+  if (hostUsage !== undefined && probeInput.usageCache !== undefined) {
+    yield* probeInput.usageCache.observe(hostUsage);
+  }
+  const cachedLimits =
+    !hostEnv.hadApiKey && probeInput.usageCache !== undefined
+      ? yield* probeInput.usageCache.read
+      : undefined;
   const usageLimits = hostEnv.hadApiKey
     ? makeUnavailableUsageLimits({ checkedAt, reason: "unsupported" })
-    : museUsageToLimits({
-        usage: hostUsage ?? lastObservedMuseUsage(),
-        checkedAt,
-      });
+    : (cachedLimits ?? museUsageToLimits({ usage: hostUsage, checkedAt }));
 
   const discoveredModels = museModelsFromRows(catalogRows);
   const models =

@@ -262,16 +262,6 @@ export function spawnMuseHost(input: {
         clientInfo: input.clientInfo ?? MUSE_CLIENT_INFO,
       });
       const addNotificationHandler = installNotificationFanout(spawned.connection);
-      // A host observes subscription usage only after it serves model traffic,
-      // so a freshly spawned probe host always reports nothing. Cache every
-      // host's `usage/changed` so the provider probe can publish the last
-      // observation the account's live hosts actually saw.
-      addNotificationHandler((notification) => {
-        const observed = museUsageChangedFrom(notification);
-        if (observed !== undefined) {
-          lastObservedUsage = observed;
-        }
-      });
       const client = new MuseClient(spawned.connection, {
         durability: readSessionDurability(spawned.initializeResult),
         host: spawned,
@@ -489,20 +479,6 @@ export const MUSE_USAGE_READ_METHOD = "usage/read" as const;
  * params are the same payload `usage/read` returns under its `usage` member.
  */
 export const MUSE_USAGE_CHANGED_METHOD = "usage/changed" as const;
-
-/**
- * A host observes subscription usage only after it serves model traffic, so a
- * freshly spawned probe host answers `usage/read` with no usage at all. The
- * adapter's long-lived hosts observe it during turns; this keeps the latest
- * observation any of them reported so the probe can publish real windows
- * without a model call. Absent until some host has observed usage.
- */
-let lastObservedUsage: Record<string, unknown> | undefined;
-
-/** The latest usage any spawned host reported, or undefined when none has. */
-export function lastObservedMuseUsage(): Record<string, unknown> | undefined {
-  return lastObservedUsage;
-}
 
 /** The usage payload a `usage/changed` notification carries, if it is one. */
 export function museUsageChangedFrom(notification: {

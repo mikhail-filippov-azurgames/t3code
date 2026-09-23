@@ -15,7 +15,7 @@ import { type ReactNode, useState } from "react";
 
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { formatUpcomingTimestamp } from "../../timestampFormat";
+import { formatChatTimestampTooltip, formatUpcomingTimestamp } from "../../timestampFormat";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { getDriverOption } from "../settings/providerDriverMeta";
 import { RedactedSensitiveText } from "../settings/RedactedSensitiveText";
@@ -182,6 +182,11 @@ function SegmentPopover({
       </div>
       <div className="flex flex-col gap-1 border-t border-border/60 pt-2.5">
         <Row label="Left">{remaining}%</Row>
+        {account.driver === "museCode" ? (
+          <Row label="Last received">
+            {formatChatTimestampTooltip(account.limits.checkedAt, timestampFormat)}
+          </Row>
+        ) : null}
         {window.resetsAt ? (
           <Row label="Resets">
             {formatUpcomingTimestamp(window.resetsAt, timestampFormat, now)}
@@ -522,6 +527,11 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
           iconClassName="size-4 text-foreground/80"
         />
         {label}
+        {pool.driver === "museCode" ? (
+          <span className="text-xs font-normal text-muted-foreground">
+            Showing last received usage data
+          </span>
+        ) : null}
       </h2>
       {pool.windows.map((window) => (
         <PoolWindowCard key={`${window.kind}:${window.id}`} pool={window} color={color} now={now} />

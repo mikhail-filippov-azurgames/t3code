@@ -17,6 +17,7 @@ import * as Schema from "effect/Schema";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
+import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { makeMuseTextGeneration } from "../../textGeneration/MuseTextGeneration.ts";
 import { ProviderDriverError } from "../Errors.ts";
@@ -40,7 +41,12 @@ import {
   buildInitialMuseCodeProviderSnapshot,
   checkMuseCodeProviderStatus,
 } from "../muse/MuseCodeProvider.ts";
-import { readMuseVersionPin, resolveMuseServeBinary, stripMuseApiKeys } from "../muse/MuseMspRuntime.ts";
+import {
+  readMuseVersionPin,
+  resolveMuseServeBinary,
+  stripMuseApiKeys,
+} from "../muse/MuseMspRuntime.ts";
+import { makeMuseUsageCache, museUsageCachePath } from "../muse/MuseUsageCache.ts";
 
 const decodeMuseCodeSettings = Schema.decodeSync(MuseCodeSettings);
 
@@ -56,6 +62,7 @@ export type MuseCodeDriverEnv =
   | Crypto.Crypto
   | FileSystem.FileSystem
   | Path.Path
+  | ServerConfig
   | ServerSettingsService;
 
 /** Fail closed when API keys could authorize the child host. */
@@ -91,9 +98,12 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
       const fileSystem = yield* FileSystem.FileSystem;
       const pathService = yield* Path.Path;
       const serverSettings = yield* ServerSettingsService;
+      const serverConfig = yield* ServerConfig;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const { env: subscriptionEnv, stripped } = stripMuseApiKeys(processEnv);
       yield* assertMuseSubscriptionEnv({ instanceId, stripped });
+      const usageCachePath = yield* museUsageCachePath(serverConfig.stateDir, instanceId);
+      const usageCache = yield* makeMuseUsageCache(usageCachePath);
 
       const pin = yield* readMuseVersionPin({ binaryPath: config.binaryPath });
       const museBin = yield* resolveMuseServeBinary({
@@ -129,6 +139,7 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
         museBin,
         env: subscriptionEnv,
         instanceId,
+        usageCache,
       }).pipe(
         Effect.provideService(Crypto.Crypto, crypto),
         Effect.mapError(
@@ -149,6 +160,8 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
         instanceId,
         museBin,
         env: subscriptionEnv,
+        onLogin: usageCache.clear,
+        onLogout: usageCache.clear,
       }).pipe(
         Effect.provideService(Crypto.Crypto, crypto),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -156,7 +169,7 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
 
       const checkProvider = checkMuseCodeProviderStatus(
         effectiveConfig,
-        { binaryPath: config.binaryPath, environment: subscriptionEnv },
+        { binaryPath: config.binaryPath, environment: subscriptionEnv, usageCache },
         subscriptionEnv,
       ).pipe(
         Effect.map(stampIdentity),
@@ -167,15 +180,17 @@ export const MuseCodeDriver: ProviderDriver<MuseCodeSettings, MuseCodeDriverEnv>
       );
 
       const snapshotSettings = makeProviderSnapshotSettingsSource(effectiveConfig, serverSettings);
-      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<MuseCodeSettings>>({
-        resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
-        getSettings: snapshotSettings.getSettings,
-        streamSettings: snapshotSettings.streamSettings,
-        haveSettingsChanged: haveProviderSnapshotSettingsChanged,
-        initialSnapshot: (settings) =>
-          buildInitialMuseCodeProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
-        checkProvider,
-      }).pipe(
+      const snapshot = yield* makeManagedServerProvider<ProviderSnapshotSettings<MuseCodeSettings>>(
+        {
+          resolveMaintenance: () => Effect.succeed(MAINTENANCE_CAPABILITIES),
+          getSettings: snapshotSettings.getSettings,
+          streamSettings: snapshotSettings.streamSettings,
+          haveSettingsChanged: haveProviderSnapshotSettingsChanged,
+          initialSnapshot: (settings) =>
+            buildInitialMuseCodeProviderSnapshot(settings.provider).pipe(Effect.map(stampIdentity)),
+          checkProvider,
+        },
+      ).pipe(
         Effect.mapError(
           (cause) =>
             new ProviderDriverError({

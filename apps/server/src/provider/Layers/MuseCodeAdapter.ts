@@ -69,6 +69,7 @@ import {
   type MuseHost,
 } from "../muse/MuseMspRuntime.ts";
 import { museUsageToLimits } from "../muse/museUsageLimits.ts";
+import type { MuseUsageCache } from "../muse/MuseUsageCache.ts";
 import {
   STEER_TERMINAL_TIMEOUT,
   applyTurnSettled,
@@ -167,6 +168,7 @@ export interface MuseCodeAdapterOptions {
   readonly museBin: string;
   readonly env: NodeJS.ProcessEnv;
   readonly instanceId?: ProviderInstanceId;
+  readonly usageCache?: MuseUsageCache;
   /** Raw MSP notification log. Owned by the caller; diagnostics only. */
   readonly nativeEventLogger?: EventNdjsonLogger;
 }
@@ -844,6 +846,9 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
                 : [...sessions.values()].find((entry) => entry.mspSessionId === sessionId);
             yield* logNative(record?.threadId ?? null, notification.method, notification.params);
             if (isUsageChanged) {
+              if (options.usageCache !== undefined) {
+                yield* options.usageCache.observe(notification.params);
+              }
               const hostRecord = [...sessions.values()].find((entry) => entry.host === bridgeHost);
               if (hostRecord !== undefined) {
                 const stamp = yield* makeEventStamp();
