@@ -2,6 +2,7 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
+import { BOARD_ORCHESTRATOR_TURN_TEXT } from "./orchestration/boardWakePrompt.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -648,35 +649,11 @@ const buildHumanBoardCard = (
 });
 
 const boardStartTaskText = (card: BoardCard): string =>
-  `Board card "${card.title}" (${card.cardId}) started by the human. Executor role: ${card.executorRole}.\n\n${card.body}`;
-
-const BOARD_START_TURN_TEXT =
-  "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
+  `${BOARD_ORCHESTRATOR_TURN_TEXT}\n\nCurrent card:\nBoard card "${card.title}" (${card.cardId}) started by the human. Executor role: ${card.executorRole}.\n\n${card.body}`;
 
 const BOARD_ORCHESTRATOR_MESSAGE_PREFIX = "board-orchestrator:";
 const BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX = "board-orchestrator-turn:";
-const BOARD_ORCHESTRATOR_SKILL_PATH = ".agents/skills/board-orchestrator/SKILL.md";
-
-// Concise on purpose: the full playbook lives in the skill file this notice
-// points at, so a marked thread learns the board workflow without a long prompt.
-const BOARD_ORCHESTRATOR_BRIEF = [
-  "You were marked as the orchestrator for this board. You run the board, not a single task: plan cards, route them to executors, and review what comes back.",
-  "",
-  "Plan before acting. Create cards with board_create_card before any work starts, and keep each status truthful: todo -> orchestrator -> in_progress -> review -> done. Read the board and its append-only history with board_list_cards, move cards with board_update_card, and drop them with board_delete_card.",
-  "",
-  "Route work through delegate_task, then link it. Moving a card to in_progress requires both assignee (the provider/model/effort you chose) and executorThreadId (the delegated child thread id). Delegate first, then pass the returned childThreadId - otherwise the server rejects the move with executor_required.",
-  "",
-  "Pick the executor from orchestrator_capabilities together with the active routing policy (role + effort). If no routing policy is available, choose from the catalog and the roles you need. When a human names an executor, follow that assignment.",
-  "",
-  "When an executor finishes, its card moves to review automatically and you are woken to review the result: accept with done, or send it back to in_progress/todo. On failure or needs human, you decide: retry, reassign, or escalate.",
-  "",
-  "Humans cannot stop, reassign, change status, or delete work; they send you a request and you act on it. Progress history is written automatically and is append-only - never try to rewrite it.",
-  "",
-  `Full playbook: read ${BOARD_ORCHESTRATOR_SKILL_PATH}.`,
-].join("\n");
-
-const BOARD_ORCHESTRATOR_TURN_TEXT =
-  "You were marked as a board orchestrator. Read the notice above and follow the board workflow (skill board-orchestrator).";
+const BOARD_ORCHESTRATOR_BRIEF = BOARD_ORCHESTRATOR_TURN_TEXT;
 
 const findExecutorChildThreadIds = (
   deps: BoardRpcDependencies,
@@ -977,7 +954,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
             message: {
               messageId: MessageId.make(`board-start-turn:${card.cardId}`),
               role: "user",
-              text: BOARD_START_TURN_TEXT,
+              text: boardStartTaskText(card),
               attachments: [],
             },
             runtimeMode: orchestrator.runtimeMode,

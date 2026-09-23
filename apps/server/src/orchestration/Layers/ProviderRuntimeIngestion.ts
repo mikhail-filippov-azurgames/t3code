@@ -56,6 +56,7 @@ import { forkParked } from "../../serverActivation.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { canReplaceThreadTitle } from "../threadTitles.ts";
+import { BOARD_ORCHESTRATOR_TURN_TEXT } from "../boardWakePrompt.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -67,17 +68,9 @@ const DELEGATION_WAKE_DELIVERED_ACTIVITY = "delegation.wake-delivered";
 const BOARD_START_MESSAGE_PREFIX = "board-start:";
 const BOARD_START_TURN_MESSAGE_PREFIX = "board-start-turn:";
 const BOARD_START_DRAIN_MESSAGE_PREFIX = "board-start-drain:";
-// Mirrors BOARD_START_TURN_TEXT in ws.ts. Duplicated on purpose: ingestion
-// must not import from the WS layer.
-const BOARD_START_TURN_TEXT =
-  "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
 const BOARD_ORCHESTRATOR_MESSAGE_PREFIX = "board-orchestrator:";
 const BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX = "board-orchestrator-turn:";
 const BOARD_ORCHESTRATOR_DRAIN_MESSAGE_PREFIX = "board-orchestrator-drain:";
-// Mirrors BOARD_ORCHESTRATOR_TURN_TEXT in ws.ts. Duplicated on purpose:
-// ingestion must not import from the WS layer.
-const BOARD_ORCHESTRATOR_TURN_TEXT =
-  "You were marked as a board orchestrator. Read the notice above and follow the board workflow (skill board-orchestrator).";
 
 // Fallback when the in-memory description cache no longer has the task name
 // (server restart, session-exit sweep, TTL/capacity eviction): earlier
@@ -1346,7 +1339,7 @@ const make = Effect.gen(function* () {
       ? DELEGATION_WAKE_TURN_MESSAGE_TEXT
       : isBoardOrchestrator
         ? BOARD_ORCHESTRATOR_TURN_TEXT
-        : BOARD_START_TURN_TEXT;
+        : undelivered.text;
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
       commandId: CommandId.make(drainId),

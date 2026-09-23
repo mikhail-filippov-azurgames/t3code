@@ -62,6 +62,7 @@ import {
   ProviderRuntimeIngestionLive,
   splitBufferedAssistantText,
 } from "./ProviderRuntimeIngestion.ts";
+import { BOARD_ORCHESTRATOR_TURN_TEXT } from "../boardWakePrompt.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -1272,12 +1273,6 @@ describe("ProviderRuntimeIngestion", () => {
   const userMessageIds = (messages: ReadonlyArray<ProviderRuntimeTestMessage>) =>
     messages.filter((message) => message.role === "user").map((message) => message.id);
 
-  const BOARD_START_TURN_TEXT =
-    "A board card is ready. Read the board-start notice above, plan the work, and act on it.";
-
-  const BOARD_ORCHESTRATOR_TURN_TEXT =
-    "You were marked as a board orchestrator. Read the notice above and follow the board workflow (skill board-orchestrator).";
-
   async function seedBoardOrchestratorNotice(
     harness: WakeHarness,
     input: { readonly threadId: ThreadId; readonly createdAt: string },
@@ -1329,7 +1324,12 @@ describe("ProviderRuntimeIngestion", () => {
 
   async function seedBoardStartNotice(
     harness: WakeHarness,
-    input: { readonly threadId: ThreadId; readonly cardId: string; readonly createdAt: string },
+    input: {
+      readonly threadId: ThreadId;
+      readonly cardId: string;
+      readonly createdAt: string;
+      readonly text?: string;
+    },
   ) {
     await harness.dispatch({
       type: "thread.message.system.append",
@@ -1337,7 +1337,7 @@ describe("ProviderRuntimeIngestion", () => {
       threadId: input.threadId,
       message: {
         messageId: asMessageId(`board-start:${input.cardId}`),
-        text: `Board card "${input.cardId}" started by the human.`,
+        text: input.text ?? `Board card "${input.cardId}" started by the human.`,
       },
       createdAt: input.createdAt,
     });
@@ -1353,7 +1353,7 @@ describe("ProviderRuntimeIngestion", () => {
       threadId: input.threadId,
       message: {
         messageId: asMessageId(`board-start-turn:${input.cardId}`),
-        text: BOARD_START_TURN_TEXT,
+        text: `Board card "${input.cardId}" started by the human.`,
         attachments: [],
       },
       createdAt: input.createdAt,
@@ -1712,12 +1712,14 @@ describe("ProviderRuntimeIngestion", () => {
     const parentThreadId = asThreadId("thread-1");
     const drainMessageId = asMessageId(`board-start-drain:${parentThreadId}:card-1`);
     const now = "2026-01-01T00:00:00.000Z";
+    const taskText = `${BOARD_ORCHESTRATOR_TURN_TEXT}\n\nCurrent card:\nBoard card "Restore the worker" (card-1) started by the human. Executor role: implementation.\n\nKeep the user request and acceptance conditions.`;
 
     await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
     await seedBoardStartNotice(harness, {
       threadId: parentThreadId,
       cardId: "card-1",
       createdAt: now,
+      text: taskText,
     });
     await settleParent(
       harness,
@@ -1729,7 +1731,7 @@ describe("ProviderRuntimeIngestion", () => {
     const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
     expect(userMessageIds(parent?.messages ?? [])).toEqual([drainMessageId]);
     const drainMessage = parent?.messages.find((message) => message.id === drainMessageId);
-    expect(drainMessage?.text).toBe(BOARD_START_TURN_TEXT);
+    expect(drainMessage?.text).toBe(taskText);
     const pendingStart = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStart)).toBe(true);
     expect(Option.getOrThrow(pendingStart).messageId).toBe(drainMessageId);

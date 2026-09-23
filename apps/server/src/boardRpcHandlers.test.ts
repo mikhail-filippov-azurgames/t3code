@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 
 import type { BoardRepositoryShape } from "./persistence/Services/Board.ts";
 import type { ProjectionTurn } from "./persistence/Services/ProjectionTurns.ts";
+import { BOARD_ORCHESTRATOR_TURN_TEXT } from "./orchestration/boardWakePrompt.ts";
 import { makeBoardRpcHandlers, type BoardRpcDependencies } from "./ws.ts";
 
 const ORCHESTRATOR = ThreadId.make("orch-thread");
@@ -252,13 +253,17 @@ describe("board RPC handlers", () => {
         (command) => messageIdOf(command) === `board-start:${card.cardId}`,
       );
       assert.isDefined(notice);
-      assert.isTrue(
-        dispatched.some(
-          (command) =>
-            command.type === "thread.turn.start" &&
-            command.message.messageId === `board-start-turn:${card.cardId}`,
-        ),
+      const wake = dispatched.find(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          command.message.messageId === `board-start-turn:${card.cardId}`,
       );
+      assert.isDefined(wake);
+      if (notice?.type === "thread.message.system.append" && wake?.type === "thread.turn.start") {
+        assert.strictEqual(wake.message.text, notice.message.text);
+        assert.include(wake.message.text, card.title);
+        assert.include(wake.message.text, card.body);
+      }
     }),
   );
 
@@ -385,13 +390,30 @@ describe("board RPC handlers", () => {
         (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
       );
       assert.isDefined(notice);
-      assert.isTrue(
-        dispatched.some(
-          (command) =>
-            command.type === "thread.turn.start" &&
-            command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
-        ),
+      const wake = dispatched.find(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
       );
+      assert.isDefined(wake);
+      if (wake?.type === "thread.turn.start") {
+        assert.strictEqual(wake.message.text, BOARD_ORCHESTRATOR_TURN_TEXT);
+        for (const instruction of [
+          "board_list_cards",
+          "board_create_card",
+          "delegate_task",
+          "orchestrator_capabilities",
+          "board_update_card",
+          "childThreadId",
+          "executorThreadId",
+          "todo -> orchestrator -> in_progress -> review -> done",
+          "board_delete_card",
+        ]) {
+          assert.include(wake.message.text, instruction);
+        }
+        assert.notInclude(wake.message.text, "notice above");
+        assert.notInclude(wake.message.text, ".agents/skills/");
+      }
     }),
   );
 
