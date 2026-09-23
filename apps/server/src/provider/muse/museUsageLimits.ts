@@ -24,7 +24,9 @@ const WEEKLY_WINDOW_ID = "weekly";
 /** The host usually sends `windowDurationMins`; the documented class is five hours. */
 const SESSION_FALLBACK_MINS = 5 * 60;
 const WEEK_MINS = 7 * 24 * 60;
-const UNAVAILABLE_MESSAGE = "Muse Code did not report usage windows.";
+const NOT_OBSERVED_MESSAGE =
+  "Muse Code has not observed subscription usage yet. Send a Muse message, then refresh limits.";
+const INVALID_USAGE_MESSAGE = "Muse Code returned usage without readable windows.";
 
 function recordOf(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -92,6 +94,6 @@ export function museUsageToLimits(input: {
     : makeUnavailableUsageLimits({
         checkedAt: input.checkedAt,
         reason: "probeFailed",
-        message: UNAVAILABLE_MESSAGE,
+        message: input.usage === undefined ? NOT_OBSERVED_MESSAGE : INVALID_USAGE_MESSAGE,
       });
 }

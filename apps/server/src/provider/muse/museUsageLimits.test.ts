@@ -103,14 +103,19 @@ describe("museUsageToLimits", () => {
       const limits = museUsageToLimits({ usage, checkedAt: CHECKED_AT });
       expect(limits.windows).toEqual([]);
       expect(limits.unavailable?.reason).toBe("probeFailed");
+      expect(limits.unavailable?.message).toBe(
+        usage === undefined
+          ? "Muse Code has not observed subscription usage yet. Send a Muse message, then refresh limits."
+          : "Muse Code returned usage without readable windows.",
+      );
     }
   });
 });
 
 describe("readMuseUsage", () => {
   const mockHost = (
-    command: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>,
-  ) => ({ connection: { command } }) as unknown as Pick<MuseHost, "connection">;
+    request: (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  ) => ({ connection: { request } }) as unknown as Pick<MuseHost, "connection">;
 
   it.effect("calls usage/read and unwraps the documented usage member", () =>
     Effect.gen(function* () {

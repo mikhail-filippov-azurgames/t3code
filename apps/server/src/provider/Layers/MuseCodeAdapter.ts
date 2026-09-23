@@ -437,7 +437,7 @@ export function museStallOutcome(input: {
 /** The narrow connection seam the liveness probe needs; `Connection` satisfies it. */
 export interface MuseLivenessProbeTarget {
   readonly connection: {
-    readonly command: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    readonly request: (method: string, params: Record<string, unknown>) => Promise<unknown>;
   };
 }
 
@@ -450,7 +450,7 @@ export function museHostLivenessProbe(
   target: MuseLivenessProbeTarget,
   timeoutMs: number = MUSE_LIVENESS_PROBE_TIMEOUT_MS,
 ): Effect.Effect<boolean> {
-  return Effect.promise(() => target.connection.command(MUSE_LIVENESS_PROBE_METHOD, {})).pipe(
+  return Effect.promise(() => target.connection.request(MUSE_LIVENESS_PROBE_METHOD, {})).pipe(
     Effect.exit,
     Effect.as(true),
     Effect.timeoutOption(Duration.millis(timeoutMs)),

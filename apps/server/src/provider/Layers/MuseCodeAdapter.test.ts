@@ -321,7 +321,7 @@ describe("museHostLivenessProbe", () => {
       const methods: Array<string> = [];
       const alive = yield* museHostLivenessProbe({
         connection: {
-          command: (method) => {
+          request: (method) => {
             methods.push(method);
             return Promise.resolve({ ok: true });
           },
@@ -335,7 +335,7 @@ describe("museHostLivenessProbe", () => {
   it.effect("treats a rejected probe as alive: the host still answered", () =>
     Effect.gen(function* () {
       const alive = yield* museHostLivenessProbe({
-        connection: { command: () => Promise.reject(new Error("unsupported method")) },
+        connection: { request: () => Promise.reject(new Error("unsupported method")) },
       });
       expect(alive).toBe(true);
     }),
@@ -344,7 +344,7 @@ describe("museHostLivenessProbe", () => {
   it.effect("reports an unanswered probe as unresponsive after the deadline", () =>
     Effect.gen(function* () {
       const fiber = yield* museHostLivenessProbe({
-        connection: { command: () => new Promise<never>(() => {}) },
+        connection: { request: () => new Promise<never>(() => {}) },
       }).pipe(Effect.forkChild);
       yield* TestClock.adjust(Duration.millis(MUSE_LIVENESS_PROBE_TIMEOUT_MS - 1));
       expect(fiber.pollUnsafe()).toBeUndefined();

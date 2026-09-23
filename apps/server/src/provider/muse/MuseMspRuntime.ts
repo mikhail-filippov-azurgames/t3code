@@ -517,16 +517,16 @@ export function museUsageChangedFrom(notification: {
 
 /**
  * Raw `usage/read` query. The pinned SDK typings predate the method, but
- * `Connection.command` takes a plain method string, so it is called
- * generically. The result is the documented `{ usage? }` envelope: `usage` is
- * omitted — never `null` — until the host has observed usage.
+ * `Connection.request` takes a plain method string, so it is called
+ * generically without adding a commandId. The result is the documented
+ * `{ usage? }` envelope: `usage` is omitted until the host has observed usage.
  */
 export function readMuseUsage(
   host: Pick<MuseHost, "connection">,
 ): Effect.Effect<Record<string, unknown> | undefined, ProviderAdapterRequestError> {
   return Effect.tryPromise({
     try: async () => {
-      const result = await host.connection.command(MUSE_USAGE_READ_METHOD, {});
+      const result = await host.connection.request(MUSE_USAGE_READ_METHOD, {});
       return isRecord(result["usage"]) ? result["usage"] : undefined;
     },
     catch: (cause) =>
