@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  clearRecoveredPiStatusDismissals,
   getProviderStatusBannerKey,
   getProviderStatusMessage,
   ProviderStatusBanner,
@@ -69,6 +70,66 @@ describe("ProviderStatusBanner", () => {
 
     expect(shouldShowProviderStatusBanner(status, null)).toBe(true);
     expect(shouldShowProviderStatusBanner(status, getProviderStatusBannerKey(status))).toBe(false);
+  });
+
+  it("keeps a continuing Pi model failure dismissed until that model is ready", () => {
+    const model = "ft3-local/bonsai-2-27b";
+    const environmentId = "environment-a";
+    const warning: ServerProvider = {
+      ...warningProvider(),
+      instanceId: ProviderInstanceId.make("pi"),
+      driver: ProviderDriverKind.make("pi"),
+      message: "Timed out waiting for HTTP /health.",
+    };
+    const nonresponse = { ...warning, message: "HTTP /health is not responding yet." };
+    const dismissed = new Set([getProviderStatusBannerKey(warning, model, environmentId)!]);
+
+    expect(getProviderStatusBannerKey(nonresponse, model, environmentId)).toBe(
+      getProviderStatusBannerKey(warning, model, environmentId),
+    );
+    expect(getProviderStatusMessage(nonresponse)).toBe(nonresponse.message);
+    expect(
+      shouldShowProviderStatusBanner(nonresponse, [...dismissed][0]!, model, environmentId),
+    ).toBe(false);
+    expect(
+      shouldShowProviderStatusBanner(nonresponse, [...dismissed][0]!, model, "environment-b"),
+    ).toBe(true);
+    expect(clearRecoveredPiStatusDismissals(dismissed, nonresponse, model, environmentId)).toBe(
+      dismissed,
+    );
+    expect(
+      clearRecoveredPiStatusDismissals(
+        dismissed,
+        { ...warning, status: "ready" },
+        "ft3-local/bonsai-2-8b",
+        environmentId,
+      ),
+    ).toBe(dismissed);
+    expect(
+      clearRecoveredPiStatusDismissals(
+        dismissed,
+        { ...warning, status: "ready" },
+        model,
+        "environment-b",
+      ),
+    ).toBe(dismissed);
+
+    const recovered = clearRecoveredPiStatusDismissals(
+      dismissed,
+      { ...warning, status: "ready" },
+      model,
+      environmentId,
+    );
+    expect(recovered.size).toBe(0);
+    const failureKey = getProviderStatusBannerKey(nonresponse, model, environmentId);
+    expect(
+      shouldShowProviderStatusBanner(
+        nonresponse,
+        recovered.has(failureKey!) ? failureKey : null,
+        model,
+        environmentId,
+      ),
+    ).toBe(true);
   });
 
   it("renders an accessible dismiss control for provider warnings", () => {

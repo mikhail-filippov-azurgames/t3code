@@ -6,7 +6,9 @@ import {
   deriveProviderInstanceEntries,
   getDefaultProviderInstanceModel,
   isProviderInstancePickerReady,
+  isProviderInstancePickerSelectable,
   isProviderInstancePickerVisible,
+  passesProviderInstanceInstallationGate,
   resolveDefaultProviderModelSelection,
   resolveSelectableProviderInstance,
   resolveProviderDriverKindForInstanceSelection,
@@ -20,6 +22,7 @@ function provider(input: {
   displayName?: string;
   accentColor?: string;
   status?: ServerProvider["status"];
+  installed?: boolean;
   models?: ServerProvider["models"];
 }): ServerProvider {
   return {
@@ -28,7 +31,7 @@ function provider(input: {
     ...(input.displayName ? { displayName: input.displayName } : {}),
     ...(input.accentColor ? { accentColor: input.accentColor } : {}),
     enabled: input.enabled ?? true,
-    installed: true,
+    installed: input.installed ?? true,
     version: null,
     status: input.status ?? "ready",
     ...(input.availability ? { availability: input.availability } : {}),
@@ -68,6 +71,88 @@ describe("isProviderInstancePickerReady", () => {
     ]);
 
     expect(entry && isProviderInstancePickerReady(entry)).toBe(true);
+  });
+});
+
+describe("isProviderInstancePickerSelectable", () => {
+  it("allows installed Pi with a stopped or incompatible inference endpoint", () => {
+    const [entry] = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        status: "warning",
+      }),
+    ]);
+
+    expect(entry && isProviderInstancePickerReady(entry)).toBe(false);
+    expect(entry && isProviderInstancePickerSelectable(entry)).toBe(true);
+  });
+
+  it("keeps Pi unavailable when the Pi runtime binary did not launch", () => {
+    const [entry] = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        installed: false,
+        status: "error",
+      }),
+    ]);
+
+    expect(entry && isProviderInstancePickerReady(entry)).toBe(false);
+    expect(entry && isProviderInstancePickerSelectable(entry)).toBe(false);
+  });
+
+  it("does not trust a stale ready status before the Pi runtime check", () => {
+    const [entry] = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        installed: false,
+        status: "ready",
+      }),
+    ]);
+
+    expect(entry && isProviderInstancePickerReady(entry)).toBe(false);
+    expect(entry && isProviderInstancePickerSelectable(entry)).toBe(false);
+  });
+
+  it("does not make other warning providers selectable", () => {
+    const [entry] = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        status: "warning",
+      }),
+    ]);
+
+    expect(entry && isProviderInstancePickerSelectable(entry)).toBe(false);
+  });
+});
+
+describe("passesProviderInstanceInstallationGate", () => {
+  it("requires the Pi runtime check before automatic selection", () => {
+    const [entry] = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        installed: false,
+        status: "warning",
+      }),
+    ]);
+
+    expect(entry && passesProviderInstanceInstallationGate(entry)).toBe(false);
+  });
+
+  it("does not change installation semantics for other providers", () => {
+    const [entry] = deriveProviderInstanceEntries([
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        installed: false,
+      }),
+    ]);
+
+    expect(entry && passesProviderInstanceInstallationGate(entry)).toBe(true);
   });
 });
 
@@ -253,6 +338,34 @@ describe("deriveProviderEntriesByEnvironment", () => {
 });
 
 describe("resolveSelectableProviderInstance", () => {
+  it("does not choose a Pi-only startup snapshot before the bundled runtime is verified", () => {
+    const piOnlyStartupSnapshot = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        installed: false,
+        status: "warning",
+      }),
+    ];
+
+    expect(resolveSelectableProviderInstance(piOnlyStartupSnapshot, undefined)).toBeUndefined();
+  });
+
+  it("does not retain an unverified Pi runtime as the requested selection", () => {
+    const piOnlyStartupSnapshot = [
+      provider({
+        provider: ProviderDriverKind.make("pi"),
+        instanceId: "pi",
+        installed: false,
+        status: "warning",
+      }),
+    ];
+
+    expect(
+      resolveSelectableProviderInstance(piOnlyStartupSnapshot, ProviderInstanceId.make("pi")),
+    ).toBeUndefined();
+  });
+
   it("returns the requested instance when it is enabled and available", () => {
     const requested = ProviderInstanceId.make("claude_work");
     const providers = [

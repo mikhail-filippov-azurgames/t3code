@@ -375,6 +375,7 @@ import {
   shouldShowEnvironmentIndicator,
 } from "./BranchToolbar.logic";
 import {
+  clearRecoveredPiStatusDismissals,
   getProviderStatusBannerKey,
   ProviderStatusBanner,
   shouldShowProviderStatusBanner,
@@ -488,6 +489,7 @@ import { fileAttachmentCapabilityBlockReason } from "./chat/composerAttachmentFi
 import { assetEnvironment } from "../state/assets";
 import { readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useSelectedPiProviderStatus } from "./chat/useSelectedPiProviderStatus";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { Button } from "./ui/button";
 import {
@@ -3653,7 +3655,20 @@ export default function ChatView(props: ChatViewProps) {
     resumeCompactionPermanentlyDismissed,
     setResumeCompactionPermanentlyDismissed,
   ]);
-  const providerStatusBannerKey = getProviderStatusBannerKey(activeProviderStatus);
+  const selectedPiModel = activeThread?.modelSelection.model;
+  const bannerProviderStatus = useSelectedPiProviderStatus(
+    environmentId,
+    activeProviderStatus,
+    selectedPiModel,
+  );
+  const providerStatusBannerKey = getProviderStatusBannerKey(
+    bannerProviderStatus,
+    bannerProviderStatus?.driver === "pi" ? selectedPiModel : undefined,
+    environmentId,
+  );
+  const [dismissedProviderStatusBannerKeys, setDismissedProviderStatusBannerKeys] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
   const [dismissedProviderStatusBannerKey, setDismissedProviderStatusBannerKey] = useState<
     string | null
   >(null);
@@ -3662,11 +3677,35 @@ export default function ChatView(props: ChatViewProps) {
       setDismissedProviderStatusBannerKey(null);
     }
   }, [dismissedProviderStatusBannerKey, providerStatusBannerKey]);
+  useEffect(() => {
+    if (bannerProviderStatus?.driver !== "pi" || bannerProviderStatus.status !== "ready") return;
+    setDismissedProviderStatusBannerKeys((previous) =>
+      clearRecoveredPiStatusDismissals(
+        previous,
+        bannerProviderStatus,
+        selectedPiModel,
+        environmentId,
+      ),
+    );
+  }, [
+    bannerProviderStatus?.driver,
+    bannerProviderStatus?.instanceId,
+    bannerProviderStatus?.status,
+    environmentId,
+    selectedPiModel,
+  ]);
   const visibleProviderStatus = shouldShowProviderStatusBanner(
-    activeProviderStatus,
-    dismissedProviderStatusBannerKey,
+    bannerProviderStatus,
+    bannerProviderStatus?.driver === "pi"
+      ? providerStatusBannerKey !== null &&
+        dismissedProviderStatusBannerKeys.has(providerStatusBannerKey)
+        ? providerStatusBannerKey
+        : null
+      : dismissedProviderStatusBannerKey,
+    bannerProviderStatus?.driver === "pi" ? selectedPiModel : undefined,
+    environmentId,
   )
-    ? activeProviderStatus
+    ? bannerProviderStatus
     : null;
   const hasTimelineTopBanner = Boolean(visibleThreadError) || visibleProviderStatus !== null;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
@@ -9422,6 +9461,7 @@ export default function ChatView(props: ChatViewProps) {
             activeProject={activeProject}
             openInCwd={gitCwd}
             activeProjectScripts={activeProjectScripts}
+            hasDelegationParent={activeThreadShell?.delegationParent != null}
             preferredScriptId={
               activeProject ? (lastInvokedScriptByProjectId[activeProject.id] ?? null) : null
             }
@@ -9469,7 +9509,17 @@ export default function ChatView(props: ChatViewProps) {
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
               <ProviderStatusBanner
                 status={visibleProviderStatus}
-                onDismiss={() => setDismissedProviderStatusBannerKey(providerStatusBannerKey)}
+                onDismiss={() => {
+                  if (providerStatusBannerKey !== null) {
+                    if (bannerProviderStatus?.driver === "pi") {
+                      setDismissedProviderStatusBannerKeys(
+                        (previous) => new Set([...previous, providerStatusBannerKey]),
+                      );
+                    } else {
+                      setDismissedProviderStatusBannerKey(providerStatusBannerKey);
+                    }
+                  }
+                }}
                 onOpenProviderSetup={openProviderSetup}
               />
               <ThreadErrorBanner
@@ -9909,7 +9959,8 @@ export default function ChatView(props: ChatViewProps) {
       {rightPanelPresent && !shouldUseRightPanelSheet && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
-          widthStorageKey={`t3code:preview-panel-width:${activeThreadKey}`}
+          // One shared width for every chat thread (the pull-requests page keeps its own key).
+          widthStorageKey="t3code:preview-panel-width"
           open={rightPanelOpen}
           maximized={rightPanelMaximized}
           surfaces={renderedRightPanelSurfaces}

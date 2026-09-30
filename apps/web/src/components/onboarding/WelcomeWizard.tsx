@@ -759,7 +759,10 @@ function AgentCard({
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
       {Icon ? (
-        <Icon className={cn("size-5 shrink-0", driver !== "claudeAgent" && "fill-foreground")} />
+        <Icon
+          className={cn("size-5 shrink-0", driver !== "claudeAgent" && "fill-foreground")}
+          aria-hidden
+        />
       ) : null}
       <div className="min-w-0 flex-1">
         <span className="block text-sm font-medium text-foreground">{displayName}</span>

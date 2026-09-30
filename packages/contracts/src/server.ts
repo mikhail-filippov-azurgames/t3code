@@ -186,6 +186,27 @@ export const ServerProviderUpdateState = Schema.Struct({
 export type ServerProviderUpdateState = typeof ServerProviderUpdateState.Type;
 
 export const ServerProvider = Schema.Struct({
+  piResources: Schema.optionalKey(
+    Schema.Struct({
+      threadId: Schema.String,
+      loadedAt: Schema.String,
+      agents: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          source: Schema.String,
+          kind: Schema.Literals(["personal", "project"]),
+        }),
+      ),
+      skills: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          source: Schema.String,
+          kind: Schema.Literals(["personal", "project"]),
+        }),
+      ),
+      warnings: Schema.Array(Schema.String),
+    }),
+  ),
   // Routing key for the configured instance this snapshot represents. This
   // is the only stable identity consumers may use for provider routing.
   instanceId: ProviderInstanceId,

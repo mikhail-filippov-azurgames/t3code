@@ -5,6 +5,7 @@ import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  passesProviderInstanceInstallationGate,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
 import { useEnvironments } from "../../state/environments";
@@ -42,6 +43,7 @@ export function useScopedModelDisabledReason(
         if (
           !entry?.enabled ||
           !entry.isAvailable ||
+          !passesProviderInstanceInstallationGate(entry) ||
           entry.driverKind !== sourceEntry?.driverKind ||
           !options?.some((option) => option.slug === model && !option.isUnavailable)
         ) {

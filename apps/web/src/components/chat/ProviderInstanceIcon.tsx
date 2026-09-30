@@ -1,5 +1,5 @@
 import { type CSSProperties, memo } from "react";
-import { type ProviderDriverKind } from "@t3tools/contracts";
+import { ProviderDriverKind } from "@t3tools/contracts";
 import { providerInstanceInitials } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
@@ -25,6 +25,7 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
     ? ({ "--provider-accent": props.accentColor } as CSSProperties)
     : undefined;
   const badgeContent = props.badgeContent ?? "initials";
+  const isPiDriver = props.driverKind === ProviderDriverKind.make("pi");
 
   return (
     <span
@@ -60,11 +61,16 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
               ? "bg-[var(--provider-accent)] text-white"
               : "bg-card text-muted-foreground",
             props.badgeClassName,
+            // Pi already has a distinctive provider glyph. Keep an instance
+            // accent dot without overlaying a second, initials-based logo.
+            isPiDriver && "h-1.5 w-1.5 min-w-0 p-0",
           )}
           style={{ borderColor: indicatorBackground }}
           aria-hidden
         >
-          {badgeContent === "initials" ? providerInstanceInitials(props.displayName) : null}
+          {badgeContent === "initials" && !isPiDriver
+            ? providerInstanceInitials(props.displayName)
+            : null}
         </span>
       ) : null}
     </span>

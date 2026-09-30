@@ -30,6 +30,7 @@ import {
   type ProviderInstanceEntry,
   deriveProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
+  passesProviderInstanceInstallationGate,
 } from "./providerInstances";
 import { sortModelsForProviderInstance } from "./modelOrdering";
 
@@ -277,7 +278,7 @@ export function resolveAppModelSelection(
   settings: UnifiedSettings,
   providers: ReadonlyArray<ServerProvider>,
   selectedModel: string | null | undefined,
-): string {
+): string | null {
   const resolvedProvider = resolveSelectableProvider(providers, provider);
   const options = getAppModelOptions(settings, providers, resolvedProvider, selectedModel);
   return (
@@ -407,10 +408,20 @@ export function resolveAppModelSelectionState(
   );
   const entries = deriveProviderInstanceEntries(supportedProviders);
   const selectedEntry = entries.find(
-    (entry) => entry.instanceId === selection.instanceId && entry.enabled && entry.isAvailable,
+    (entry) =>
+      entry.instanceId === selection.instanceId &&
+      entry.enabled &&
+      entry.isAvailable &&
+      passesProviderInstanceInstallationGate(entry),
   );
   const entry =
-    selectedEntry ?? entries.find((candidate) => candidate.enabled && candidate.isAvailable);
+    selectedEntry ??
+    entries.find(
+      (candidate) =>
+        candidate.enabled &&
+        candidate.isAvailable &&
+        passesProviderInstanceInstallationGate(candidate),
+    );
   if (entry) {
     // When the instance changed due to fallback (e.g. selected instance was disabled),
     // don't carry over the old instance's model — use the fallback instance's default.

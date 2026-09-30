@@ -30,6 +30,13 @@ export const FileExplorerIcon: Icon = (props) => (
   </svg>
 );
 
+export const TyporaIcon: Icon = (props) => (
+  <svg viewBox="0 0 24 24" fill="none" {...props}>
+    <rect x="2" y="2" width="20" height="20" rx="4" fill="#4778DE" />
+    <path d="M7.5 7.75h9M12 7.75v8.5" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
+  </svg>
+);
+
 // Apple brand mark from Simple Icons (CC0).
 export const AppleIcon: Icon = (props) => (
   <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
@@ -274,12 +281,7 @@ export const GrokIcon: Icon = ({ className, ...props }) => (
 );
 
 export const MuseCodeIcon: Icon = ({ className, ...props }) => (
-  <svg
-    {...props}
-    viewBox="0 0 24 24"
-    fill="none"
-    className={cn("text-[#0866FF]", className)}
-  >
+  <svg {...props} viewBox="0 0 24 24" fill="none" className={cn("text-[#0866FF]", className)}>
     <path
       d="M2.5 15.4C4.2 9.7 6.2 6.8 8.7 6.8c3.5 0 5.2 10.4 8.6 10.4 2.1 0 3.5-2.5 4.2-5.2C20 8.5 18.5 6.8 16.7 6.8c-3.5 0-5.2 10.4-8.6 10.4-2.1 0-3.8-1.4-5.6-1.8Z"
       stroke="currentColor"
@@ -774,17 +776,34 @@ export const ACPRegistryIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
-export const PiAgentIcon: Icon = ({ className, ...props }) => (
-  <svg {...props} viewBox="0 0 800 800" className={cn("fill-none", className)}>
-    <rect width="800" height="800" rx="160" fill="#000" />
-    <path
-      fill="#fff"
-      fillRule="evenodd"
-      d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
-    />
-    <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
-  </svg>
-);
+export const PiAgentIcon: Icon = ({
+  className,
+  role,
+  "aria-label": ariaLabel,
+  "aria-hidden": ariaHidden,
+  ...props
+}) => {
+  const isDecorative = ariaHidden === true || ariaHidden === "true";
+
+  return (
+    <svg
+      {...props}
+      viewBox="0 0 800 800"
+      role={isDecorative ? undefined : (role ?? "img")}
+      aria-label={isDecorative ? undefined : (ariaLabel ?? "Pi")}
+      aria-hidden={ariaHidden}
+      className={cn("fill-none", className)}
+    >
+      <rect width="800" height="800" rx="160" fill="#000" />
+      <path
+        fill="#fff"
+        fillRule="evenodd"
+        d="M165.29 165.29H517.36V400H400V517.36H282.65V634.72H165.29ZM282.65 282.65V400H400V282.65Z"
+      />
+      <path fill="#fff" d="M517.36 400H634.72V634.72H517.36Z" />
+    </svg>
+  );
+};
 
 // Official two-color mark from https://forgejo.org/favicon.svg.
 export const ForgejoIcon: Icon = (props) => (

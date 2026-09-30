@@ -6,7 +6,11 @@ import { Button } from "../ui/button";
 import { formatProviderDriverKindLabel } from "../../providerModels";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
-export function getProviderStatusBannerKey(status: ServerProvider | null): string | null {
+export function getProviderStatusBannerKey(
+  status: ServerProvider | null,
+  model?: string | undefined,
+  environmentId?: string | undefined,
+): string | null {
   if (!status || status.status === "ready" || status.status === "disabled") return null;
   // Antigravity checks saved credentials when a session starts. Its local
   // health check leaves auth unknown after a restart, which is not a failure.
@@ -18,16 +22,38 @@ export function getProviderStatusBannerKey(status: ServerProvider | null): strin
   ) {
     return null;
   }
-  return [status.instanceId, status.status, status.auth.status, status.message ?? ""].join(
-    "\u0000",
-  );
+  const failureCategory =
+    status.auth.status === "unauthenticated"
+      ? "authentication"
+      : !status.installed
+        ? "installation"
+        : status.driver === "pi" && model && status.status === "warning"
+          ? "selected-model-unavailable"
+          : status.status === "error"
+            ? "provider-error"
+            : "provider-warning";
+  return [environmentId ?? "", status.instanceId, model ?? "", failureCategory].join("\u0000");
+}
+
+export function clearRecoveredPiStatusDismissals(
+  dismissed: ReadonlySet<string>,
+  status: ServerProvider | null,
+  model: string | undefined,
+  environmentId?: string | undefined,
+): ReadonlySet<string> {
+  if (status?.driver !== "pi" || status.status !== "ready" || !model) return dismissed;
+  const prefix = `${environmentId ?? ""}\u0000${status.instanceId}\u0000${model}\u0000`;
+  const remaining = [...dismissed].filter((key) => !key.startsWith(prefix));
+  return remaining.length === dismissed.size ? dismissed : new Set(remaining);
 }
 
 export function shouldShowProviderStatusBanner(
   status: ServerProvider | null,
   dismissedBannerKey: string | null,
+  model?: string | undefined,
+  environmentId?: string | undefined,
 ): boolean {
-  const bannerKey = getProviderStatusBannerKey(status);
+  const bannerKey = getProviderStatusBannerKey(status, model, environmentId);
   return bannerKey !== null && bannerKey !== dismissedBannerKey;
 }
 

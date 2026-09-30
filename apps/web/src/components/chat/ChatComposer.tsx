@@ -244,6 +244,7 @@ import { ProviderModelPicker } from "./ProviderModelPicker";
 import { type ComposerCommandItem, ComposerCommandMenu } from "./ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./ComposerPendingApprovalActions";
 import { CompactComposerControlsMenu } from "./CompactComposerControlsMenu";
+import { PiInferenceServerControl } from "./PiInferenceServerControl";
 import { ComposerImageThumbnail } from "./ComposerImageThumbnail";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
 import { ComposerPendingApprovalPanel } from "./ComposerPendingApprovalPanel";
@@ -1035,6 +1036,7 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
   runtimeMode: RuntimeMode;
   size?: "sm" | "xs";
   hidden?: boolean;
+  afterRuntimeMode?: ReactNode;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
 }) {
@@ -1140,6 +1142,13 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
         </Select>
         <TooltipPopup side="top">{runtimeModeOption.description}</TooltipPopup>
       </Tooltip>
+
+      {props.afterRuntimeMode ? (
+        <>
+          <ComposerControlSeparator size={size} />
+          {props.afterRuntimeMode}
+        </>
+      ) : null}
 
       {interactionModeToggle}
     </>
@@ -4843,6 +4852,21 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     size: "xs",
     hidden: composerControlsHidden || restingHiddenBlockCount > 1,
   });
+  const piInferenceServerControl =
+    selectedProvider === "pi" ? (
+      <PiInferenceServerControl
+        key={`${environmentId}:${selectedInstanceId}`}
+        environmentId={environmentId}
+        instanceId={selectedInstanceId}
+        threadId={activeThreadId}
+        model={
+          providerCatalogPending
+            ? (activeThreadModelSelection?.model ?? selectedModelForPickerWithCustomFallback)
+            : selectedModelForPickerWithCustomFallback
+        }
+        size={composerControlsInStrip || composerControlsCompact ? "xs" : "sm"}
+      />
+    ) : null;
   const restingBlockDefs = [
     ...(providerTraitsPicker
       ? [
@@ -4866,6 +4890,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           runtimeMode={runtimeMode}
           size={composerControlsInStrip ? "xs" : "sm"}
           hidden={composerControlsHidden || restingHiddenBlockCount > 0}
+          afterRuntimeMode={
+            composerControlsInStrip && restingHiddenBlockCount > 0
+              ? undefined
+              : piInferenceServerControl
+          }
           onToggleInteractionMode={toggleInteractionMode}
           onRuntimeModeChange={handleRuntimeModeChange}
         />
@@ -4953,6 +4982,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           runtimeMode={runtimeMode}
           showInteractionModeToggle={planModeUiEnabled}
           traitsMenuContent={providerTraitsMenuContent}
+          inferenceServerControl={piInferenceServerControl}
           onToggleInteractionMode={toggleInteractionMode}
           onRuntimeModeChange={handleRuntimeModeChange}
         />
@@ -4998,6 +5028,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 }
                 traitsMenuContent={
                   hiddenRestingBlockIds.includes("traits") ? providerTraitsMenuContent : undefined
+                }
+                inferenceServerControl={
+                  hiddenRestingBlockIds.includes("mode") ? piInferenceServerControl : undefined
                 }
                 onToggleInteractionMode={toggleInteractionMode}
                 onRuntimeModeChange={handleRuntimeModeChange}

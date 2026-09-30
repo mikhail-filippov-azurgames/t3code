@@ -1243,6 +1243,35 @@ describe("resolveComposerProviderSelection", () => {
     });
   }
 
+  it("does not auto-select Pi from a Pi-only startup snapshot before the CLI check", () => {
+    const [piStartupEntry] = deriveProviderInstanceEntries([
+      {
+        driver: ProviderDriverKind.make("pi"),
+        instanceId: ProviderInstanceId.make("pi"),
+        enabled: true,
+        installed: false,
+        status: "warning",
+        auth: { status: "unknown" },
+        version: null,
+        checkedAt: now,
+        models: [],
+        slashCommands: [],
+        skills: [],
+      },
+    ]);
+    expect(piStartupEntry).toBeDefined();
+
+    const selection = resolveComposerProviderSelection({
+      entries: [piStartupEntry!],
+      candidateInstanceIds: [piStartupEntry!.instanceId],
+      lockedProvider: null,
+      lockedInstanceId: null,
+    });
+
+    expect(selection.selectedProviderEntry).toBeUndefined();
+    expect(selection.unavailableProviderInstanceId).toBe(piStartupEntry!.instanceId);
+  });
+
   it.each([
     ["claudeAgent", "claude_work"],
     ["codex", "codex_work"],

@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  ProviderInstanceId,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
@@ -12,12 +13,15 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Latch from "effect/Latch";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as TestClock from "effect/testing/TestClock";
+import { Atom, AtomRegistry } from "effect/unstable/reactivity";
 import { RpcClientError } from "effect/unstable/rpc";
 import * as Socket from "effect/unstable/socket/Socket";
 
@@ -47,8 +51,57 @@ import {
   waitForNextEnvironmentReconnect,
   waitForDesktopUpdateTarget,
   runDesktopCommitWithReconnectObserver,
+  piInferenceServerStatusFlightKey,
 } from "./server.ts";
 import { applyServerConfigProjection } from "./serverConfigProjection.ts";
+import { createRuntimeCommand } from "./runtime.ts";
+
+describe("Pi status request identity", () => {
+  it("returns each model's own response during overlapping status checks", async () => {
+    const latch = Latch.makeUnsafe();
+    const executions: string[] = [];
+    const started = Effect.runSync(Queue.unbounded<string>());
+    const command = createRuntimeCommand(Atom.runtime(Layer.empty), {
+      label: "test.pi-status-flight",
+      concurrency: { mode: "singleFlight", key: piInferenceServerStatusFlightKey },
+      execute: ({ input }) =>
+        Effect.sync(() => {
+          executions.push(input.model ?? "default");
+        }).pipe(
+          Effect.andThen(Queue.offer(started, input.model ?? "default")),
+          Effect.andThen(latch.await),
+          Effect.as(input.model ?? "default"),
+        ),
+    });
+    const registry = AtomRegistry.make();
+    const environmentId = EnvironmentId.make("environment-1");
+    const instanceId = ProviderInstanceId.make("pi");
+    const model27b = "ft3-local/bonsai-2-27b";
+    const model8b = "ft3-local/ternary-bonsai-8b";
+
+    const first = command.run(registry, { environmentId, input: { instanceId, model: model27b } });
+    const sameModel = command.run(registry, {
+      environmentId,
+      input: { instanceId, model: model27b },
+    });
+    const switched = command.run(registry, {
+      environmentId,
+      input: { instanceId, model: model8b },
+    });
+    const startedModels = await Promise.all([
+      Effect.runPromise(Queue.take(started)),
+      Effect.runPromise(Queue.take(started)),
+    ]);
+    latch.openUnsafe();
+
+    expect(new Set(startedModels)).toEqual(new Set([model27b, model8b]));
+    expect(await first).toMatchObject({ _tag: "Success", value: model27b });
+    expect(await sameModel).toMatchObject({ _tag: "Success", value: model27b });
+    expect(await switched).toMatchObject({ _tag: "Success", value: model8b });
+    expect(new Set(executions)).toEqual(new Set([model27b, model8b]));
+    registry.dispose();
+  });
+});
 
 const CONFIG = {
   availableEditors: [],

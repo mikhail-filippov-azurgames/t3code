@@ -40,6 +40,7 @@ import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { cn } from "../../lib/utils";
 import { resolveAppModelSelectionState } from "../../modelSelection";
 import {
+  useEnvironment,
   useEnvironments,
   usePrimaryEnvironmentId,
   type EnvironmentPresentation,
@@ -81,8 +82,11 @@ import { stackedThreadToast, toastManager } from "../ui/toast";
 import { AddProviderInstanceDialog } from "./AddProviderInstanceDialog";
 import { ExpandableText } from "./ExpandableText";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { resolvePiBonsaiFolderPickerTarget } from "../chat/PiInferenceServerControl.logic";
 import { UsageProviderSettings } from "./UsageProviderSettings";
 import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetupSection";
+import { PiBonsaiPresetSection } from "./PiBonsaiPresetSection";
+import { applyPiBonsaiPresetToProviderConfig } from "./PiBonsaiPresetSection.logic";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import { searchableSetting } from "./settingsSearch";
 import {
@@ -571,6 +575,11 @@ export function EnvironmentProviderSettings({
   readonly readOnly?: boolean;
 }) {
   const settings = useEnvironmentSettings(environmentId);
+  const selectedEnvironment = useEnvironment(environmentId);
+  const piPickerTargetEnvironmentId = resolvePiBonsaiFolderPickerTarget(
+    isElectron,
+    selectedEnvironment?.entry.target ?? null,
+  );
   // Provider instances hold per-machine credentials and binaries, so this
   // page always edits exactly the environment it displays.
   const updateSettings = useUpdateEnvironmentSettings(environmentId);
@@ -910,6 +919,13 @@ export function EnvironmentProviderSettings({
         instance={row.instance}
         driverOption={driverOption}
         liveProvider={liveProvider}
+        codexResourceInstances={Object.entries(settings.providerInstances)
+          .filter(
+            ([, candidate]) =>
+              candidate.driver === "codex" && resolveProviderInstanceEnabled(candidate),
+          )
+          .map(([id, candidate]) => ({ id, label: candidate.displayName?.trim() || id }))}
+        piPickerTargetEnvironmentId={piPickerTargetEnvironmentId}
         mode={mode}
         selected={mode === "list" && selectedRow?.instanceId === row.instanceId}
         onSelect={mode === "list" ? () => setSelectedInstanceId(row.instanceId) : undefined}
@@ -926,6 +942,18 @@ export function EnvironmentProviderSettings({
               enabled={resolveProviderInstanceEnabled(row.instance)}
               readOnly={readOnly}
               onEnable={() => updateProviderInstance(row, { ...row.instance, enabled: true })}
+            />
+          ) : mode === "editor" && row.driver === "pi" ? (
+            <PiBonsaiPresetSection
+              key={String(environmentId) + ":" + String(row.instanceId)}
+              environmentId={environmentId}
+              readOnly={readOnly}
+              onUsePreset={(preset) => {
+                updateProviderInstance(row, {
+                  ...row.instance,
+                  config: applyPiBonsaiPresetToProviderConfig(row.instance.config, preset),
+                });
+              }}
             />
           ) : null
         }

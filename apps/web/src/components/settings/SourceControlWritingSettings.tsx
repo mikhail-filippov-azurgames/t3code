@@ -19,6 +19,7 @@ import { useSettingsScope } from "./SettingsScopeContext";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  passesProviderInstanceInstallationGate,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import {
@@ -114,7 +115,10 @@ export function SourceControlWritingSettingsSection() {
   );
   const canEnableDedicatedModel = instanceEntries.some(
     (entry) =>
-      entry.instanceId === defaultModelSelection.instanceId && entry.enabled && entry.isAvailable,
+      entry.instanceId === defaultModelSelection.instanceId &&
+      entry.enabled &&
+      entry.isAvailable &&
+      passesProviderInstanceInstallationGate(entry),
   );
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,

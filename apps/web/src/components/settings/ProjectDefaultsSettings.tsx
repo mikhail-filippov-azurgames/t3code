@@ -12,6 +12,7 @@ import { getCustomModelOptionsByInstance } from "../../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  passesProviderInstanceInstallationGate,
   resolveDefaultProviderModelSelection,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
@@ -114,6 +115,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       if (
         !entry?.enabled ||
         !entry.isAvailable ||
+        !passesProviderInstanceInstallationGate(entry) ||
         entry.driverKind !== sourceEntry?.driverKind ||
         !options?.some((option) => option.slug === model && !option.isUnavailable)
       ) {

@@ -26,6 +26,7 @@ import { CursorDriver, type CursorDriverEnv } from "./Drivers/CursorDriver.ts";
 import { GrokDriver, type GrokDriverEnv } from "./Drivers/GrokDriver.ts";
 import { MuseCodeDriver, type MuseCodeDriverEnv } from "./Drivers/MuseCodeDriver.ts";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "./Drivers/OpenCodeDriver.ts";
+import { PiDriver, type PiDriverEnv } from "./Drivers/PiDriver.ts";
 import { AntigravityDriver, type AntigravityDriverEnv } from "./Drivers/AntigravityDriver.ts";
 import type { AnyProviderDriver } from "./ProviderDriver.ts";
 
@@ -41,6 +42,7 @@ export type BuiltInDriversEnv =
   | GrokDriverEnv
   | MuseCodeDriverEnv
   | OpenCodeDriverEnv
+  | PiDriverEnv
   | AntigravityDriverEnv;
 
 /**
@@ -55,5 +57,6 @@ export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv
   GrokDriver,
   MuseCodeDriver,
   OpenCodeDriver,
+  PiDriver,
   AntigravityDriver,
 ];

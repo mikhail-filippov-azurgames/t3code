@@ -42,6 +42,7 @@ import { TooltipProvider } from "../ui/tooltip";
 import { Button } from "../ui/button";
 import {
   isProviderInstancePickerReady,
+  isProviderInstancePickerSelectable,
   isProviderInstancePickerVisible,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
@@ -88,7 +89,7 @@ export function shouldIncludeModelPickerOption(input: {
   if (input.entry.driverKind === "antigravity" && input.option.slug === ANTIGRAVITY_DEFAULT_MODEL) {
     return false;
   }
-  if (isProviderInstancePickerReady(input.entry)) return true;
+  if (isProviderInstancePickerSelectable(input.entry)) return true;
   return (
     input.entry.enabled &&
     (input.entry.driverKind === "opencode" || input.entry.driverKind === "antigravity") &&
@@ -126,7 +127,7 @@ export function adjacentModelPickerProvider(input: {
       .filter(
         (entry) =>
           !input.disabledInstanceIds?.has(entry.instanceId) &&
-          (isProviderInstancePickerReady(entry) ||
+          (isProviderInstancePickerSelectable(entry) ||
             input.selectableUnavailableInstanceIds?.has(entry.instanceId)),
       )
       .map((entry) => entry.instanceId),

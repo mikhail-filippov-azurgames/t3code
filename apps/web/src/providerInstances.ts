@@ -76,7 +76,36 @@ export interface ProviderInstanceEntry {
  * `ready` probe status can remain in the streamed snapshot until reconciliation.
  */
 export function isProviderInstancePickerReady(entry: ProviderInstanceEntry): boolean {
-  return entry.enabled && entry.isAvailable && entry.status === "ready";
+  return (
+    entry.enabled &&
+    entry.isAvailable &&
+    entry.status === "ready" &&
+    passesProviderInstanceInstallationGate(entry)
+  );
+}
+
+/**
+ * Pi is eligible for selection only after its bundled CLI check has confirmed
+ * the runtime exists. Other providers do not use this snapshot bit.
+ */
+export function passesProviderInstanceInstallationGate(entry: ProviderInstanceEntry): boolean {
+  return entry.driverKind !== "pi" || entry.installed;
+}
+
+/**
+ * Whether an instance can be actively selected in the model picker.
+ * Pi's warning state means its inference endpoint is stopped or unhealthy;
+ * an installed Pi runtime can still be selected so the user can start it.
+ */
+export function isProviderInstancePickerSelectable(entry: ProviderInstanceEntry): boolean {
+  return (
+    passesProviderInstanceInstallationGate(entry) &&
+    (isProviderInstancePickerReady(entry) ||
+      (entry.enabled &&
+        entry.isAvailable &&
+        entry.driverKind === "pi" &&
+        entry.status === "warning"))
+  );
 }
 
 /** Picker rails contain configured, enabled instances only. */
@@ -243,14 +272,14 @@ export function getDefaultProviderInstanceModel(
 }
 
 const isSelectableProviderInstanceEntry = (entry: ProviderInstanceEntry): boolean =>
-  entry.enabled && entry.isAvailable;
+  entry.enabled && entry.isAvailable && passesProviderInstanceInstallationGate(entry);
 
 /**
  * Resolve an exact stored instance when it remains enabled and available.
  * Otherwise choose a deterministic fallback that can plausibly start now:
- * ready first, then a non-error probe result. An errored provider is retained
- * only when it was explicitly requested; it is never invented as a new-user
- * default.
+ * ready first, then a non-error probe result. Pi also has to pass its runtime
+ * installation gate. An errored provider is retained only when explicitly
+ * requested; it is never invented as a new-user default.
  */
 export function resolveSelectableProviderInstanceEntry(
   entries: ReadonlyArray<ProviderInstanceEntry>,

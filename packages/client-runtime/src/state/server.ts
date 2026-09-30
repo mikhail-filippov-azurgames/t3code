@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  type PiInferenceServerInput,
   type ServerConfig,
   type ServerConfigStreamEvent,
   type ServerLifecycleWelcomePayload,
@@ -610,6 +611,17 @@ export function resolveServerConfigValue(
   return initialConfig ?? projection?.config ?? null;
 }
 
+export function piInferenceServerStatusFlightKey(request: {
+  readonly environmentId: EnvironmentId;
+  readonly input: PiInferenceServerInput;
+}): string {
+  return JSON.stringify([
+    request.environmentId,
+    request.input.instanceId,
+    request.input.model ?? null,
+  ]);
+}
+
 export function createServerEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | EnvironmentCacheStore | R, E>,
   options: {
@@ -1010,6 +1022,38 @@ export function createServerEnvironmentAtoms<R, E>(
     removeProviderInstallation: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:provider:install-remove",
       tag: WS_METHODS.providerInstallRemove,
+    }),
+    piInferenceServerStatus: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:pi-inference-status",
+      tag: WS_METHODS.providerPiInferenceServerStatus,
+      concurrency: {
+        mode: "singleFlight",
+        key: piInferenceServerStatusFlightKey,
+      },
+    }),
+    startPiInferenceServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:pi-inference-start",
+      tag: WS_METHODS.providerPiInferenceServerStart,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.instanceId]),
+      },
+    }),
+    stopPiInferenceServer: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:pi-inference-stop",
+      tag: WS_METHODS.providerPiInferenceServerStop,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.instanceId]),
+      },
+    }),
+    detectPiBonsaiPreset: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:provider:pi-bonsai-preset-detect",
+      tag: WS_METHODS.providerPiBonsaiPresetDetect,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }) => environmentId,
+      },
     }),
     traceDiagnostics: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:trace-diagnostics",

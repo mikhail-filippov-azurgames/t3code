@@ -862,6 +862,199 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 );
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
+export const PiSettings = makeProviderSettingsSchema(
+  {
+    codexResourceInstanceId: Schema.optionalKey(ProviderInstanceId).pipe(
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    personalInstructionsPath: Schema.optionalKey(TrimmedString).pipe(
+      Schema.annotateKey({
+        title: "Personal Pi AGENTS.md",
+        description:
+          "Optional absolute host path. Empty follows the selected Codex instance's (or CODEX_HOME) AGENTS.md; a value overrides that default.",
+        providerSettingsForm: {
+          placeholder: "Absolute host path to AGENTS.md",
+          clearWhenEmpty: "persist",
+        },
+      }),
+    ),
+    personalSkillsDirectory: Schema.optionalKey(TrimmedString).pipe(
+      Schema.annotateKey({
+        title: "Personal Pi skills directory",
+        description:
+          "Optional absolute host directory. Empty mirrors the selected Codex instance's active personal skills (host .agents/skills, its skills and skills/.system, and enabled plugin skills); a value overrides all of them and companion files are included.",
+        providerSettingsForm: {
+          placeholder: "Absolute host path to skills directory",
+          clearWhenEmpty: "persist",
+        },
+      }),
+    ),
+    // Bundled/default harness for local OpenAI-compatible endpoints. Enabled
+    // by default so a fresh install can point at Ollama/LM Studio/vLLM
+    // without installing OpenCode or a separate Pi copy.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("pi").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description:
+          "Uses T3 Code's bundled Pi runtime; custom binary paths and PATH fallback are unsupported.",
+        providerSettingsForm: {
+          placeholder: "pi",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    baseUrl: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("http://127.0.0.1:11434/v1")),
+      Schema.annotateKey({
+        title: "Local endpoint base URL",
+        description: "OpenAI-compatible base URL (Ollama, LM Studio, vLLM, SGLang).",
+        providerSettingsForm: {
+          placeholder: "http://127.0.0.1:11434/v1",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    apiKey: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "API key",
+        description:
+          "Dummy value (e.g. ollama) is fine for keyless local servers. Stored in plain text.",
+        providerSettingsForm: {
+          control: "password",
+          placeholder: "Optional",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    model: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Model",
+        description:
+          "Default model ID served by this endpoint. Leave empty to choose a configured custom model in the model picker.",
+        providerSettingsForm: {
+          placeholder: "e.g. qwen2.5-coder:7b",
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    inferenceServerExecutablePath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Managed llama-server executable",
+        description:
+          "Optional direct path to llama-server.exe. FT3 launches this exact process; PowerShell launch/stop scripts are not run.",
+        providerSettingsForm: {
+          placeholder: "Path to llama-server executable",
+          clearWhenEmpty: "persist",
+        },
+      }),
+    ),
+    inferenceServerModelPath: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Managed GGUF model file",
+        description: "Optional model file for the managed local inference server.",
+        providerSettingsForm: {
+          placeholder: "Path to GGUF model file",
+          clearWhenEmpty: "persist",
+        },
+      }),
+    ),
+    inferenceServerProfiles: Schema.Array(
+      Schema.Struct({
+        model: TrimmedString,
+        baseUrl: TrimmedString,
+        executablePath: TrimmedString,
+        modelPath: TrimmedString,
+      }),
+    ).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    inferenceServerAutoStart: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Start inference server on first message",
+        description:
+          "Start only when a non-empty message is sent; creating an empty chat does not start it.",
+        providerSettingsForm: { control: "switch" },
+      }),
+    ),
+    inferenceServerGpuLayers: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 999 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(48)),
+    ),
+    inferenceServerContextSize: Schema.Int.check(
+      Schema.isBetween({ minimum: 512, maximum: 1_048_576 }),
+    ).pipe(Schema.withDecodingDefault(Effect.succeed(81_920))),
+    inferenceServerParallel: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 64 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(1)),
+    ),
+    inferenceServerTemperature: Schema.Number.check(
+      Schema.isBetween({ minimum: 0, maximum: 2 }),
+    ).pipe(Schema.withDecodingDefault(Effect.succeed(1))),
+    inferenceServerTopP: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(0.95)),
+    ),
+    inferenceServerTopK: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 1000 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(20)),
+    ),
+    inferenceServerMinP: Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1 })).pipe(
+      Schema.withDecodingDefault(Effect.succeed(0.05)),
+    ),
+    inferenceServerFlashAttention: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+    ),
+    inferenceServerCacheTypeK: Schema.Literals(["q4_0", "q8_0", "f16", "bf16", "f32"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("q4_0" as const)),
+    ),
+    inferenceServerCacheTypeV: Schema.Literals(["q4_0", "q8_0", "f16", "bf16", "f32"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("q4_0" as const)),
+    ),
+    inferenceServerJinja: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+    inferenceServerReasoning: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+    inferenceServerReasoningEffort: Schema.Literals(["low", "medium", "high"]).pipe(
+      Schema.withDecodingDefault(Effect.succeed("medium" as const)),
+    ),
+    customModels: Schema.Array(CustomModelSetting).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: [
+      "binaryPath",
+      "personalInstructionsPath",
+      "personalSkillsDirectory",
+      "baseUrl",
+      "apiKey",
+      "model",
+      "inferenceServerExecutablePath",
+      "inferenceServerModelPath",
+      "inferenceServerAutoStart",
+      "inferenceServerGpuLayers",
+      "inferenceServerContextSize",
+      "inferenceServerParallel",
+      "inferenceServerTemperature",
+      "inferenceServerTopP",
+      "inferenceServerTopK",
+      "inferenceServerMinP",
+      "inferenceServerFlashAttention",
+      "inferenceServerCacheTypeK",
+      "inferenceServerCacheTypeV",
+      "inferenceServerJinja",
+      "inferenceServerReasoning",
+      "inferenceServerReasoningEffort",
+    ],
+  },
+);
+export type PiSettings = typeof PiSettings.Type;
+
 export const OpenCodeSettings = makeProviderSettingsSchema(
   {
     // Off by default (like Cursor and Grok): the binding is not yet stable
@@ -1080,6 +1273,14 @@ export const ServerSettings = Schema.Struct({
    * between a desktop window and a phone attached to the same server.
    */
   enableAgentBrowserAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Phase 1 Coordinator/Architect split. When off,
+   * architect/review/cancel/publish commands deny typed `feature_disabled`
+   * while bindings and reviews persist; coordinator/executor/card flows are
+   * unaffected. Default on now that the S0 amendment and the contract are
+   * both accepted (§10).
+   */
+  coordinatorArchitectSplit: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   projectAgentBrowserAccessOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1221,6 +1422,7 @@ export const ServerSettings = Schema.Struct({
     grok: GrokSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     museCode: MuseCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     opencode: OpenCodeSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+    pi: PiSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
     antigravity: AntigravitySettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   }).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // New driver-agnostic instance map. Keyed by `ProviderInstanceId`; values
@@ -1395,10 +1597,44 @@ const OpenCodeSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
 
+const PiSettingsPatch = Schema.Struct({
+  codexResourceInstanceId: Schema.optionalKey(ProviderInstanceId),
+  personalInstructionsPath: Schema.optionalKey(TrimmedString),
+  personalSkillsDirectory: Schema.optionalKey(TrimmedString),
+  enabled: Schema.optionalKey(Schema.Boolean),
+  binaryPath: Schema.optionalKey(TrimmedString),
+  baseUrl: Schema.optionalKey(TrimmedString),
+  apiKey: Schema.optionalKey(TrimmedString),
+  model: Schema.optionalKey(TrimmedString),
+  inferenceServerExecutablePath: Schema.optionalKey(TrimmedString),
+  inferenceServerModelPath: Schema.optionalKey(TrimmedString),
+  inferenceServerAutoStart: Schema.optionalKey(Schema.Boolean),
+  inferenceServerGpuLayers: Schema.optionalKey(Schema.Int),
+  inferenceServerContextSize: Schema.optionalKey(Schema.Int),
+  inferenceServerParallel: Schema.optionalKey(Schema.Int),
+  inferenceServerTemperature: Schema.optionalKey(Schema.Number),
+  inferenceServerTopP: Schema.optionalKey(Schema.Number),
+  inferenceServerTopK: Schema.optionalKey(Schema.Int),
+  inferenceServerMinP: Schema.optionalKey(Schema.Number),
+  inferenceServerFlashAttention: Schema.optionalKey(Schema.Boolean),
+  inferenceServerCacheTypeK: Schema.optionalKey(
+    Schema.Literals(["q4_0", "q8_0", "f16", "bf16", "f32"]),
+  ),
+  inferenceServerCacheTypeV: Schema.optionalKey(
+    Schema.Literals(["q4_0", "q8_0", "f16", "bf16", "f32"]),
+  ),
+  inferenceServerJinja: Schema.optionalKey(Schema.Boolean),
+  inferenceServerReasoning: Schema.optionalKey(Schema.Boolean),
+  inferenceServerReasoningEffort: Schema.optionalKey(Schema.Literals(["low", "medium", "high"])),
+  customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
+});
+
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
+  /** Temporary Phase 1 disable; bindings and review history remain durable. */
+  coordinatorArchitectSplit: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   projectAgentBrowserAccessOverrides: Schema.optionalKey(
@@ -1476,14 +1712,24 @@ export const ServerSettingsPatch = Schema.Struct({
         }),
       ),
       opencode: Schema.optionalKey(OpenCodeSettingsPatch),
+      pi: Schema.optionalKey(PiSettingsPatch),
       antigravity: Schema.optionalKey(AntigravitySettingsPatch),
     }),
   ),
-  // Whole-map replacement for the new instance config. Patching individual
-  // entries is intentionally out of scope: the map is small, and partial
-  // patches risk leaving driver-specific config in a half-merged state.
-  // The web UI sends a fully-formed map every time it edits this field.
+  // Whole-map replacement for surfaces that edit several provider instances.
+  // Each entry is complete so omitted driver-specific fields can be cleared.
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
+  // Focused settings surfaces replace one complete instance entry. The server
+  // merges the entries into its latest map so edits to other instances survive.
+  providerInstanceConfigUpdates: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, ProviderInstanceConfig),
+  ),
+  // Field-level config edits for a Pi instance. The server rebases these
+  // keys onto its latest Pi config so simultaneous dialogs do not replace
+  // each other's unrelated settings.
+  piProviderInstanceConfigPatches: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, PiSettingsPatch),
+  ),
   // Per-entry, unlike `providerInstances`: a client only ever adds or removes
   // one source, and sending the whole map races another edit that has not
   // echoed back yet. `null` removes; the server merges into its current map.

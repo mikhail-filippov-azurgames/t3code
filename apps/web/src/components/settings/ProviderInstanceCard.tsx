@@ -32,6 +32,7 @@ import {
   toCustomModelSetting,
 } from "@t3tools/shared/model";
 import { cn } from "../../lib/utils";
+import { ensureLocalApi } from "../../localApi";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
@@ -348,6 +349,8 @@ function ProviderEnvironmentSection(props: {
 }
 
 interface ProviderInstanceCardProps {
+  readonly codexResourceInstances?: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+  readonly piPickerTargetEnvironmentId?: string | null;
   readonly instanceId: ProviderInstanceId;
   readonly instance: ProviderInstanceConfig;
   readonly driverOption: DriverOption | undefined;
@@ -407,6 +410,8 @@ export function ProviderInstanceCard({
   instance,
   driverOption,
   liveProvider,
+  codexResourceInstances,
+  piPickerTargetEnvironmentId,
   mode,
   selected = false,
   onSelect,
@@ -870,7 +875,129 @@ export function ProviderInstanceCard({
             }
           />
         )}
+        {driverKind === "pi" && piPickerTargetEnvironmentId && !readOnly ? (
+          <SettingsRow
+            title="Personal Pi resources"
+            description="Optional overrides. Empty follows the selected Codex instance's AGENTS.md and active skills. These pickers only appear for a local host."
+            control={
+              <span className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void ensureLocalApi()
+                      .dialogs.pickPiInstructions?.({
+                        targetEnvironmentId: piPickerTargetEnvironmentId,
+                      })
+                      .then((picked) => {
+                        if (picked)
+                          updateConfig(
+                            nextConfigBlobWithValue(
+                              instance.config,
+                              "personalInstructionsPath",
+                              picked,
+                            ),
+                          );
+                      });
+                  }}
+                >
+                  Choose AGENTS.md
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    void ensureLocalApi()
+                      .dialogs.pickFolder({ targetEnvironmentId: piPickerTargetEnvironmentId })
+                      .then((picked) => {
+                        if (picked)
+                          updateConfig(
+                            nextConfigBlobWithValue(
+                              instance.config,
+                              "personalSkillsDirectory",
+                              picked,
+                            ),
+                          );
+                      });
+                  }}
+                >
+                  Choose skills folder
+                </Button>
+              </span>
+            }
+          />
+        ) : null}
       </SettingsSection>
+
+      {driverKind === "pi" ? (
+        <SettingsSection title="Pi session resources">
+          <SettingsRow
+            title="Shared Codex instance"
+            description="Which Codex home supplies Pi's default personal AGENTS.md and active skills. Explicit resource paths above override it. Defaults mirror the host .agents/skills, that home's skills and skills/.system, and the skills of plugins enabled in its config.toml; unresolved plugin skills are reported as a partial subset."
+            control={
+              <select
+                className="h-8 rounded border bg-background px-2 text-sm"
+                disabled={readOnly}
+                value={
+                  instance.config &&
+                  typeof instance.config === "object" &&
+                  "codexResourceInstanceId" in instance.config
+                    ? String(instance.config.codexResourceInstanceId ?? "")
+                    : ""
+                }
+                onChange={(event) => {
+                  const next = {
+                    ...(instance.config && typeof instance.config === "object"
+                      ? instance.config
+                      : {}),
+                  } as Record<string, unknown>;
+                  if (event.target.value) next.codexResourceInstanceId = event.target.value;
+                  else delete next.codexResourceInstanceId;
+                  updateConfig(next);
+                }}
+              >
+                <option value="">Auto: personal Codex</option>
+                {codexResourceInstances?.map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>
+                    {candidate.label}
+                  </option>
+                ))}
+              </select>
+            }
+          />
+          <SettingsRow
+            title="Last started session"
+            description={
+              liveProvider?.piResources ? (
+                <span>
+                  Thread {liveProvider.piResources.threadId} · {liveProvider.piResources.loadedAt}
+                </span>
+              ) : (
+                "No Pi session resource snapshot has been loaded yet. New settings take effect when a new session starts."
+              )
+            }
+          />
+          {liveProvider?.piResources?.agents.map((resource) => (
+            <SettingsRow
+              key={`agent:${resource.source}`}
+              title={resource.name}
+              description={`${resource.kind} AGENTS.md · ${resource.source}`}
+            />
+          ))}
+          {liveProvider?.piResources?.skills.map((resource) => (
+            <SettingsRow
+              key={`skill:${resource.source}`}
+              title={resource.name}
+              description={`${resource.kind} skill · ${resource.source}`}
+            />
+          ))}
+          {liveProvider?.piResources?.warnings.map((warning) => (
+            <SettingsRow key={warning} title="Resource warning" description={warning} />
+          ))}
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection
         title="Environment"

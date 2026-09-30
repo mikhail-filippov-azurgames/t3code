@@ -33,6 +33,35 @@ function entry(status: ServerProvider["status"], driver = "opencode") {
 }
 
 describe("shouldIncludeModelPickerOption", () => {
+  it("shows configured Pi models while its local inference endpoint is stopped", () => {
+    const providerEntry = entry("warning", "pi");
+
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option: { slug: "ft3-local/bonsai-2-27b", name: "bonsai-2-27b" },
+        activeInstanceId: ProviderInstanceId.make("codex"),
+        activeModel: "",
+      }),
+    ).toBe(true);
+  });
+
+  it("hides Pi models when the Pi runtime binary is unavailable", () => {
+    const providerEntry = {
+      ...entry("error", "pi"),
+      installed: false,
+    };
+
+    expect(
+      shouldIncludeModelPickerOption({
+        entry: providerEntry,
+        option: { slug: "ft3-local/bonsai-2-27b", name: "bonsai-2-27b" },
+        activeInstanceId: providerEntry.instanceId,
+        activeModel: "ft3-local/bonsai-2-27b",
+      }),
+    ).toBe(false);
+  });
+
   it.each(["ready", "error"] as const)(
     "never offers the internal Antigravity default marker as a model when %s",
     (status) => {

@@ -590,6 +590,110 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 
+  it.effect("preserves simultaneous per-instance provider settings saves", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const piA = ProviderInstanceId.make("pi-one");
+      const piB = ProviderInstanceId.make("pi-two");
+      const codexId = ProviderInstanceId.make("codex-existing");
+      const piConfig = (contextSize: number) => ({
+        baseUrl: "http://127.0.0.1:8080/v1",
+        inferenceServerContextSize: contextSize,
+      });
+
+      const initial = yield* serverSettings.updateSettings({
+        providerInstances: {
+          [piA]: {
+            driver: ProviderDriverKind.make("pi"),
+            enabled: true,
+            config: piConfig(81920),
+          },
+          [piB]: {
+            driver: ProviderDriverKind.make("pi"),
+            enabled: true,
+            config: piConfig(65536),
+          },
+          [codexId]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            config: { homePath: "~/.codex" },
+          },
+        },
+      });
+
+      yield* Effect.all(
+        [
+          serverSettings.updateSettings({
+            providerInstanceConfigUpdates: {
+              [piA]: { ...initial.providerInstances[piA]!, config: piConfig(32768) },
+            },
+          }),
+          serverSettings.updateSettings({
+            providerInstanceConfigUpdates: {
+              [piB]: { ...initial.providerInstances[piB]!, config: piConfig(16384) },
+            },
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      const saved = yield* serverSettings.getSettings;
+      assert.deepEqual(saved.providerInstances[piA]?.config, piConfig(32768));
+      assert.deepEqual(saved.providerInstances[piB]?.config, piConfig(16384));
+      assert.deepEqual(saved.providerInstances[codexId], initial.providerInstances[codexId]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("rebases simultaneous edits to different Pi fields in one instance", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const piId = ProviderInstanceId.make("pi-shared-editor");
+      const codexId = ProviderInstanceId.make("codex-preserved");
+      const initial = yield* serverSettings.updateSettings({
+        providerInstances: {
+          [piId]: {
+            driver: ProviderDriverKind.make("pi"),
+            enabled: true,
+            config: {
+              baseUrl: "http://127.0.0.1:8080/v1",
+              inferenceServerContextSize: 81920,
+              inferenceServerTopP: 0.95,
+            },
+          },
+          [codexId]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: true,
+            config: { homePath: "~/.codex" },
+          },
+        },
+      });
+
+      yield* Effect.all(
+        [
+          serverSettings.updateSettings({
+            piProviderInstanceConfigPatches: {
+              [piId]: { inferenceServerContextSize: 32768 },
+            },
+          }),
+          serverSettings.updateSettings({
+            piProviderInstanceConfigPatches: {
+              [piId]: { inferenceServerTopP: 0.8 },
+            },
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      const saved = yield* serverSettings.getSettings;
+      assert.deepEqual(saved.providerInstances[piId]?.config, {
+        baseUrl: "http://127.0.0.1:8080/v1",
+        inferenceServerContextSize: 32768,
+        inferenceServerTopP: 0.8,
+      });
+      assert.deepEqual(saved.providerInstances[codexId], initial.providerInstances[codexId]);
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
   it.effect("enables previously used providers from sparse settings files", () =>
     Effect.gen(function* () {
       const serverConfig = yield* ServerConfig.ServerConfig;
@@ -674,6 +778,40 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       const settings = yield* serverSettings.getSettings;
 
       assert.equal(settings.textGenerationModelSelection.instanceId, "claudeAgent");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("uses the configured Pi endpoint model for text generation fallback", () =>
+    Effect.gen(function* () {
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
+      const disabled = { enabled: false };
+      const model = "local/qwen-7b";
+      yield* fileSystem.writeFileString(
+        serverConfig.settingsPath,
+        // @effect-diagnostics-next-line preferSchemaOverJson:off
+        JSON.stringify({
+          providers: {
+            codex: disabled,
+            claudeAgent: disabled,
+            cursor: disabled,
+            grok: disabled,
+            museCode: disabled,
+            opencode: disabled,
+            pi: { enabled: true, model },
+            antigravity: disabled,
+          },
+          providerInstances: {
+            pi: { driver: "pi", enabled: true, config: { model } },
+          },
+        }),
+      );
+
+      const settings = yield* serverSettings.getSettings;
+
+      assert.equal(settings.textGenerationModelSelection.instanceId, "pi");
+      assert.equal(settings.textGenerationModelSelection.model, `ft3-local/${model}`);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );
 

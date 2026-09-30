@@ -1,7 +1,6 @@
 import { elementContextToPreviewAnnotation } from "./lib/elementContext";
 import {
   ElementContextDetails,
-  DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   EnvironmentId,
@@ -985,7 +984,7 @@ function normalizeProviderModelOptions(
 ): ProviderOptionSelectionsByProvider | null {
   const candidate = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
   const result: ProviderOptionSelectionsByProvider = {};
-  for (const providerKey of ["codex", "claudeAgent", "cursor", "opencode"] as const) {
+  for (const providerKey of ["codex", "claudeAgent", "cursor", "opencode", "pi"] as const) {
     const selections = coerceProviderOptionSelections(candidate?.[providerKey]);
     if (selections) {
       result[providerKey] = selections;
@@ -1144,18 +1143,16 @@ function legacyToModelSelectionByProvider(
 ): Partial<Record<ProviderInstanceId, ModelSelection>> {
   const result: Partial<Record<ProviderInstanceId, ModelSelection>> = {};
   if (modelOptions) {
-    for (const provider of ["codex", "claudeAgent", "cursor", "opencode"] as const) {
+    for (const provider of ["codex", "claudeAgent", "cursor", "opencode", "pi"] as const) {
       const options = modelOptions[provider];
       if (options && options.length > 0) {
         const driverKind = ProviderDriverKind.make(provider);
         const instanceKey = defaultInstanceIdForDriver(driverKind);
-        result[instanceKey] = createModelSelection(
-          instanceKey,
+        const model =
           modelSelection?.instanceId === instanceKey
             ? modelSelection.model
-            : (DEFAULT_MODEL_BY_PROVIDER[driverKind] ?? DEFAULT_MODEL),
-          options,
-        );
+            : DEFAULT_MODEL_BY_PROVIDER[driverKind];
+        if (model) result[instanceKey] = createModelSelection(instanceKey, model, options);
       }
     }
   }
@@ -1208,7 +1205,9 @@ export function deriveEffectiveComposerModelState(input: {
       input.providers,
       baseModelCandidate,
     ) ??
-    normalizeModelSlug(baseModelCandidate, input.selectedProvider) ??
+    (input.selectedProvider === "pi"
+      ? null
+      : normalizeModelSlug(baseModelCandidate, input.selectedProvider)) ??
     getDefaultServerModel(input.providers, input.selectedProvider);
   // Look up the instance's saved selection first; fall back to the
   // driver-kind bucket so legacy kind-keyed drafts still resolve. Every
@@ -1250,7 +1249,7 @@ export function deriveEffectiveComposerModelState(input: {
     null;
 
   return {
-    selectedModel,
+    selectedModel: selectedModel ?? "",
     modelOptions,
   };
 }
@@ -3090,18 +3089,15 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const base = existing ?? createEmptyThreadDraft();
             const nextMap = { ...base.modelSelectionByProvider };
-            for (const provider of ["codex", "claudeAgent", "cursor", "opencode"] as const) {
+            for (const provider of ["codex", "claudeAgent", "cursor", "opencode", "pi"] as const) {
               if (!modelOptions || !(provider in modelOptions)) continue;
               const opts = modelOptions[provider];
               const driverKind = ProviderDriverKind.make(provider);
               const instanceKey = defaultInstanceIdForDriver(driverKind);
               const current = nextMap[instanceKey];
-              if (opts && opts.length > 0) {
-                nextMap[instanceKey] = createModelSelection(
-                  instanceKey,
-                  current?.model ?? DEFAULT_MODEL_BY_PROVIDER[driverKind] ?? DEFAULT_MODEL,
-                  opts,
-                );
+              const model = current?.model ?? DEFAULT_MODEL_BY_PROVIDER[driverKind];
+              if (opts && opts.length > 0 && model) {
+                nextMap[instanceKey] = createModelSelection(instanceKey, model, opts);
               } else if (current?.options) {
                 const { options: _, ...rest } = current;
                 nextMap[instanceKey] = rest as ModelSelection;
@@ -3135,8 +3131,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
           const instanceKey = options?.instanceId ?? defaultInstanceIdForDriver(normalizedProvider);
           const fallbackModel =
             normalizeModelSlug(options?.model, normalizedProvider) ??
-            DEFAULT_MODEL_BY_PROVIDER[normalizedProvider] ??
-            DEFAULT_MODEL;
+            DEFAULT_MODEL_BY_PROVIDER[normalizedProvider];
           const providerOpts =
             nextProviderOptions && nextProviderOptions.length > 0 ? nextProviderOptions : undefined;
 
@@ -3148,11 +3143,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             const nextMap = { ...base.modelSelectionByProvider };
             const currentForProvider = nextMap[instanceKey];
             if (providerOpts) {
-              nextMap[instanceKey] = createModelSelection(
-                instanceKey,
-                currentForProvider?.model ?? fallbackModel,
-                providerOpts,
-              );
+              const model = currentForProvider?.model ?? fallbackModel;
+              if (model) {
+                nextMap[instanceKey] = createModelSelection(instanceKey, model, providerOpts);
+              }
             } else if (currentForProvider && (currentForProvider.options?.length ?? 0) > 0) {
               const { options: _, ...rest } = currentForProvider;
               nextMap[instanceKey] = rest as ModelSelection;
@@ -3166,14 +3160,14 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               const stickyBase =
                 nextStickyMap[instanceKey] ??
                 base.modelSelectionByProvider[instanceKey] ??
-                createModelSelection(instanceKey, fallbackModel);
-              if (providerOpts) {
+                (fallbackModel ? createModelSelection(instanceKey, fallbackModel) : undefined);
+              if (providerOpts && stickyBase) {
                 nextStickyMap[instanceKey] = createModelSelection(
                   instanceKey,
                   stickyBase.model,
                   providerOpts,
                 );
-              } else if ((stickyBase.options?.length ?? 0) > 0) {
+              } else if (stickyBase && (stickyBase.options?.length ?? 0) > 0) {
                 const { options: _, ...rest } = stickyBase;
                 nextStickyMap[instanceKey] = rest as ModelSelection;
               }

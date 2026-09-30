@@ -92,6 +92,7 @@ import {
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
+  passesProviderInstanceInstallationGate,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
@@ -2149,7 +2150,7 @@ export function GeneralSettingsPanel() {
     applyProviderInstanceSettings(deriveProviderInstanceEntries(textGenerationProviders), settings),
   );
   const hasTextGenerationProvider = textGenerationModelInstanceEntries.some(
-    (entry) => entry.enabled && entry.isAvailable,
+    (entry) => entry.enabled && entry.isAvailable && passesProviderInstanceInstallationGate(entry),
   );
   const textGenInstanceEntry = textGenerationModelInstanceEntries.find(
     (entry) => entry.instanceId === textGenInstanceId,
@@ -3007,13 +3008,13 @@ export function GeneralSettingsPanel() {
         />
 
         <SettingsRow
-          title="Orchestrator unmark confirmation"
-          description="Unmarking an orchestrator deletes its cards and delegated chats. Turn this on to skip the confirmation dialog. Saved on this device."
+          title="Coordinator removal confirmation"
+          description="Removing a Coordinator deletes its cards and delegated chats. Turn this on to skip the confirmation dialog. Saved on this device."
           control={
             <Switch
               checked={skipOrchestratorUnmarkConfirm}
               onCheckedChange={(checked) => setSkipOrchestratorUnmarkConfirm(Boolean(checked))}
-              aria-label="Skip orchestrator unmark confirmation"
+              aria-label="Skip Coordinator removal confirmation"
             />
           }
         />

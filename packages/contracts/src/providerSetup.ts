@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 
-import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
 export const ProviderSetupInput = Schema.Struct({
@@ -69,6 +70,46 @@ export const ProviderInstallCancelInput = Schema.Struct({
   operationId: SetupOperationId,
 });
 export type ProviderInstallCancelInput = typeof ProviderInstallCancelInput.Type;
+
+export const PiInferenceServerInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  threadId: Schema.optional(ThreadId),
+  model: Schema.optional(Schema.String),
+});
+export type PiInferenceServerInput = typeof PiInferenceServerInput.Type;
+
+export const PiBonsaiPresetDetectInput = Schema.Struct({
+  rootPath: Schema.optional(Schema.String),
+});
+export type PiBonsaiPresetDetectInput = typeof PiBonsaiPresetDetectInput.Type;
+
+export const PiInferenceServerStatus = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  endpoint: Schema.String,
+  local: Schema.Boolean,
+  phase: Schema.Literals(["stopped", "starting", "running", "ready", "failed"]),
+  owner: Schema.Literals(["none", "ft3", "external"]),
+  ready: Schema.Boolean,
+  canStart: Schema.Boolean,
+  canStop: Schema.Boolean,
+  pendingRestart: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  orphanedManagedEndpoint: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  usedByOtherInstances: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  progress: Schema.NullOr(Schema.String),
+  error: Schema.NullOr(Schema.String),
+  modelIds: Schema.Array(TrimmedNonEmptyString),
+});
+export type PiInferenceServerStatus = typeof PiInferenceServerStatus.Type;
+
+/** Bonsai launch config discovered on the FT3 host; paths are suggestions, never defaults. */
+export const PiBonsaiPreset = Schema.Struct({
+  executablePath: TrimmedNonEmptyString,
+  modelPath: TrimmedNonEmptyString,
+  baseUrl: TrimmedNonEmptyString,
+  // FT3 passes this stable alias to llama-server, so selection works before startup.
+  model: TrimmedNonEmptyString,
+});
+export type PiBonsaiPreset = typeof PiBonsaiPreset.Type;
 
 /** Safe setup failure text. Never include OAuth codes, URLs, or native token data. */
 export class ProviderSetupError extends Schema.TaggedError<ProviderSetupError>()(

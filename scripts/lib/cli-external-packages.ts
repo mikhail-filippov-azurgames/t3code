@@ -51,6 +51,16 @@ export const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   // becoming real if either is ever declared as a dependency.
   "bufferutil",
   "utf-8-validate",
+  // The bundled Pi harness CLI (@earendil-works/pi-coding-agent 0.87.1). The
+  // server never imports it — it spawns `node <cliJs>` as a child process —
+  // but the packaged Windows app has no dev-time node_modules, so the Pi
+  // package must travel in the server sidecar: the sidecar's `vp install
+  // --prod` installs the selected root plus its full transitive closure,
+  // which is what `resolvePiRuntime`'s bundled-kind lookup walks up to.
+  // Narrow (full package name, not the `@earendil-works/` scope): Pi ships a
+  // self-contained dist bundle, so only this root is needed and sibling
+  // packages (chord, pi-ai, ...) stay out of the runtime closure walk.
+  "@earendil-works/pi-coding-agent",
 ] as const;
 
 export function isRuntimeExternalCliDependency(id: string): boolean {

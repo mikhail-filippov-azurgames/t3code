@@ -243,6 +243,55 @@ export const pickFolder = DesktopIpc.makeIpcMethod({
   }),
 });
 
+export const pickPiInstructions = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.PICK_PI_INSTRUCTIONS_CHANNEL,
+  payload: Schema.UndefinedOr(PickFolderOptionsSchema),
+  result: Schema.NullOr(Schema.String),
+  handler: Effect.fn("desktop.ipc.window.pickPiInstructions")(function* (options) {
+    const dialog = yield* ElectronDialog.ElectronDialog;
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
+    const wslEnvironment = yield* DesktopWslEnvironment.DesktopWslEnvironment;
+    const settings = yield* appSettings.get;
+    if (!settings.localEnvironmentEnabled) return null;
+    const targetId = options?.targetEnvironmentId;
+    const useWsl =
+      targetId !== undefined &&
+      targetId !== PRIMARY_LOCAL_ENVIRONMENT_ID &&
+      targetId.startsWith(DesktopWslBackend.WSL_INSTANCE_ID_PREFIX);
+    const wslDistro = useWsl
+      ? (extractWslDistroFromEnvironmentId(targetId) ?? settings.wslDistro)
+      : null;
+    const defaultPath = useWsl
+      ? Option.fromNullishOr(
+          resolveWslPickFolderDefaultPath(
+            options,
+            { distro: wslDistro },
+            yield* wslEnvironment.listDistros,
+            Option.getOrNull(yield* wslEnvironment.getUserHome(wslDistro)),
+          ),
+        )
+      : environment.resolvePickFolderDefaultPath(options);
+    const paths = yield* dialog.pickFiles({
+      owner: yield* electronWindow.focusedMainOrFirst,
+      defaultPath,
+      multiple: false,
+      filters: [{ name: "AGENTS.md", extensions: ["md"] }],
+    });
+    const selected = paths[0];
+    if (!selected || !/(?:^|[\\/])AGENTS\.md$/i.test(selected)) return null;
+    if (!useWsl) return selected;
+    const linuxUncPath = wslUncPathToLinuxPath(selected);
+    if (linuxUncPath !== null) return linuxUncPath;
+    const converted = yield* wslEnvironment.windowsToWslPath(
+      extractDistroFromUncPath(selected) ?? wslDistro,
+      selected,
+    );
+    return Option.getOrElse(converted, () => selected);
+  }),
+});
+
 export const pickProjectFavicon = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.PICK_PROJECT_FAVICON_CHANNEL,
   payload: Schema.UndefinedOr(Schema.String),

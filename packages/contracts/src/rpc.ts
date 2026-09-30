@@ -8,6 +8,10 @@ import {
   ProviderAuthState,
   ProviderInstallCancelInput,
   ProviderInstallState,
+  PiBonsaiPreset,
+  PiBonsaiPresetDetectInput,
+  PiInferenceServerInput,
+  PiInferenceServerStatus,
   ProviderSetupError,
   ProviderSetupInput,
 } from "./providerSetup.ts";
@@ -86,7 +90,11 @@ import {
   ReviewDiffPreviewResult,
 } from "./review.ts";
 import { KeybindingsConfigError } from "./keybindings.ts";
-import { OrchestratorMcpFailure } from "./orchestratorMcp.ts";
+import {
+  OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
+  OrchestratorMcpFailure,
+  OrchestratorMcpGetCoordinatorBindingInput,
+} from "./orchestratorMcp.ts";
 import {
   ClientOrchestrationCommand,
   ORCHESTRATION_WS_METHODS,
@@ -347,6 +355,10 @@ export const WS_METHODS = {
   providerInstallCancel: "provider.install.cancel",
   providerInstallSubscribe: "provider.install.subscribe",
   providerInstallRemove: "provider.install.remove",
+  providerPiInferenceServerStatus: "provider.piInferenceServer.status",
+  providerPiInferenceServerStart: "provider.piInferenceServer.start",
+  providerPiInferenceServerStop: "provider.piInferenceServer.stop",
+  providerPiBonsaiPresetDetect: "provider.piBonsaiPreset.detect",
 
   // VCS methods
   vcsPull: "vcs.pull",
@@ -607,6 +619,30 @@ const WsProviderInstallRemoveRpc = Rpc.make(WS_METHODS.providerInstallRemove, {
   payload: ProviderSetupInput,
   success: ProviderInstallState,
   error: ProviderSetupRpcError,
+});
+
+const WsProviderPiInferenceServerStatusRpc = Rpc.make(WS_METHODS.providerPiInferenceServerStatus, {
+  payload: PiInferenceServerInput,
+  success: PiInferenceServerStatus,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderPiInferenceServerStartRpc = Rpc.make(WS_METHODS.providerPiInferenceServerStart, {
+  payload: PiInferenceServerInput,
+  success: PiInferenceServerStatus,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderPiInferenceServerStopRpc = Rpc.make(WS_METHODS.providerPiInferenceServerStop, {
+  payload: PiInferenceServerInput,
+  success: PiInferenceServerStatus,
+  error: ProviderSetupRpcError,
+});
+
+const WsProviderPiBonsaiPresetDetectRpc = Rpc.make(WS_METHODS.providerPiBonsaiPresetDetect, {
+  payload: PiBonsaiPresetDetectInput,
+  success: Schema.NullOr(PiBonsaiPreset),
+  error: EnvironmentAuthorizationError,
 });
 
 const WsServerUpdateServerRpc = Rpc.make(WS_METHODS.serverUpdateServer, {
@@ -1354,6 +1390,15 @@ const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationGetCoordinatorArchitectSidebarRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar,
+  {
+    payload: OrchestratorMcpGetCoordinatorBindingInput,
+    success: OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -1554,6 +1599,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsProviderInstallCancelRpc,
   WsProviderInstallSubscribeRpc,
   WsProviderInstallRemoveRpc,
+  WsProviderPiInferenceServerStatusRpc,
+  WsProviderPiInferenceServerStartRpc,
+  WsProviderPiInferenceServerStopRpc,
+  WsProviderPiBonsaiPresetDetectRpc,
   WsServerUpdateServerRpc,
   WsServerUpdateServerWithProgressRpc,
   WsServerCommitDesktopUpdateRpc,
@@ -1681,6 +1730,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationSearchThreadsRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
+  WsOrchestrationGetCoordinatorArchitectSidebarRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

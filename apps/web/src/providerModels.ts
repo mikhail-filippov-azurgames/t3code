@@ -1,5 +1,4 @@
 import {
-  DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
@@ -95,13 +94,13 @@ function withoutPlanAgentOption(caps: ModelCapabilities): ModelCapabilities {
 export function getDefaultServerModel(
   providers: ReadonlyArray<ServerProvider>,
   provider: ProviderDriverKind,
-): string {
+): string | null {
   const models = getProviderModels(providers, provider);
   return (
     models.find((model) => model.isDefault && !model.isCustom)?.slug ??
     models.find((model) => !model.isCustom)?.slug ??
     models[0]?.slug ??
     DEFAULT_MODEL_BY_PROVIDER[provider] ??
-    DEFAULT_MODEL
+    null
   );
 }

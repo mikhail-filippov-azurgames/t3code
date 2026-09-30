@@ -476,6 +476,34 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("merges focused provider instance replacements into the latest map", () => {
+    const piA = ProviderInstanceId.make("pi-a");
+    const piB = ProviderInstanceId.make("pi-b");
+    const existing = ProviderInstanceId.make("codex-work");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        [piA]: { driver: ProviderDriverKind.make("pi"), enabled: true, config: { model: "a" } },
+        [piB]: { driver: ProviderDriverKind.make("pi"), enabled: true, config: { model: "b" } },
+        [existing]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          config: { homePath: "~/.codex" },
+        },
+      },
+    };
+
+    const updated = applyServerSettingsPatch(current, {
+      providerInstanceConfigUpdates: {
+        [piA]: { ...current.providerInstances[piA]!, config: { model: "a-new" } },
+      },
+    });
+
+    expect(updated.providerInstances[piA]?.config).toEqual({ model: "a-new" });
+    expect(updated.providerInstances[piB]).toEqual(current.providerInstances[piB]);
+    expect(updated.providerInstances[existing]).toEqual(current.providerInstances[existing]);
+  });
+
   it("upserts and removes usageLimitSources per entry so concurrent edits cannot clobber", () => {
     const hubA = UsageLimitSourceId.make("cliproxy-a");
     const hubB = UsageLimitSourceId.make("cliproxy-b");
@@ -497,6 +525,87 @@ describe("serverSettings helpers", () => {
 
     const removed = applyServerSettingsPatch(added, { usageLimitSources: { [hubA]: null } });
     expect(Object.keys(removed.usageLimitSources)).toEqual([hubB]);
+  });
+
+  it("rebases concurrent Pi field patches on the latest same-instance config", () => {
+    const piId = ProviderInstanceId.make("pi-concurrent");
+    const piDefaultedId = ProviderInstanceId.make("pi-defaulted");
+    const otherId = ProviderInstanceId.make("codex-kept");
+    const current = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      providerInstances: {
+        [piId]: {
+          driver: ProviderDriverKind.make("pi"),
+          enabled: true,
+          config: {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            inferenceServerContextSize: 81920,
+            inferenceServerTopP: 0.95,
+          },
+        },
+        [piDefaultedId]: {
+          driver: ProviderDriverKind.make("pi"),
+          enabled: true,
+        },
+        [otherId]: {
+          driver: ProviderDriverKind.make("codex"),
+          enabled: true,
+          config: { homePath: "~/.codex" },
+        },
+      },
+    });
+
+    // These deltas came from two editors opened on the same initial snapshot.
+    const contextEdit = applyServerSettingsPatch(current, {
+      piProviderInstanceConfigPatches: {
+        [piId]: { inferenceServerContextSize: 32768 },
+      },
+    });
+    const samplingEdit = applyServerSettingsPatch(contextEdit, {
+      piProviderInstanceConfigPatches: {
+        [piId]: { inferenceServerTopP: 0.8 },
+      },
+    });
+    const defaultedConfigEdit = applyServerSettingsPatch(samplingEdit, {
+      piProviderInstanceConfigPatches: {
+        [piDefaultedId]: { inferenceServerTopP: 0.7 },
+      },
+    });
+
+    expect(defaultedConfigEdit.providerInstances[piId]?.config).toEqual({
+      baseUrl: "http://127.0.0.1:8080/v1",
+      inferenceServerContextSize: 32768,
+      inferenceServerTopP: 0.8,
+    });
+    expect(defaultedConfigEdit.providerInstances[piDefaultedId]?.config).toEqual({
+      inferenceServerTopP: 0.7,
+    });
+    expect(defaultedConfigEdit.providerInstances[otherId]).toEqual(
+      current.providerInstances[otherId],
+    );
+
+    // A generic provider editor still submits its providerInstances snapshot,
+    // but its config delta must rebase on the latest server config.
+    const staleEditorEdit = applyServerSettingsPatch(defaultedConfigEdit, {
+      providerInstances: {
+        ...defaultedConfigEdit.providerInstances,
+        [piId]: {
+          ...defaultedConfigEdit.providerInstances[piId]!,
+          config: {
+            baseUrl: "http://127.0.0.1:8080/v1",
+            inferenceServerContextSize: 81920,
+            inferenceServerTopP: 0.7,
+          },
+        },
+      },
+      piProviderInstanceConfigPatches: {
+        [piId]: { inferenceServerTopP: 0.6 },
+      },
+    });
+    expect(staleEditorEdit.providerInstances[piId]?.config).toEqual({
+      baseUrl: "http://127.0.0.1:8080/v1",
+      inferenceServerContextSize: 32768,
+      inferenceServerTopP: 0.6,
+    });
   });
 
   it("replaces and removes individual usage prices without clobbering other models", () => {

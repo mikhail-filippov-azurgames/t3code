@@ -242,6 +242,42 @@ describe("buildProviderInstanceUpdatePatch", () => {
     expect(patch.providerInstances?.[instanceId]).toEqual(nextInstance);
     expect(patch.providers).toBeUndefined();
   });
+
+  it("sends a Pi config delta so stale settings-page saves rebase on live fields", () => {
+    const instanceId = ProviderInstanceId.make("pi-local");
+    const currentInstance = {
+      driver: ProviderDriverKind.make("pi"),
+      enabled: true,
+      config: {
+        baseUrl: "http://127.0.0.1:8080/v1",
+        inferenceServerContextSize: 81920,
+        inferenceServerTopP: 0.95,
+      },
+    } satisfies ProviderInstanceConfig;
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: { [instanceId]: currentInstance },
+    };
+    const nextInstance = {
+      ...currentInstance,
+      config: {
+        ...currentInstance.config,
+        baseUrl: "http://127.0.0.1:8181/v1",
+      },
+    } satisfies ProviderInstanceConfig;
+
+    const patch = buildProviderInstanceUpdatePatch({
+      settings,
+      instanceId,
+      instance: nextInstance,
+      driver: ProviderDriverKind.make("pi"),
+      isDefault: false,
+    });
+
+    expect(patch.piProviderInstanceConfigPatches).toEqual({
+      [instanceId]: { baseUrl: "http://127.0.0.1:8181/v1" },
+    });
+  });
 });
 
 describe("getChangedBrowserSettingLabels", () => {

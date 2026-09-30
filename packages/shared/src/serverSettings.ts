@@ -7,6 +7,7 @@ import {
   type ProjectScopedServerSettingKey,
   type ProjectSettingsOverrides,
   type ProviderDriverKind,
+  type ProviderInstanceConfig,
   type ServerProvider,
   ServerSettings,
   type ServerSettingsPatch,
@@ -173,6 +174,37 @@ function mergeSettingsEntries<Value>(
   return Object.fromEntries(next);
 }
 
+/** Apply Pi config fields to the latest envelope for each named instance. */
+function mergePiProviderInstanceConfigPatches(
+  instances: ServerSettings["providerInstances"],
+  patches: NonNullable<ServerSettingsPatch["piProviderInstanceConfigPatches"]>,
+  currentInstances: ServerSettings["providerInstances"],
+): ServerSettings["providerInstances"] {
+  const next: Record<string, ProviderInstanceConfig> = { ...instances };
+  for (const [instanceId, configPatch] of Object.entries(patches)) {
+    const instance = next[instanceId];
+    if (!instance || instance.driver !== "pi") continue;
+    const latestInstance = currentInstances[instanceId as keyof typeof currentInstances];
+    const latestConfig = latestInstance?.driver === "pi" ? latestInstance.config : undefined;
+    const currentConfig = latestConfig ?? instance.config;
+    if (
+      currentConfig !== undefined &&
+      currentConfig !== null &&
+      (typeof currentConfig !== "object" || Array.isArray(currentConfig))
+    ) {
+      continue;
+    }
+    const definedFields = Object.fromEntries(
+      Object.entries(configPatch).filter(([, value]) => value !== undefined),
+    );
+    next[instanceId] = {
+      ...instance,
+      config: { ...(currentConfig ?? {}), ...definedFields },
+    };
+  }
+  return next;
+}
+
 /**
  * Derived views of `projectSettingsOverrides` for clients that still read
  * the legacy per-key maps. Recomputed on every patch and load so they
@@ -275,6 +307,11 @@ export function applyServerSettingsPatch(
     usagePriceOverrides: usagePriceOverridesPatch,
     // Entry replacement: deepMerge would keep keys the client meant to clear.
     projectSettingsOverrides: projectSettingsOverridesPatch,
+    // A focused provider settings surface replaces only the named instance.
+    providerInstanceConfigUpdates,
+    // Pi composer dialogs patch only changed config fields onto the latest
+    // instance envelope, avoiding lost updates from concurrently open chats.
+    piProviderInstanceConfigPatches,
     // Already translated into `projectSettingsOverrides` above; the legacy
     // maps are derived views and must never be merged directly.
     projectAgentBrowserAccessOverrides: _legacyBrowserAccess,
@@ -333,8 +370,19 @@ export function applyServerSettingsPatch(
     ...(backgroundActivity === undefined && backgroundActivityPatch !== undefined
       ? { backgroundActivity: backgroundActivityPatch }
       : {}),
-    ...(patch.providerInstances !== undefined
-      ? { providerInstances: patch.providerInstances }
+    ...(patch.providerInstances !== undefined ||
+    providerInstanceConfigUpdates !== undefined ||
+    piProviderInstanceConfigPatches !== undefined
+      ? {
+          providerInstances: mergePiProviderInstanceConfigPatches(
+            {
+              ...(patch.providerInstances ?? current.providerInstances),
+              ...providerInstanceConfigUpdates,
+            },
+            piProviderInstanceConfigPatches ?? {},
+            current.providerInstances,
+          ),
+        }
       : {}),
     ...(projectSettingsOverridesPatch !== undefined
       ? {

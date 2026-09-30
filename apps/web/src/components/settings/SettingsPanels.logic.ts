@@ -6,6 +6,7 @@ import type {
   PreviewViewportSetting,
   ProviderInstanceId,
   ServerSettings,
+  ServerSettingsPatch,
   SidebarProjectGroupingMode,
   UnifiedSettings,
 } from "@t3tools/contracts";
@@ -259,13 +260,36 @@ export function buildProviderInstanceUpdatePatch(input: {
   readonly textGenerationModelSelection?:
     | ServerSettings["textGenerationModelSelection"]
     | undefined;
-}): Partial<UnifiedSettings> {
+}): Partial<UnifiedSettings> & Pick<ServerSettingsPatch, "piProviderInstanceConfigPatches"> {
   type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
   const legacyProviderDefaults = DEFAULT_UNIFIED_SETTINGS.providers as Record<
     string,
     LegacyProviderSettings | undefined
   >;
   const legacyProviderDefault = input.isDefault ? legacyProviderDefaults[input.driver] : undefined;
+  const currentInstance = input.settings.providerInstances[input.instanceId];
+  const currentConfig =
+    typeof currentInstance?.config === "object" &&
+    currentInstance.config !== null &&
+    !Array.isArray(currentInstance.config)
+      ? (currentInstance.config as Record<string, unknown>)
+      : {};
+  const nextConfig =
+    typeof input.instance.config === "object" &&
+    input.instance.config !== null &&
+    !Array.isArray(input.instance.config)
+      ? (input.instance.config as Record<string, unknown>)
+      : {};
+  const piConfigPatch =
+    input.driver === "pi" && currentInstance?.driver === "pi"
+      ? {
+          [input.instanceId]: Object.fromEntries(
+            Object.entries(nextConfig).filter(
+              ([key, value]) => JSON.stringify(currentConfig[key]) !== JSON.stringify(value),
+            ),
+          ),
+        }
+      : undefined;
   return {
     ...(legacyProviderDefault !== undefined
       ? {
@@ -279,6 +303,7 @@ export function buildProviderInstanceUpdatePatch(input: {
       ...input.settings.providerInstances,
       [input.instanceId]: input.instance,
     },
+    ...(piConfigPatch ? { piProviderInstanceConfigPatches: piConfigPatch } : {}),
     ...(input.textGenerationModelSelection !== undefined
       ? { textGenerationModelSelection: input.textGenerationModelSelection }
       : {}),

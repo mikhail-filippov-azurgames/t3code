@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "ft3-pi-runtime",
+  "description": "Pinned Pi harness bundled with FT3 as the built-in/default provider for local OpenAI-compatible endpoints. The npm dependency @earendil-works/pi-coding-agent (exact pin) ships the CLI inside FT3's package graph; the bundled runtime is required.",
+  "piPin": "0.87.1",
+  "piPackage": "@earendil-works/pi-coding-agent",
+  "piLicense": "MIT",
+  "piBin": "dist/bundle/cli.js",
+  "docs": [
+    "https://pi.dev/docs/latest/rpc",
+    "https://pi.dev/docs/latest/rpc-commands",
+    "https://pi.dev/docs/latest/json",
+    "https://pi.dev/docs/latest/message-types",
+    "https://pi.dev/docs/latest/rpc-extension-ui",
+    "https://pi.dev/docs/latest/extensions",
+    "https://pi.dev/docs/latest/cli",
+    "https://pi.dev/docs/latest/models"
+  ],
+  "providerId": "ft3-local",
+  "api": "openai-completions",
+  "defaultBaseUrl": "http://127.0.0.1:11434/v1",
+  "resolution": {
+    "order": ["workspace bundle (node cli.js)"],
+    "nodeExecutable": "HostProcessExecutablePath (the server runs under Node)",
+    "implementation": "apps/server/src/provider/pi/piRuntime.ts"
+  },
+  "protocol": {
+    "interrupt": ["clear_queue", "abort"],
+    "streamText": "message_update.text_delta only; message_end text only when nothing streamed",
+    "completion": "agent_settled",
+    "resume": "--session-id with stored Pi session id"
+  },
+  "managedAgentDir": "<stateDir>/pi/<instanceId>/agent",
+  "managedFiles": [
+    "models.json",
+    "settings.json",
+    "APPEND_SYSTEM.md",
+    "sessions/<thread-hash>/ft3-policy.json",
+    "sessions/<thread-hash>/extensions/ft3-guard/index.js"
+  ],
+  "permissionBridge": "apps/server/src/provider/pi/piToolGuard.ts",
+  "packaging": {
+    "sidecarAllowlist": "scripts/lib/cli-external-packages.ts",
+    "windowsRuntimeDependency": "@earendil-works/pi-coding-agent@0.87.1",
+    "serverAsarCli": "resources/server.asar/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    "serverModuleResolution": "resolvePiRuntime walks upward from apps/server/dist to server.asar/node_modules",
+    "runtimeHost": "HostProcessExecutablePath with ELECTRON_RUN_AS_NODE=1 forwarded by the desktop backend"
+  },
+  "permissions": {
+    "enforcement": "explicit FT3-managed Pi tool_call extension; Pi launches with --no-extensions and only this extension path",
+    "workspacePaths": "realpath-resolved before execution; external paths prompt; approval-required writes block",
+    "shell": "one-time approval outside full-access because Pi has no OS sandbox",
+    "limitations": "pre-execution extension is not an OS sandbox; shell approvals are stricter than auto commandExecution"
+  },
+  "remainingWork": [
+    "Run a live end-to-end pass against a local endpoint (Ollama): prompt, steer, abort, extension-UI dialog, crash-restart",
+    "Consider RPC get_available_models for model listing instead of CLI --list-models parsing"
+  ]
+}

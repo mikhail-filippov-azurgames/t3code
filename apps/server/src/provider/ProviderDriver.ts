@@ -26,7 +26,9 @@ import type {
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
+  PiInferenceServerStatus,
   ServerProvider,
+  ThreadId,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
 import type * as Schema from "effect/Schema";
@@ -71,6 +73,22 @@ export interface ProviderInstance {
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
+  /** Pi's endpoint-scoped local server control; other drivers omit it. */
+  readonly localInferenceServer?: {
+    readonly getStatus: (
+      model?: string,
+    ) => Effect.Effect<PiInferenceServerStatus, ProviderDriverError>;
+    readonly start: (
+      threadId?: ThreadId,
+      model?: string,
+    ) => Effect.Effect<PiInferenceServerStatus, ProviderDriverError>;
+    readonly stop: (
+      threadId?: ThreadId,
+      model?: string,
+    ) => Effect.Effect<PiInferenceServerStatus, ProviderDriverError>;
+  };
+  /** Emits persisted, non-turn runtime activity for manual Pi server controls. */
+  readonly emitRuntimeActivity?: (threadId: ThreadId, message: string) => Effect.Effect<void>;
   readonly snapshot: ServerProviderShape;
   readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
   readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;

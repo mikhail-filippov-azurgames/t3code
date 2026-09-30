@@ -18,11 +18,14 @@ import {
   resolvePlanAgentHealPatch,
   withoutPlanAgentSelection,
 } from "./modelSelection";
+import { getDefaultServerModel } from "./providerModels";
 
 function provider(input: {
   provider?: ProviderDriverKind;
   instanceId: string;
   models?: ReadonlyArray<string>;
+  installed?: boolean;
+  status?: ServerProvider["status"];
 }): ServerProvider {
   const driver =
     input.provider ??
@@ -33,9 +36,9 @@ function provider(input: {
     instanceId: ProviderInstanceId.make(input.instanceId),
     driver,
     enabled: true,
-    installed: true,
+    installed: input.installed ?? true,
     version: null,
-    status: "ready",
+    status: input.status ?? "ready",
     auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
     models: (input.models ?? []).map((slug) => ({
@@ -66,6 +69,25 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("does not invent a Pi model when its endpoint has no model configured", () => {
+    const instanceId = ProviderInstanceId.make("pi");
+    const pi = ProviderDriverKind.make("pi");
+    const providers = [provider({ provider: pi, instanceId, models: [] })];
+    const settings = settingsWithProviderInstances();
+    const state = deriveEffectiveComposerModelState({
+      draft: null,
+      providers,
+      selectedProvider: pi,
+      selectedInstanceId: instanceId,
+      threadModelSelection: createModelSelection(instanceId, "ft3-local"),
+      projectModelSelection: null,
+      settings,
+    });
+
+    expect(getDefaultServerModel(providers, pi)).toBeNull();
+    expect(state.selectedModel).toBe("");
+  });
+
   it("preserves server-provided legacy model metadata", () => {
     const baseProvider = provider({
       instanceId: "claudeAgent",
@@ -833,6 +855,23 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, [unsupported])).toEqual(
       NO_PROVIDER_MODEL_SELECTION,
     );
+  });
+
+  it("does not auto-select a Pi-only startup snapshot before the CLI check", () => {
+    const instanceId = ProviderInstanceId.make("pi");
+    const pi = provider({
+      provider: ProviderDriverKind.make("pi"),
+      instanceId,
+      models: ["bonsai-2-27b"],
+      installed: false,
+      status: "warning",
+    });
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      textGenerationModelSelection: createModelSelection(instanceId, "bonsai-2-27b"),
+    };
+
+    expect(resolveAppModelSelectionState(settings, [pi])).toEqual(NO_PROVIDER_MODEL_SELECTION);
   });
 });
 

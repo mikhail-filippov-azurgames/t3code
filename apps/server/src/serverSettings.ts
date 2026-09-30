@@ -49,6 +49,7 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as ServerConfig from "./config.ts";
+import { normalizePiModelSlug } from "./provider/pi/piAgentDir.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
 import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
@@ -337,7 +338,9 @@ function fallbackTextGenerationProvider(settings: ServerSettings): ServerSetting
   // (codex enabled) when the Providers UI has only written providerInstances.
   const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
     const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
-    return instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
+    const enabled =
+      instance === undefined ? provider.enabled : resolveProviderInstanceEnabled(instance);
+    return enabled && (driver !== "pi" || settings.providers.pi.model.trim().length > 0);
   });
   const fallback = fallbackEntry ? ProviderDriverKind.make(fallbackEntry[0]) : undefined;
   if (!fallback) {
@@ -351,7 +354,9 @@ function fallbackTextGenerationProvider(settings: ServerSettings): ServerSetting
       model:
         DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[fallback] ??
         DEFAULT_MODEL_BY_PROVIDER[fallback] ??
-        DEFAULT_TEXT_GENERATION_MODEL,
+        (fallback === "pi"
+          ? (normalizePiModelSlug(settings.providers.pi.model) ?? "")
+          : DEFAULT_TEXT_GENERATION_MODEL),
     } satisfies ModelSelection,
   };
 }

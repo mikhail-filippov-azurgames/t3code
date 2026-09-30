@@ -34,6 +34,8 @@ const CURSOR_INSTANCE = ProviderInstanceId.make("cursor");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
+const PI_DRIVER = ProviderDriverKind.make("pi");
+const PI_INSTANCE = ProviderInstanceId.make("pi");
 
 type ProviderOptionSelectionBag = ReadonlyArray<ProviderOptionSelection>;
 type ProviderOptionSelectionsByProvider = Partial<Record<string, ProviderOptionSelectionBag>>;
@@ -1891,6 +1893,21 @@ describe("composerDraftStore modelSelection", () => {
 
   beforeEach(() => {
     resetComposerDraftStore();
+  });
+
+  it("keeps Pi trait edits from seeding a fabricated model name", () => {
+    const store = useComposerDraftStore.getState();
+    const options = toSelections({ endpointOption: "enabled" });
+
+    store.setModelOptions(threadRef, providerModelOptions({ pi: { endpointOption: "enabled" } }));
+    store.setProviderModelOptions(threadRef, PI_DRIVER, options, { persistSticky: true });
+
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[PI_INSTANCE]).toBe(
+      undefined,
+    );
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[PI_INSTANCE]).toBe(
+      undefined,
+    );
   });
 
   it("stores a model selection in the draft", () => {

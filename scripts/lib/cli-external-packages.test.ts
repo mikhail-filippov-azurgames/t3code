@@ -1,4 +1,10 @@
+import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
+
+// Classic compiler API for parsing the pinned Pi bundle. The catalog
+// `typescript` is the native v7 port without `createSourceFile`; the legacy
+// v6 package (a declared devDependency here) keeps the parser.
+import * as TypeScript from "typescript-legacy";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -82,7 +88,30 @@ describe("selectCliRuntimeExternalDependencies", () => {
   it("selects every external root declared by the server", () => {
     assert.deepStrictEqual(
       Object.keys(selectCliRuntimeExternalDependencies(serverPackageJson.dependencies)).sort(),
-      ["@ff-labs/fff-node", "msgpackr-extract", "node-pty"],
+      ["@earendil-works/pi-coding-agent", "@ff-labs/fff-node", "msgpackr-extract", "node-pty"],
+    );
+  });
+
+  // The pinned Pi harness must travel in the Windows server sidecar: the
+  // packaged app has no dev-time node_modules, and `resolvePiRuntime`'s
+  // bundled-kind lookup walks up to the sidecar's node_modules. The sidecar's
+  // `vp install --prod` installs the selected root plus its full transitive
+  // closure, so selecting the root is the whole proof — no other wiring.
+  it("selects the bundled Pi harness root for the Windows sidecar", () => {
+    assert.deepStrictEqual(
+      selectCliRuntimeExternalDependencies({
+        "@earendil-works/pi-coding-agent": "0.87.1",
+        effect: "3.0.0",
+      }),
+      { "@earendil-works/pi-coding-agent": "0.87.1" },
+    );
+    assert.ok(
+      (
+        (serverPackageJson.dependencies as Record<string, string>)[
+          "@earendil-works/pi-coding-agent"
+        ] ?? ""
+      ).trim().length > 0,
+      "the Pi harness must stay a declared server dependency so the pin is exact",
     );
   });
 });
@@ -159,8 +188,14 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
 
         // Without this the closure check below can pass vacuously: if nothing is
         // read, nothing is checked. These are the packages whose closure actually
-        // broke WSL, so require them by name.
-        for (const required of ["node-pty", "node-gyp-build-optional-packages", "detect-libc"]) {
+        // broke WSL, so require them by name — plus the Pi harness, whose
+        // presence in the store is what lets the sidecar install carry it.
+        for (const required of [
+          "node-pty",
+          "node-gyp-build-optional-packages",
+          "detect-libc",
+          "@earendil-works/pi-coding-agent",
+        ]) {
           assert.ok(
             found.includes(required),
             `expected ${required} in the pnpm store; the closure check is only meaningful if it can read these (found ${found.length})`,
@@ -169,6 +204,17 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
       }),
     120_000,
   );
+
+  // The Pi harness root is exempt from the manifest walk below, and the
+  // exemption is load-bearing, not a weakening: Pi ships a self-contained
+  // dist bundle (see the `pi dist bundle is self-contained` test), so its
+  // manifest dependencies are build-time inputs that Pi's own bundler
+  // inlined — requiring them external would force shared packages like
+  // `yaml` out of the server bundle and break the single-executable. The
+  // spawned CLI resolves its real runtime requires (Node built-ins plus
+  // guarded optionals) from the sidecar, where `vp install --prod` carries
+  // the selected root's full transitive closure.
+  const isExemptSelfContainedCli = (name: string) => name === "@earendil-works/pi-coding-agent";
 
   it.effect("keeps every runtime dependency of an external package external too", () =>
     Effect.gen(function* () {
@@ -189,10 +235,11 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
         if (!manifest) continue;
 
         const declared = {
-          ...(manifest.dependencies ?? {}),
-          ...(manifest.optionalDependencies ?? {}),
-          ...(manifest.peerDependencies ?? {}),
+          ...manifest.dependencies,
+          ...manifest.optionalDependencies,
+          ...manifest.peerDependencies,
         };
+        if (isExemptSelfContainedCli(name)) continue;
         for (const dependency of Object.keys(declared)) {
           if (!isRuntimeExternal(dependency)) {
             violations.push(`${name} -> ${dependency}`);
@@ -205,6 +252,81 @@ it.layer(NodeServices.layer)("external package dependency closure", (it) => {
         violations,
         [],
         `these dependencies of external packages would be bundled away and fail to resolve under WSL: ${violations.join(", ")}`,
+      );
+    }),
+  );
+
+  // Machine-checked premise of the Pi exemption above. The spawned Pi CLI
+  // must resolve its real runtime requires from the sidecar without the
+  // manifest-walk closure: its dist bundle is self-contained apart from
+  // Node built-ins and guarded optional probes (`bufferutil` /
+  // `utf-8-validate` are ws accelerators wrapped in try/catch and already
+  // external; `supports-color` is a guarded `debug`-package probe). A text
+  // regex is not enough here — the `@aws-sdk/*` names occur as
+  // `require('...')` text inside Bedrock error-message string literals —
+  // so the scan parses each file and collects only real `require` /
+  // `__require` call arguments. If a future Pi pin hard-requires a new
+  // file-backed package, this fails and the exemption must be revisited.
+  it.effect("pi dist bundle is self-contained (exemption premise)", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const bundleDir = path.resolve(
+        path.dirname(NodeURL.fileURLToPath(import.meta.url)),
+        "../../apps/server/node_modules/@earendil-works/pi-coding-agent/dist/bundle",
+      );
+      const cliJs = path.join(bundleDir, "cli.js");
+      assert.ok(
+        yield* fileSystem.exists(cliJs).pipe(Effect.orElseSucceed(() => false)),
+        `expected the pinned Pi CLI at ${cliJs}; run the install step that provides apps/server/node_modules first`,
+      );
+      const chunksDir = path.join(bundleDir, "chunks");
+      const entries = [
+        "cli.js",
+        ...(yield* fileSystem.readDirectory(chunksDir)).map((entry) => `chunks/${entry}`),
+      ];
+      const specifiers = new Set<string>();
+      for (const entry of entries) {
+        if (!entry.endsWith(".js")) continue;
+        const source = yield* fileSystem.readFileString(path.join(bundleDir, entry));
+        const script = TypeScript.createSourceFile(
+          entry,
+          source,
+          TypeScript.ScriptTarget.Latest,
+          false,
+        );
+        const visit = (node: TypeScript.Node): void => {
+          if (TypeScript.isCallExpression(node)) {
+            const callee = node.expression.getText(script);
+            const firstArgument = node.arguments[0];
+            if (
+              (callee === "require" || callee === "__require") &&
+              firstArgument !== undefined &&
+              TypeScript.isStringLiteralLike(firstArgument)
+            ) {
+              const specifier = firstArgument.text;
+              if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+                specifiers.add(specifier);
+              }
+            }
+          }
+          TypeScript.forEachChild(node, visit);
+        };
+        visit(script);
+      }
+      assert.ok(
+        specifiers.size > 0,
+        "the require scan saw nothing; the bundle shape changed and this proof is blind",
+      );
+      const allowedOptionals = new Set(["bufferutil", "utf-8-validate", "supports-color"]);
+      const unexpected = [...specifiers]
+        .filter((specifier) => !NodeModule.isBuiltin(specifier))
+        .filter((specifier) => !allowedOptionals.has(specifier))
+        .sort();
+      assert.deepStrictEqual(
+        unexpected,
+        [],
+        `Pi dist requires file-backed packages outside the sidecar story: ${unexpected.join(", ")}`,
       );
     }),
   );

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderDriverKind } from "@t3tools/contracts";
+import { PiAgentIcon } from "../Icons";
 
 import { DRIVER_OPTION_BY_VALUE } from "./providerDriverMeta";
 import {
@@ -68,6 +69,25 @@ describe("ProviderSettingsForm helpers", () => {
       "autoCompactWindow",
       "launchArgs",
     ]);
+  });
+
+  it("exposes the bundled Pi endpoint and model settings", () => {
+    const pi = DRIVER_OPTION_BY_VALUE[ProviderDriverKind.make("pi")];
+    expect(pi).toMatchObject({ label: "Pi", icon: PiAgentIcon });
+    expect(pi).toBeDefined();
+    expect(deriveProviderSettingsFields(pi!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "baseUrl",
+      "apiKey",
+      "model",
+      "inferenceServerExecutablePath",
+      "inferenceServerModelPath",
+      "inferenceServerAutoStart",
+    ]);
+    expect(deriveProviderSettingsFields(pi!).find((field) => field.key === "model")).toMatchObject({
+      label: "Model",
+      placeholder: "e.g. qwen2.5-coder:7b",
+    });
   });
 
   it("preserves unknown config keys while omitting empty configurable fields", () => {

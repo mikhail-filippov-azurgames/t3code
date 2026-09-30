@@ -7,6 +7,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import {
   isProviderInstancePickerReady,
+  isProviderInstancePickerSelectable,
   shouldShowInstanceBadge,
   type ProviderInstanceEntry,
 } from "../../providerInstances";
@@ -156,7 +157,8 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
             const unavailableSelectionIsReachable =
               props.selectableUnavailableInstanceIds?.has(entry.instanceId) ?? false;
             const isDisabled =
-              (isUnavailable && !unavailableSelectionIsReachable) || isContextDisabled;
+              (!isProviderInstancePickerSelectable(entry) && !unavailableSelectionIsReachable) ||
+              isContextDisabled;
             const isSelected = props.selectedInstanceId === entry.instanceId;
             const isHovered = hoveredInstanceId === entry.instanceId;
             const showNewBadge = props.newBadgeInstanceIds?.has(entry.instanceId) ?? false;

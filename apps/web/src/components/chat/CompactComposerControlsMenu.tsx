@@ -18,6 +18,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   runtimeMode: RuntimeMode;
   showInteractionModeToggle: boolean;
   traitsMenuContent?: ReactNode;
+  inferenceServerControl?: ReactNode;
   size?: "sm" | "xs";
   /**
    * The resting strip keeps this menu mounted out of flow while every block
@@ -85,6 +86,14 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
           <MenuRadioItem value="auto">Auto</MenuRadioItem>
           <MenuRadioItem value="full-access">Full access</MenuRadioItem>
         </MenuRadioGroup>
+        {props.inferenceServerControl ? (
+          <>
+            <MenuDivider />
+            <div className="flex items-center gap-1 px-2 py-1.5">
+              {props.inferenceServerControl}
+            </div>
+          </>
+        ) : null}
       </MenuPopup>
     </Menu>
   );
