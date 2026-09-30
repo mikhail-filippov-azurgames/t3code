@@ -229,6 +229,7 @@ function PoolSegment({
   color,
   now,
   index,
+  solo,
 }: {
   readonly account: LimitAccount;
   readonly window: LimitPoolMember["window"];
@@ -237,6 +238,8 @@ function PoolSegment({
   readonly now: number;
   /** 1-based position in the bar, shown on the strip and its legend row to tie them together. */
   readonly index: number;
+  /** One account in the bar: name and percent belong on the segment itself, so no index and no legend. */
+  readonly solo: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const remaining = remainingPercent(window);
@@ -272,13 +275,20 @@ function PoolSegment({
             }}
           />
         ) : null}
-        <span
-          aria-hidden
-          className="absolute inset-0 flex items-center justify-center text-[10px] leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
+        {solo ? null : (
+          <span
+            aria-hidden
+            className="absolute inset-0 flex items-center justify-center text-[10px] leading-none font-semibold text-foreground/80 tabular-nums @2xl/pool:hidden"
+          >
+            {index}
+          </span>
+        )}
+        <div
+          className={cn(
+            "relative h-full min-w-0 items-center gap-1.5 px-2 text-xs",
+            solo ? "flex" : "hidden @2xl/pool:flex",
+          )}
         >
-          {index}
-        </span>
-        <div className="relative hidden h-full min-w-0 items-center gap-1.5 px-2 text-xs @2xl/pool:flex">
           <AccountName account={account} className="min-w-0 truncate font-medium text-foreground" />
           <span className="shrink-0 font-semibold text-foreground tabular-nums">{remaining}%</span>
           {/* Countdown and badge get their own plate: fill and hatching run under them otherwise. */}
@@ -300,7 +310,9 @@ function PoolSegment({
           </span>
         </div>
       </PopoverTrigger>
-      <LegendRow account={account} window={window} color={color} now={now} index={index} />
+      {solo ? null : (
+        <LegendRow account={account} window={window} color={color} now={now} index={index} />
+      )}
       {account.redeem ? (
         <RedeemableSegmentPopup
           account={account}
@@ -439,7 +451,8 @@ function RedeemableSegmentPopup({
  *
  * Wide, each segment carries its own label. Narrow, the bar is a bare strip
  * and a legend below lists the accounts in the same order; both open the
- * same popover.
+ * same popover. A single account needs no numbering at any width: its name
+ * and percent sit on the segment itself and there is nothing to map.
  */
 function PoolBar({
   pool,
@@ -451,6 +464,7 @@ function PoolBar({
   readonly now: number;
 }) {
   const restores = new Map(pool.resets.map((reset) => [reset.member.account.key, reset]));
+  const solo = pool.columns.filter((member) => member.window !== null).length === 1;
   return (
     <div className="@container/pool min-w-0">
       <div
@@ -467,6 +481,7 @@ function PoolBar({
               color={color}
               now={now}
               index={position + 1}
+              solo={solo}
             />
           ) : null,
         )}
