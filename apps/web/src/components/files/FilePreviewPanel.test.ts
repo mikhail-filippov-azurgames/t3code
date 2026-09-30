@@ -62,6 +62,7 @@ describe("isMarkdownPreviewFile", () => {
   it("recognizes markdown and MDX files case-insensitively", () => {
     expect(isMarkdownPreviewFile("README.md")).toBe(true);
     expect(isMarkdownPreviewFile("docs/guide.MDX")).toBe(true);
+    expect(isMarkdownPreviewFile("docs/guide.markdown")).toBe(true);
   });
 
   it("does not treat other text files as markdown", () => {

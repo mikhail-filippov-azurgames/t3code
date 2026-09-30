@@ -14,6 +14,7 @@ import {
   ExternalLauncherEditorSpawnError,
   ExternalLauncherUnknownEditorError,
   ExternalLauncherUnsupportedEditorError,
+  userInstallPathsForEditor,
   type EditorId,
   type FileManagerRevealKind,
   type LaunchEditorInput,
@@ -109,6 +110,9 @@ const CommandLookupEnvConfig = Config.all({
   Path: Config.string("Path").pipe(Config.option),
   path: Config.string("path").pipe(Config.option),
   PATHEXT: Config.string("PATHEXT").pipe(Config.option),
+  LOCALAPPDATA: Config.string("LOCALAPPDATA").pipe(Config.option),
+  USERPROFILE: Config.string("USERPROFILE").pipe(Config.option),
+  PROGRAMFILES: Config.string("PROGRAMFILES").pipe(Config.option),
 }).pipe(Config.map(compactEnv));
 
 const readBrowserLaunchEnv = BrowserLaunchEnvConfig.pipe(Effect.orElseSucceed(() => ({})));
@@ -169,6 +173,53 @@ const resolveAvailableCommand = Effect.fn("externalLauncher.resolveAvailableComm
   for (const command of commands) {
     if (yield* isCommandAvailable(command, { env })) {
       return Option.some(command);
+    }
+  }
+  return Option.none();
+});
+
+const ENV_PATH_TEMPLATE_PATTERN = /%([^%]+)%/g;
+
+// Windows environment names are case-insensitive.
+function lookupEnvValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const direct = env[name];
+  if (direct !== undefined && direct.trim().length > 0) return direct;
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === wanted && value !== undefined && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+/** `%LOCALAPPDATA%\…` → absolute path, or undefined when any variable is missing. */
+function expandUserInstallPath(template: string, env: NodeJS.ProcessEnv): string | undefined {
+  let missing = false;
+  const expanded = template.replace(ENV_PATH_TEMPLATE_PATTERN, (_match, name: string) => {
+    const value = lookupEnvValue(env, name);
+    if (value === undefined) {
+      missing = true;
+      return "";
+    }
+    return value;
+  });
+  return missing ? undefined : expanded;
+}
+
+const resolveEditorCommand = Effect.fn("externalLauncher.resolveEditorCommand")(function* (
+  editor: (typeof EDITORS)[number],
+  env: NodeJS.ProcessEnv,
+): Effect.fn.Return<Option.Option<string>, never, FileSystem.FileSystem | Path.Path> {
+  if (editor.commands) {
+    const fromPath = yield* resolveAvailableCommand(editor.commands, env);
+    if (Option.isSome(fromPath)) return fromPath;
+  }
+  for (const template of userInstallPathsForEditor(editor.id)) {
+    const candidate = expandUserInstallPath(template, env);
+    if (candidate === undefined) continue;
+    if (yield* isCommandAvailable(candidate, { env })) {
+      return Option.some(candidate);
     }
   }
   return Option.none();
@@ -435,7 +486,7 @@ const buildAvailableEditors = Effect.fn("externalLauncher.buildAvailableEditors"
       continue;
     }
 
-    const command = yield* resolveAvailableCommand(editor.commands, env);
+    const command = yield* resolveEditorCommand(editor, env);
     if (Option.isSome(command)) {
       available.push(editor.id);
     }
@@ -537,10 +588,11 @@ const resolveEditorLaunch = Effect.fn("resolveEditorLaunch")(function* (
     return yield* new ExternalLauncherUnknownEditorError({ editor: input.editor });
   }
 
-  if (editorDef.commands) {
+  const editorCommands = editorDef.commands;
+  if (editorCommands) {
     const command = Option.getOrElse(
-      yield* resolveAvailableCommand(editorDef.commands, env),
-      () => editorDef.commands[0],
+      yield* resolveEditorCommand(editorDef, env),
+      () => editorCommands[0],
     );
     return {
       editor: editorDef.id,

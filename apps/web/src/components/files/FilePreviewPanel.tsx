@@ -1176,6 +1176,7 @@ export default function FilePreviewPanel({
               openInCwd={absolutePath}
               compact
               enableShortcut={false}
+              allowTypora={isMarkdown}
             />
           ) : null}
           {canToggleRendered && renderedMode ? (

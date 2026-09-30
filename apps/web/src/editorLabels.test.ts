@@ -6,6 +6,7 @@ describe("editorLabelForPlatform", () => {
   it("uses the editor name from the shared editor definitions", () => {
     expect(editorLabelForPlatform("cursor", "MacIntel")).toBe("Cursor");
     expect(editorLabelForPlatform("vscode-insiders", "Win32")).toBe("VS Code Insiders");
+    expect(editorLabelForPlatform("typora", "Win32")).toBe("Typora");
   });
 
   it.each([
@@ -20,6 +21,7 @@ describe("editorLabelForPlatform", () => {
 describe("openInEditorMenuLabel", () => {
   it("names the preferred editor", () => {
     expect(openInEditorMenuLabel("zed")).toBe("Open in Zed");
+    expect(openInEditorMenuLabel("typora")).toBe("Open in Typora");
   });
 
   it("keeps the generic label for the default file handler and missing preferences", () => {

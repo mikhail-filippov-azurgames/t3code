@@ -10,6 +10,8 @@ type EditorDefinition = {
   readonly commands: readonly [string, ...string[]] | null;
   readonly baseArgs?: readonly string[];
   readonly launchStyle: EditorLaunchStyle;
+  /** User install paths with Windows environment variables. */
+  readonly userInstallPaths?: readonly string[];
   /**
    * URL scheme for editors that support VS Code's remote deep links
    * (`<scheme>://vscode-remote/ssh-remote+<host><path>`). Only set for VS Code
@@ -72,6 +74,18 @@ export const EDITORS = [
   { id: "rubymine", label: "RubyMine", commands: ["rubymine"], launchStyle: "line-column" },
   { id: "rustrover", label: "RustRover", commands: ["rustrover"], launchStyle: "line-column" },
   { id: "webstorm", label: "WebStorm", commands: ["webstorm"], launchStyle: "line-column" },
+  {
+    id: "typora",
+    label: "Typora",
+    commands: ["typora"],
+    launchStyle: "direct-path",
+    // Squirrel-style user install and a machine-wide one; neither is on PATH.
+    userInstallPaths: [
+      "%LOCALAPPDATA%\\Programs\\Typora\\Typora.exe",
+      "%USERPROFILE%\\AppData\\Local\\Programs\\Typora\\Typora.exe",
+      "%PROGRAMFILES%\\Typora\\Typora.exe",
+    ],
+  },
   { id: "file-manager", label: "File Manager", commands: null, launchStyle: "direct-path" },
 ] as const satisfies ReadonlyArray<EditorDefinition>;
 
@@ -93,6 +107,9 @@ export type LaunchEditorInput = typeof LaunchEditorInput.Type;
 
 const remoteSchemeOf = (editor: EditorDefinition): string | undefined => editor.remoteScheme;
 
+const userInstallPathsOf = (editor: EditorDefinition): readonly string[] =>
+  editor.userInstallPaths ?? [];
+
 /** Editors that can open a remote workspace via an SSH deep link. */
 export const REMOTE_CAPABLE_EDITOR_IDS: ReadonlyArray<EditorId> = EDITORS.flatMap((editor) =>
   remoteSchemeOf(editor) !== undefined ? [editor.id] : [],
@@ -101,6 +118,12 @@ export const REMOTE_CAPABLE_EDITOR_IDS: ReadonlyArray<EditorId> = EDITORS.flatMa
 export const remoteSchemeForEditor = (id: EditorId): string | undefined => {
   const editor = EDITORS.find((candidate) => candidate.id === id);
   return editor === undefined ? undefined : remoteSchemeOf(editor);
+};
+
+/** User install path templates, empty for PATH-only editors. */
+export const userInstallPathsForEditor = (id: EditorId): readonly string[] => {
+  const editor = EDITORS.find((candidate) => candidate.id === id);
+  return editor === undefined ? [] : userInstallPathsOf(editor);
 };
 
 /**

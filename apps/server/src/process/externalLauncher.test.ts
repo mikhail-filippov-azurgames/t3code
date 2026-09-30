@@ -1057,3 +1057,121 @@ it.effect("rejects unknown editors through the service API", () =>
     assert.equal(error.message, "Unknown editor: missing-editor");
   }).pipe(Effect.provide(testLayer({ platform: "linux", env: { PATH: "" } }))),
 );
+
+// Windows paths match the install template only on a Windows host.
+it.effect.skipIf(!windowsHost)(
+  "discovers Typora from the per-user install path when it is not on PATH",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-" });
+      const localAppData = path.join(binDir, "local-app-data");
+      const typoraDir = path.join(localAppData, "Programs", "Typora");
+      yield* fileSystem.makeDirectory(typoraDir, { recursive: true });
+      const typoraPath = path.join(typoraDir, "Typora.exe");
+      yield* fileSystem.writeFileString(typoraPath, "");
+
+      let spawned: ChildProcess.StandardCommand | undefined;
+      const editors = yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        const discovered = yield* launcher.resolveAvailableEditors();
+        yield* launcher.launchEditor({
+          editor: "typora",
+          cwd: "C:\\notes\\project\\readme.md",
+        });
+        return discovered;
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            platform: "win32",
+            env: {
+              PATH: "",
+              PATHEXT: ".COM;.EXE;.BAT;.CMD",
+              LOCALAPPDATA: localAppData,
+            },
+            onSpawn: (command) => {
+              spawned = command;
+            },
+          }),
+        ),
+      );
+
+      assert.equal(editors.includes("typora"), true);
+      assert.ok(spawned);
+      assert.equal(spawned.command, typoraPath);
+      assert.deepEqual(spawned.args, ["C:\\notes\\project\\readme.md"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("does not advertise Typora when PATH and user install paths have no match", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-" });
+    yield* fileSystem.writeFileString(path.join(binDir, "code.CMD"), "@echo off\r\n");
+
+    const withEmptyInstall = yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      return yield* launcher.resolveAvailableEditors();
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          platform: "win32",
+          env: {
+            PATH: binDir,
+            PATHEXT: ".COM;.EXE;.BAT;.CMD",
+            LOCALAPPDATA: path.join(binDir, "no-typora-here"),
+          },
+        }),
+      ),
+    );
+    assert.equal(withEmptyInstall.includes("typora"), false);
+    assert.equal(withEmptyInstall.includes("vscode"), true);
+
+    // Missing LOCALAPPDATA skips the install template.
+    const withoutLocalAppData = yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      return yield* launcher.resolveAvailableEditors();
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          platform: "win32",
+          env: { PATH: binDir, PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+        }),
+      ),
+    );
+    assert.equal(withoutLocalAppData.includes("typora"), false);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("launches Typora with the direct file path", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-editors-" });
+    yield* fileSystem.writeFileString(path.join(binDir, "typora.CMD"), "@echo off\r\n");
+
+    let spawned: ChildProcess.StandardCommand | undefined;
+    yield* Effect.gen(function* () {
+      const launcher = yield* ExternalLauncher.ExternalLauncher;
+      yield* launcher.launchEditor({
+        editor: "typora",
+        cwd: "C:\\notes\\project\\readme.md",
+      });
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          platform: "win32",
+          env: { PATH: binDir, PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+          onSpawn: (command) => {
+            spawned = command;
+          },
+        }),
+      ),
+    );
+
+    assert.ok(spawned);
+    assert.deepEqual(spawned.args, ["C:\\notes\\project\\readme.md"]);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

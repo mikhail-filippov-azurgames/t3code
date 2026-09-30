@@ -27,6 +27,7 @@ import {
   Icon,
   KiroIcon,
   TraeIcon,
+  TyporaIcon,
   VisualStudioCode,
   VisualStudioCodeInsiders,
   VSCodium,
@@ -163,6 +164,11 @@ export const resolveOpenInOptions = (
       kind: "brand",
     },
     {
+      Icon: TyporaIcon,
+      value: "typora",
+      kind: "brand",
+    },
+    {
       Icon: isMacPlatform(platform)
         ? FinderIcon
         : isWindowsPlatform(platform)
@@ -189,6 +195,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   openInCwd,
   compact = false,
   enableShortcut = true,
+  allowTypora = false,
 }: {
   environmentId: EnvironmentId;
   keybindings: ResolvedKeybindingsConfig;
@@ -196,6 +203,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   openInCwd: string | null;
   compact?: boolean;
   enableShortcut?: boolean;
+  allowTypora?: boolean;
 }) {
   const openInEditorMutation = useAtomCommand(shellEnvironment.openInEditor, "open in editor");
   const remote = useRemoteOpenState(environmentId);
@@ -205,10 +213,15 @@ export const OpenInPicker = memo(function OpenInPicker({
   // Remote mode ignores the server's PATH probe: what matters is what runs on
   // the viewing machine, which only the desktop app can probe.
   const effectiveEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
-  const [preferredEditor, setPreferredEditor] = usePreferredEditor(effectiveEditors);
+  const contextEditors = useMemo(
+    () =>
+      allowTypora ? effectiveEditors : effectiveEditors.filter((editor) => editor !== "typora"),
+    [allowTypora, effectiveEditors],
+  );
+  const [preferredEditor, setPreferredEditor] = usePreferredEditor(contextEditors, allowTypora);
   const options = useMemo(
-    () => resolveOpenInOptions(navigator.platform, effectiveEditors),
-    [effectiveEditors],
+    () => resolveOpenInOptions(navigator.platform, contextEditors),
+    [contextEditors],
   );
   const primaryOption = options.find(({ value }) => value === preferredEditor) ?? null;
 

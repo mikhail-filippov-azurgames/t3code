@@ -1,6 +1,7 @@
 import { isAbsolutePath } from "~/terminal-links";
 
-export const isMarkdownPreviewFile = (path: string): boolean => /\.(?:md|mdx)$/i.test(path);
+export const isMarkdownPreviewFile = (path: string): boolean =>
+  /\.(?:md|mdx|markdown)$/i.test(path);
 
 export function shouldShowFileExplorer(input: {
   readonly relativePath: string | null;

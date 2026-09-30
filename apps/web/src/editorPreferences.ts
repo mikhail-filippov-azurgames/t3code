@@ -38,13 +38,23 @@ export class PreferredEditorUnavailableError extends Schema.TaggedError<Preferre
   }
 }
 
-export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
+export function resolvePreferredEditor(
+  availableEditors: ReadonlyArray<EditorId>,
+  lastEditor: EditorId | null,
+  allowTypora = false,
+): EditorId | null {
+  const eligible = new Set(availableEditors.filter((editor) => allowTypora || editor !== "typora"));
+  if (lastEditor && eligible.has(lastEditor)) return lastEditor;
+  return EDITORS.find((editor) => eligible.has(editor.id))?.id ?? null;
+}
+
+export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>, allowTypora = false) {
   const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, EditorId);
 
-  const effectiveEditor = useMemo(() => {
-    if (lastEditor && availableEditors.includes(lastEditor)) return lastEditor;
-    return EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null;
-  }, [lastEditor, availableEditors]);
+  const effectiveEditor = useMemo(
+    () => resolvePreferredEditor(availableEditors, lastEditor, allowTypora),
+    [lastEditor, availableEditors, allowTypora],
+  );
 
   return [effectiveEditor, setLastEditor] as const;
 }
@@ -52,10 +62,8 @@ export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
 export function resolveAndPersistPreferredEditor(
   availableEditors: readonly EditorId[],
 ): EditorId | null {
-  const availableEditorIds = new Set(availableEditors);
   const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
-  if (stored && availableEditorIds.has(stored)) return stored;
-  const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
+  const editor = resolvePreferredEditor(availableEditors, stored);
   if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
   return editor ?? null;
 }
