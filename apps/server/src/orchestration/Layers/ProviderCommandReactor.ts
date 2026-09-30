@@ -69,6 +69,12 @@ import {
 import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { handledDelegationWakeMessageIds } from "../delegatedTaskWake.ts";
 import {
+  PUBLISH_WAKE_DELIVERED_ACTIVITY,
+  REVIEW_PUBLISHED_ACTIVITY,
+  publishWakeDeliveredMarkerId,
+  publishWakeReviewIdFromMessageId,
+} from "../coordinatorArchitect.ts";
+import {
   resolveSourceControlWriterModelSelection,
   ServerSettingsService,
 } from "../../serverSettings.ts";
@@ -457,6 +463,65 @@ const make = Effect.gen(function* () {
         kind: DELEGATION_WAKE_DELIVERED_ACTIVITY,
         summary: "Delegated child results delivered",
         payload: { wakeMessageIds: input.wakeMessageIds },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+  // The architecture publish wake proves the coordinator wake reached the
+  // provider only after `sendTurn` resolves. Appending it here (never at the
+  // dispatch site) keeps a failed send from being recorded as a delivered
+  // wake; the payload is copied from the published content already on the
+  // coordinator thread.
+  const appendArchitecturePublishWakeMarker = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly createdAt: string;
+  }) {
+    const reviewId = publishWakeReviewIdFromMessageId(String(input.messageId));
+    if (reviewId === null) return;
+    const markerId = publishWakeDeliveredMarkerId(String(input.threadId), reviewId);
+    const detail = yield* projectionSnapshotQuery
+      .getThreadDetailById(input.threadId, {
+        activityKinds: [REVIEW_PUBLISHED_ACTIVITY, PUBLISH_WAKE_DELIVERED_ACTIVITY],
+        activityHistory: "complete",
+      })
+      .pipe(
+        Effect.retry({ times: 2, schedule: Schedule.exponential("50 millis") }),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+          return Effect.logWarning("publish wake delivery marker context could not be loaded", {
+            threadId: input.threadId,
+            messageId: input.messageId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(Option.none<OrchestrationThread>()));
+        }),
+      );
+    if (Option.isNone(detail)) return;
+    if (detail.value.activities.some((activity) => activity.id === markerId)) return;
+    const published = detail.value.activities.find(
+      (activity) =>
+        activity.kind === REVIEW_PUBLISHED_ACTIVITY &&
+        Predicate.isObject(activity.payload) &&
+        activity.payload.reviewId === reviewId,
+    );
+    const publishedPayload = Predicate.isObject(published?.payload) ? published.payload : undefined;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(`${markerId}:command`),
+      threadId: input.threadId,
+      activity: {
+        id: EventId.make(markerId),
+        tone: "info",
+        kind: PUBLISH_WAKE_DELIVERED_ACTIVITY,
+        summary: "Coordinator publish wake delivered",
+        payload: {
+          reviewId,
+          disposition: publishedPayload?.disposition ?? null,
+          summary: publishedPayload?.summary ?? null,
+          refs: publishedPayload?.refs ?? null,
+        },
         turnId: null,
         createdAt: input.createdAt,
       },
@@ -2275,6 +2340,21 @@ const make = Effect.gen(function* () {
             Effect.catchCause((cause) =>
               Effect.logWarning("delegation wake delivery marker could not be appended", {
                 threadId: event.payload.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+        ),
+        Effect.tap(() =>
+          appendArchitecturePublishWakeMarker({
+            threadId: event.payload.threadId,
+            messageId: event.payload.messageId,
+            createdAt: event.payload.createdAt,
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("publish wake delivery marker could not be appended", {
+                threadId: event.payload.threadId,
+                messageId: event.payload.messageId,
                 cause: Cause.pretty(cause),
               }),
             ),

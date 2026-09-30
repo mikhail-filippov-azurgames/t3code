@@ -6071,4 +6071,138 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.sendTurn.mock.calls[0]?.[0].input).toBe("Proceed despite the read failure.");
   });
+
+  it("records the publish-wake marker only after a confirmed provider send", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const reviewId = "architecture-review:pub-marker";
+    const refs = { oclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174041"] };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-review-published"),
+        threadId,
+        activity: {
+          id: EventId.make(`arch:review-published:${reviewId}`),
+          tone: "info",
+          kind: "architecture.review-published",
+          summary: "Architecture review published",
+          payload: {
+            reviewId,
+            disposition: "needs-human-decision",
+            summary: "Confirm the rollout owner.",
+            refs,
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`arch:publish-wake-turn:${reviewId}`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`arch:publish-wake:${reviewId}`),
+          role: "user",
+          text: "Architecture review published.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    const markerId = `arch:publish-wake-delivered:${threadId}:${reviewId}`;
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.activities.some((activity) => activity.id === markerId) ?? false;
+    });
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const marker = thread?.activities.find(
+      (activity) => activity.kind === "architecture.publish-wake-delivered",
+    );
+    expect(marker?.id).toBe(markerId);
+    expect(marker?.payload).toEqual({
+      reviewId,
+      disposition: "needs-human-decision",
+      summary: "Confirm the rollout owner.",
+      refs,
+    });
+  });
+
+  it("does not leave a publish-wake marker when the provider send fails", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const reviewId = "architecture-review:pub-fail";
+
+    harness.sendTurn.mockImplementation((() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "injected provider send failure",
+        }),
+      )) as never);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-review-published-fail"),
+        threadId,
+        activity: {
+          id: EventId.make(`arch:review-published:${reviewId}`),
+          tone: "info",
+          kind: "architecture.review-published",
+          summary: "Architecture review published",
+          payload: {
+            reviewId,
+            disposition: "recommendation",
+            summary: "Ship it.",
+            refs: { oclRefs: [] },
+          },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`arch:publish-wake-turn:${reviewId}`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`arch:publish-wake:${reviewId}`),
+          role: "user",
+          text: "Architecture review published.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.some(
+        (activity) => activity.kind === "architecture.publish-wake-delivered",
+      ),
+    ).toBe(false);
+  });
 });

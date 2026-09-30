@@ -1725,17 +1725,10 @@ describe("phase 1 coordinator/architect service", () => {
         oclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174011"],
         architectOclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174012"],
       });
-      const wakeMarker = coordActivities.find(
-        (activity) => activity.kind === "architecture.publish-wake-delivered",
-      );
-      assert.isDefined(wakeMarker);
-      assert.strictEqual(
-        wakeMarker?.id,
-        `arch:publish-wake-delivered:${coordinatorId}:${requested.reviewId}`,
-      );
-      assert.deepEqual(
-        (wakeMarker?.payload as { readonly refs?: unknown }).refs,
-        (publishedActivity?.payload as { readonly refs?: unknown }).refs,
+      // The delivery marker is written by the provider reactor only after a
+      // confirmed send, never by the service at dispatch time.
+      assert.isFalse(
+        coordActivities.some((activity) => activity.kind === "architecture.publish-wake-delivered"),
       );
 
       const replay = yield* harness.service.publishToCoordinator(archScope, {
@@ -2052,16 +2045,14 @@ describe("phase 1 coordinator/architect service", () => {
         );
         assert.include(wakeText, `[${disposition}]`);
         assert.include(wakeText, `Summary ${disposition}`);
-        const marker = harness.threads
-          .get(coordinatorId)
-          ?.activities.find(
-            (activity) =>
-              activity.kind === "architecture.publish-wake-delivered" &&
-              (activity.payload as { readonly reviewId?: unknown }).reviewId === requested.reviewId,
-          );
-        assert.strictEqual(
-          (marker?.payload as { readonly disposition?: unknown } | undefined)?.disposition,
-          disposition,
+        // The service does not write the delivery marker; only the provider
+        // reactor does, after a confirmed provider send.
+        assert.isFalse(
+          harness.threads
+            .get(coordinatorId)
+            ?.activities.some(
+              (activity) => activity.kind === "architecture.publish-wake-delivered",
+            ) ?? false,
         );
       }
 
@@ -2089,7 +2080,7 @@ describe("phase 1 coordinator/architect service", () => {
     }),
   );
 
-  it.effect("replays a publish wake after a marker crash without a second provider turn", () =>
+  it.effect("replays a missing publish wake without a second provider turn or a false marker", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
       const coordinatorScope = scopeFor(coordinatorId);
@@ -2114,51 +2105,44 @@ describe("phase 1 coordinator/architect service", () => {
         oclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174042"],
         idempotencyKey: "answer-publish-crash",
       });
-      harness.setDispatchFailure((command) =>
-        String(command["commandId"] ?? "").startsWith("arch:publish-wake-delivered:"),
-      );
-      const interrupted = yield* runFailure(
-        harness.service.publishToCoordinator(architectScope, {
-          reviewId: requested.reviewId,
-          idempotencyKey: "publish-crash",
-        }),
-      );
-      assert.strictEqual(interrupted, "orchestration_error");
+      const published = yield* harness.service.publishToCoordinator(architectScope, {
+        reviewId: requested.reviewId,
+        idempotencyKey: "publish-crash",
+      });
+      assert.strictEqual(published.status, "published");
       const coordinatorTurnCount = () =>
         harness.dispatched.filter(
           (command) =>
             command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
         ).length;
       assert.strictEqual(coordinatorTurnCount(), 1);
+      // The service never marks delivery at dispatch time, so the crash window
+      // between an accepted start and the reactor's post-send marker is not a
+      // false success.
       assert.isFalse(
         harness.threads
           .get(coordinatorId)
-          ?.activities.some((activity) => activity.kind === "architecture.publish-wake-delivered"),
+          ?.activities.some(
+            (activity) => activity.kind === "architecture.publish-wake-delivered",
+          ) ?? false,
       );
 
-      harness.setDispatchFailure(null);
       const outcomes = yield* harness.service.reconcileAfterRestart();
       assert.isTrue(
         outcomes.some(
           (outcome) => outcome.outcome === `publish-wake-replayed:${requested.reviewId}`,
         ),
       );
+      // Replay reuses the deterministic turn command id (receipt dedup), so
+      // there is still exactly one coordinator turn and still no marker.
       assert.strictEqual(coordinatorTurnCount(), 1);
-      const marker = harness.threads
-        .get(coordinatorId)
-        ?.activities.find((activity) => activity.kind === "architecture.publish-wake-delivered");
-      assert.strictEqual(
-        marker?.id,
-        `arch:publish-wake-delivered:${coordinatorId}:${requested.reviewId}`,
+      assert.isFalse(
+        harness.threads
+          .get(coordinatorId)
+          ?.activities.some(
+            (activity) => activity.kind === "architecture.publish-wake-delivered",
+          ) ?? false,
       );
-      assert.strictEqual(
-        (marker?.payload as { readonly disposition?: unknown } | undefined)?.disposition,
-        "needs-human-decision",
-      );
-      assert.deepEqual((marker?.payload as { readonly refs?: unknown } | undefined)?.refs, {
-        oclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174041"],
-        architectOclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174042"],
-      });
     }),
   );
 

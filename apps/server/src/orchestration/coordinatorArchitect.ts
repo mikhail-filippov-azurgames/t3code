@@ -67,7 +67,14 @@ export const reviewWakeTurnCommandId = (reviewId: string): string =>
 export const reviewWakeDeliveredMarkerId = (architectThreadId: string, reviewId: string): string =>
   `arch:review-wake-delivered:${architectThreadId}:${reviewId}`;
 
-export const publishWakeMessageId = (reviewId: string): string => `arch:publish-wake:${reviewId}`;
+export const PUBLISH_WAKE_MESSAGE_PREFIX = "arch:publish-wake:" as const;
+export const publishWakeMessageId = (reviewId: string): string =>
+  `${PUBLISH_WAKE_MESSAGE_PREFIX}${reviewId}`;
+/** The review this coordinator publish-wake turn belongs to, or null for any other message. */
+export const publishWakeReviewIdFromMessageId = (messageId: string): string | null =>
+  messageId.startsWith(PUBLISH_WAKE_MESSAGE_PREFIX)
+    ? messageId.slice(PUBLISH_WAKE_MESSAGE_PREFIX.length) || null
+    : null;
 export const publishWakeTurnCommandId = (reviewId: string): string =>
   `arch:publish-wake-turn:${reviewId}`;
 export const publishWakeDeliveredMarkerId = (

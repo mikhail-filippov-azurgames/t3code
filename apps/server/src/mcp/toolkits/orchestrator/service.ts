@@ -4,7 +4,6 @@ import {
   ARCHITECT_BOUND_ACTIVITY,
   ARCHITECT_UNBOUND_ACTIVITY,
   COORDINATOR_ARCHITECT_ACTIVITY_KINDS,
-  PUBLISH_WAKE_DELIVERED_ACTIVITY,
   REVIEW_ANSWERED_ACTIVITY,
   REVIEW_CANCELLED_ACTIVITY,
   REVIEW_PUBLISHED_ACTIVITY,
@@ -16,7 +15,6 @@ import {
   hasReviewWakeDelivered,
   needsPublishWakeReplay,
   needsReviewWakeReplay,
-  publishWakeDeliveredMarkerId,
   publishWakeMessageId,
   publishWakeTurnCommandId,
   reviewRefCommandId,
@@ -2640,6 +2638,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       }
       const summary = review.answerSummary ?? "";
       const refs = review.refs;
+      // The delivered marker is written by the provider reactor only after
+      // `sendTurn` is confirmed, so a failed send cannot leave a marker here.
       yield* dispatchWakeTurn({
         threadId: binding.coordinatorThreadId,
         turnCommandId: publishWakeTurnCommandId(review.reviewId),
@@ -2648,15 +2648,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         modelSelection: shell.modelSelection,
         runtimeMode: shell.runtimeMode,
         interactionMode: shell.interactionMode,
-        createdAt: at,
-      });
-      yield* appendPhase1Activity({
-        threadId: binding.coordinatorThreadId,
-        commandId: `arch:publish-wake-delivered:${review.reviewId}`,
-        activityId: publishWakeDeliveredMarkerId(binding.coordinatorThreadId, review.reviewId),
-        kind: PUBLISH_WAKE_DELIVERED_ACTIVITY,
-        summary: "Coordinator publish wake delivered",
-        payload: { reviewId: review.reviewId, disposition, summary, refs },
         createdAt: at,
       });
     });
