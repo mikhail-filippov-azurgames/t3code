@@ -231,7 +231,7 @@ describe("routine completion grouping", () => {
     expect(notices).toHaveLength(1);
     expect(notices[0]?.key).toBe(threadCompletedGroupKey(parentEnvironmentId, parentThreadId));
     expect(notices[0]?.count).toBe(3);
-    expect(notices[0]?.title).toBe("3 child threads completed");
+    expect(notices[0]?.title).toBe("3 delegated results");
     expect(notices[0]?.body).toBe("Child three");
     expect(notices[0]?.at).toBe(third);
   });

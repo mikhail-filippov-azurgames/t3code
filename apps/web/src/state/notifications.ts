@@ -323,7 +323,7 @@ export function threadCompletedGroupKey(
 }
 
 export function formatThreadCompletedGroupTitle(count: number): string {
-  return count === 1 ? "1 child thread completed" : `${count} child threads completed`;
+  return count === 1 ? "1 delegated result" : `${count} delegated results`;
 }
 
 /**

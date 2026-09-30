@@ -49,6 +49,13 @@ export function buildThreadRouteParams(ref: ScopedThreadRef): {
   };
 }
 
+export function buildThreadRouteLocation(ref: ScopedThreadRef) {
+  return {
+    to: "/$environmentId/$threadId" as const,
+    params: buildThreadRouteParams(ref),
+  };
+}
+
 export function buildDraftThreadRouteParams(draftId: DraftId): {
   draftId: DraftId;
 } {

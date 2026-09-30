@@ -21,6 +21,8 @@ import {
   setNotificationBadge,
   unlockNotificationAudio,
 } from "../threadNotifications";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { buildThreadRouteLocation } from "../threadRoutes";
 import { describeCalendarRunNotice } from "./calendar/calendar.logic";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
 import { toastManager } from "./ui/toast";
@@ -336,10 +338,7 @@ function EnvironmentNotifications({
         notification.addEventListener("click", () => {
           notification.close();
           window.focus();
-          void navigate({
-            to: "/$environmentId/$threadId",
-            params: { environmentId, threadId: thread.id },
-          });
+          void navigate(buildThreadRouteLocation(scopeThreadRef(environmentId, thread.id)));
         });
       } catch {
         // Some browsers expose Notification but reject desktop presentation.

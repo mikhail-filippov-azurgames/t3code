@@ -195,7 +195,7 @@ it("collapses three delegated child completions into one summary row with the la
   const notices = useNotificationsStore.getState().notices;
   expect(notices).toHaveLength(1);
   expect(notices[0]?.count).toBe(3);
-  expect(notices[0]?.title).toBe("3 child threads completed");
+  expect(notices[0]?.title).toBe("3 delegated results");
   expect(notices[0]?.body).toBe("Child three");
   expect(notices[0]?.key).toBe("thread-completed-group:env-1:parent-1");
   expect(selectUnreadNoticeCount(useNotificationsStore.getState())).toBe(1);

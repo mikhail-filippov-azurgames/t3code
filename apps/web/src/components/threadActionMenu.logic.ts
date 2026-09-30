@@ -1,4 +1,10 @@
-import type { ContextMenuItem, EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type {
+  ArchitectTaskEffort,
+  ContextMenuItem,
+  EnvironmentId,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ThreadChildrenAction } from "@t3tools/contracts/settings";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
@@ -30,6 +36,39 @@ export type ThreadActionMenuId =
   | "delete-old-children"
   | "archive"
   | "delete";
+
+export type CoordinatorArchitectSidebarAction = "replace" | "detach";
+
+export function buildCoordinatorArchitectSidebarPrompt(input: {
+  readonly action: CoordinatorArchitectSidebarAction;
+  readonly architectThreadId: ThreadId;
+  readonly taskEffort: ArchitectTaskEffort;
+  readonly questionOrReason: string;
+  readonly preferredTarget?: {
+    readonly instanceId: string;
+    readonly driverKind: string;
+    readonly model: string;
+  };
+}): string {
+  switch (input.action) {
+    case "replace":
+      return [
+        "Replace the bound Architect using architect_replace after checking the accepted architecture routing policy and saving the selection rationale to OpenContext.",
+        `Current Architect thread: ${input.architectThreadId}`,
+        `Task effort: ${input.taskEffort}`,
+        `Human preferred target: ${input.preferredTarget?.instanceId ?? "unspecified"} (${input.preferredTarget?.driverKind ?? "unknown"}) / ${input.preferredTarget?.model ?? "unspecified"}`,
+        `Reason: ${input.questionOrReason}`,
+        "Verify that the preference is eligible for role=architecture and the live provider's read-only permission envelope. If it is not eligible, explain and use the policy route only after recording the decision in OpenContext. Replacement soft-deletes the prior binding and revokes its credential after the durable transition.",
+        "Accepted policy: oc://doc/3900df61-9dd5-4621-9278-34ac20d60648 (its current accepted revision is authoritative; read it from OpenContext)",
+      ].join("\n\n");
+    case "detach":
+      return [
+        "Detach the bound Architect using architect_detach.",
+        `Reason: ${input.questionOrReason}`,
+        "This soft-deletes and retains the binding, then revokes the Architect credential after the durable transition. Do not purge or recreate it unless I request a new binding.",
+      ].join("\n\n");
+  }
+}
 
 export interface ThreadActionMenuState {
   readonly branch: string | null;

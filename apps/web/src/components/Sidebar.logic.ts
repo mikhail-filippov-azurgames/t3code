@@ -5,7 +5,7 @@ import {
   isAtomCommandInterrupted,
   type AtomCommandResult,
 } from "@t3tools/client-runtime/state/runtime";
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { BoardExecutorRole, ContextMenuItem } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/unstable/reactivity";
 import {
@@ -19,6 +19,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-settled";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { ArchitectureReviewRecord } from "@t3tools/contracts";
 import {
   getThreadSortTimestamp,
   resolveSettledThreadTimestamp,
@@ -30,6 +31,22 @@ import {
 import type { SidebarThreadSummary, Thread } from "../types";
 import { cn } from "../lib/utils";
 import { isLatestTurnSettled } from "../session-logic";
+import { BOARD_EXECUTOR_ROLES, boardExecutorRoleLabel } from "./board/board.logic";
+
+export function resolveCoordinatorArchitectReviewAttention(
+  reviews: ReadonlyArray<Pick<ArchitectureReviewRecord, "status">>,
+): ReadonlyArray<{ readonly status: "open" | "answered" | "published"; readonly count: number }> {
+  const counts = new Map<"open" | "answered" | "published", number>();
+  for (const review of reviews) {
+    if (review.status === "open" || review.status === "answered" || review.status === "published") {
+      counts.set(review.status, (counts.get(review.status) ?? 0) + 1);
+    }
+  }
+  return (["open", "answered", "published"] as const).flatMap((status) => {
+    const count = counts.get(status) ?? 0;
+    return count > 0 ? [{ status, count }] : [];
+  });
+}
 
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
@@ -1296,6 +1313,85 @@ export function sidebarDelegationParentKey(thread: {
   return scopedThreadKey(
     scopeThreadRef(parent.parentEnvironmentId as EnvironmentId, parent.parentThreadId),
   );
+}
+
+/**
+ * Forest parent key for a row: delegation lineage first, then the
+ * binding-derived Architect nesting. A bound Architect has no delegation
+ * lineage by contract, so its parent comes from the coordinator↔architect
+ * binding index (`architectParentKeys`: architect key → coordinator key).
+ * A real delegated child keeps its lineage parent even if a binding entry
+ * ever names it, so existing delegation hierarchy is untouched. Absent
+ * both = top-level row.
+ */
+export function sidebarForestParentKey(
+  thread: {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly delegationParent?:
+      | { readonly parentThreadId: ThreadId; readonly parentEnvironmentId: string }
+      | null
+      | undefined;
+  },
+  architectParentKeys: ReadonlyMap<string, string>,
+): string | null {
+  return (
+    sidebarDelegationParentKey(thread) ??
+    architectParentKeys.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) ??
+    null
+  );
+}
+
+/** Delegated child model: board role label when the lineage role is known, else generic. */
+export type SidebarDelegationMarker =
+  | {
+      readonly kind: "role";
+      readonly role: BoardExecutorRole;
+      readonly label: string;
+    }
+  | {
+      readonly kind: "generic";
+      readonly label: string;
+    };
+
+export function resolveSidebarDelegationMarker(
+  thread: {
+    readonly delegationParent?: { readonly role: string } | null | undefined;
+  },
+  parentTitle: string | null,
+): SidebarDelegationMarker | null {
+  const parent = thread.delegationParent;
+  if (parent == null) return null;
+  const source = parentTitle !== null ? `Delegated from ${parentTitle}` : "Delegated subtask";
+  const role = BOARD_EXECUTOR_ROLES.find((candidate) => candidate === parent.role);
+  if (role === undefined) return { kind: "generic", label: source };
+  return { kind: "role", role, label: `${boardExecutorRoleLabel(role)} · ${source}` };
+}
+
+/** Bottom meta-row role badge: Coordinator mark or board role glyph next to the provider icon. */
+export type SidebarRoleBadge =
+  | {
+      readonly kind: "orchestrator";
+      readonly label: string;
+    }
+  | {
+      readonly kind: "role";
+      readonly role: BoardExecutorRole;
+      readonly label: string;
+    };
+
+export function resolveSidebarRoleBadge(
+  thread: {
+    readonly delegationParent?: { readonly role: string } | null | undefined;
+  },
+  isOrchestrator: boolean,
+): SidebarRoleBadge | null {
+  if (isOrchestrator) return { kind: "orchestrator", label: "Coordinator" };
+  const role = BOARD_EXECUTOR_ROLES.find(
+    (candidate) => candidate === thread.delegationParent?.role,
+  );
+  if (role === undefined) return null;
+  return { kind: "role", role, label: boardExecutorRoleLabel(role) };
 }
 
 /**

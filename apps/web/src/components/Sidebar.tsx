@@ -1,7 +1,12 @@
 import { requestCustomSnooze } from "./CustomSnoozeDialog";
-import { readSkipOrchestratorUnmarkConfirmation } from "./board/boardPreferences";
-import { boardEnvironment, useBoardOrchestratorThreadKeys } from "./board/useBoardBackend";
-import { OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "./board/boardRoleIcons";
+import {
+  buildBoardThreadContextMenuItems,
+  isBoardThreadActionId,
+  resolveBoardThreadMenuInput,
+} from "./board/boardThreadActions.logic";
+import { useBoardThreadActions } from "./board/useBoardThreadActions";
+import { useBoardOrchestratorThreadKeys } from "./board/useBoardBackend";
+import { BoardRoleIcon, OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "./board/boardRoleIcons";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/shared/threadPullRequests";
 import { useAtomValue } from "@effect/atom-react";
@@ -78,7 +83,6 @@ import {
   type ReactNode,
 } from "react";
 import { useParams, useRouter } from "@tanstack/react-router";
-import { AsyncResult } from "effect/unstable/reactivity";
 
 import { useRightPanelStore } from "../rightPanelStore";
 import {
@@ -141,6 +145,7 @@ import { environmentServerConfigsAtom, primaryServerKeybindingsAtom } from "../s
 import { vcsEnvironment } from "../state/vcs";
 import { threadEnvironment } from "../state/threads";
 import { useEnvironmentQuery } from "../state/query";
+import { useArchitectParentKeys } from "../state/coordinatorArchitect";
 import { useAtomCommand } from "../state/use-atom-command";
 import {
   buildThreadRouteParams,
@@ -186,6 +191,8 @@ import {
   planSidebarThreadDrop,
   reduceSidebarProjectScopeMenuState,
   resolveAdjacentThreadId,
+  resolveSidebarDelegationMarker,
+  resolveSidebarRoleBadge,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
   type DelegatedCascadeDescendant,
@@ -199,6 +206,7 @@ import {
   filterCollapsedSidebarForest,
   orderSidebarSectionForest,
   sidebarDelegationParentKey,
+  sidebarForestParentKey,
   sidebarListItemId,
   sidebarMarkerId,
   sortLogicalProjectsForSidebar,
@@ -238,6 +246,7 @@ import {
   type SnoozePreset,
 } from "./Sidebar.snooze";
 import { ProjectFavicon, type ProjectFaviconProject } from "./ProjectFavicon";
+import { CoordinatorArchitectSidebarPin } from "./CoordinatorArchitectSidebarPin";
 import { makeWorkspaceFileDropHandlers } from "./chat/workspaceFileDrop";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
@@ -1621,46 +1630,49 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       />
     )
   ) : null;
-  // Delegated child marker: muted, no row affordance beyond the tooltip.
-  // Provider-internal subagents never produce shell lineage, so they stay
-  // unmarked. A missing parent title falls back to a generic label.
-  const delegationLabel =
-    thread.delegationParent == null
-      ? null
-      : props.delegationParentTitle !== null
-        ? `Delegated from ${props.delegationParentTitle}`
-        : "Delegated subtask";
+  // Delegated child marker: always the generic arrow; the tooltip keeps
+  // the board role label when the lineage role is known. Provider-internal
+  // subagents never produce shell lineage, so they stay unmarked.
+  const delegationMarkerModel = resolveSidebarDelegationMarker(thread, props.delegationParentTitle);
   const delegationMarker =
-    delegationLabel !== null ? (
+    delegationMarkerModel !== null ? (
       <Tooltip>
         <TooltipTrigger
           render={
             <span
-              aria-label={delegationLabel}
+              aria-label={delegationMarkerModel.label}
               className="inline-flex shrink-0 items-center text-muted-foreground/65"
             />
           }
         >
           <CornerDownRightIcon aria-hidden className="size-3 shrink-0" />
         </TooltipTrigger>
-        <TooltipPopup>{delegationLabel}</TooltipPopup>
+        <TooltipPopup>{delegationMarkerModel.label}</TooltipPopup>
       </Tooltip>
     ) : null;
-  const orchestratorMarker = props.isOrchestrator ? (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <span
-            aria-label="Orchestrator"
-            className={`inline-flex shrink-0 items-center ${ORCHESTRATOR_ICON_CLASS}`}
-          />
-        }
-      >
-        <OrchestratorIcon aria-hidden className="size-3 shrink-0" />
-      </TooltipTrigger>
-      <TooltipPopup>Orchestrator</TooltipPopup>
-    </Tooltip>
-  ) : null;
+  // Bottom meta-row role badge: board glyph next to the provider icon, same
+  // mapping as the task tracker; orchestrator rows show the orchestrator mark.
+  const roleBadgeModel = resolveSidebarRoleBadge(thread, props.isOrchestrator);
+  const roleBadge =
+    roleBadgeModel !== null ? (
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <span
+              aria-label={roleBadgeModel.label}
+              className={cn("inline-flex shrink-0 items-center", ORCHESTRATOR_ICON_CLASS)}
+            />
+          }
+        >
+          {roleBadgeModel.kind === "orchestrator" ? (
+            <OrchestratorIcon aria-hidden className="size-3.5 shrink-0" />
+          ) : (
+            <BoardRoleIcon role={roleBadgeModel.role} className="size-3.5 shrink-0" />
+          )}
+        </TooltipTrigger>
+        <TooltipPopup>{roleBadgeModel.label}</TooltipPopup>
+      </Tooltip>
+    ) : null;
   // Parent wake-up marker: direct delegated children finished and not opened
   // yet. The count + corner glyph keep it distinct from the parent's own Done
   // pill; a running child never contributes. No animation, no live region.
@@ -1809,7 +1821,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
             {title}
             {pinIndicator}
             {delegationMarker}
-            {orchestratorMarker}
             {delegatedChildrenReturnedMarker}
             {delegatedChildrenWorkingMarker}
             {forestCollapsedCount}
@@ -1974,7 +1985,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
               )}
               {pinIndicator}
               {delegationMarker}
-              {orchestratorMarker}
               {forestCollapsedCount}
               {delegatedChildrenReturnedMarker}
               {delegatedChildrenWorkingMarker}
@@ -2144,9 +2154,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                   <span className="text-diff-deletion-foreground">−{diff.deletions}</span>
                 </span>
               ) : null}
+              {roleBadge}
               <span
                 aria-hidden
-                className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
+                className={cn(
+                  "pointer-events-none inline-flex shrink-0 items-center gap-1",
+                  roleBadge === null && "ml-auto",
+                )}
               >
                 {isRemote ? (
                   <span className="inline-flex shrink-0 items-center text-sidebar-muted-foreground/70">
@@ -2424,15 +2438,7 @@ export default function Sidebar() {
   const { environments } = useEnvironments();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const orchestratorThreadKeys = useBoardOrchestratorThreadKeys();
-  const addOrchestrator = useAtomCommand(boardEnvironment.orchestratorAdd, {
-    reportFailure: false,
-  });
-  const removeOrchestrator = useAtomCommand(boardEnvironment.orchestratorRemove, {
-    reportFailure: false,
-  });
-  const resendBrief = useAtomCommand(boardEnvironment.resendBrief, {
-    reportFailure: false,
-  });
+  const runBoardThreadAction = useBoardThreadActions();
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
   const setSelectionAnchor = useThreadSelectionStore((s) => s.setAnchor);
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
@@ -2982,12 +2988,14 @@ export default function Sidebar() {
   // Section-local delegation forests: children attach under their parent
   // only inside the same section; cross-section children stay detached
   // top-level rows with their marker. Collapse is session-only UI state.
+  // Binding-derived Architect rows nest through the same forest parent key.
+  const architectParentKeys = useArchitectParentKeys();
   const sectionForests = useMemo(() => {
     const build = (list: readonly EnvironmentThreadShell[]) =>
       orderSidebarSectionForest({
         threads: list,
         getKey: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
-        getParentKey: (thread) => sidebarDelegationParentKey(thread),
+        getParentKey: (thread) => sidebarForestParentKey(thread, architectParentKeys),
       });
     const pinned = build(pinnedThreads);
     const active = build(activeThreads);
@@ -3000,7 +3008,13 @@ export default function Sidebar() {
       }
     }
     return { pinned, active, snoozed, settled, parentByKey };
-  }, [activeThreads, pinnedThreads, renderedSettledThreads, visibleSnoozedThreads]);
+  }, [
+    activeThreads,
+    architectParentKeys,
+    pinnedThreads,
+    renderedSettledThreads,
+    visibleSnoozedThreads,
+  ]);
   // Cascade helpers read the forests through this ref for the same
   // row-memoization reason as threadByKeyRef below.
   const sectionForestsRef = useRef(sectionForests);
@@ -4611,35 +4625,22 @@ export default function Sidebar() {
         const isPinned = thread.pinnedAt != null;
         // Presets resolve at menu-open time (same as the popover).
         const snoozePresets = resolveSnoozePresets(new Date(), timestampFormat);
-        // The board lives on the primary environment; only its chats can be
-        // orchestrators. Child threads never can (design §3.1).
-        const boardEligible = thread.environmentId === primaryEnvironmentId;
+        // The board lives on the primary environment; only its root chats can
+        // be Coordinators. Child threads never can (design §3.1).
         const isOrchestrator = orchestratorThreadKeys.has(thread.id as string);
-        // Non-destructive board actions lead the menu; the destructive unmark
-        // stays with Archive/Delete at the bottom.
-        const boardTopItems = boardEligible
-          ? [
-              ...(thread.delegationParent == null && !isOrchestrator
-                ? [{ id: "board-make-orchestrator" as const, label: "Make orchestrator" }]
-                : []),
-              ...(isOrchestrator
-                ? [
-                    { id: "board-create-task" as const, label: "Create task" },
-                    { id: "board-resend-brief" as const, label: "Resend brief" },
-                  ]
-                : []),
-            ]
-          : [];
-        const boardDestructiveItems =
-          boardEligible && isOrchestrator
-            ? [
-                {
-                  id: "board-unmark-orchestrator" as const,
-                  label: "Unmark orchestrator",
-                  destructive: true,
-                },
-              ]
-            : [];
+        // Non-destructive board actions lead the menu; removal stays with
+        // Archive/Delete at the bottom.
+        const boardMenuItems = buildBoardThreadContextMenuItems(
+          resolveBoardThreadMenuInput({
+            isServerThread: true,
+            environmentId: thread.environmentId,
+            primaryEnvironmentId,
+            isCoordinator: isOrchestrator,
+            hasDelegationParent: thread.delegationParent != null,
+          }),
+        );
+        const boardTopItems = boardMenuItems.topItems;
+        const boardDestructiveItems = boardMenuItems.destructiveItems;
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             [
@@ -4678,6 +4679,12 @@ export default function Sidebar() {
               ? await requestCustomSnooze()
               : snoozePresets.find((candidate) => `snooze:${candidate.id}` === clicked.value);
           if (preset) attemptSnooze(threadRef, preset);
+          return;
+        }
+        // Board Coordinator actions share their item set and handler with the
+        // chat header toolbar; the id is the only thing the menu passes back.
+        if (isBoardThreadActionId(clicked.value)) {
+          await runBoardThreadAction(clicked.value, threadRef.threadId);
           return;
         }
         switch (clicked.value) {
@@ -4796,85 +4803,6 @@ export default function Sidebar() {
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
-          case "board-make-orchestrator": {
-            if (primaryEnvironmentId === null) return;
-            const result = await addOrchestrator({
-              environmentId: primaryEnvironmentId,
-              input: { threadId: threadRef.threadId },
-            });
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Could not mark the orchestrator",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            }
-            return;
-          }
-          case "board-create-task":
-            void router.navigate({
-              to: "/board",
-              search: { orchestrator: threadRef.threadId, create: true },
-            });
-            return;
-          case "board-resend-brief": {
-            if (primaryEnvironmentId === null) return;
-            const result = await resendBrief({
-              environmentId: primaryEnvironmentId,
-              input: { threadId: threadRef.threadId },
-            });
-            if (AsyncResult.isSuccess(result)) {
-              toastManager.add(
-                stackedThreadToast({
-                  type: "success",
-                  title: "Brief resent",
-                  description: "The orchestrator will see it in its thread.",
-                }),
-              );
-              return;
-            }
-            if (!isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Could not resend the brief",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            }
-            return;
-          }
-          case "board-unmark-orchestrator": {
-            if (primaryEnvironmentId === null) return;
-            if (!readSkipOrchestratorUnmarkConfirmation()) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  "Unmark this orchestrator? Its cards and delegated chats are deleted.",
-                  { variant: "destructive" },
-                ),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            const result = await removeOrchestrator({
-              environmentId: primaryEnvironmentId,
-              input: { threadId: threadRef.threadId },
-            });
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Could not unmark the orchestrator",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            }
-            return;
-          }
           case "archive-old-children":
           case "delete-old-children": {
             const cleanupAction = clicked.value === "delete-old-children" ? "delete" : "archive";
@@ -5058,7 +4986,6 @@ export default function Sidebar() {
       })();
     },
     [
-      addOrchestrator,
       archiveThread,
       archiveThreadChildren,
       attemptPin,
@@ -5081,9 +5008,8 @@ export default function Sidebar() {
       orchestratorThreadKeys,
       primaryEnvironmentId,
       projectByKey,
-      removeOrchestrator,
-      resendBrief,
       router,
+      runBoardThreadAction,
       serverConfigs,
       startThreadRename,
       updateThreadMetadata,
@@ -5625,7 +5551,18 @@ export default function Sidebar() {
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item));
+                          const thread = threadByKey.get(item.key)!;
+                          items.push(renderThreadRow(thread, item));
+                          items.push(
+                            <CoordinatorArchitectSidebarPin
+                              key={`architect-pin:${item.key}`}
+                              environmentId={thread.environmentId}
+                              coordinatorThreadId={thread.id as ThreadId}
+                              isCurrentThread={routeThreadKey === item.key}
+                              depth={item.depth ?? 0}
+                              onNavigate={navigateToThread}
+                            />,
+                          );
                           continue;
                         }
                         switch (item.marker) {

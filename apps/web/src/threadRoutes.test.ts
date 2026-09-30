@@ -5,6 +5,7 @@ import { DraftId } from "./composerDraftStore";
 
 import {
   buildDraftThreadRouteParams,
+  buildThreadRouteLocation,
   buildThreadRouteParams,
   resolveActiveThreadRouteRef,
   resolveThreadRouteRenderState,
@@ -19,6 +20,15 @@ describe("threadRoutes", () => {
     expect(buildThreadRouteParams(ref)).toEqual({
       environmentId: "env-1",
       threadId: "thread-1",
+    });
+  });
+
+  it("builds the same scoped route location used by thread notifications", () => {
+    const ref = scopeThreadRef("env-1" as never, ThreadId.make("thread-1"));
+
+    expect(buildThreadRouteLocation(ref)).toEqual({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: "env-1", threadId: "thread-1" },
     });
   });
 

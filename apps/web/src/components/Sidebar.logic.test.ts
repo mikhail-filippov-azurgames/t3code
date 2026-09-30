@@ -45,6 +45,10 @@ import {
   planPinnedReorder,
   planSidebarThreadDrop,
   sidebarDelegationParentKey,
+  sidebarForestParentKey,
+  resolveSidebarDelegationMarker,
+  resolveSidebarRoleBadge,
+  resolveCoordinatorArchitectReviewAttention,
   sidebarMarkerId,
   sidebarListItemId,
   sortPinnedThreadsForSidebar,
@@ -2792,6 +2796,139 @@ describe("sidebarDelegationParentKey", () => {
   });
 });
 
+describe("sidebarForestParentKey", () => {
+  const coordinatorEnv = EnvironmentId.make("env-coordinator");
+  const coordinatorId = ThreadId.make("coordinator-1");
+  const architectId = ThreadId.make("arch:binding-1");
+  type ForestThread = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly delegationParent?: {
+      readonly parentThreadId: ThreadId;
+      readonly parentEnvironmentId: string;
+      readonly role: string;
+    } | null;
+  };
+  const coordinator: ForestThread = { environmentId: coordinatorEnv, id: coordinatorId };
+  const architect: ForestThread = { environmentId: coordinatorEnv, id: architectId };
+  const keyOf = (thread: ForestThread) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const coordinatorKey = keyOf(coordinator);
+  const architectKey = keyOf(architect);
+  const bindingParents = new Map([[architectKey, coordinatorKey]]);
+
+  it("nests the bound Architect under its Coordinator from the binding index", () => {
+    expect(sidebarForestParentKey(architect, bindingParents)).toBe(coordinatorKey);
+    const forest = orderSidebarSectionForest({
+      threads: [coordinator, architect],
+      getKey: keyOf,
+      getParentKey: (thread) => sidebarForestParentKey(thread, bindingParents),
+    });
+    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
+      [coordinatorKey, 0, null],
+      [architectKey, 1, coordinatorKey],
+    ]);
+    expect(forest[0]?.descendantCount).toBe(1);
+  });
+
+  it("keeps a real delegated child on its lineage parent when a binding entry names it too", () => {
+    const delegated: ForestThread = {
+      environmentId: coordinatorEnv,
+      id: ThreadId.make("task-1"),
+      delegationParent: {
+        parentThreadId: ThreadId.make("task-parent"),
+        parentEnvironmentId: "env-coordinator",
+        role: "implementation",
+      },
+    };
+    const lineageKey = scopedThreadKey(
+      scopeThreadRef(coordinatorEnv, ThreadId.make("task-parent")),
+    );
+    const contested = new Map([[keyOf(delegated), coordinatorKey]]);
+    expect(sidebarForestParentKey(delegated, contested)).toBe(lineageKey);
+  });
+
+  it("stays top-level with no binding entry and no lineage", () => {
+    expect(sidebarForestParentKey(architect, new Map())).toBeNull();
+    expect(sidebarForestParentKey(coordinator, bindingParents)).toBeNull();
+  });
+
+  it("drops no rows when the bound Architect thread is gone", () => {
+    const forest = orderSidebarSectionForest({
+      threads: [coordinator],
+      getKey: keyOf,
+      getParentKey: (thread) => sidebarForestParentKey(thread, bindingParents),
+    });
+    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
+      [coordinatorKey, 0, null],
+    ]);
+  });
+
+  it("keeps the Architect openable as one detached row when its Coordinator is absent", () => {
+    const forest = orderSidebarSectionForest({
+      threads: [architect],
+      getKey: keyOf,
+      getParentKey: (thread) => sidebarForestParentKey(thread, bindingParents),
+    });
+    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
+      [architectKey, 0, null],
+    ]);
+  });
+});
+
+describe("resolveSidebarDelegationMarker", () => {
+  it("labels known executor roles with the board role label and delegation source", () => {
+    expect(
+      resolveSidebarDelegationMarker({ delegationParent: { role: "implementation" } }, "Fix tests"),
+    ).toEqual({
+      kind: "role",
+      role: "implementation",
+      label: "Implementation · Delegated from Fix tests",
+    });
+    expect(
+      resolveSidebarDelegationMarker({ delegationParent: { role: "architecture" } }, null),
+    ).toEqual({
+      kind: "role",
+      role: "architecture",
+      label: "Architecture · Delegated subtask",
+    });
+  });
+
+  it("keeps the generic marker for lineage roles outside the board vocabulary", () => {
+    expect(
+      resolveSidebarDelegationMarker({ delegationParent: { role: "executor" } }, "Fix tests"),
+    ).toEqual({ kind: "generic", label: "Delegated from Fix tests" });
+  });
+
+  it("returns no marker without lineage so root and ordinary rows stay unchanged", () => {
+    expect(resolveSidebarDelegationMarker({ delegationParent: null }, null)).toBeNull();
+    expect(resolveSidebarDelegationMarker({}, "Fix tests")).toBeNull();
+  });
+});
+
+describe("resolveSidebarRoleBadge", () => {
+  it("maps a known lineage role to the board role badge", () => {
+    expect(resolveSidebarRoleBadge({ delegationParent: { role: "test" } }, false)).toEqual({
+      kind: "role",
+      role: "test",
+      label: "Test",
+    });
+  });
+
+  it("marks orchestrator rows even without lineage", () => {
+    expect(resolveSidebarRoleBadge({}, true)).toEqual({
+      kind: "orchestrator",
+      label: "Coordinator",
+    });
+  });
+
+  it("hides the badge for ordinary rows and unknown lineage roles", () => {
+    expect(resolveSidebarRoleBadge({}, false)).toBeNull();
+    expect(resolveSidebarRoleBadge({ delegationParent: null }, false)).toBeNull();
+    expect(resolveSidebarRoleBadge({ delegationParent: { role: "executor" } }, false)).toBeNull();
+  });
+});
+
 describe("planDelegatedPinCascade", () => {
   const descendant = (
     key: string,
@@ -3521,5 +3658,24 @@ describe("collectWorkingDelegatedChildCounts", () => {
     });
     expect(counts.get(keyOf(parent))).toBeUndefined();
     expect(counts.get(keyOf(middle))).toBe(1);
+  });
+});
+
+describe("resolveCoordinatorArchitectReviewAttention", () => {
+  it("shows only review workflow states and drops cancelled reviews", () => {
+    expect(
+      resolveCoordinatorArchitectReviewAttention([
+        { status: "open" },
+        { status: "open" },
+        { status: "answered" },
+        { status: "published" },
+        { status: "cancelled" },
+      ]),
+    ).toEqual([
+      { status: "open", count: 2 },
+      { status: "answered", count: 1 },
+      { status: "published", count: 1 },
+    ]);
+    expect(resolveCoordinatorArchitectReviewAttention([])).toEqual([]);
   });
 });
