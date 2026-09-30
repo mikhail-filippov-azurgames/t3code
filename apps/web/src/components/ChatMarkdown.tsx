@@ -34,6 +34,8 @@ import type {
   ServerProviderSkill,
   ThreadPullRequestKey,
 } from "@t3tools/contracts";
+import { ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
 import {
   isAtomCommandInterrupted,
@@ -78,12 +80,16 @@ import type {
   Options as ReactMarkdownOptions,
 } from "react-markdown";
 import ReactMarkdown from "react-markdown";
+import { useNavigate } from "@tanstack/react-router";
+import GithubSlugger from "github-slugger";
 import { toHtml } from "hast-util-to-html";
 import { createIncrementalMarkdownPlugin } from "../markdown-incremental";
 import { defaultUrlTransform } from "react-markdown";
 import rehypeRaw from "rehype-raw";
+import rehypeKatex from "rehype-katex";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkBreaks from "remark-breaks";
+import remarkMath from "remark-math";
 import { parseAssistantCitationHref } from "@t3tools/shared/assistantCitations";
 import { parseComposerContextHref } from "@t3tools/shared/composerContextReferences";
 import { AssistantCitationChip } from "./chat/AssistantCitationChip";
@@ -96,6 +102,7 @@ import {
   renderCodexFileCitationsAsMarkdown,
 } from "@t3tools/client-runtime/codex-markdown-directives";
 import { renderSkillInlineMarkdownChildren } from "./chat/SkillInlineText";
+import { MermaidDiagram } from "./chat/MermaidDiagram";
 import {
   resolveMarkdownMediaPreview,
   type ExpandedImagePreview,
@@ -165,7 +172,8 @@ import { useAssetUrlRefresh, useAssetUrlState } from "../assets/assetUrls";
 import { cn } from "../lib/utils";
 import { useRemoteOpenResolution, type RemoteOpenMode } from "../remoteOpen";
 import { useRightPanelStore } from "../rightPanelStore";
-import { readThreadShell, useProjects } from "../state/entities";
+import { buildThreadRouteLocation } from "../threadRoutes";
+import { readThreadShell, readThreadShells, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
 import { shellEnvironment } from "../state/shell";
 import { assetEnvironment } from "../state/assets";
@@ -488,7 +496,14 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    href: [...(defaultSchema.protocols?.href ?? []), "file", "oc", "t3-citation", "t3-context"],
+    href: [
+      ...(defaultSchema.protocols?.href ?? []),
+      "file",
+      "oc",
+      "t3-citation",
+      "t3-context",
+      "t3-thread-id",
+    ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },
 } satisfies Parameters<typeof rehypeSanitize>[0];
@@ -516,6 +531,30 @@ const CHAT_MARKDOWN_REHYPE_PLUGINS = [
   rehypeRaw,
   rehypePreserveImageSourceMeta,
   [rehypeSanitize, CHAT_MARKDOWN_SANITIZE_SCHEMA],
+] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
+
+const CHAT_MARKDOWN_MATH_SANITIZE_SCHEMA = {
+  ...CHAT_MARKDOWN_SANITIZE_SCHEMA,
+  attributes: {
+    ...CHAT_MARKDOWN_SANITIZE_SCHEMA.attributes,
+    code: [
+      ["className", /^language-./, "math-inline", "math-display"],
+      "dataCodeMeta",
+      "dataInlineCode",
+    ],
+  },
+} satisfies Parameters<typeof rehypeSanitize>[0];
+
+const CHAT_MARKDOWN_REHYPE_PLUGINS_WITH_MATH = [
+  rehypeRaw,
+  rehypePreserveImageSourceMeta,
+  [rehypeSanitize, CHAT_MARKDOWN_MATH_SANITIZE_SCHEMA],
+  [rehypeKatex, { trust: false, throwOnError: false, maxSize: 50 }],
+] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
+
+const CHAT_MARKDOWN_REHYPE_PLUGINS_KATEX_ONLY = [
+  [rehypeSanitize, CHAT_MARKDOWN_MATH_SANITIZE_SCHEMA],
+  [rehypeKatex, { trust: false, throwOnError: false, maxSize: 50 }],
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
 /** GitHub's own five alert kinds, in its colors: the glyph names the urgency, the title says it. */
@@ -594,7 +633,11 @@ function extractPreCodeMeta(node: unknown): string | undefined {
 
 type MarkdownAstNode = {
   type?: string;
+  depth?: number;
+  label?: string;
   meta?: unknown;
+  alt?: string;
+  value?: string;
   url?: string;
   data?: {
     hProperties?: Record<string, unknown>;
@@ -666,6 +709,196 @@ function remarkNormalizeLinksAndTagInlineCode() {
   };
 }
 
+const SANITIZED_FRAGMENT_PREFIX = "user-content-";
+
+function markdownHeadingText(node: MarkdownAstNode): string {
+  if (node.type === "image") return node.alt ?? "";
+  if (node.type === "html") return (node.value ?? "").replace(/<[^>]*>/gu, "");
+  if (typeof node.value === "string") return node.value;
+  return node.children?.map(markdownHeadingText).join("") ?? "";
+}
+
+function isMarkdownTableOfContentsMarker(node: MarkdownAstNode): boolean {
+  if (node.type !== "paragraph" || node.children?.length !== 1) return false;
+  const onlyChild = node.children[0];
+  if (onlyChild?.type === "text") return onlyChild.value?.trim().toLowerCase() === "[toc]";
+  return onlyChild?.type === "linkReference" && onlyChild.label?.toLowerCase() === "toc";
+}
+
+function markdownTableOfContents(
+  headings: ReadonlyArray<{ depth: number; id: string; text: string }>,
+) {
+  const list: MarkdownAstNode = { type: "list", children: [] };
+  const parents: Array<{ depth: number; item: MarkdownAstNode }> = [];
+
+  for (const heading of headings) {
+    const item: MarkdownAstNode = {
+      type: "listItem",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            {
+              type: "link",
+              url: `#${SANITIZED_FRAGMENT_PREFIX}${heading.id}`,
+              children: [{ type: "text", value: heading.text || heading.id }],
+            },
+          ],
+        },
+      ],
+    };
+
+    while (parents.length > 0 && parents[parents.length - 1]!.depth >= heading.depth) {
+      parents.pop();
+    }
+
+    const parent = parents[parents.length - 1]?.item;
+    if (parent) {
+      let nestedList = parent.children?.find((child) => child.type === "list");
+      if (!nestedList) {
+        nestedList = { type: "list", children: [] };
+        parent.children?.push(nestedList);
+      }
+      nestedList.children?.push(item);
+    } else {
+      list.children?.push(item);
+    }
+
+    parents.push({ depth: heading.depth, item });
+  }
+
+  return list;
+}
+
+function remarkTyporaFilePreview() {
+  return (tree: MarkdownAstNode) => {
+    const slugger = new GithubSlugger();
+    const headings: Array<{ depth: number; id: string; text: string }> = [];
+    const authoredIds = new Set<string>();
+
+    const collectAuthoredIds = (node: MarkdownAstNode) => {
+      if (node.type === "html" && node.value) {
+        for (const match of node.value.matchAll(
+          /\bid\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s/>]+))/giu,
+        )) {
+          authoredIds.add(match[1] ?? match[2] ?? match[3] ?? "");
+        }
+      }
+      node.children?.forEach(collectAuthoredIds);
+    };
+
+    collectAuthoredIds(tree);
+
+    const addHeadingIds = (node: MarkdownAstNode) => {
+      if (node.type === "heading") {
+        const text = markdownHeadingText(node).trim();
+        let id = slugger.slug(text);
+        while (authoredIds.has(id)) id = slugger.slug(text);
+        node.data = {
+          ...node.data,
+          hProperties: { ...node.data?.hProperties, id },
+        };
+        headings.push({ depth: node.depth ?? 1, id, text });
+      }
+      node.children?.forEach(addHeadingIds);
+    };
+
+    addHeadingIds(tree);
+    const replaceTocMarkers = (node: MarkdownAstNode) => {
+      if (!node.children) return;
+      node.children = node.children.flatMap((child) => {
+        if (isMarkdownTableOfContentsMarker(child)) {
+          return headings.length > 0 ? [markdownTableOfContents(headings)] : [];
+        }
+        replaceTocMarkers(child);
+        return [child];
+      });
+    };
+
+    replaceTocMarkers(tree);
+  };
+}
+
+const THREAD_ID_UUID_V4_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const THREAD_ID_TEXT_REGEX =
+  /(^|[^a-z0-9_-])((?:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|import:[a-z0-9._-]+:[a-z0-9._:-]*[a-z0-9_-]|delegated-task:[0-9a-f]{40}))(?=$|[^a-z0-9_-])/giu;
+const THREAD_ID_HREF_PREFIX = "t3-thread-id:";
+
+function isLinkableThreadId(threadId: string): boolean {
+  return (
+    THREAD_ID_UUID_V4_REGEX.test(threadId) ||
+    /^import:[a-z0-9._-]+:[a-z0-9._:-]*[a-z0-9_-]$/iu.test(threadId) ||
+    /^delegated-task:[0-9a-f]{40}$/iu.test(threadId)
+  );
+}
+
+function threadIdHref(threadId: string) {
+  return `${THREAD_ID_HREF_PREFIX}${threadId}`;
+}
+
+function parseThreadIdHref(href: string): string | null {
+  if (!href.startsWith(THREAD_ID_HREF_PREFIX)) return null;
+  const threadId = href.slice(THREAD_ID_HREF_PREFIX.length);
+  return isLinkableThreadId(threadId) ? threadId : null;
+}
+
+function linkifyThreadIdText(value: string): MarkdownAstNode[] {
+  const nodes: MarkdownAstNode[] = [];
+  const matcher = new RegExp(THREAD_ID_TEXT_REGEX.source, THREAD_ID_TEXT_REGEX.flags);
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = matcher.exec(value)) !== null) {
+    const threadId = match[2]!;
+    const threadIdStart = match.index + match[1]!.length;
+    if (threadIdStart > lastIndex) {
+      nodes.push({ type: "text", value: value.slice(lastIndex, threadIdStart) });
+    }
+    nodes.push({
+      type: "link",
+      url: threadIdHref(threadId),
+      children: [{ type: "text", value: threadId }],
+    });
+    lastIndex = threadIdStart + threadId.length;
+  }
+  if (nodes.length === 0) return [{ type: "text", value }];
+  if (lastIndex < value.length) nodes.push({ type: "text", value: value.slice(lastIndex) });
+  return nodes;
+}
+
+function remarkLinkifyThreadIds() {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      if (!node.children) return;
+      node.children = node.children.flatMap((child) => {
+        if (child.type === "text" && typeof child.value === "string") {
+          return linkifyThreadIdText(child.value);
+        }
+        if (child.type === "inlineCode" && typeof child.value === "string") {
+          if (isLinkableThreadId(child.value)) {
+            return [{ type: "link", url: threadIdHref(child.value), children: [child] }];
+          }
+          return [child];
+        }
+        if (
+          child.type === "link" ||
+          child.type === "linkReference" ||
+          child.type === "code" ||
+          child.type === "html" ||
+          child.type === "image" ||
+          child.type === "imageReference"
+        ) {
+          return [child];
+        }
+        visit(child);
+        return [child];
+      });
+    };
+
+    visit(tree);
+  };
+}
+
 function nodeToPlainText(node: ReactNode): string {
   if (typeof node === "string" || typeof node === "number") {
     return String(node);
@@ -722,7 +955,7 @@ function readInitialWordWrapSetting(): boolean {
 function MarkdownTable({ children, ...props }: React.ComponentProps<"table">) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
-  const [expanded, setExpanded] = useState(readInitialWordWrapSetting);
+  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandLabel = expanded ? "Collapse table cells" : "Expand table cells";
@@ -1771,8 +2004,6 @@ function hastHasText(node: unknown): boolean {
   return "children" in node && Array.isArray(node.children) && node.children.some(hastHasText);
 }
 
-const SANITIZED_FRAGMENT_PREFIX = "user-content-";
-
 function decodeMarkdownFragmentId(href: string): string {
   const encodedId = href.slice(1);
   try {
@@ -1798,7 +2029,9 @@ function findMarkdownFragmentTarget(anchor: HTMLAnchorElement, href: string): HT
   const markdownRoot = anchor.closest<HTMLElement>(".chat-markdown");
   if (markdownRoot) {
     const localTargets = Array.from(markdownRoot.querySelectorAll<HTMLElement>("[id]"));
-    const localTarget = localTargets.find(matchesFragment);
+    const localTarget =
+      localTargets.find((element) => element.id === decodedId) ??
+      localTargets.find(matchesFragment);
     if (localTarget) return localTarget;
   }
 
@@ -1821,14 +2054,9 @@ function handleMarkdownFragmentClick(event: ReactMouseEvent<HTMLAnchorElement>, 
     return;
   }
 
-  const target = findMarkdownFragmentTarget(event.currentTarget, href);
-  if (!target) return;
-
   event.preventDefault();
-  const nextUrl = new URL(window.location.href);
-  nextUrl.hash = href.slice(1);
-  window.history.pushState(window.history.state, "", nextUrl);
-  target.scrollIntoView({ block: "nearest" });
+  event.stopPropagation();
+  findMarkdownFragmentTarget(event.currentTarget, href)?.scrollIntoView({ block: "nearest" });
 }
 
 function MarkdownExternalLinkContent({
@@ -2472,6 +2700,7 @@ function useChatMarkdownState({
   const markdownUrlTransform = useCallback((href: string) => {
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
+    if (parseThreadIdHref(href)) return href;
     // `oc:` is not a web protocol: react-markdown's default transform would
     // blank the href before the anchor renderer could recognise it.
     if (parseOpenContextDocHref(href)) return href;
@@ -2914,6 +3143,66 @@ function markdownHeadingRenderer(level: 1 | 2 | 3 | 4 | 5 | 6) {
   };
 }
 
+function MarkdownThreadIdLink({
+  threadId,
+  threadRef,
+  children,
+}: {
+  threadId: string;
+  threadRef: ScopedThreadRef;
+  children: ReactNode;
+}) {
+  const navigate = useNavigate();
+  const [lookupError, setLookupError] = useState<"not-found" | "ambiguous" | null>(null);
+  return (
+    <>
+      <button
+        type="button"
+        className="inline cursor-pointer rounded-sm font-mono text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80 focus-visible:outline-2 focus-visible:outline-ring"
+        aria-label={`Open chat ${threadId}`}
+        data-markdown-copy={threadId}
+        data-thread-id-link={threadId}
+        onClick={(event) => {
+          if (
+            event.button !== 0 ||
+            event.metaKey ||
+            event.ctrlKey ||
+            event.shiftKey ||
+            event.altKey
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.stopPropagation();
+          const localRef = scopeThreadRef(threadRef.environmentId, ThreadId.make(threadId));
+          const matches = readThreadShell(localRef)
+            ? [localRef]
+            : readThreadShells()
+                .filter((shell) => shell.id === threadId)
+                .map((shell) => scopeThreadRef(shell.environmentId, shell.id));
+          if (matches.length !== 1) {
+            setLookupError(matches.length === 0 ? "not-found" : "ambiguous");
+            return;
+          }
+          setLookupError(null);
+          void navigate(buildThreadRouteLocation(matches[0]!));
+        }}
+      >
+        {children}
+      </button>
+      {lookupError && (
+        <span
+          role="status"
+          data-thread-id-not-found={threadId}
+          className="ml-1 text-muted-foreground"
+        >
+          {lookupError === "not-found" ? "Not found" : "Multiple chats found"}
+        </span>
+      )}
+    </>
+  );
+}
+
 // Keep component types stable when streaming changes the message state.
 const CHAT_MARKDOWN_COMPONENTS = {
   h1: markdownHeadingRenderer(1),
@@ -3024,6 +3313,14 @@ const CHAT_MARKDOWN_COMPONENTS = {
       openFileInPanel,
       resolveOpenContextDocForLink,
     } = use(ChatMarkdownRendererContext);
+    const threadId = href ? parseThreadIdHref(href) : null;
+    if (threadId !== null && threadRef !== undefined) {
+      return (
+        <MarkdownThreadIdLink threadId={threadId} threadRef={threadRef}>
+          {children}
+        </MarkdownThreadIdLink>
+      );
+    }
     const citation = href ? parseAssistantCitationHref(href) : null;
     if (citation) return <AssistantCitationChip citation={citation} />;
     const contextReference = href ? parseComposerContextHref(href) : null;
@@ -3397,11 +3694,27 @@ const CHAT_MARKDOWN_COMPONENTS = {
   table: function MarkdownTableRenderer({ node: _node, ...props }) {
     return <MarkdownTable {...props} />;
   },
+  th: function MarkdownTableHeader({ node: _node, children, ...props }) {
+    return (
+      <th {...props}>
+        <div className="chat-markdown-table-cell-content">{children}</div>
+      </th>
+    );
+  },
+  td: function MarkdownTableCell({ node: _node, children, ...props }) {
+    return (
+      <td {...props}>
+        <div className="chat-markdown-table-cell-content">{children}</div>
+      </td>
+    );
+  },
   details: function MarkdownDetailsRenderer({ node: _node, children, open: detailsOpen }) {
     return <MarkdownDetails open={detailsOpen}>{children}</MarkdownDetails>;
   },
   pre: function MarkdownPre({ node, children, ...props }) {
-    const { resolvedTheme, diffThemeName, isStreaming } = use(ChatMarkdownRendererContext);
+    const { resolvedTheme, diffThemeName, isStreaming, imageBaseDir } = use(
+      ChatMarkdownRendererContext,
+    );
     const codeBlock = extractCodeBlock(children);
     if (!codeBlock) {
       return <pre {...props}>{children}</pre>;
@@ -3409,6 +3722,24 @@ const CHAT_MARKDOWN_COMPONENTS = {
 
     const language = extractFenceLanguage(codeBlock.className);
     const fenceTitle = extractFenceTitle(extractPreCodeMeta(node));
+    // Mermaid diagrams are a file-preview affordance only; chat keeps the fence.
+    if (imageBaseDir !== undefined && language.toLowerCase() === "mermaid") {
+      return (
+        <MarkdownCodeBlock
+          code={codeBlock.code}
+          language={language}
+          fenceTitle={fenceTitle}
+          theme={resolvedTheme}
+        >
+          <RenderErrorBoundary
+            resetKeys={[codeBlock.code, resolvedTheme]}
+            fallback={<pre {...props}>{children}</pre>}
+          >
+            <MermaidDiagram code={codeBlock.code} theme={resolvedTheme} isStreaming={isStreaming} />
+          </RenderErrorBoundary>
+        </MarkdownCodeBlock>
+      );
+    }
     return (
       <MarkdownCodeBlock
         code={codeBlock.code}
@@ -3450,6 +3781,7 @@ function ChatMarkdown({
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
+  const typoraPreviewFeatures = props.imageBaseDir !== undefined;
   const {
     componentState,
     handleCopy,
@@ -3462,14 +3794,24 @@ function ChatMarkdown({
     props.isStreaming === true &&
     extraRemarkPlugins.length === 0 &&
     /(?:^|\n) {0,3}(?:`{3}|~{3})/.test(text);
+  const linkThreadIds = props.threadRef !== undefined;
   const remarkPlugins = useMemo(
     () => [
       ...(lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS),
+      ...(typoraPreviewFeatures ? [remarkMath, remarkTyporaFilePreview] : []),
       ...extraRemarkPlugins,
       ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
+      ...(linkThreadIds ? [remarkLinkifyThreadIds] : []),
     ],
-    [extraRemarkPlugins, incrementalParsing, lineBreaks],
+    [extraRemarkPlugins, incrementalParsing, lineBreaks, linkThreadIds, typoraPreviewFeatures],
   );
+  const rehypePlugins = typoraPreviewFeatures
+    ? parseRawHtml
+      ? CHAT_MARKDOWN_REHYPE_PLUGINS_WITH_MATH
+      : CHAT_MARKDOWN_REHYPE_PLUGINS_KATEX_ONLY
+    : parseRawHtml
+      ? CHAT_MARKDOWN_REHYPE_PLUGINS
+      : undefined;
 
   // react-markdown converts unparsed HTML nodes to text when skipHtml is false.
   // Keep that behavior explicit because literal mode depends on escaping the
@@ -3479,6 +3821,7 @@ function ChatMarkdown({
       ref={markdownRef}
       className={cn(
         "chat-markdown w-full min-w-0 text-sm leading-relaxed text-foreground/80 [overflow-wrap:anywhere] [word-break:break-word]",
+        typoraPreviewFeatures && "typora-markdown-preview",
         className,
       )}
       // Gates the fade-in for blocks that arrive while the response streams.
@@ -3488,7 +3831,7 @@ function ChatMarkdown({
       <ChatMarkdownRendererContext value={componentState}>
         <ReactMarkdown
           remarkPlugins={remarkPlugins}
-          rehypePlugins={parseRawHtml ? CHAT_MARKDOWN_REHYPE_PLUGINS : undefined}
+          rehypePlugins={rehypePlugins}
           skipHtml={false}
           components={CHAT_MARKDOWN_COMPONENTS}
           urlTransform={markdownUrlTransform}

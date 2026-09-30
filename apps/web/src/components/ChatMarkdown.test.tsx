@@ -1,20 +1,34 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import * as NodeFS from "node:fs";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { create, type ReactTestRenderer } from "react-test-renderer";
+import { create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
+import { __setClientSettingsForTests, getClientSettings } from "../hooks/useSettings";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { clearWorkspaceMatchCache } from "../workspaceBasenameLookup";
 import { GitHubIcon } from "./Icons";
 import { Button } from "./ui/button";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
 
+const markdownStyles = NodeFS.readFileSync(new URL("../index.css", import.meta.url), "utf8");
+
 const projectQueryState = vi.hoisted(() => ({
   entries: [] as ReadonlyArray<{ readonly path: string; readonly kind: "file" | "directory" }>,
   failure: false,
 }));
 const rightPanelState = vi.hoisted(() => ({ openFile: vi.fn() }));
+const threadLinkState = vi.hoisted(() => ({
+  availableThreadRefs: new Set<string>(),
+  navigate: vi.fn(),
+}));
+
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  useNavigate: () => threadLinkState.navigate,
+}));
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("../hooks/useTheme", () => ({ useTheme: () => ({ resolvedTheme: "dark" }) }));
@@ -55,7 +69,15 @@ vi.mock("../state/session", async (importOriginal) => ({
   usePreparedConnection: () => ({ _tag: "Loading" }),
 }));
 vi.mock("../state/entities", () => ({
-  readThreadShell: () => null,
+  readThreadShell: (ref: { environmentId: string; threadId: string }) =>
+    threadLinkState.availableThreadRefs.has(`${ref.environmentId}:${ref.threadId}`)
+      ? { id: ref.threadId }
+      : null,
+  readThreadShells: () =>
+    [...threadLinkState.availableThreadRefs].map((key) => {
+      const separator = key.indexOf(":");
+      return { environmentId: key.slice(0, separator), id: key.slice(separator + 1) };
+    }),
   useProjects: () => [],
   useServerConfigs: () => new Map(),
 }));
@@ -92,6 +114,8 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
 beforeEach(() => {
   projectQueryState.entries = [];
   projectQueryState.failure = false;
+  threadLinkState.availableThreadRefs.clear();
+  threadLinkState.navigate.mockClear();
   rightPanelState.openFile.mockClear();
   clearWorkspaceMatchCache();
 });
@@ -159,6 +183,199 @@ describe("ChatMarkdown context references", () => {
       await act(async () => {
         renderer?.unmount();
       });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("ChatMarkdown thread ID references", () => {
+  const threadId = "550e8400-e29b-41d4-a716-446655440000";
+  const importedThreadId = "import:codex:codex-session";
+  const delegatedThreadId = `delegated-task:${"a".repeat(40)}`;
+  const sourceRef = scopeThreadRef(EnvironmentId.make("env-1"), ThreadId.make("source-thread"));
+
+  it.each([
+    { label: "UUID v4", threadId, text: `Open ${threadId}.` },
+    { label: "imported ID", threadId: importedThreadId, text: `Open ${importedThreadId}.` },
+    { label: "delegated ID", threadId: delegatedThreadId, text: `Open ${delegatedThreadId}.` },
+    {
+      label: "inline-code imported ID",
+      threadId: importedThreadId,
+      text: `Open \`${importedThreadId}\`.`,
+    },
+  ])("opens existing $label chat on a primary click", async ({ threadId, text }) => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    threadLinkState.availableThreadRefs.add(`env-1:${threadId}`);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={sourceRef} text={text} />);
+      });
+      const link = renderer!.root.findByProps({ "data-thread-id-link": threadId });
+      await act(async () => {
+        link.props.onClick({
+          button: 0,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(threadLinkState.navigate).toHaveBeenCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: "env-1", threadId },
+      });
+      expect(threadLinkState.navigate).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("opens a chat from another environment when it is the only match", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    threadLinkState.availableThreadRefs.add(`env-2:${threadId}`);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown cwd={undefined} threadRef={sourceRef} text={`Open ${threadId}.`} />,
+        );
+      });
+      const link = renderer!.root.findByProps({ "data-thread-id-link": threadId });
+      await act(async () => {
+        link.props.onClick({
+          button: 0,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(threadLinkState.navigate).toHaveBeenCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: "env-2", threadId },
+      });
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows Not found without navigating when no environment has the chat", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown cwd={undefined} threadRef={sourceRef} text={`Open ${threadId}.`} />,
+        );
+      });
+      const link = renderer!.root.findByProps({ "data-thread-id-link": threadId });
+      await act(async () => {
+        link.props.onClick({
+          button: 0,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(threadLinkState.navigate).not.toHaveBeenCalled();
+      expect(renderer!.root.findByProps({ role: "status" }).children).toEqual(["Not found"]);
+      expect(link.props["data-markdown-copy"]).toBe(threadId);
+
+      threadLinkState.availableThreadRefs.add(`env-2:${threadId}`);
+      await act(async () => {
+        link.props.onClick({
+          button: 0,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(threadLinkState.navigate).toHaveBeenCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: "env-2", threadId },
+      });
+      expect(renderer!.root.findAllByProps({ role: "status" })).toHaveLength(0);
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("prefers the current environment when the same ID also exists elsewhere", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    threadLinkState.availableThreadRefs.add(`env-1:${threadId}`);
+    threadLinkState.availableThreadRefs.add(`env-2:${threadId}`);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={sourceRef} text={threadId} />);
+      });
+      await act(async () => {
+        renderer!.root.findByProps({ "data-thread-id-link": threadId }).props.onClick({
+          button: 0,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(threadLinkState.navigate).toHaveBeenCalledWith({
+        to: "/$environmentId/$threadId",
+        params: { environmentId: "env-1", threadId },
+      });
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("marks an ID as ambiguous when it exists in two other environments", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    threadLinkState.availableThreadRefs.add(`env-2:${threadId}`);
+    threadLinkState.availableThreadRefs.add(`env-3:${threadId}`);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={sourceRef} text={threadId} />);
+      });
+      await act(async () => {
+        renderer!.root.findByProps({ "data-thread-id-link": threadId }).props.onClick({
+          button: 0,
+          altKey: false,
+          ctrlKey: false,
+          metaKey: false,
+          shiftKey: false,
+          preventDefault: vi.fn(),
+          stopPropagation: vi.fn(),
+        });
+      });
+      expect(threadLinkState.navigate).not.toHaveBeenCalled();
+      expect(renderer!.root.findByProps({ role: "status" }).children).toEqual([
+        "Multiple chats found",
+      ]);
+    } finally {
+      await act(async () => renderer?.unmount());
       vi.unstubAllGlobals();
     }
   });
@@ -740,6 +957,215 @@ describe("ChatMarkdown heading levels", () => {
   });
 });
 
+describe("ChatMarkdown tables", () => {
+  it("wraps long Russian cells within roughly 45 characters by default", async () => {
+    const longRussianText =
+      "Подробное описание содержит последовательность действий, ограничения и условия, необходимые для корректного применения результата в узкой панели чата.";
+    const markdown = `| Раздел | Описание |\n| --- | --- |\n| Доступность | ${longRussianText} |`;
+    const previousSettings = getClientSettings();
+    __setClientSettingsForTests({ ...previousSettings, wordWrap: false });
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} text={markdown} />);
+      });
+
+      const table = renderer!.root.findByProps({ "data-expanded": "false" });
+      const descriptionCell = table.findAllByType("td")[1];
+      if (!descriptionCell) throw new Error("Missing Russian table cell");
+
+      const textContent = (node: ReactTestInstance): string =>
+        node.children
+          .map((child) => (typeof child === "string" ? child : textContent(child)))
+          .join("");
+
+      expect(textContent(descriptionCell)).toBe(longRussianText);
+      expect(
+        descriptionCell.findByProps({ className: "chat-markdown-table-cell-content" }),
+      ).toBeDefined();
+      const scrollViewport = table.findByProps({ "data-slot": "scroll-area-viewport" });
+      expect(scrollViewport.props.className).toContain("overflow-auto");
+      expect(markdownStyles).toMatch(
+        /\.chat-markdown \.chat-markdown-table-cell-content\s*\{[^}]*max-width:\s*45ch;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere/u,
+      );
+      expect(markdownStyles).not.toMatch(
+        /\.chat-markdown table\s*\{[^}]*min-width:\s*max-content/u,
+      );
+
+      const expandButton = table.findByProps({ "aria-label": "Expand table cells" });
+      expect(expandButton.props["aria-pressed"]).toBe(false);
+      expect(table.findByProps({ "aria-label": "Copy table" })).toBeDefined();
+
+      const collapsedCellRules = [
+        ...markdownStyles.matchAll(
+          /[^{}]*\.chat-markdown-table-container\[data-expanded="false"\][^{}]*\{([^{}]*)\}/gu,
+        ),
+      ];
+      for (const [, declarations] of collapsedCellRules) {
+        expect(declarations).not.toMatch(
+          /(?:overflow\s*:\s*hidden|text-overflow\s*:\s*ellipsis|white-space\s*:\s*nowrap)/u,
+        );
+      }
+    } finally {
+      await act(async () => {
+        renderer?.unmount();
+      });
+      __setClientSettingsForTests(previousSettings);
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("ChatMarkdown Typora file preview features", () => {
+  it("scrolls to a heading without changing the chat route when a contents link is clicked", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            cwd="/tmp/project"
+            imageBaseDir="/tmp/project/docs"
+            text={"[toc]\n\n# Project Overview\n\n## Diagram\n\n[diagram](#diagram)"}
+          />,
+        );
+      });
+      const heading = { id: "user-content-diagram", scrollIntoView: vi.fn() };
+      const markdownRoot = { querySelectorAll: () => [heading] };
+      const currentTarget = { closest: () => markdownRoot };
+      const preventDefault = vi.fn();
+      const stopPropagation = vi.fn();
+      const links = renderer!.root
+        .findAllByType("a")
+        .filter((anchor) => ["#diagram", "#user-content-diagram"].includes(anchor.props.href));
+      expect(links).toHaveLength(2);
+
+      for (const link of links) {
+        await act(async () => {
+          link.props.onClick({
+            currentTarget,
+            defaultPrevented: false,
+            button: 0,
+            altKey: false,
+            ctrlKey: false,
+            metaKey: false,
+            shiftKey: false,
+            preventDefault,
+            stopPropagation,
+          });
+        });
+      }
+
+      expect(preventDefault).toHaveBeenCalledTimes(2);
+      expect(stopPropagation).toHaveBeenCalledTimes(2);
+      expect(heading.scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(heading.scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      expect(threadLinkState.navigate).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("adds unique heading anchors and a nested table of contents in file previews", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        imageBaseDir="/tmp/project/docs"
+        text={"[toc]\n\n# Project Overview\n\n## Setup\n\n## Setup\n\n### Details"}
+      />,
+    );
+
+    expect(html).toContain('id="user-content-project-overview"');
+    expect(html).toContain('id="user-content-setup"');
+    expect(html).toContain('id="user-content-setup-1"');
+    expect(html).toContain('id="user-content-details"');
+    expect(html).toContain('href="#user-content-project-overview"');
+    expect(html).toContain('href="#user-content-setup-1"');
+    expect(html).not.toContain("[toc]");
+  });
+
+  it("keeps table of contents targets distinct from authored HTML ids", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        imageBaseDir="/tmp/project/docs"
+        text={'[toc]\n\n<div id="setup"></div>\n\n# Setup'}
+      />,
+    );
+
+    expect(html).toContain('id="user-content-setup"');
+    expect(html).toContain('id="user-content-setup-1"');
+    expect(html).toContain('href="#user-content-setup-1"');
+  });
+
+  it("renders inline and display math while keeping untrusted TeX links disabled", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        imageBaseDir="/tmp/project/docs"
+        text={
+          'Inline $x^2$ and display:\n\n$$\n\\frac{1}{2}\n$$\n\nUnsafe $\\href{javascript:alert(1)}{link}$\n\n<img src="x" onerror="alert(1)">'
+        }
+      />,
+    );
+
+    expect(html).toContain('class="katex"');
+    expect(html).toContain('class="katex-display"');
+    expect(html).toContain("<math");
+    expect(html).not.toContain('href="javascript:');
+    expect(html).not.toContain("onerror=");
+  });
+
+  it("limits oversized math dimensions", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        imageBaseDir="/tmp/project/docs"
+        text={"$\\rule{999999em}{999999em}$"}
+      />,
+    );
+
+    expect(html).toContain('class="katex"');
+    expect(html).toContain('style="height:50em"');
+    expect(html).toContain("border-right-width:50em");
+  });
+
+  it("keeps file preview syntax out of chat Markdown", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown cwd="/tmp/project" text={"[toc]\n\n# Project Overview\n\n$x^2$"} />,
+    );
+
+    expect(html).toContain("[toc]");
+    expect(html).not.toContain('id="user-content-project-overview"');
+    expect(html).not.toContain('class="katex"');
+  });
+
+  it("renders mermaid fences as diagrams in file previews", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        imageBaseDir="/tmp/project/docs"
+        text={"```mermaid\ngraph TD;\nA-->B\n```"}
+      />,
+    );
+
+    expect(html).toContain('data-mermaid-state="pending"');
+    expect(html).toContain('data-language="mermaid"');
+    expect(html).not.toContain("chat-markdown-shiki");
+  });
+
+  it("keeps mermaid fences as code blocks in chat", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown cwd="/tmp/project" text={"```mermaid\ngraph TD;\nA-->B\n```"} />,
+    );
+
+    expect(html).not.toContain("data-mermaid-state");
+  });
+});
+
 describe("shouldUseMarkdownFileBrowserPrimaryAction", () => {
   it("uses the browser when it is the only available primary action", () => {
     expect(
@@ -931,6 +1357,19 @@ describe("ChatMarkdown OpenContext document links", () => {
       expect(html).not.toContain("chat-markdown-file-link");
     },
   );
+
+  it("preserves a versioned OpenContext link as a document chip", () => {
+    const html = renderToStaticMarkup(
+      <ChatMarkdown
+        cwd="C:/Users/shawn/project"
+        environmentId={environmentId}
+        text={`[amendment](oc://doc/${stableId}@5)`}
+      />,
+    );
+
+    expect(html).toContain(`href="oc://doc/${stableId}@5"`);
+    expect(html).toContain('data-opencontext-doc-status="idle"');
+  });
 });
 
 describe("ChatMarkdown missing file links", () => {

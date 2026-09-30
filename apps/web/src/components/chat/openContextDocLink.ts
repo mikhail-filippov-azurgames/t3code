@@ -6,7 +6,7 @@ import type { ContextMenuItem } from "@t3tools/contracts";
  * rather than a loosened file-path rule — an `oc:` href is a document
  * reference, never a workspace path or an external web link.
  */
-const OPEN_CONTEXT_DOC_HREF_PATTERN = /^oc:\/\/doc\/([^/?#\s]+)\/?$/i;
+const OPEN_CONTEXT_DOC_HREF_PATTERN = /^oc:\/\/doc\/([^/@?#\s]+)(@[1-9]\d*)?\/?$/i;
 
 export interface OpenContextDocHref {
   /** Canonical form, so copying and comparisons do not depend on a trailing slash. */
@@ -16,9 +16,10 @@ export interface OpenContextDocHref {
 
 export function parseOpenContextDocHref(href: string | undefined): OpenContextDocHref | null {
   if (!href) return null;
-  const stableId = OPEN_CONTEXT_DOC_HREF_PATTERN.exec(href.trim())?.[1]?.trim();
+  const match = OPEN_CONTEXT_DOC_HREF_PATTERN.exec(href.trim());
+  const stableId = match?.[1]?.trim();
   if (!stableId) return null;
-  return { href: `oc://doc/${stableId}`, stableId };
+  return { href: `oc://doc/${stableId}${match?.[2] ?? ""}`, stableId };
 }
 
 export type OpenContextDocLinkStatus = "idle" | "found" | "not_found" | "unavailable";

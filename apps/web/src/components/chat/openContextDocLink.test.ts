@@ -14,10 +14,19 @@ describe("open context document links", () => {
     });
   });
 
+  it("resolves a versioned document link by stable id while preserving its revision for copying", () => {
+    expect(parseOpenContextDocHref("oc://doc/84bbfd7b-3caa-4ce8-bef7-33e130fd7652@5")).toEqual({
+      href: "oc://doc/84bbfd7b-3caa-4ce8-bef7-33e130fd7652@5",
+      stableId: "84bbfd7b-3caa-4ce8-bef7-33e130fd7652",
+    });
+  });
+
   it.each([
     ["oc://doc/", null],
     ["oc://doc/a/b", null],
     ["oc://doc/a?query=1", null],
+    ["oc://doc/a@0", null],
+    ["oc://doc/a@latest", null],
     ["oc://folder/abc", null],
     ["https://example.com/oc://doc/abc", null],
     ["#fragment", null],

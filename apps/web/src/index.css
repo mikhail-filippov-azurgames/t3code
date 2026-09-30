@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "katex/dist/katex.min.css";
 
 @custom-variant dark (&:is(.dark, .dark *));
 @custom-variant light (&:not(.dark, .dark *));
@@ -1891,6 +1892,17 @@ code {
   background: transparent !important;
 }
 
+.typora-markdown-preview .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  padding-block: 0.25rem;
+}
+
+.typora-markdown-preview .chat-markdown-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 /* Paragraphs and code blocks arrive in chunks while a response streams. Fade
    each new block in so the chunk does not pop. @starting-style only applies
    when an element is first inserted, and the rule is gated on data-streaming,
@@ -1907,17 +1919,12 @@ code {
   }
 }
 
-/* Diagnostics-style tables: row separators only, uppercase headers, and a
-   scroll-fade container for horizontal overflow. The root chat-markdown
-   wrapping rules (overflow-wrap: anywhere) would let columns shrink to single
-   characters and defeat the overflow — restore word-boundary wrapping so the
-   min column width is the longest word. */
+/* Keep table cells readable at about 45 characters per line. Wide tables may
+   still scroll horizontally, while long text increases the row height. */
 .chat-markdown table {
   width: 100%;
-  min-width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
-  overflow-wrap: normal;
-  word-break: normal;
   font-size: 0.75rem;
 }
 
@@ -1925,32 +1932,29 @@ code {
 .chat-markdown td {
   padding: 0.45rem 0.75rem;
   text-align: left;
+  vertical-align: top;
+}
+
+.chat-markdown .chat-markdown-table-cell-content {
+  max-width: 45ch;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .chat-markdown thead th {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
   padding-block: 0.55rem;
   font-weight: 600;
-  white-space: nowrap;
 }
 
 .chat-markdown tbody td {
   border-bottom: 1px solid color-mix(in srgb, var(--contrast-border) 60%, transparent);
 }
 
-/* Collapsed (default): single-line cells truncate so arbitrary chat content
-   cannot blow the column out; the footer toggle expands cells to wrap. */
-.chat-markdown .chat-markdown-table-container[data-expanded="false"] th,
-.chat-markdown .chat-markdown-table-container[data-expanded="false"] td {
-  overflow: hidden;
-  max-width: 24rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chat-markdown .chat-markdown-table-container[data-expanded="true"] td {
-  max-width: 24rem;
-  overflow-wrap: anywhere;
+.chat-markdown
+  .chat-markdown-table-container[data-expanded="true"]
+  .chat-markdown-table-cell-content {
+  max-width: 80ch;
 }
 
 /* Prompt-stash save acknowledgement: the new count fades up from just below

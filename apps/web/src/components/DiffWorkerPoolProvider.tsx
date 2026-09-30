@@ -25,6 +25,7 @@ export class DiffWorkerError extends Schema.TaggedError<DiffWorkerError>()("Diff
 }
 
 const DIFF_WORKER_IDLE_TTL_MS = 30_000;
+const DIFF_WORKER_INIT_TIMEOUT_MS = 5_000;
 let sharedWorkerPool:
   | {
       readonly pool: WorkerPoolManager;
@@ -98,26 +99,49 @@ function DiffWorkerThemeSync({ themeName }: { themeName: DiffThemeName }) {
 function DiffWorkerReady({ children }: { children?: ReactNode }) {
   const workerPool = useWorkerPool();
   const [readyPool, setReadyPool] = useState<WorkerPoolManager>();
-  const ready = workerPool
-    ? readyPool === workerPool || workerPool.isInitialized() || !workerPool.isWorkingPool()
-    : typeof window === "undefined";
+  const [failedPool, setFailedPool] = useState<WorkerPoolManager>();
+  const [missingPoolTimedOut, setMissingPoolTimedOut] = useState(false);
+  const fallback = workerPool
+    ? failedPool === workerPool || !workerPool.isWorkingPool()
+    : typeof window === "undefined" || missingPoolTimedOut;
+  const ready =
+    fallback ||
+    (workerPool !== undefined && (readyPool === workerPool || workerPool.isInitialized()));
+
+  useEffect(() => {
+    if (workerPool || typeof window === "undefined") return;
+    const timeout = setTimeout(() => setMissingPoolTimedOut(true), DIFF_WORKER_INIT_TIMEOUT_MS);
+    return () => clearTimeout(timeout);
+  }, [workerPool]);
 
   useEffect(() => {
     if (ready || !workerPool) return;
 
     let mounted = true;
-    const finish = () => {
-      if (mounted) setReadyPool(workerPool);
-    };
-    // Failed pools use Pierre's existing main-thread highlighter.
-    void workerPool.initialize().then(finish, finish);
+    // Worker load failures can leave initialize() pending forever. Keep the viewer usable.
+    const timeout = setTimeout(() => {
+      if (mounted) setFailedPool(workerPool);
+    }, DIFF_WORKER_INIT_TIMEOUT_MS);
+    void workerPool.initialize().then(
+      () => {
+        if (mounted) setReadyPool(workerPool);
+      },
+      () => {
+        if (mounted) setFailedPool(workerPool);
+      },
+    );
     return () => {
       mounted = false;
+      clearTimeout(timeout);
     };
   }, [ready, workerPool]);
 
   return ready ? (
-    children
+    fallback ? (
+      <WorkerPoolContext value={undefined}>{children}</WorkerPoolContext>
+    ) : (
+      children
+    )
   ) : (
     <div
       role="status"

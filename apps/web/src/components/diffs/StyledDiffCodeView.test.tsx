@@ -281,6 +281,27 @@ describe("code-view worker lifecycle", () => {
     ).toContain("Plain text is ready.");
   });
 
+  it("shows code with the main-thread fallback when worker initialization never finishes", async () => {
+    testState.holdInitialization = true;
+    const held = new Promise<void>((resolve) => {
+      testState.onInitializationHeld = resolve;
+    });
+    await act(async () => {
+      renderer = create(renderViews(1));
+    });
+    await held;
+    expect(renderer!.root.findAllByProps({ role: "status" })).toHaveLength(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(renderer!.root.findAllByProps({ role: "status" })).toHaveLength(0);
+    expect(testState.renderPools.at(-1)).toBeUndefined();
+    expect(
+      renderer!.root.findByProps({ "data-code-file": "notes.txt" }).children.join(""),
+    ).toContain("Plain text is ready.");
+  });
+
   it("keeps an initializing pool until its last view closes and ignores late responses", async () => {
     testState.holdInitialization = true;
     const held = new Promise<void>((resolve) => {
