@@ -1,7 +1,10 @@
 import * as Context from "effect/Context";
+import * as Data from "effect/Data";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
+import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -56,6 +59,14 @@ const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 const VCS_PROCESS_CONCURRENCY = 8;
 const GITHUB_PROCESS_CONCURRENCY = 4;
+const CHECKPOINT_CAPTURE_RETRY_TIMES = 2;
+const CHECKPOINT_CAPTURE_RETRY_DELAY_MS = 75;
+
+/**
+ * Operation tag for checkpoint capture. Exported so the Git driver and this
+ * process boundary agree on which Git commands may retry transient failures.
+ */
+export const CHECKPOINT_CAPTURE_OPERATION = "GitVcsDriver.checkpoints.captureCheckpoint";
 
 const classifyNonZeroExit = (command: string, stderr: string): VcsProcessExitFailureKind => {
   const normalized = stderr.toLowerCase();
@@ -102,6 +113,21 @@ const classifyNonZeroExit = (command: string, stderr: string): VcsProcessExitFai
 
   return "command-failed";
 };
+
+/**
+ * Recognizes Git failures that are worth one more attempt under concurrent
+ * worktree access: index/ref lock contention and files that vanish between
+ * enumerate and stat. Classified from stderr before it is discarded; unknown
+ * or structural failures stay non-retryable.
+ */
+const isTransientGitExit = (stderr: string) =>
+  /unable to create [^\n]*\.lock['"]?: file exists/i.test(stderr) ||
+  /(?:unable to stat|lstat\(|error: open\()[^\n]+: no such file or directory/i.test(stderr);
+
+/** Internal signal: a transient failure the caller may retry; never crosses the service boundary. */
+class TransientGitExit extends Data.TaggedError("TransientGitExit")<{
+  readonly error: VcsProcessExitError;
+}> {}
 
 export const make = Effect.gen(function* () {
   const processRunner = yield* ProcessRunner.ProcessRunner;
@@ -165,15 +191,24 @@ export const make = Effect.gen(function* () {
     }
 
     if (!input.allowNonZeroExit && result.code !== 0) {
-      return yield* VcsProcessExitError.fromProcessExit(
+      const failureKind = classifyNonZeroExit(input.command, result.stderr);
+      const error = VcsProcessExitError.fromProcessExit(
         baseError,
         {
           exitCode: result.code,
           stderr: result.stderr,
           stderrTruncated: result.stderrTruncated,
         },
-        classifyNonZeroExit(input.command, result.stderr),
+        failureKind,
       );
+      if (
+        input.command === "git" &&
+        failureKind === "command-failed" &&
+        isTransientGitExit(result.stderr)
+      ) {
+        return yield* new TransientGitExit({ error });
+      }
+      return yield* error;
     }
 
     return {
@@ -189,7 +224,28 @@ export const make = Effect.gen(function* () {
 
   const run = Effect.fn("VcsProcess.run")(function* (input: VcsProcessInput) {
     const bounded = vcsProcesses.withPermits(1)(runUnbounded(input));
-    return yield* input.command === "gh" ? githubProcesses.withPermits(1)(bounded) : bounded;
+    const withPermits = input.command === "gh" ? githubProcesses.withPermits(1)(bounded) : bounded;
+    // Retry only a bounded number of transient checkpoint Git failures; re-acquires the process
+    // permit each attempt and keeps the caller's private index/tree and outer recovery deadline.
+    const retrying =
+      input.command === "git" && input.operation === CHECKPOINT_CAPTURE_OPERATION
+        ? withPermits.pipe(
+            Effect.tapError((error) =>
+              Effect.logDebug("checkpoint Git command failed", {
+                operation: input.operation,
+                errorTag: error._tag,
+              }),
+            ),
+            Effect.retry({
+              times: CHECKPOINT_CAPTURE_RETRY_TIMES,
+              while: (error): error is TransientGitExit => error._tag === "TransientGitExit",
+              schedule: Schedule.spaced(Duration.millis(CHECKPOINT_CAPTURE_RETRY_DELAY_MS)),
+            }),
+          )
+        : withPermits;
+    return yield* retrying.pipe(
+      Effect.catchTag("TransientGitExit", (transient) => Effect.fail(transient.error)),
+    );
   });
 
   return VcsProcess.of({ run });

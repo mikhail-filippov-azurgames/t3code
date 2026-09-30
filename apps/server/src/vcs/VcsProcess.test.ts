@@ -1,9 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { HostProcessWorkingDirectory } from "@t3tools/shared/hostProcess";
+import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -50,6 +52,114 @@ const captureProcessResult = (
   );
 
 describe("VcsProcess.run", () => {
+  it.effect.each([
+    {
+      name: "retries a transient lock failure and then succeeds",
+      stderr: (attempt: number) =>
+        attempt < 3 ? "fatal: Unable to create '/repo/.git/index.lock': File exists" : null,
+      expectedAttempts: 3,
+      succeeds: true,
+    },
+    {
+      name: "retries a transient missing-file failure and then succeeds",
+      stderr: (attempt: number) =>
+        attempt < 2 ? 'error: open("/repo/.git/file"): No such file or directory' : null,
+      expectedAttempts: 2,
+      succeeds: true,
+    },
+    {
+      name: "bounds persistent transient failures",
+      stderr: () => "fatal: Unable to create '/repo/.git/index.lock': File exists",
+      expectedAttempts: 3,
+      succeeds: false,
+    },
+    {
+      name: "does not retry a non-transient failure",
+      stderr: () => "fatal: index file corrupt",
+      expectedAttempts: 1,
+      succeeds: false,
+    },
+  ])("checkpoint capture $name", ({ stderr, expectedAttempts, succeeds }) =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const service = yield* VcsProcess.make.pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          ProcessRunner.ProcessRunner.of({
+            run: () =>
+              Effect.sync(() => {
+                attempts += 1;
+                const message = stderr(attempts);
+                return {
+                  stdout: "",
+                  stderr: message ?? "",
+                  code: ChildProcessSpawner.ExitCode(message === null ? 0 : 1),
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                };
+              }),
+          }),
+        ),
+      );
+      const fiber = yield* service
+        .run({
+          operation: VcsProcess.CHECKPOINT_CAPTURE_OPERATION,
+          command: "git",
+          args: ["add", "-A", "--", "."],
+          cwd: "/workspace",
+        })
+        .pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(Duration.millis(150));
+      const result = yield* Fiber.join(fiber);
+      expect(attempts).toBe(expectedAttempts);
+      assert.strictEqual(Exit.isSuccess(result), succeeds);
+      if (Exit.isFailure(result)) {
+        const error = Cause.findErrorOption(result.cause);
+        assert.isTrue(error._tag === "Some");
+        if (error._tag === "Some") {
+          assert.strictEqual(error.value._tag, "VcsProcessExitError");
+          if (error.value._tag === "VcsProcessExitError") {
+            expect(error.value.exitCode).toBe(1);
+          }
+        }
+      }
+    }),
+  );
+
+  it.effect("does not retry transient Git failures outside checkpoint capture", () =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      const service = yield* VcsProcess.make.pipe(
+        Effect.provideService(
+          ProcessRunner.ProcessRunner,
+          ProcessRunner.ProcessRunner.of({
+            run: () =>
+              Effect.sync(() => {
+                attempts += 1;
+                return {
+                  stdout: "",
+                  stderr: "fatal: Unable to create '/repo/.git/index.lock': File exists",
+                  code: ChildProcessSpawner.ExitCode(1),
+                  timedOut: false,
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                  stdoutInvalidUtf8: false,
+                  stderrInvalidUtf8: false,
+                };
+              }),
+          }),
+        ),
+      );
+      const error = yield* service.run(baseInput).pipe(Effect.flip);
+      expect(attempts).toBe(1);
+      expect(error).toBeInstanceOf(VcsProcessExitError);
+    }),
+  );
+
   it.effect("bounds a synthetic burst of GitHub API processes", () =>
     Effect.gen(function* () {
       const gate = yield* Deferred.make<void>();
