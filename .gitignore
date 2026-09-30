@@ -44,3 +44,7 @@ node_modules/
 
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+# Local research scratch; never belongs in the repo.
+benchmarks/
+typora-preview-smoke.md
