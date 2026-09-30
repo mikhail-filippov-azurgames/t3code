@@ -34,18 +34,16 @@ export type BoardCardStatus = typeof BoardCardStatus.Type;
 export const BoardCreatedBy = Schema.Literals(["human", "orchestrator"]);
 export type BoardCreatedBy = typeof BoardCreatedBy.Type;
 
-/**
- * Executor role vocabulary. The board card and the delegation policy both draw
- * from this list; each consumer aliases it under its own public name.
- */
-export const ExecutorRole = Schema.Literals([
+/** Executor role vocabulary shared by board cards and delegation policy. */
+export const EXECUTOR_ROLES = [
   "architecture",
   "implementation",
   "review",
   "test",
   "research",
   "general",
-]);
+] as const;
+export const ExecutorRole = Schema.Literals(EXECUTOR_ROLES);
 export type ExecutorRole = typeof ExecutorRole.Type;
 
 export const BoardCardOutcome = Schema.Literals(["succeeded", "failed", "cancelled"]);

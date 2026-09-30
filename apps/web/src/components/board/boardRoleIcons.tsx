@@ -1,9 +1,9 @@
 /**
  * Icons that identify board roles and the orchestrator mark.
  *
- * The orchestrator marker reuses the sidebar "Working" sky hue so a marked
- * chat reads the same everywhere; executor role icons stay neutral gray
- * because the role is metadata, not status.
+ * The orchestrator marker and the sidebar role glyphs share the sidebar
+ * "Working" sky hue so role work reads the same in the thread list; board
+ * view role icons stay neutral gray because the role is metadata, not status.
  *
  * @module components/board/boardRoleIcons
  */

@@ -8,12 +8,13 @@
  *
  * @module components/board/board.logic
  */
-import type {
-  BoardCard,
-  BoardCardEvent,
-  BoardCardStatus,
-  BoardExecutorRole,
-  BoardListResult,
+import {
+  EXECUTOR_ROLES,
+  type BoardCard,
+  type BoardCardEvent,
+  type BoardCardStatus,
+  type BoardExecutorRole,
+  type BoardListResult,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 
@@ -22,24 +23,17 @@ export const BOARD_COLUMNS: ReadonlyArray<{
   readonly label: string;
 }> = [
   { status: "todo", label: "To do" },
-  { status: "orchestrator", label: "Orchestrator" },
+  { status: "orchestrator", label: "Coordinator" },
   { status: "in_progress", label: "In progress" },
   { status: "review", label: "Review" },
   { status: "done", label: "Done" },
 ];
 
-export const BOARD_EXECUTOR_ROLES: ReadonlyArray<BoardExecutorRole> = [
-  "architecture",
-  "implementation",
-  "review",
-  "test",
-  "research",
-  "general",
-];
+export const BOARD_EXECUTOR_ROLES: ReadonlyArray<BoardExecutorRole> = EXECUTOR_ROLES;
 
 const STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
   todo: "To do",
-  orchestrator: "Orchestrator",
+  orchestrator: "Coordinator",
   in_progress: "In progress",
   review: "Review",
   done: "Done",

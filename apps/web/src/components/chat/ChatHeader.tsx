@@ -38,6 +38,9 @@ import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useT3ProjectFileScripts } from "~/hooks/useT3ProjectFileScripts";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { useBoardOrchestratorThreadKeys } from "../board/useBoardBackend";
+import { resolveBoardThreadActionsControlModel } from "../board/boardThreadActions.logic";
+import { useBoardThreadActions } from "../board/useBoardThreadActions";
+import { BoardThreadActionsControl } from "../board/BoardThreadActionsControl";
 import { OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "../board/boardRoleIcons";
 import { readLocalApi } from "~/localApi";
 import { threadEnvironment } from "../../state/threads";
@@ -61,6 +64,8 @@ interface ChatHeaderProps {
   activeProject: EnvironmentProject | null;
   openInCwd: string | null;
   activeProjectScripts: ReadonlyArray<ProjectScript> | undefined;
+  /** The active thread carries a delegation lineage, so it is a delegated child. */
+  hasDelegationParent: boolean;
   preferredScriptId: string | null;
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
@@ -130,6 +135,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeProject,
   openInCwd,
   activeProjectScripts,
+  hasDelegationParent,
   preferredScriptId,
   keybindings,
   availableEditors,
@@ -177,6 +183,25 @@ export const ChatHeader = memo(function ChatHeader({
   const activeThreadRef = useMemo(
     () => scopeThreadRef(activeThreadEnvironmentId, activeThreadId),
     [activeThreadEnvironmentId, activeThreadId],
+  );
+  // The toolbar control and the sidebar menu share one item set and one handler.
+  const runBoardThreadAction = useBoardThreadActions();
+  const boardThreadActions = useMemo(
+    () =>
+      resolveBoardThreadActionsControlModel({
+        isServerThread,
+        environmentId: activeThreadEnvironmentId,
+        primaryEnvironmentId,
+        isCoordinator: isOrchestrator,
+        hasDelegationParent,
+      }),
+    [
+      activeThreadEnvironmentId,
+      hasDelegationParent,
+      isOrchestrator,
+      isServerThread,
+      primaryEnvironmentId,
+    ],
   );
   const updateThreadMetadata = useAtomCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
@@ -406,7 +431,7 @@ export const ChatHeader = memo(function ChatHeader({
           {isServerThread && isOrchestrator ? (
             <Badge variant="secondary" size="sm" className="ml-1 shrink-0 gap-1">
               <OrchestratorIcon aria-hidden className={`size-3 ${ORCHESTRATOR_ICON_CLASS}`} />
-              Orchestrator
+              Coordinator
             </Badge>
           ) : null}
         </WorkspaceBreadcrumbItem>
@@ -432,6 +457,10 @@ export const ChatHeader = memo(function ChatHeader({
             onDeleteScript={onDeleteProjectScript}
           />
         )}
+        <BoardThreadActionsControl
+          model={boardThreadActions}
+          onSelect={(actionId) => void runBoardThreadAction(actionId, activeThreadId)}
+        />
         {showOpenInPicker && (
           <OpenInPicker
             environmentId={activeThreadEnvironmentId}

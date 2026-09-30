@@ -11,8 +11,10 @@ import { describe, it } from "vite-plus/test";
 import { assert } from "vite-plus/test";
 
 import {
+  BOARD_COLUMNS,
   boardEventsForCard,
   DEFAULT_BOARD_FILTERS,
+  boardStatusLabel,
   filterBoardCards,
   filterChatCandidates,
   groupBoardCardsByStatus,
@@ -21,6 +23,20 @@ import {
 } from "./board.logic";
 
 const ORCHESTRATOR = ThreadId.make("thread-orchestrator");
+
+describe("Phase 1 board status compatibility", () => {
+  it("keeps the orchestrator status value while presenting it as Coordinator", () => {
+    assert.deepEqual(
+      BOARD_COLUMNS.map(({ status }) => status),
+      ["todo", "orchestrator", "in_progress", "review", "done"],
+    );
+    assert.strictEqual(
+      BOARD_COLUMNS.find(({ status }) => status === "orchestrator")?.label,
+      "Coordinator",
+    );
+    assert.strictEqual(boardStatusLabel("orchestrator"), "Coordinator");
+  });
+});
 
 function makeCard(input: {
   readonly id: string;

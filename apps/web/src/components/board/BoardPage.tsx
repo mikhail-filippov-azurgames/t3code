@@ -129,7 +129,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
 
   const handleCreate = async (input: BoardCardDraft) => {
     if (environmentId === null || selectedOrchestratorId === null) {
-      throw new Error("Choose an orchestrator before creating a task.");
+      throw new Error("Choose a Coordinator before creating a task.");
     }
     const result = await createCard({
       environmentId,
@@ -171,7 +171,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     if (orchestratorShell === undefined) {
       toastManager.add({
         type: "error",
-        title: "Orchestrator chat unavailable",
+        title: "Coordinator chat unavailable",
         description: "Reconnect the environment and try again.",
       });
       return;
@@ -191,8 +191,8 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     if (AsyncResult.isSuccess(result)) {
       toastManager.add({
         type: "success",
-        title: "Request sent to the orchestrator",
-        description: "It will see the request in its thread.",
+        title: "Request sent to the Coordinator",
+        description: "The Coordinator will see the request in its thread.",
       });
       return;
     }
@@ -215,7 +215,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     if (environmentId === null) return;
     if (!skipUnmarkConfirm) {
       const confirmed = await readLocalApi()?.dialogs.confirm(
-        "Unmark this orchestrator? Its cards and delegated chats are deleted.",
+        "Remove this Coordinator? Its cards and delegated chats are deleted.",
         { variant: "destructive" },
       );
       if (!confirmed) return;
@@ -229,7 +229,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     }
     toastManager.add({
       type: "error",
-      title: "Could not unmark the orchestrator",
+      title: "Could not remove the Coordinator",
       description: boardFailureText(result.cause),
     });
   };
@@ -247,14 +247,14 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     if (AsyncResult.isSuccess(result)) {
       toastManager.add({
         type: "success",
-        title: "Brief resent",
-        description: "The orchestrator will see it in its thread.",
+        title: "Coordinator brief resent",
+        description: "The Coordinator will see it in its thread.",
       });
       return;
     }
     toastManager.add({
       type: "error",
-      title: "Could not resend the brief",
+      title: "Could not resend the Coordinator brief",
       description: boardFailureText(result.cause),
     });
   };
@@ -271,7 +271,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                 <Button
                   size="icon-sm"
                   variant="ghost"
-                  aria-label="Back to all orchestrators"
+                  aria-label="Back to all coordinators"
                   onClick={() => {
                     setSelectedOrchestratorId(null);
                     setSelectedCardId(null);
@@ -294,7 +294,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
             {selectedOrchestratorId === null ? (
               <Button size="sm" disabled={environmentId === null} onClick={() => setAddOpen(true)}>
                 <PlusIcon />
-                Add orchestrator
+                Add Coordinator
               </Button>
             ) : (
               <>
@@ -304,7 +304,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                   disabled={busy}
                   onClick={() => void handleRemoveOrchestrator(selectedOrchestratorId)}
                 >
-                  Unmark
+                  Remove Coordinator
                 </Button>
                 <Button
                   size="sm"
@@ -312,7 +312,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                   disabled={busy}
                   onClick={() => void handleResendBrief(selectedOrchestratorId)}
                 >
-                  Resend brief
+                  Resend Coordinator brief
                 </Button>
                 <Button size="sm" onClick={() => setCreateCardOpen(true)}>
                   <PlusIcon />
@@ -409,11 +409,11 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
             {selectedOrchestratorId === null && orchestrators.length === 0 && isLive ? (
               <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-border px-6 py-16 text-center">
                 <p className="text-sm text-muted-foreground">
-                  No orchestrators yet. Mark a chat as an orchestrator to start planning tasks.
+                  No coordinators yet. Mark a chat as a Coordinator to start planning tasks.
                 </p>
                 <Button size="sm" onClick={() => setAddOpen(true)}>
                   <PlusIcon />
-                  Add orchestrator
+                  Add Coordinator
                 </Button>
               </div>
             ) : (
