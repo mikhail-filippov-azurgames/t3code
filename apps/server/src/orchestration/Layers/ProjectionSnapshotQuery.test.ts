@@ -959,6 +959,51 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
     }),
   );
 
+  it.effect("links a request message to its concrete turn", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-turn-linkage");
+      const messageId = asMessageId("message-turn-linkage");
+      const createdAt = "2026-09-05T00:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, source_proposed_plan_thread_id,
+          source_proposed_plan_id, assistant_message_id, state, requested_at,
+          started_at, completed_at, checkpoint_turn_count, checkpoint_ref,
+          checkpoint_status, checkpoint_files_json
+        ) VALUES
+        (${threadId}, 'turn-linkage', ${messageId}, NULL, NULL, NULL,
+          'completed', ${createdAt}, ${createdAt}, ${createdAt}, NULL, NULL, NULL, '[]'),
+        (${threadId}, NULL, 'message-pending-linkage', NULL, NULL, NULL,
+          'pending', ${createdAt}, NULL, NULL, NULL, NULL, NULL, '[]')
+      `;
+      assert.deepEqual(
+        yield* query.getTurnByPendingMessageId({ threadId, messageId }),
+        Option.some({ turnId: asTurnId("turn-linkage"), state: "completed" }),
+      );
+      assert.equal(
+        (yield* query.getTurnByPendingMessageId({
+          threadId,
+          messageId: asMessageId("message-pending-linkage"),
+        }))._tag,
+        "None",
+      );
+      assert.equal(
+        (yield* query.getTurnByPendingMessageId({ threadId, messageId: asMessageId("missing") }))
+          ._tag,
+        "None",
+      );
+    }).pipe(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM projection_turns WHERE thread_id = 'thread-turn-linkage'`;
+        }).pipe(Effect.orDie),
+      ),
+    ),
+  );
+
   it.effect("keeps archived threads out of the main shell snapshot", () =>
     Effect.gen(function* () {
       const snapshotQuery = yield* ProjectionSnapshotQuery;
@@ -3667,6 +3712,304 @@ projectionSnapshotLayer("ProjectionSnapshotQuery activities by kind", (it) => {
         parentEnvironmentId: "env-1",
         role: "review",
       });
+      const archivedDetail = yield* query.getThreadDetailSnapshotIncludingArchived(
+        ThreadId.make("thread-archived-child"),
+        { turnLimit: 1 },
+      );
+      assert.strictEqual(Option.isSome(archivedDetail), true);
+      if (Option.isSome(archivedDetail)) {
+        assert.strictEqual(archivedDetail.value.thread.archivedAt, timestamp);
+        assert.strictEqual(archivedDetail.value.page?.threadSequence, 0);
+      }
+      const durableLineage =
+        yield* query.listActivitiesByKindIncludingArchived("delegation.created");
+      assert.deepStrictEqual(
+        durableLineage
+          .filter(({ threadId }) => threadId === "thread-archived-child")
+          .map(({ threadId, activity }) => [threadId, activity.kind]),
+        [["thread-archived-child", "delegation.created"]],
+      );
+    }),
+  );
+});
+
+projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) => {
+  it.effect("pages exact parent children and reads only bounded turn-scoped summary input", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-09-20T10:00:00.000Z";
+      const longReport = "child final report ".repeat(400);
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('memory-project', 'Memory', '/workspace', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          worktree_path, latest_turn_id, created_at, updated_at, archived_at, deleted_at,
+          pending_approval_count, pending_user_input_count
+        ) VALUES
+          ('memory-child-a', 'memory-project', 'First child', '{}', 'full-access', 'default',
+            '/workspace/a', 'memory-turn-a', ${timestamp}, ${timestamp}, NULL, NULL, 0, 0),
+          ('memory-child-b', 'memory-project', 'Archived child', '{}', 'full-access', 'default',
+            '/workspace/b', NULL, ${timestamp}, ${timestamp}, ${timestamp}, NULL, 0, 0),
+          ('memory-child-foreign', 'memory-project', 'Foreign child', '{}', 'full-access', 'default',
+            '/workspace/foreign', NULL, ${timestamp}, ${timestamp}, NULL, NULL, 0, 0)
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES
+          ('memory-lineage-a', 'memory-child-a', NULL, 'info', 'delegation.created', 'Created',
+            '{"version":1,"taskId":"memory-child-a","childThreadId":"memory-child-a","parentEnvironmentId":"env-memory","parentThreadId":"parent-memory","projectId":"memory-project","role":"implementation"}',
+            1, ${timestamp}),
+          ('memory-lineage-b', 'memory-child-b', NULL, 'info', 'delegation.created', 'Created',
+            '{"version":1,"taskId":"memory-child-b","childThreadId":"memory-child-b","parentEnvironmentId":"env-memory","parentThreadId":"parent-memory","projectId":"memory-project","role":"review"}',
+            1, ${timestamp}),
+          ('memory-lineage-foreign', 'memory-child-foreign', NULL, 'info', 'delegation.created', 'Created',
+            '{"version":1,"taskId":"memory-child-foreign","childThreadId":"memory-child-foreign","parentEnvironmentId":"env-other","parentThreadId":"parent-other","projectId":"memory-project","role":"review"}',
+            1, ${timestamp}),
+          ('memory-followup-b', 'memory-child-b', NULL, 'info', 'delegation.follow-up-queued', 'Follow-up queued',
+            '{"parentEnvironmentId":"env-memory","parentThreadId":"parent-memory","result":{"messageId":"memory-pending-message"}}',
+            2, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state, requested_at,
+          started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          'memory-child-a', 'memory-turn-a', NULL, 'memory-assistant-a', 'completed',
+          ${timestamp}, ${timestamp}, ${timestamp}, '[]'
+        ), (
+          'memory-child-b', 'memory-turn-b', NULL, NULL, 'completed',
+          ${timestamp}, ${timestamp}, ${timestamp}, '[]'
+        ), (
+          'memory-child-b', 'memory-turn-c', NULL, NULL, 'error',
+          ${timestamp}, ${timestamp}, ${timestamp}, '[]'
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        ) VALUES (
+          'memory-assistant-a', 'memory-child-a', 'memory-turn-a', 'assistant',
+          ${longReport}, 0, ${timestamp}, ${timestamp}
+        )
+      `;
+      for (let index = 1; index <= 25; index++) {
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES (
+            ${`memory-turn-event-${index}`}, 'memory-child-a', 'memory-turn-a', 'info',
+            'tool.completed', ${"evidence ".repeat(100)}, '{}', ${index + 1}, ${timestamp}
+          )
+        `;
+      }
+      yield* sql`
+        INSERT INTO projection_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES (
+          'memory-child-a', 'env-memory', 'parent-memory', 'memory-turn-a', ${timestamp},
+          'Outcome: done', 'model', '["memory-turn-a"]', 26, 'fingerprint', 'ready', NULL, 1, NULL, ${timestamp}
+        )
+      `;
+
+      const firstPage = yield* query.listDelegatedTaskMemoryRows({
+        parentEnvironmentId: "env-memory",
+        parentThreadId: ThreadId.make("parent-memory"),
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        firstPage.rows.map(({ taskId }) => taskId),
+        [ThreadId.make("memory-child-a")],
+      );
+      assert.equal(firstPage.hasMore, true);
+      assert.deepStrictEqual(firstPage.rows[0]?.summary?.sourceTurnIds, [
+        TurnId.make("memory-turn-a"),
+      ]);
+      assert.equal(firstPage.rows[0]?.summary?.watermark, 26);
+
+      const secondPage = yield* query.listDelegatedTaskMemoryRows({
+        parentEnvironmentId: "env-memory",
+        parentThreadId: ThreadId.make("parent-memory"),
+        afterTaskId: ThreadId.make("memory-child-a"),
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        secondPage.rows.map(({ taskId }) => taskId),
+        [ThreadId.make("memory-child-b")],
+      );
+      assert.equal(secondPage.rows[0]?.hasPendingFollowUp, true);
+      assert.equal(secondPage.hasMore, false);
+
+      const exactChild = yield* query.listDelegatedTaskMemoryRows({
+        parentEnvironmentId: "env-memory",
+        parentThreadId: ThreadId.make("parent-memory"),
+        taskId: ThreadId.make("memory-child-b"),
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        exactChild.rows.map(({ taskId }) => taskId),
+        [ThreadId.make("memory-child-b")],
+      );
+
+      const summaryInput = yield* query.getDelegatedTaskSummaryInput({
+        childThreadId: ThreadId.make("memory-child-a"),
+        sourceTurnId: TurnId.make("memory-turn-a"),
+      });
+      assert.equal(Option.isSome(summaryInput), true);
+      if (Option.isSome(summaryInput)) {
+        assert.equal(summaryInput.value.assistantText?.length, 5_000);
+        assert.equal(summaryInput.value.activities.length, 20);
+        assert.isAtMost(
+          Math.max(...summaryInput.value.activities.map(({ summary }) => summary.length)),
+          400,
+        );
+        assert.equal(summaryInput.value.threadWatermark, 26);
+        assert.equal(summaryInput.value.parentEnvironmentId, "env-memory");
+      }
+
+      // A terminal child turn remains discoverable after restart even when the
+      // parent callback was never appended. Archived children participate, and
+      // already-projected summaries do not consume recovery pages.
+      const recoveryPageOne = yield* query.listDelegatedTaskSummaryRecoveryCandidates({ limit: 1 });
+      assert.deepStrictEqual(
+        recoveryPageOne.rows.map(({ childThreadId, sourceTurnId }) => [
+          childThreadId,
+          sourceTurnId,
+        ]),
+        [[ThreadId.make("memory-child-b"), TurnId.make("memory-turn-b")]],
+      );
+      assert.equal(recoveryPageOne.rows[0]?.status, "completed");
+      assert.equal(recoveryPageOne.rows[0]?.parentThreadId, ThreadId.make("parent-memory"));
+      assert.equal(recoveryPageOne.hasMore, true);
+      const recoveryPageTwo = yield* query.listDelegatedTaskSummaryRecoveryCandidates({
+        afterChildThreadId: ThreadId.make("memory-child-b"),
+        afterSourceTurnId: TurnId.make("memory-turn-b"),
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        recoveryPageTwo.rows.map(({ childThreadId, sourceTurnId }) => [
+          childThreadId,
+          sourceTurnId,
+        ]),
+        [[ThreadId.make("memory-child-b"), TurnId.make("memory-turn-c")]],
+      );
+      assert.equal(recoveryPageTwo.rows[0]?.status, "failed");
+      assert.equal(recoveryPageTwo.hasMore, false);
+    }),
+  );
+
+  it.effect("keeps ambiguous legacy wake IDs scoped during completion recovery", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-09-26T08:00:00.000Z";
+      const parentThreadId = "parent-wake-ambiguity";
+      const tasks = [
+        { childThreadId: "child:a", turnId: "b:c", legacyWake: false },
+        { childThreadId: "child:a:b", turnId: "c", legacyWake: false },
+        { childThreadId: "same-turn-a", turnId: "shared-turn", legacyWake: true },
+        { childThreadId: "same-turn-b", turnId: "shared-turn", legacyWake: true },
+      ] as const;
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('wake-ambiguity-project', 'Wake ambiguity', '/workspace', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          created_at, updated_at, archived_at, deleted_at
+        ) VALUES
+          (${parentThreadId}, 'wake-ambiguity-project', 'Parent', '{}', 'full-access', 'default',
+            ${timestamp}, ${timestamp}, NULL, NULL),
+          ('child:a', 'wake-ambiguity-project', 'Colon child A', '{}', 'full-access', 'default',
+            ${timestamp}, ${timestamp}, NULL, NULL),
+          ('child:a:b', 'wake-ambiguity-project', 'Colon child B', '{}', 'full-access', 'default',
+            ${timestamp}, ${timestamp}, NULL, NULL),
+          ('same-turn-a', 'wake-ambiguity-project', 'Repeated turn A', '{}', 'full-access', 'default',
+            ${timestamp}, ${timestamp}, NULL, NULL),
+          ('same-turn-b', 'wake-ambiguity-project', 'Repeated turn B', '{}', 'full-access', 'default',
+            ${timestamp}, ${timestamp}, NULL, NULL)
+      `;
+      for (const [index, task] of tasks.entries()) {
+        const lineageId = `wake-ambiguity-lineage-${index}`;
+        const completionId = `wake-ambiguity-completion-${index}`;
+        const payload = `{"version":1,"childThreadId":"${task.childThreadId}","delegatedTurnId":"${task.turnId}","status":"completed","completedAt":"${timestamp}"}`;
+        const lineagePayload = `{"version":1,"childThreadId":"${task.childThreadId}","parentEnvironmentId":"env-wake-ambiguity","parentThreadId":"${parentThreadId}"}`;
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+          ) VALUES
+            (${lineageId}, ${task.childThreadId}, NULL, 'info', 'delegation.created', 'Created',
+              ${lineagePayload}, 1, ${timestamp}),
+            (${completionId}, ${parentThreadId}, NULL, 'info', 'delegation.completed', 'Completed',
+              ${payload}, ${index + 1}, ${timestamp})
+        `;
+        yield* sql`
+          INSERT INTO projection_turns (
+            thread_id, turn_id, pending_message_id, assistant_message_id, state, requested_at,
+            started_at, completed_at, checkpoint_files_json
+          ) VALUES (
+            ${task.childThreadId}, ${task.turnId}, NULL, NULL, 'completed',
+            ${timestamp}, ${timestamp}, ${timestamp}, '[]'
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_delegated_task_summaries (
+            child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+            summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+            error, attempt_count, retry_after, updated_at
+          ) VALUES (
+            ${task.childThreadId}, 'env-wake-ambiguity', ${parentThreadId}, ${task.turnId}, ${timestamp},
+            'Outcome: done', 'deterministic', ${`["${task.turnId}"]`}, 1,
+            ${`fingerprint-${index}`}, 'ready', NULL, 1, NULL, ${timestamp}
+          )
+        `;
+      }
+
+      for (const task of tasks) {
+        if (task.legacyWake) continue;
+        const pairKey = `${task.childThreadId.length}:${task.childThreadId}${task.turnId.length}:${task.turnId}`;
+        yield* sql`
+          INSERT INTO projection_thread_messages (
+            message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+          ) VALUES (
+            ${`delegation-wake:${pairKey}`}, ${parentThreadId}, NULL, 'system',
+            'Scoped wake result', 0, ${timestamp}, ${timestamp}
+          )
+        `;
+      }
+      yield* sql`
+        INSERT INTO projection_thread_messages (
+          message_id, thread_id, turn_id, role, text, is_streaming, created_at, updated_at
+        ) VALUES
+          ('delegation-wake:shared-turn', ${parentThreadId}, NULL, 'system', 'Legacy wake result', 0, ${timestamp}, ${timestamp}),
+          ('delegation-wake-turn:shared-turn', ${parentThreadId}, NULL, 'user', 'Ambiguous bare anchor', 0, ${timestamp}, ${timestamp}),
+          ('delegation-wake-turn:child:a:b:c', ${parentThreadId}, NULL, 'user', 'Ambiguous colon anchor', 0, ${timestamp}, ${timestamp})
+      `;
+
+      const candidates = yield* query.listDelegatedTaskSummaryRecoveryCandidates({ limit: 10 });
+      const scopedCandidates = candidates.rows.filter(
+        ({ parentThreadId: candidateParentThreadId }) =>
+          candidateParentThreadId === ThreadId.make(parentThreadId),
+      );
+      assert.deepStrictEqual(
+        scopedCandidates.map(({ childThreadId, sourceTurnId }) => [childThreadId, sourceTurnId]),
+        tasks
+          .map(({ childThreadId, turnId }) => [ThreadId.make(childThreadId), TurnId.make(turnId)])
+          .sort(
+            ([leftChild, leftTurn], [rightChild, rightTurn]) =>
+              String(leftChild).localeCompare(String(rightChild)) ||
+              String(leftTurn).localeCompare(String(rightTurn)),
+          ),
+      );
     }),
   );
 });

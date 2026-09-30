@@ -11,6 +11,7 @@ import {
   ProviderInstanceId,
   ProviderSetupError,
   type ProviderInstanceConfig,
+  type OrchestrationThread,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import {
@@ -50,7 +51,10 @@ import { loadDelegationPermissionEnvelope } from "../../provider/DelegationPermi
 import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
-import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import {
+  makeSqlitePersistenceLive,
+  SqlitePersistenceMemory,
+} from "../../persistence/Layers/Sqlite.ts";
 import {
   ProviderService,
   type ProviderServiceShape,
@@ -65,6 +69,8 @@ import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQu
 import * as ThreadBackgroundLiveness from "../ThreadBackgroundLiveness.ts";
 import * as ThreadPlanProgress from "../ThreadPlanProgress.ts";
 import {
+  __testing as providerCommandReactorTesting,
+  readQueuedTurnSendMarkers,
   providerErrorLabelFromInstanceHint,
   ProviderCommandReactorLive,
 } from "./ProviderCommandReactor.ts";
@@ -150,6 +156,582 @@ describe("ProviderCommandReactor", () => {
     createdBaseDirs.clear();
   });
 
+  effectIt.effect("replays an unconsumed queued start committed before reactor startup", () =>
+    Effect.gen(function* () {
+      const harness = yield* Effect.promise(() => createHarness({ deferReactorStart: true }));
+      const threadId = ThreadId.make("thread-1");
+      const providerSession: ProviderSession = {
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        status: "ready",
+        runtimeMode: "approval-required",
+        threadId,
+        resumeCursor: { opaque: "recovery-session" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      };
+      harness.runtimeSessions.push(providerSession);
+      const threadSession = {
+        threadId,
+        providerInstanceId: providerSession.providerInstanceId,
+        providerName: "codex",
+        status: "ready" as const,
+        runtimeMode: "approval-required" as const,
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: providerSession.updatedAt,
+      };
+      yield* harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.make("queued-start-session-before-reactor"),
+        threadId,
+        session: threadSession,
+        createdAt: providerSession.createdAt,
+      });
+      yield* harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("queued-start-before-reactor"),
+        threadId,
+        message: {
+          messageId: asMessageId("queued-message-before-reactor"),
+          role: "user",
+          text: "Deliver after startup recovery.",
+          attachments: [],
+        },
+        delegationConfigFingerprint: "recovery-config-fingerprint",
+        followUpBehavior: "queue",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+
+      yield* Effect.promise(() => harness.startReactor());
+      yield* Effect.promise(() => waitFor(() => harness.startSession.mock.calls.length === 1));
+
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    }),
+  );
+
+  describe("startup recovery of queued delegation follow-ups", () => {
+    async function createDeferredRecoveryHarness(input?: {
+      readonly dbPath?: string;
+      readonly skipBootstrap?: boolean;
+    }) {
+      const harness = await createHarness({
+        deferReactorStart: true,
+        ...(input?.dbPath !== undefined ? { dbPath: input.dbPath } : {}),
+        ...(input?.skipBootstrap === true ? { skipBootstrap: true } : {}),
+      });
+      const threadId = ThreadId.make("thread-1");
+      const now = "2026-01-01T00:00:00.000Z";
+      harness.runtimeSessions.push({
+        provider: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        status: "ready",
+        runtimeMode: "approval-required",
+        threadId,
+        resumeCursor: { opaque: "recovery-session" },
+        createdAt: now,
+        updatedAt: now,
+      });
+      const settings = await harness.runEffect(harness.serverSettings.getSettings);
+      const effectiveInstanceConfig =
+        deriveProviderInstanceConfigMap(settings)[ProviderInstanceId.make("codex")];
+      expect(effectiveInstanceConfig).toBeDefined();
+      if (effectiveInstanceConfig === undefined) throw new Error("missing codex config");
+      const capabilities = new Set<string>(["pull-requests", "orchestration"]);
+      if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+      if (settings.enableAgentDeviceAccess) capabilities.add("device");
+      const permissionEnvelope = await harness.runEffect(
+        loadDelegationPermissionEnvelope({
+          driverKind: effectiveInstanceConfig.driver,
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          instanceConfig: effectiveInstanceConfig,
+          environment: process.env,
+          workspaceRoot: "/tmp/provider-project",
+          worktreePath: "/tmp/provider-project",
+          branch: null,
+          t3McpCapabilities: capabilities,
+        }).pipe(Effect.provide(NodeServices.layer)),
+      );
+      expect(permissionEnvelope.status).toBe("verified");
+      if (permissionEnvelope.status !== "verified") throw new Error("envelope not verified");
+      const recoveryFingerprint = permissionEnvelope.fingerprint;
+      const setSession = (
+        commandId: string,
+        status: "ready" | "running",
+        activeTurnId: TurnId | null,
+        createdAt: string,
+      ) =>
+        harness.runEffect(
+          harness.engine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.make(commandId),
+            threadId,
+            session: {
+              threadId,
+              providerInstanceId: ProviderInstanceId.make("codex"),
+              providerName: "codex",
+              status,
+              runtimeMode: "approval-required",
+              activeTurnId,
+              lastError: null,
+              updatedAt: createdAt,
+            },
+            createdAt,
+          }),
+        );
+      const dispatchQueuedFollowUp = (
+        id: string,
+        text: string,
+        createdAt: string,
+        commandSuffix: string = id,
+      ) =>
+        harness.runEffect(
+          harness.engine.dispatch({
+            type: "thread.turn.start",
+            commandId: CommandId.make(`cmd-queued-${commandSuffix}`),
+            threadId,
+            message: {
+              messageId: asMessageId(`user-message-${id}`),
+              role: "user",
+              text,
+              attachments: [],
+            },
+            delegationConfigFingerprint: recoveryFingerprint,
+            followUpBehavior: "queue",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            createdAt,
+          }),
+        );
+      const dispatchClaim = (id: string, createdAt: string) =>
+        harness.runEffect(
+          harness.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-claim-${id}`),
+            threadId,
+            activity: {
+              id: EventId.make(`claim-${id}`),
+              tone: "info",
+              kind: "provider.turn.send.claimed",
+              summary: "Provider turn send claimed",
+              payload: { requestId: `user-message-${id}` },
+              turnId: null,
+              createdAt,
+            },
+            createdAt,
+          }),
+        );
+      const dispatchFailed = (id: string, createdAt: string) =>
+        harness.runEffect(
+          harness.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-recovery-turn-failed-${id}`),
+            threadId,
+            activity: {
+              id: EventId.make(`recovery-turn-failed-${id}`),
+              tone: "error",
+              kind: "provider.turn.start.failed",
+              summary: "Provider turn start failed",
+              payload: {
+                detail: "deterministic start failure",
+                requestId: `user-message-${id}`,
+              },
+              turnId: null,
+              createdAt,
+            },
+            createdAt,
+          }),
+        );
+      const dispatchBound = (id: string, createdAt: string, fingerprint: string) =>
+        harness.runEffect(
+          harness.engine.dispatch({
+            type: "thread.activity.append",
+            commandId: CommandId.make(`cmd-bound-${id}`),
+            threadId,
+            activity: {
+              id: EventId.make(`bound-${id}`),
+              tone: "info",
+              kind: "delegation.provider-bound",
+              summary: "Delegated task provider bound",
+              payload: {
+                version: 1,
+                taskId: "thread-1",
+                delegatedMessageId: `user-message-${id}`,
+                providerInstanceId: "codex",
+                driverKind: "codex",
+                providerConfigFingerprint: fingerprint,
+                observedAt: createdAt,
+              },
+              turnId: null,
+              createdAt,
+            },
+            createdAt,
+          }),
+        );
+      const readUncertainActivities = async () => {
+        const readModel = await harness.readModel();
+        return (
+          readModel.threads
+            .find((entry) => entry.id === ThreadId.make("thread-1"))
+            ?.activities.filter((activity) => activity.kind === "provider.turn.send.uncertain") ??
+          []
+        );
+      };
+      if (input?.skipBootstrap !== true) {
+        await setSession("cmd-recovery-session-ready", "ready", null, now);
+      }
+      return {
+        harness,
+        setSession,
+        dispatchQueuedFollowUp,
+        dispatchClaim,
+        dispatchFailed,
+        dispatchBound,
+        recoveryFingerprint,
+        readUncertainActivities,
+      };
+    }
+
+    it("silently skips a claimed follow-up whose turn already completed before startup", async () => {
+      const {
+        harness,
+        setSession,
+        dispatchQueuedFollowUp,
+        dispatchClaim,
+        readUncertainActivities,
+      } = await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("completed", "already done work", "2026-01-01T00:00:01.000Z");
+      await dispatchClaim("completed", "2026-01-01T00:00:02.000Z");
+      await setSession(
+        "cmd-recovery-turn-running",
+        "running",
+        asTurnId("turn-completed"),
+        "2026-01-01T00:00:03.000Z",
+      );
+      await setSession("cmd-recovery-turn-ready", "ready", null, "2026-01-01T00:00:04.000Z");
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await readUncertainActivities()).toEqual([]);
+    });
+
+    it("silently skips a legacy bound follow-up across a cold restart", async () => {
+      const dbDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-restart-"));
+      createdBaseDirs.add(dbDir);
+      const dbPath = NodePath.join(dbDir, "state.sqlite");
+      const first = await createDeferredRecoveryHarness({ dbPath });
+      await first.dispatchQueuedFollowUp("legacy", "legacy sent work", "2026-01-01T00:00:01.000Z");
+      await first.dispatchBound("legacy", "2026-01-01T00:00:02.000Z", first.recoveryFingerprint);
+      await first.setSession(
+        "cmd-legacy-turn-running",
+        "running",
+        asTurnId("turn-legacy"),
+        "2026-01-01T00:00:03.000Z",
+      );
+      await first.setSession("cmd-legacy-turn-ready", "ready", null, "2026-01-01T00:00:04.000Z");
+      await first.harness.dispose();
+
+      const second = await createDeferredRecoveryHarness({ dbPath, skipBootstrap: true });
+      await second.harness.startReactor();
+      await second.harness.drain();
+
+      expect(second.harness.startSession).not.toHaveBeenCalled();
+      expect(second.harness.sendTurn).not.toHaveBeenCalled();
+      expect(await second.readUncertainActivities()).toEqual([]);
+    });
+
+    it("flags a legacy bound follow-up without a recorded turn as uncertain", async () => {
+      const {
+        harness,
+        dispatchQueuedFollowUp,
+        dispatchBound,
+        recoveryFingerprint,
+        readUncertainActivities,
+      } = await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("legacy-lost", "legacy lost work", "2026-01-01T00:00:01.000Z");
+      await dispatchBound("legacy-lost", "2026-01-01T00:00:02.000Z", recoveryFingerprint);
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await readUncertainActivities()).toHaveLength(1);
+    });
+
+    it("flags a claimed follow-up with terminal-only completion as uncertain", async () => {
+      const {
+        harness,
+        setSession,
+        dispatchQueuedFollowUp,
+        dispatchClaim,
+        readUncertainActivities,
+      } = await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("terminal", "terminal work", "2026-01-01T00:00:01.000Z");
+      await dispatchClaim("terminal", "2026-01-01T00:00:02.000Z");
+      await setSession("cmd-recovery-terminal-ready", "ready", null, "2026-01-01T00:00:03.000Z");
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      const uncertain = await readUncertainActivities();
+      expect(uncertain).toHaveLength(1);
+      expect(uncertain[0]).toMatchObject({
+        payload: { requestId: "user-message-terminal" },
+      });
+    });
+
+    it("skips a queued follow-up that already failed before startup", async () => {
+      const { harness, dispatchQueuedFollowUp, dispatchFailed } =
+        await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("failed", "failed work", "2026-01-01T00:00:01.000Z");
+      await dispatchFailed("failed", "2026-01-01T00:00:02.000Z");
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.startSession).not.toHaveBeenCalled();
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+    });
+
+    it("recovers every unclaimed queued follow-up in log order", async () => {
+      const { harness, dispatchQueuedFollowUp } = await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("first", "first queued prompt", "2026-01-01T00:00:01.000Z");
+      await dispatchQueuedFollowUp("second", "second queued prompt", "2026-01-01T00:00:02.000Z");
+
+      await harness.startReactor();
+      await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+      await harness.drain();
+
+      expect(harness.sendTurn).toHaveBeenCalledTimes(2);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringContaining("first queued prompt"),
+        followUpBehavior: "queue",
+      });
+      expect(harness.sendTurn.mock.calls[1]?.[0]).toMatchObject({
+        input: expect.stringContaining("second queued prompt"),
+        followUpBehavior: "queue",
+      });
+      expect(harness.startSession).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not resend when the same request arrives after key-cache bypass", async () => {
+      const { harness, dispatchQueuedFollowUp } = await createDeferredRecoveryHarness();
+
+      await harness.startReactor();
+      await dispatchQueuedFollowUp("same", "single billed prompt", "2026-01-01T00:00:01.000Z");
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await dispatchQueuedFollowUp(
+        "same",
+        "single billed prompt",
+        "2026-01-01T00:00:02.000Z",
+        "same-redelivery",
+      );
+      await harness.drain();
+
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(harness.startSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("recovers a newer request despite a delayed unrelated active session", async () => {
+      const { harness, setSession, dispatchQueuedFollowUp } = await createDeferredRecoveryHarness();
+      await setSession(
+        "cmd-recovery-older-turn-running",
+        "running",
+        asTurnId("turn-older"),
+        "2026-01-01T00:00:01.000Z",
+      );
+      await dispatchQueuedFollowUp("newer", "newer queued prompt", "2026-01-01T00:00:02.000Z");
+      await setSession(
+        "cmd-recovery-older-turn-refresh",
+        "running",
+        asTurnId("turn-older"),
+        "2026-01-01T00:00:03.000Z",
+      );
+
+      await harness.startReactor();
+      await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+      await harness.drain();
+
+      expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+      expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+        input: expect.stringContaining("newer queued prompt"),
+        followUpBehavior: "queue",
+      });
+    });
+
+    it("flags a claimed send without a recorded turn as uncertain without resending", async () => {
+      const { harness, dispatchQueuedFollowUp, dispatchClaim, readUncertainActivities } =
+        await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("lost", "possibly lost prompt", "2026-01-01T00:00:01.000Z");
+      await dispatchClaim("lost", "2026-01-01T00:00:02.000Z");
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await readUncertainActivities()).toHaveLength(1);
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await readUncertainActivities()).toHaveLength(1);
+    });
+
+    it("silently skips a claimed send whose turn started", async () => {
+      const {
+        harness,
+        setSession,
+        dispatchQueuedFollowUp,
+        dispatchClaim,
+        readUncertainActivities,
+      } = await createDeferredRecoveryHarness();
+      await dispatchQueuedFollowUp("started", "started prompt", "2026-01-01T00:00:01.000Z");
+      await dispatchClaim("started", "2026-01-01T00:00:02.000Z");
+      await setSession(
+        "cmd-recovery-started-running",
+        "running",
+        asTurnId("turn-started"),
+        "2026-01-01T00:00:03.000Z",
+      );
+
+      await harness.startReactor();
+      await harness.drain();
+
+      expect(harness.sendTurn).not.toHaveBeenCalled();
+      expect(await readUncertainActivities()).toEqual([]);
+    });
+
+    it("does not rebill across a cold restart after the queued turn completed", async () => {
+      const dbDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3code-restart-"));
+      createdBaseDirs.add(dbDir);
+      const dbPath = NodePath.join(dbDir, "state.sqlite");
+      const first = await createDeferredRecoveryHarness({ dbPath });
+      await first.dispatchQueuedFollowUp("once", "run exactly once", "2026-01-01T00:00:01.000Z");
+
+      await first.harness.startReactor();
+      await waitFor(() => first.harness.sendTurn.mock.calls.length === 1);
+      await first.setSession(
+        "cmd-recovery-cold-running",
+        "running",
+        asTurnId("turn-once"),
+        "2026-01-01T00:00:02.000Z",
+      );
+      await first.setSession("cmd-recovery-cold-ready", "ready", null, "2026-01-01T00:00:03.000Z");
+      await first.harness.drain();
+      expect(first.harness.sendTurn).toHaveBeenCalledTimes(1);
+      await first.harness.dispose();
+
+      const second = await createDeferredRecoveryHarness({ dbPath, skipBootstrap: true });
+      await second.harness.startReactor();
+      await second.harness.drain();
+
+      expect(second.harness.sendTurn).not.toHaveBeenCalled();
+      expect(second.harness.startSession).not.toHaveBeenCalled();
+      expect(await second.readUncertainActivities()).toEqual([]);
+    });
+  });
+
+  describe("readQueuedTurnSendMarkers", () => {
+    const failedActivity = {
+      kind: "provider.turn.start.failed",
+      payload: { requestId: "user-message-a" },
+    };
+    const claimedActivity = {
+      kind: "provider.turn.send.claimed",
+      payload: { requestId: "user-message-a" },
+    };
+    const boundActivity = {
+      kind: "delegation.provider-bound",
+      payload: { delegatedMessageId: "user-message-a" },
+    };
+    const uncertainActivity = {
+      kind: "provider.turn.send.uncertain",
+      payload: { requestId: "user-message-a" },
+    };
+
+    it("reports no markers for an untouched request", () => {
+      expect(readQueuedTurnSendMarkers([], asMessageId("user-message-a"))).toEqual({
+        hasFailed: false,
+        hasClaim: false,
+        hasLegacyBound: false,
+        hasUncertainDiagnostic: false,
+      });
+    });
+
+    it("detects each marker kind for the requested message", () => {
+      expect(
+        readQueuedTurnSendMarkers(
+          [failedActivity, claimedActivity, boundActivity, uncertainActivity],
+          asMessageId("user-message-a"),
+        ),
+      ).toEqual({
+        hasFailed: true,
+        hasClaim: true,
+        hasLegacyBound: true,
+        hasUncertainDiagnostic: true,
+      });
+    });
+
+    it("treats a legacy provider binding as send evidence for its message", () => {
+      expect(readQueuedTurnSendMarkers([boundActivity], asMessageId("user-message-a"))).toEqual({
+        hasFailed: false,
+        hasClaim: false,
+        hasLegacyBound: true,
+        hasUncertainDiagnostic: false,
+      });
+      expect(
+        readQueuedTurnSendMarkers(
+          [
+            {
+              kind: "delegation.provider-bound",
+              payload: { delegatedMessageId: "user-message-b" },
+            },
+          ],
+          asMessageId("user-message-a"),
+        ),
+      ).toEqual({
+        hasFailed: false,
+        hasClaim: false,
+        hasLegacyBound: false,
+        hasUncertainDiagnostic: false,
+      });
+    });
+
+    it("ignores markers for other messages and non-object payloads", () => {
+      expect(
+        readQueuedTurnSendMarkers(
+          [
+            { kind: "provider.turn.send.claimed", payload: { requestId: "user-message-b" } },
+            { kind: "provider.turn.send.claimed", payload: null },
+            { kind: "provider.turn.send.claimed", payload: "user-message-a" },
+          ],
+          asMessageId("user-message-a"),
+        ),
+      ).toEqual({
+        hasFailed: false,
+        hasClaim: false,
+        hasLegacyBound: false,
+        hasUncertainDiagnostic: false,
+      });
+    });
+
+    it("returns the same markers on repeated evaluation", () => {
+      const activities = [claimedActivity];
+      const messageId = asMessageId("user-message-a");
+      expect(readQueuedTurnSendMarkers(activities, messageId)).toEqual(
+        readQueuedTurnSendMarkers(activities, messageId),
+      );
+    });
+  });
+
   describe("provider error attribution", () => {
     it("uses the current provider instance slug when current instance lookup fails", () => {
       expect(
@@ -179,6 +761,7 @@ describe("ProviderCommandReactor", () => {
     readonly requiresNewThreadForModelChange?: boolean;
     readonly unreadableHistory?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
+    readonly wakeDeliveryMarkerDispatchFailures?: number;
     readonly titleRegenerationBeforeStart?: "one" | "two";
     readonly serverActivation?: Effect.Effect<void>;
     readonly beforeReadySessionDispatch?: () => Effect.Effect<void>;
@@ -192,6 +775,8 @@ describe("ProviderCommandReactor", () => {
     ) => Effect.Effect<ProviderSession, ProviderServiceError>;
     readonly tryHandlePromptCommandEffect?: ProviderAuthService["Service"]["tryHandlePromptCommand"];
     readonly useLegacyProviderConfig?: boolean;
+    readonly dbPath?: string;
+    readonly skipBootstrap?: boolean;
   }) {
     const now = "2026-01-01T00:00:00.000Z";
     const baseDir =
@@ -285,7 +870,7 @@ describe("ProviderCommandReactor", () => {
         ),
       );
     });
-    const sendTurn = vi.fn((_: unknown) =>
+    const sendTurn = vi.fn((_: Parameters<ProviderServiceShape["sendTurn"]>[0]) =>
       Effect.succeed({
         threadId: ThreadId.make("thread-1"),
         turnId: asTurnId("turn-1"),
@@ -420,6 +1005,10 @@ describe("ProviderCommandReactor", () => {
       },
     };
 
+    const persistence =
+      input?.dbPath !== undefined
+        ? makeSqlitePersistenceLive(input.dbPath)
+        : SqlitePersistenceMemory;
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(ThreadBackgroundLiveness.layer),
@@ -428,24 +1017,38 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationEventStoreLive),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(RepositoryIdentityResolver.layer),
-      Layer.provide(SqlitePersistenceMemory),
+      Layer.provide(persistence),
     );
     const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
       Layer.provide(ThreadBackgroundLiveness.layer),
       Layer.provide(ThreadPlanProgress.layer),
       Layer.provide(RepositoryIdentityResolver.layer),
-      Layer.provide(SqlitePersistenceMemory),
+      Layer.provide(persistence),
     );
     let titleRegenerationCompletionDispatchAttempts = 0;
+    let wakeDeliveryMarkerDispatchAttempts = 0;
     const reactorOrchestrationLayer = Layer.effect(
       OrchestrationEngineService,
       Effect.gen(function* () {
         const engine = yield* OrchestrationEngineService;
         return {
           readEvents: engine.readEvents,
+          readPendingDelegatedTurnStarts: engine.readPendingDelegatedTurnStarts,
           readThreadEvents: engine.readThreadEvents,
           getThreadReplayStats: engine.getThreadReplayStats,
           dispatch: (command) => {
+            if (
+              command.type === "thread.activity.append" &&
+              command.activity.kind === "delegation.wake-delivered"
+            ) {
+              wakeDeliveryMarkerDispatchAttempts += 1;
+              if (
+                wakeDeliveryMarkerDispatchAttempts <=
+                (input?.wakeDeliveryMarkerDispatchFailures ?? 0)
+              ) {
+                return Effect.die(new Error("Injected wake delivery marker failure"));
+              }
+            }
             if (command.type === "thread.title.regeneration.complete") {
               titleRegenerationCompletionDispatchAttempts += 1;
               if (
@@ -524,7 +1127,7 @@ describe("ProviderCommandReactor", () => {
             : { providerInstances: { [modelSelection.instanceId]: providerInstanceConfig } },
         ),
       ),
-      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provideMerge(persistence),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), baseDir)),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -536,32 +1139,34 @@ describe("ProviderCommandReactor", () => {
     const serverSettings = await runtime.runPromise(Effect.service(ServerSettingsService));
     const runEffect = <A, E>(effect: Effect.Effect<A, E>) => runtime!.runPromise(effect);
 
-    await Effect.runPromise(
-      engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.make("cmd-project-create"),
-        projectId: asProjectId("project-1"),
-        title: "Provider Project",
-        workspaceRoot: "/tmp/provider-project",
-        defaultModelSelection: modelSelection,
-        createdAt: now,
-      }),
-    );
-    await Effect.runPromise(
-      engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.make("cmd-thread-create"),
-        threadId: ThreadId.make("thread-1"),
-        projectId: asProjectId("project-1"),
-        title: input?.initialTitle ?? "Thread",
-        modelSelection: modelSelection,
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt: now,
-      }),
-    );
+    if (input?.skipBootstrap !== true) {
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-project-create"),
+          projectId: asProjectId("project-1"),
+          title: "Provider Project",
+          workspaceRoot: "/tmp/provider-project",
+          defaultModelSelection: modelSelection,
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-thread-create"),
+          threadId: ThreadId.make("thread-1"),
+          projectId: asProjectId("project-1"),
+          title: input?.initialTitle ?? "Thread",
+          modelSelection: modelSelection,
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        }),
+      );
+    }
     if (input?.unreadableHistory === true) {
       // Metadata commands must not decode this unrelated message body.
       await runtime.runPromise(
@@ -628,8 +1233,15 @@ describe("ProviderCommandReactor", () => {
       );
     if (!input?.deferReactorStart) await startReactor();
     const drain = () => Effect.runPromise(reactor.drain);
+    const ownScope = scope;
+    const ownRuntime = runtime;
+    const dispose = async () => {
+      if (ownScope && ownRuntime) await ownRuntime.runPromise(Scope.close(ownScope, Exit.void));
+      if (ownRuntime) await ownRuntime.dispose();
+    };
 
     return {
+      dispose,
       engine,
       snapshotQuery,
       readModel: () => Effect.runPromise(snapshotQuery.getSnapshot()),
@@ -667,6 +1279,9 @@ describe("ProviderCommandReactor", () => {
       runEffect,
       get titleRegenerationCompletionDispatchAttempts() {
         return titleRegenerationCompletionDispatchAttempts;
+      },
+      get wakeDeliveryMarkerDispatchAttempts() {
+        return wakeDeliveryMarkerDispatchAttempts;
       },
     };
   }
@@ -3966,7 +4581,7 @@ describe("ProviderCommandReactor", () => {
           createdAt: now,
         }),
       ),
-    ).rejects.toThrow("turn turn-1 is not the active turn");
+    ).rejects.toThrow("Command produced no events.");
     await harness.drain();
     expect(harness.interruptTurn).not.toHaveBeenCalled();
   });
@@ -4913,6 +5528,316 @@ describe("ProviderCommandReactor", () => {
     }),
   );
 
+  it("keeps historical delivered wakes handled across legacy IDs and durable anchors", () => {
+    const threadId = ThreadId.make("thread-1");
+    const childThreadId = ThreadId.make("child-history");
+    const turnId = TurnId.make("turn-history");
+    const legacyWakeMessageId = MessageId.make(`delegation-wake:${turnId}`);
+    const encodedPair = `${String(childThreadId).length}:${childThreadId}${String(turnId).length}:${turnId}`;
+    const compositeWakeMessageId = MessageId.make(`delegation-wake:${encodedPair}`);
+    const directTurnMessageId = MessageId.make(`delegation-wake-turn:${childThreadId}:${turnId}`);
+    const legacyDirectTurnMessageId = MessageId.make(`delegation-wake-turn:${turnId}`);
+    const completion = {
+      kind: "delegation.completed",
+      payload: { childThreadId, delegatedTurnId: turnId },
+    };
+    const delivered = {
+      kind: "delegation.wake-delivered",
+      payload: { wakeMessageIds: [legacyWakeMessageId] },
+    };
+    const buildWake = (
+      messages: ReadonlyArray<{ id: MessageId; role: "system" | "user"; text: string }>,
+      activities: ReadonlyArray<{ kind: string; payload: unknown }>,
+      currentMessageId?: MessageId,
+    ) =>
+      providerCommandReactorTesting.buildWakeDelivery(
+        {
+          id: threadId,
+          messages,
+          activities,
+        } as unknown as OrchestrationThread,
+        currentMessageId,
+      );
+
+    expect(
+      buildWake(
+        [{ id: compositeWakeMessageId, role: "system", text: "Already delivered." }],
+        [completion, delivered],
+      ).inputPrefix,
+    ).toBeUndefined();
+    expect(
+      buildWake(
+        [
+          { id: legacyWakeMessageId, role: "system", text: "Already delivered." },
+          { id: directTurnMessageId, role: "user", text: "Historical wake turn." },
+        ],
+        [completion],
+      ).inputPrefix,
+    ).toBeUndefined();
+    expect(
+      buildWake(
+        [
+          { id: compositeWakeMessageId, role: "system", text: "Already delivered." },
+          { id: legacyDirectTurnMessageId, role: "user", text: "Legacy historical wake turn." },
+        ],
+        [completion],
+      ).inputPrefix,
+    ).toBeUndefined();
+    expect(
+      buildWake(
+        [
+          { id: compositeWakeMessageId, role: "system", text: "Current wake result." },
+          { id: legacyDirectTurnMessageId, role: "user", text: "Current wake turn." },
+        ],
+        [completion],
+        legacyDirectTurnMessageId,
+      ).inputPrefix,
+    ).toContain("Current wake result.");
+    expect(
+      buildWake(
+        [{ id: compositeWakeMessageId, role: "system", text: "Crash-gap result." }],
+        [completion],
+      ).inputPrefix,
+    ).toContain("Crash-gap result.");
+  });
+
+  it("scopes wake anchors across repeated turn IDs and colon-containing IDs", () => {
+    const threadId = ThreadId.make("thread-1");
+    const sharedTurnId = TurnId.make("shared-turn");
+    const childA = ThreadId.make("child:a");
+    const childB = ThreadId.make("child:b");
+    const pairA = `${String(childA).length}:${childA}${String(sharedTurnId).length}:${sharedTurnId}`;
+    const pairB = `${String(childB).length}:${childB}${String(sharedTurnId).length}:${sharedTurnId}`;
+    const wakeA = MessageId.make(`delegation-wake:${pairA}`);
+    const wakeB = MessageId.make(`delegation-wake:${pairB}`);
+    const safeAnchorA = MessageId.make(`delegation-wake-turn:${pairA}`);
+    const sharedLegacyAnchor = MessageId.make(`delegation-wake-turn:${sharedTurnId}`);
+    const completionA = {
+      kind: "delegation.completed",
+      payload: { childThreadId: childA, delegatedTurnId: sharedTurnId },
+    };
+    const completionB = {
+      kind: "delegation.completed",
+      payload: { childThreadId: childB, delegatedTurnId: sharedTurnId },
+    };
+    const buildWake = (
+      messages: ReadonlyArray<{ id: MessageId; role: "system" | "user"; text: string }>,
+      activities = [completionA, completionB],
+    ) =>
+      providerCommandReactorTesting.buildWakeDelivery({
+        id: threadId,
+        messages,
+        activities,
+      } as unknown as OrchestrationThread);
+
+    const scoped = buildWake([
+      { id: wakeA, role: "system", text: "Result A" },
+      { id: wakeB, role: "system", text: "Result B" },
+      { id: safeAnchorA, role: "user", text: "Wake A" },
+    ]).inputPrefix;
+    expect(scoped).not.toContain("Result A");
+    expect(scoped).toContain("Result B");
+
+    const ambiguousLegacy = buildWake([
+      { id: wakeA, role: "system", text: "Result A" },
+      { id: wakeB, role: "system", text: "Result B" },
+      { id: sharedLegacyAnchor, role: "user", text: "Ambiguous old wake" },
+    ]).inputPrefix;
+    expect(ambiguousLegacy).toContain("Result A");
+    expect(ambiguousLegacy).toContain("Result B");
+
+    const colonChildA = ThreadId.make("child:a");
+    const colonTurnA = TurnId.make("b:c");
+    const colonChildB = ThreadId.make("child:a:b");
+    const colonTurnB = TurnId.make("c");
+    const colonPairA = `${String(colonChildA).length}:${colonChildA}${String(colonTurnA).length}:${colonTurnA}`;
+    const colonPairB = `${String(colonChildB).length}:${colonChildB}${String(colonTurnB).length}:${colonTurnB}`;
+    const colonWakeA = MessageId.make(`delegation-wake:${colonPairA}`);
+    const colonWakeB = MessageId.make(`delegation-wake:${colonPairB}`);
+    const collidingOldAnchor = MessageId.make(`delegation-wake-turn:${colonChildA}:${colonTurnA}`);
+    const colonPrefix = buildWake(
+      [
+        { id: colonWakeA, role: "system", text: "Colon result A" },
+        { id: colonWakeB, role: "system", text: "Colon result B" },
+        { id: collidingOldAnchor, role: "user", text: "Ambiguous colon anchor" },
+      ],
+      [
+        {
+          kind: "delegation.completed",
+          payload: { childThreadId: colonChildA, delegatedTurnId: colonTurnA },
+        },
+        {
+          kind: "delegation.completed",
+          payload: { childThreadId: colonChildB, delegatedTurnId: colonTurnB },
+        },
+      ],
+    ).inputPrefix;
+    expect(collidingOldAnchor).toBe(
+      MessageId.make(`delegation-wake-turn:${colonChildB}:${colonTurnB}`),
+    );
+    expect(colonPrefix).toContain("Colon result A");
+    expect(colonPrefix).toContain("Colon result B");
+  });
+
+  it("omits an anchored historical completion from later parent prompts", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const childThreadId = ThreadId.make("child-historical-prompt");
+    const turnId = TurnId.make("historical-prompt-turn");
+    const wakeMessageId = MessageId.make(`delegation-wake:${turnId}`);
+    const directTurnMessageId = MessageId.make(`delegation-wake-turn:${childThreadId}:${turnId}`);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.system.append",
+        commandId: CommandId.make("historical-prompt-wake"),
+        threadId,
+        message: {
+          messageId: wakeMessageId,
+          text: "Historical child result that must not be replayed.",
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("historical-prompt-completion"),
+        threadId,
+        activity: {
+          id: EventId.make("historical-prompt-completion"),
+          tone: "info",
+          kind: "delegation.completed",
+          summary: "Historical delegated child completed",
+          payload: { childThreadId, delegatedTurnId: turnId },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.user.append",
+        commandId: CommandId.make("historical-prompt-direct-turn"),
+        threadId,
+        message: {
+          messageId: directTurnMessageId,
+          text: "Historical child completion wake turn.",
+          attachments: [],
+        },
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("later-parent-request"),
+        threadId,
+        message: {
+          messageId: MessageId.make("later-parent-request-message"),
+          role: "user",
+          text: "Handle the next task.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const input = harness.sendTurn.mock.calls[0]?.[0].input;
+    expect(typeof input).toBe("string");
+    if (typeof input !== "string") throw new Error("Provider input was not captured");
+    expect(input).not.toContain("Historical child result that must not be replayed.");
+    await harness.dispose();
+  });
+
+  it("fails closed on unreadable history for a synthetic wake and keeps the result eligible", async () => {
+    const harness = await createHarness({ unreadableHistory: true });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const childThreadId = ThreadId.make("child-unreadable-wake");
+    const turnId = TurnId.make("unreadable-wake-turn");
+    const pair = `${String(childThreadId).length}:${childThreadId}${String(turnId).length}:${turnId}`;
+    const wakeMessageId = MessageId.make(`delegation-wake:${pair}`);
+    const directTurnMessageId = MessageId.make(`delegation-wake-turn:${pair}`);
+    const completion = {
+      kind: "delegation.completed",
+      payload: { childThreadId, delegatedTurnId: turnId },
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.system.append",
+        commandId: CommandId.make("unreadable-wake-message"),
+        threadId,
+        message: { messageId: wakeMessageId, text: "Durable result must survive read failure." },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("unreadable-wake-completion"),
+        threadId,
+        activity: {
+          id: EventId.make("unreadable-wake-completion"),
+          tone: "info",
+          kind: "delegation.completed",
+          summary: "Delegated child completed",
+          payload: completion.payload,
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("unreadable-synthetic-wake"),
+        threadId,
+        message: {
+          messageId: directTurnMessageId,
+          role: "user",
+          text: "Child completion wake.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await harness.drain();
+
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+    expect(harness.wakeDeliveryMarkerDispatchAttempts).toBe(0);
+    const laterMessageId = MessageId.make("unreadable-wake-later-request");
+    const retryable = providerCommandReactorTesting.buildWakeDelivery(
+      {
+        id: threadId,
+        messages: [
+          { id: wakeMessageId, role: "system", text: "Durable result must survive read failure." },
+          { id: directTurnMessageId, role: "user", text: "Child completion wake." },
+          { id: laterMessageId, role: "user", text: "Later request." },
+        ],
+        activities: [
+          completion,
+          {
+            kind: "provider.turn.start.failed",
+            payload: { requestId: directTurnMessageId, detail: "history read failed" },
+          },
+        ],
+      } as unknown as OrchestrationThread,
+      laterMessageId,
+    );
+    expect(retryable.inputPrefix).toContain("Durable result must survive read failure.");
+  });
+
   it("prepends an undelivered delegation wake and records one durable delivery marker", async () => {
     const harness = await createHarness();
     const now = "2026-01-01T00:00:00.000Z";
@@ -4992,6 +5917,105 @@ describe("ProviderCommandReactor", () => {
         .find((entry) => entry.id === threadId)
         ?.activities.filter((activity) => activity.kind === "delegation.wake-delivered"),
     ).toHaveLength(1);
+  });
+
+  it("keeps the successful direct send anchored when its delivery marker append fails", async () => {
+    const harness = await createHarness({ wakeDeliveryMarkerDispatchFailures: 1 });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const childThreadId = ThreadId.make("child-marker-failure");
+    const childTurnId = asTurnId("child-terminal-turn");
+    const pair = `${String(childThreadId).length}:${childThreadId}${String(childTurnId).length}:${childTurnId}`;
+    const wakeMessageId = MessageId.make(`delegation-wake:${pair}`);
+    const directTurnMessageId = MessageId.make(`delegation-wake-turn:${pair}`);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.system.append",
+        commandId: CommandId.make("cmd-direct-wake-message"),
+        threadId,
+        message: { messageId: wakeMessageId, text: "Delegated child completed. Preview: done." },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make("cmd-direct-wake-completion"),
+        threadId,
+        activity: {
+          id: EventId.make("direct-wake-completion"),
+          tone: "info",
+          kind: "delegation.completed",
+          summary: "Delegated child completed",
+          payload: { childThreadId, delegatedTurnId: childTurnId },
+          turnId: null,
+          createdAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(String(directTurnMessageId)),
+        threadId,
+        message: {
+          messageId: directTurnMessageId,
+          role: "user",
+          text: "Continue after the child result.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(() => harness.wakeDeliveryMarkerDispatchAttempts === 1);
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(harness.sendTurn).toHaveBeenCalledTimes(1);
+    expect(thread?.messages.some((message) => message.id === directTurnMessageId)).toBe(true);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "delegation.wake-delivered"),
+    ).toBe(false);
+
+    const target = {
+      instanceId: ProviderInstanceId.make("museCode"),
+      model: "muse-spark-1.3",
+    };
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make("cmd-switch-after-marker-failure"),
+        threadId,
+        modelSelection: target,
+      }),
+    );
+    await harness.drain();
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-handoff-after-marker-failure"),
+        threadId,
+        message: {
+          messageId: MessageId.make("handoff-after-marker-failure"),
+          role: "user",
+          text: "Continue after switching providers.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    const handoffInput = harness.sendTurn.mock.calls[1]?.[0].input;
+    expect(typeof handoffInput).toBe("string");
+    if (typeof handoffInput !== "string") throw new Error("Handoff input was not captured");
+    expect(handoffInput).toContain("<previous_provider_conversation>");
+    expect(handoffInput).not.toContain("Delegated child completed. Preview: done.");
   });
 
   it("leaves a turn without wakes unchanged", async () => {

@@ -222,6 +222,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
           dispatch: (command) => Effect.sync(() => ({ sequence: commands.push(command) })),
           readEvents: () => Stream.empty,
+          readPendingDelegatedTurnStarts: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused"),
           streamDomainEvents: Stream.empty,
@@ -327,6 +328,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
           dispatch: () => Effect.die("must not dispatch for a scanner skip"),
           readEvents: () => Stream.empty,
+          readPendingDelegatedTurnStarts: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused"),
           streamDomainEvents: Stream.empty,
@@ -392,6 +394,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
             return Effect.succeed({ sequence: 1 });
           },
           readEvents: () => Stream.empty,
+          readPendingDelegatedTurnStarts: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused"),
           streamDomainEvents: Stream.empty,
@@ -463,6 +466,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
           dispatch: () => Effect.die("must not replay history or settle active work"),
           readEvents: () => Stream.empty,
+          readPendingDelegatedTurnStarts: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused"),
           streamDomainEvents: Stream.empty,
@@ -501,6 +505,7 @@ it.layer(NodeServices.layer)("AgentSessionImporter", (it) => {
         const engine = OrchestrationEngine.OrchestrationEngineService.of({
           dispatch: (command) => Effect.sync(() => ({ sequence: commands.push(command) })),
           readEvents: () => Stream.empty,
+          readPendingDelegatedTurnStarts: () => Stream.empty,
           readThreadEvents: () => Stream.empty,
           getThreadReplayStats: () => Effect.die("unused"),
           streamDomainEvents: Stream.empty,

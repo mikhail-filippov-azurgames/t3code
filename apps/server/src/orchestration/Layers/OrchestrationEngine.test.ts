@@ -345,6 +345,7 @@ describe("OrchestrationEngine", () => {
           return savedEvent;
         }),
       readFromSequence: () => Stream.empty,
+      readPendingDelegatedTurnStarts: () => Stream.empty,
       readAll: () =>
         Stream.fail(
           new PersistenceSqlError({
@@ -454,9 +455,17 @@ describe("OrchestrationEngine", () => {
           getFullThreadDiffContext: () => Effect.succeed(Option.none()),
           getThreadRuntimeContext: () => Effect.die("unused"),
           getTurnStartMessage: () => Effect.die("unused"),
+          getTurnByPendingMessageId: () => Effect.die("unused"),
           getThreadShellById: () => Effect.succeed(Option.none()),
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
+          listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+          listDelegatedTaskSummaryRecoveryCandidates: () =>
+            Effect.succeed({ rows: [], hasMore: false }),
+          getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
+          getThreadDetailSnapshotIncludingArchived: () => Effect.succeedNone,
+          listDelegatedTaskMemoryRows: () => Effect.succeed({ rows: [], hasMore: false }),
+          getDelegatedTaskSummaryInput: () => Effect.succeedNone,
           searchThreads: () => Effect.succeed({ matches: [] }),
         }),
       ),
@@ -1496,6 +1505,7 @@ describe("OrchestrationEngine", () => {
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
+      readPendingDelegatedTurnStarts: () => Stream.empty,
       readAll() {
         return Stream.fromIterable(events);
       },
@@ -1736,6 +1746,7 @@ describe("OrchestrationEngine", () => {
       readFromSequence(sequenceExclusive) {
         return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
       },
+      readPendingDelegatedTurnStarts: () => Stream.empty,
       readAll() {
         return Stream.fromIterable(events);
       },

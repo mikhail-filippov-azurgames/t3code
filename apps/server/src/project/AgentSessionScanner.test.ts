@@ -61,8 +61,15 @@ const makeProjectionSnapshotQueryLayer = (importedWorkspaceRoots: ReadonlyArray<
     getThreadShellById: () => Effect.die("unused"),
     getThreadRuntimeContext: () => Effect.die("unused"),
     getTurnStartMessage: () => Effect.die("unused"),
+    getTurnByPendingMessageId: () => Effect.die("unused"),
     getThreadDetailById: () => Effect.die("unused"),
     getThreadDetailSnapshot: () => Effect.die("unused"),
+    listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+    listDelegatedTaskSummaryRecoveryCandidates: () => Effect.succeed({ rows: [], hasMore: false }),
+    getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
+    getThreadDetailSnapshotIncludingArchived: () => Effect.succeedNone,
+    listDelegatedTaskMemoryRows: () => Effect.succeed({ rows: [], hasMore: false }),
+    getDelegatedTaskSummaryInput: () => Effect.succeedNone,
     searchThreads: () => Effect.die("unused"),
   });
 

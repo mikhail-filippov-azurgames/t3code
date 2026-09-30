@@ -17,6 +17,7 @@ import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { CalendarReactor } from "../../background/CalendarReactor.ts";
 import * as BoardReactor from "../BoardReactor.ts";
+import * as DelegatedTaskSummaryReactor from "../DelegatedTaskSummaryReactor.ts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -120,6 +121,15 @@ describe("OrchestrationReactor", () => {
             drain: Effect.void,
           }),
         ),
+        Layer.provideMerge(
+          Layer.succeed(DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor, {
+            start: () => {
+              started.push("delegated-task-summary-reactor");
+              return Effect.void;
+            },
+            drain: Effect.void,
+          }),
+        ),
       ),
     );
 
@@ -137,6 +147,7 @@ describe("OrchestrationReactor", () => {
       "pull-request-sync-reactor",
       "agent-awareness-relay",
       "board-reactor",
+      "delegated-task-summary-reactor",
     ]);
 
     await Effect.runPromise(Scope.close(scope, Exit.void));

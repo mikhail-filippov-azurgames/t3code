@@ -25,6 +25,8 @@ import {
   type HostPowerSnapshot,
   MessageId,
   parseCalendarCron,
+  ProviderDriverKind,
+  type ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import { compareDateTimeStrings } from "@t3tools/shared/dateTime";
@@ -35,9 +37,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ORCHESTRATION_COMMAND_NO_EVENTS_DETAIL } from "../orchestration/Layers/OrchestrationEngine.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import { CalendarEventRepository } from "../persistence/Services/CalendarEvents.ts";
 import { CalendarNotices } from "./CalendarNotices.ts";
 import * as HostPowerMonitor from "./HostPowerMonitor.ts";
@@ -196,12 +202,22 @@ export class CalendarReactor extends Context.Service<
 >()("t3/background/CalendarReactor") {}
 
 /** @public Service construction is part of the canonical Effect module API. */
+const isProviderDriverKind = Schema.is(ProviderDriverKind);
+
+/**
+ * One fire attempt: `fired` spent sweep budget, `deferred` leaves the slot due
+ * for a later sweep inside the grace window, `settled` advanced the schedule.
+ */
+type CalendarFireVerdict = "fired" | "deferred" | "settled";
+
 export const make = Effect.gen(function* () {
   const repository = yield* CalendarEventRepository;
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const hostPower = yield* HostPowerMonitor.HostPowerMonitor;
   const notices = yield* CalendarNotices;
+  const snapshots = yield* ProjectionSnapshotQuery;
+  const providerService = yield* ProviderService;
 
   const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
@@ -248,6 +264,155 @@ export const make = Effect.gen(function* () {
       threadId,
     });
 
+  // Best-effort explainer for a skipped slot; never blocks the schedule.
+  const settleInvalidContinueFire = Effect.fn("CalendarReactor.settleInvalidContinueFire")(
+    function* (
+      event: CalendarEvent,
+      threadId: ThreadId | null,
+      slotKey: string,
+      scheduledAt: string,
+      firedAt: string,
+      reason: string,
+    ) {
+      yield* Effect.logWarning("calendar event fire skipped: invalid continue target", {
+        eventId: event.eventId,
+        ...(threadId !== null ? { threadId } : {}),
+        reason,
+      });
+      if (threadId !== null) {
+        yield* engine
+          .dispatch({
+            type: "thread.message.system.append",
+            commandId: CommandId.make(`calendar:invalid:${slotKey}`),
+            threadId,
+            message: {
+              messageId: MessageId.make(`calendar:invalid:${slotKey}`),
+              text: `Scheduled run skipped: ${reason} (calendar event ${event.eventId}, slot ${scheduledAt}).`,
+            },
+            createdAt: firedAt,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.failCause(cause)
+                : Effect.logWarning("calendar invalid-target notice failed", {
+                    eventId: event.eventId,
+                    cause: Cause.pretty(cause),
+                  }),
+            ),
+          );
+      }
+      yield* recordNotice(event, "skipped-missed", scheduledAt, firedAt, threadId);
+      yield* repository.recordMissed({
+        eventId: event.eventId,
+        missedAt: scheduledAt,
+        nextFireAt: nextFireAtFor(event, firedAt),
+        updatedAt: firedAt,
+      });
+    },
+  );
+
+  // Read-only provider lookup. Only a typed unknown-instance settles the
+  // slot; anything else (registry hiccup, defect) propagates so the sweep
+  // retries the still-due slot inside the grace window instead of closing it.
+  const lookupInstanceInfo = (instanceId: ProviderInstanceId) =>
+    providerService.getInstanceInfo(instanceId).pipe(
+      Effect.asSome,
+      Effect.catchTag("ProviderUnsupportedError", () => Effect.succeed(Option.none())),
+    );
+
+  type ContinueFirePlan =
+    | { readonly kind: "fire" }
+    | { readonly kind: "deferred" }
+    | { readonly kind: "settled" };
+
+  // Existing continue thread: busy defers, unknown/incompatible closes, a
+  // cross-driver target repoints durably before the turn starts. The turn
+  // always carries the explicit event selection: with the durable meta ahead
+  // of it the pair is the accepted cross-driver signal, while a stale reader
+  // rejects the override loudly instead of starting the old driver silently.
+  // Ordering holds because dispatches commit in call order and the provider
+  // reactor drains one ordered queue, so meta-updated lands before the turn.
+  const planContinueThreadFire = Effect.fn("CalendarReactor.planContinueThreadFire")(function* (
+    event: CalendarEvent,
+    threadId: ThreadId,
+    slotKey: string,
+    scheduledAt: string,
+    firedAt: string,
+  ) {
+    const shell = Option.getOrUndefined(yield* snapshots.getThreadShellById(threadId));
+    if (shell === undefined) {
+      yield* settleInvalidContinueFire(
+        event,
+        null,
+        slotKey,
+        scheduledAt,
+        firedAt,
+        `thread '${threadId}' no longer exists`,
+      );
+      return { kind: "settled" } as const;
+    }
+    if (shell.session?.status === "starting" || shell.session?.status === "running") {
+      return { kind: "deferred" } as const;
+    }
+    // Same authority rule as a UI provider switch: live session first.
+    const currentInstanceId = shell.session?.providerInstanceId ?? shell.modelSelection.instanceId;
+    const currentInfo = yield* lookupInstanceInfo(currentInstanceId);
+    const desiredInfo = yield* lookupInstanceInfo(event.modelSelection.instanceId);
+    if (Option.isNone(currentInfo) || Option.isNone(desiredInfo)) {
+      const missing = Option.isNone(desiredInfo)
+        ? event.modelSelection.instanceId
+        : currentInstanceId;
+      yield* settleInvalidContinueFire(
+        event,
+        threadId,
+        slotKey,
+        scheduledAt,
+        firedAt,
+        `provider instance '${missing}' is not configured in this build`,
+      );
+      return { kind: "settled" } as const;
+    }
+    if (!isProviderDriverKind(desiredInfo.value.driverKind)) {
+      yield* settleInvalidContinueFire(
+        event,
+        threadId,
+        slotKey,
+        scheduledAt,
+        firedAt,
+        `provider instance '${event.modelSelection.instanceId}' uses unknown provider driver '${desiredInfo.value.driverKind}'`,
+      );
+      return { kind: "settled" } as const;
+    }
+    if (currentInfo.value.driverKind !== desiredInfo.value.driverKind) {
+      // Durable target first; the turn below repeats it explicitly so a
+      // stale reader fails loudly instead of starting the old driver.
+      yield* engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.make(`calendar:meta:${slotKey}`),
+        threadId,
+        modelSelection: event.modelSelection,
+      });
+      return { kind: "fire" } as const;
+    }
+    if (
+      event.modelSelection.instanceId !== currentInstanceId &&
+      currentInfo.value.continuationIdentity.continuationKey !==
+        desiredInfo.value.continuationIdentity.continuationKey
+    ) {
+      yield* settleInvalidContinueFire(
+        event,
+        threadId,
+        slotKey,
+        scheduledAt,
+        firedAt,
+        `thread '${threadId}' cannot switch from instance '${currentInstanceId}' to '${event.modelSelection.instanceId}' because their provider resume state is incompatible`,
+      );
+      return { kind: "settled" } as const;
+    }
+    return { kind: "fire" } as const;
+  });
+
   const fire = Effect.fn("CalendarReactor.fire")(function* (event: CalendarEvent) {
     const firedAt = yield* nowIso;
     const scheduledAt = event.nextFireAt;
@@ -257,6 +422,14 @@ export const make = Effect.gen(function* () {
     let threadId: ThreadId;
     if (existingThreadId !== null) {
       threadId = existingThreadId;
+      const plan = yield* planContinueThreadFire(
+        event,
+        existingThreadId,
+        slotKey,
+        scheduledAt,
+        firedAt,
+      );
+      if (plan.kind !== "fire") return plan.kind;
     } else {
       threadId = ThreadId.make(yield* crypto.randomUUIDv4);
       yield* engine.dispatch({
@@ -294,7 +467,23 @@ export const make = Effect.gen(function* () {
       createdAt: firedAt,
     });
 
-    yield* notify(threadId, event, "started", scheduledAt, firedAt);
+    // A crash between notify and recordFire replays the persisted notice as a
+    // zero-event duplicate; that replay proves the turn already fired, so the
+    // schedule still advances instead of looping on the same slot. Matching
+    // stays narrow: any other rejection (e.g. a deleted thread) still fails.
+    yield* notify(threadId, event, "started", scheduledAt, firedAt).pipe(
+      Effect.catchTag("OrchestrationCommandInvariantError", (error) =>
+        error.commandType === "thread.message.system.append" &&
+        error.detail === ORCHESTRATION_COMMAND_NO_EVENTS_DETAIL
+          ? Effect.void
+          : Effect.fail(error),
+      ),
+      Effect.catchTag("OrchestrationCommandPreviouslyRejectedError", (error) =>
+        error.detail.includes(ORCHESTRATION_COMMAND_NO_EVENTS_DETAIL)
+          ? Effect.void
+          : Effect.fail(error),
+      ),
+    );
     yield* recordNotice(event, "started", scheduledAt, firedAt, threadId);
     yield* repository.recordFire({
       eventId: event.eventId,
@@ -302,6 +491,7 @@ export const make = Effect.gen(function* () {
       nextFireAt: nextFireAtFor(event, scheduledAt),
       updatedAt: firedAt,
     });
+    return "fired" as const;
   });
 
   // Collapse a stale slot: one miss, the schedule advanced from now, and the
@@ -335,15 +525,22 @@ export const make = Effect.gen(function* () {
     yield* recordNotice(event, "skipped-missed", scheduledAt, observedAt, event.threadId);
   });
 
+  // Deferred slots stay due without spending budget; the next sweep retries
+  // them while the grace window holds, then the miss path settles them.
   const fireOnSweep = (event: CalendarEvent, label: string, failed?: Set<string>) =>
     fire(event).pipe(
+      Effect.tap((verdict) =>
+        Effect.sync(() => {
+          if (verdict === "deferred") failed?.add(event.eventId);
+        }),
+      ),
       Effect.catchCause((cause) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
         failed?.add(event.eventId);
         return Effect.logWarning(label, {
           eventId: event.eventId,
           cause: Cause.pretty(cause),
-        });
+        }).pipe(Effect.as("settled" as CalendarFireVerdict));
       }),
     );
 
@@ -365,8 +562,9 @@ export const make = Effect.gen(function* () {
           leftDueInGrace = true;
           continue;
         }
-        budget -= 1;
-        yield* fireOnSweep(event, "calendar event fire failed at startup");
+        const verdict = yield* fireOnSweep(event, "calendar event fire failed at startup");
+        if (verdict === "fired") budget -= 1;
+        else if (verdict === "deferred") leftDueInGrace = true;
         continue;
       }
       yield* collapseMissedSlot(event, observedAt, power);
@@ -403,8 +601,8 @@ export const make = Effect.gen(function* () {
         .filter((event) => isWithinFireGrace(event.nextFireAt, observedAt))
         .sort(compareDueCalendarEvents)[0];
       if (next === undefined || budget <= 0) break;
-      yield* fireOnSweep(next, "calendar event fire failed", failed);
-      budget -= 1;
+      const verdict = yield* fireOnSweep(next, "calendar event fire failed", failed);
+      if (verdict === "fired") budget -= 1;
     }
   });
 

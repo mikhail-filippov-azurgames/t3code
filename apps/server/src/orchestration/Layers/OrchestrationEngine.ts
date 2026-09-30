@@ -54,6 +54,14 @@ const isOrchestrationCommandPreviouslyRejectedError = Schema.is(
 );
 const isOrchestrationCommandIdConflictError = Schema.is(OrchestrationCommandIdConflictError);
 
+/**
+ * Zero-event dispatch detail: the decider accepted the command but produced
+ * no events (e.g. a redelivered duplicate notice). Recoverable-dispatch
+ * callers match on this shared detail to tell a replayed duplicate from a
+ * real rejection; narrowing further by command tag stays at the call site.
+ */
+export const ORCHESTRATION_COMMAND_NO_EVENTS_DETAIL = "Command produced no events.";
+
 interface CommandEnvelope {
   command: OrchestrationCommand;
   origin: OrchestrationClientOrigin | undefined;
@@ -289,7 +297,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
               if (lastSavedEvent === null) {
                 return yield* new OrchestrationCommandInvariantError({
                   commandType: envelope.command.type,
-                  detail: "Command produced no events.",
+                  detail: ORCHESTRATION_COMMAND_NO_EVENTS_DETAIL,
                 });
               }
 
@@ -422,6 +430,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive, limit) =>
     eventStore.readFromSequence(fromSequenceExclusive, limit);
 
+  const readPendingDelegatedTurnStarts: OrchestrationEngineShape["readPendingDelegatedTurnStarts"] =
+    () => eventStore.readPendingDelegatedTurnStarts();
+
   const readThreadEvents: OrchestrationEngineShape["readThreadEvents"] = ({ threadId, ...range }) =>
     eventStore.readAggregateRange({ ...range, aggregateKind: "thread", aggregateId: threadId });
 
@@ -449,6 +460,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   return {
     readEvents,
+    readPendingDelegatedTurnStarts,
     readThreadEvents,
     getThreadReplayStats,
     dispatch,

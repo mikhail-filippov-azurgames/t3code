@@ -10,7 +10,9 @@ import type {
   AgentSessionImportSource,
   ApprovalRequestId,
   CheckpointRef,
+  IsoDateTime,
   MessageId,
+  DelegationCompletedActivityPayload,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
   OrchestrationProject,
@@ -26,12 +28,64 @@ import type {
   OrchestrationThreadShell,
   ProjectId,
   ThreadId,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Option from "effect/Option";
 import type * as Effect from "effect/Effect";
 
 import type { ProjectionRepositoryError } from "../../persistence/Errors.ts";
+import type { ProjectionTurnState } from "../../persistence/Services/ProjectionTurns.ts";
+import type {
+  DelegatedSummarySource,
+  DelegatedSummaryState,
+} from "../../persistence/Services/DelegatedTaskSummaries.ts";
+
+export interface DelegatedTaskMemoryRow {
+  readonly taskId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly role: string;
+  readonly title: string;
+  readonly updatedAt: IsoDateTime;
+  readonly worktreePath: string | null;
+  readonly latestTurnId: TurnId | null;
+  readonly latestTurnState: ProjectionTurnState | null;
+  readonly hasPendingApprovals: boolean;
+  readonly hasPendingUserInput: boolean;
+  readonly hasPendingFollowUp: boolean;
+  readonly threadWatermark: number;
+  readonly summary: null | {
+    readonly sourceTurnId: TurnId;
+    readonly text: string;
+    readonly source: DelegatedSummarySource;
+    readonly sourceTurnIds: ReadonlyArray<TurnId>;
+    readonly watermark: number;
+    readonly state: DelegatedSummaryState;
+    readonly error: string | null;
+  };
+}
+
+export interface DelegatedTaskSummaryInputSnapshot {
+  readonly projectId: ProjectId;
+  readonly parentEnvironmentId: string;
+  readonly parentThreadId: ThreadId;
+  readonly branch: string | null;
+  readonly worktreePath: string | null;
+  readonly assistantText: string | null;
+  readonly activities: ReadonlyArray<{ readonly kind: string; readonly summary: string }>;
+  readonly threadWatermark: number;
+}
+
+export interface DelegatedTaskSummaryRecoveryCandidate {
+  readonly parentThreadId: ThreadId;
+  readonly childThreadId: ThreadId;
+  readonly sourceTurnId: TurnId;
+  readonly status: DelegationCompletedActivityPayload["status"];
+  readonly outputStatus: DelegationCompletedActivityPayload["outputStatus"] | null;
+  readonly completedAt: IsoDateTime;
+  readonly resultExcerpt: string | null;
+  readonly terminalError: string | null;
+}
 
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
@@ -81,6 +135,37 @@ export interface ProjectionThreadDetailQuery {
  * ProjectionSnapshotQueryShape - Service API for read-model snapshots.
  */
 export interface ProjectionSnapshotQueryShape {
+  /** Keyset-paged direct child index, with bounded summary and latest-follow-up projection. */
+  readonly listDelegatedTaskMemoryRows: (input: {
+    readonly parentEnvironmentId: string;
+    readonly parentThreadId: ThreadId;
+    readonly afterTaskId?: ThreadId;
+    readonly taskId?: ThreadId;
+    readonly limit: number;
+  }) => Effect.Effect<
+    { readonly rows: ReadonlyArray<DelegatedTaskMemoryRow>; readonly hasMore: boolean },
+    ProjectionRepositoryError
+  >;
+
+  /** Small turn-scoped input for summary generation; never hydrates a full transcript. */
+  readonly getDelegatedTaskSummaryInput: (input: {
+    readonly childThreadId: ThreadId;
+    readonly sourceTurnId: TurnId;
+  }) => Effect.Effect<Option.Option<DelegatedTaskSummaryInputSnapshot>, ProjectionRepositoryError>;
+
+  /** Bounded keyset scan of terminal delegated child turns needing a summary or parent notification recovery. */
+  readonly listDelegatedTaskSummaryRecoveryCandidates: (input: {
+    readonly afterChildThreadId?: ThreadId;
+    readonly afterSourceTurnId?: TurnId;
+    readonly limit: number;
+  }) => Effect.Effect<
+    {
+      readonly rows: ReadonlyArray<DelegatedTaskSummaryRecoveryCandidate>;
+      readonly hasMore: boolean;
+    },
+    ProjectionRepositoryError
+  >;
+
   /** Read the latest request or resolution without loading the thread history. */
   readonly getUserInputActivity: (input: {
     readonly threadId: ThreadId;
@@ -95,6 +180,14 @@ export interface ProjectionSnapshotQueryShape {
   readonly listActivitiesByKind: (
     kind: string,
   ) => Effect.Effect<ReadonlyArray<OrchestrationThreadActivity>, ProjectionRepositoryError>;
+
+  /** Same durable activity read, including archived but not deleted threads. */
+  readonly listActivitiesByKindIncludingArchived: (
+    kind: string,
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly threadId: ThreadId; readonly activity: OrchestrationThreadActivity }>,
+    ProjectionRepositoryError
+  >;
 
   /**
    * Read the lightweight command snapshot used to bootstrap the in-memory
@@ -248,9 +341,31 @@ export interface ProjectionSnapshotQueryShape {
   >;
 
   /**
+   * Read the concrete turn recorded for one request message, if any. Links a
+   * request to the turn that consumed it via the persisted pending message id,
+   * so startup recovery can tell a sent turn from a claimed-but-lost send.
+   */
+  readonly getTurnByPendingMessageId: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) => Effect.Effect<
+    Option.Option<{
+      readonly turnId: TurnId;
+      readonly state: ProjectionTurnState;
+    }>,
+    ProjectionRepositoryError
+  >;
+
+  /**
    * Read a single active thread detail snapshot by id.
    */
   readonly getThreadDetailById: (
+    threadId: ThreadId,
+    query?: ProjectionThreadDetailQuery,
+  ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
+
+  /** Internal durable-memory read; includes archived, non-deleted threads. */
+  readonly getThreadDetailByIdIncludingArchived: (
     threadId: ThreadId,
     query?: ProjectionThreadDetailQuery,
   ) => Effect.Effect<Option.Option<OrchestrationThread>, ProjectionRepositoryError>;
@@ -272,6 +387,12 @@ export interface ProjectionSnapshotQueryShape {
    * collection-level activity pruning.
    */
   readonly getThreadDetailSnapshot: (
+    threadId: ThreadId,
+    window?: OrchestrationThreadDetailWindow,
+  ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;
+
+  /** Paginated transcript read that includes archived, non-deleted threads. */
+  readonly getThreadDetailSnapshotIncludingArchived: (
     threadId: ThreadId,
     window?: OrchestrationThreadDetailWindow,
   ) => Effect.Effect<Option.Option<OrchestrationThreadDetailSnapshot>, ProjectionRepositoryError>;

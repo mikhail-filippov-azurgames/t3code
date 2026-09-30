@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { formatTokens } from "@t3tools/shared/usageFormat";
@@ -57,6 +58,12 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { canReplaceThreadTitle } from "../threadTitles.ts";
 import { BOARD_ORCHESTRATOR_TURN_TEXT } from "../boardWakePrompt.ts";
+import { scrubDelegatedTaskText } from "../../DelegatedTaskMemoryText.ts";
+import {
+  delegatedChildTurnKey,
+  handledDelegationWakeMessageIds,
+  unambiguousLegacyDelegationWakeIds,
+} from "../delegatedTaskWake.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerTaskKey = (threadId: ThreadId, taskId: string) => `${threadId}:${taskId}`;
@@ -65,6 +72,8 @@ const DELEGATION_MODEL_OBSERVED_ACTIVITY = "delegation.model-observed";
 const DELEGATION_COMPLETED_ACTIVITY = "delegation.completed";
 const DELEGATION_WAKE_MESSAGE_PREFIX = "delegation-wake:";
 const DELEGATION_WAKE_DELIVERED_ACTIVITY = "delegation.wake-delivered";
+const PROVIDER_TURN_START_FAILED_ACTIVITY = "provider.turn.start.failed";
+
 const BOARD_START_MESSAGE_PREFIX = "board-start:";
 const BOARD_START_TURN_MESSAGE_PREFIX = "board-start-turn:";
 const BOARD_START_DRAIN_MESSAGE_PREFIX = "board-start-drain:";
@@ -1059,7 +1068,7 @@ const make = Effect.gen(function* () {
   });
 
   const DELEGATION_WAKE_TURN_MESSAGE_TEXT =
-    "Delegated child finished. The result is included above. React to it and act on it if needed.";
+    "A delegated child finished. Read the bounded preview above. If it is insufficient for your decision, use task_read with the child task ID to read the full transcript.";
 
   // A running/starting orchestration session (including waiting-for-input),
   // a still-active projected turn (running), or a queued start (pending
@@ -1098,29 +1107,173 @@ const make = Effect.gen(function* () {
     readonly delegatedTurnId: TurnId;
     readonly completedAt: string;
   }) {
+    const wakeSuffix = delegatedChildTurnKey(input.childThreadId, input.delegatedTurnId);
+    const wakeMessageId = MessageId.make(`${DELEGATION_WAKE_MESSAGE_PREFIX}${wakeSuffix}`);
+    const legacyWakeMessageId = MessageId.make(
+      `${DELEGATION_WAKE_MESSAGE_PREFIX}${input.delegatedTurnId}`,
+    );
+    const directTurnMessageId = MessageId.make(`delegation-wake-turn:${wakeSuffix}`);
+    const legacyCompositeDirectTurnMessageId = MessageId.make(
+      `delegation-wake-turn:${input.childThreadId}:${input.delegatedTurnId}`,
+    );
+    const legacyDirectTurnMessageId = MessageId.make(
+      `delegation-wake-turn:${input.delegatedTurnId}`,
+    );
+    const drainTurnMessageId = MessageId.make(
+      `delegation-wake-drain:${input.parentThreadId}:${wakeSuffix}`,
+    );
+    const legacyDrainTurnMessageId = MessageId.make(
+      `delegation-wake-drain:${input.parentThreadId}:${input.delegatedTurnId}`,
+    );
+    const [
+      directTurn,
+      drainTurn,
+      legacyCompositeDirectTurn,
+      legacyDirectTurn,
+      legacyDrainTurn,
+      deliveredActivities,
+      parentShell,
+    ] = yield* Effect.all([
+      projectionThreadMessages.getByMessageId({ messageId: directTurnMessageId }),
+      projectionThreadMessages.getByMessageId({ messageId: drainTurnMessageId }),
+      projectionThreadMessages.getByMessageId({ messageId: legacyCompositeDirectTurnMessageId }),
+      projectionThreadMessages.getByMessageId({ messageId: legacyDirectTurnMessageId }),
+      projectionThreadMessages.getByMessageId({ messageId: legacyDrainTurnMessageId }),
+      projectionThreadActivityRepository.listByThreadId({
+        threadId: input.parentThreadId,
+        activityKinds: [DELEGATION_COMPLETED_ACTIVITY, DELEGATION_WAKE_DELIVERED_ACTIVITY],
+      }),
+      projectionSnapshotQuery.getThreadShellById(input.parentThreadId),
+    ]);
+    const unambiguousLegacyIds = unambiguousLegacyDelegationWakeIds({
+      threadId: String(input.parentThreadId),
+      activities: deliveredActivities,
+    });
+    if (
+      Option.isSome(directTurn) ||
+      Option.isSome(drainTurn) ||
+      (Option.isSome(legacyCompositeDirectTurn) &&
+        unambiguousLegacyIds.has(String(legacyCompositeDirectTurnMessageId))) ||
+      (Option.isSome(legacyDirectTurn) &&
+        unambiguousLegacyIds.has(String(legacyDirectTurnMessageId))) ||
+      (Option.isSome(legacyDrainTurn) &&
+        unambiguousLegacyIds.has(String(legacyDrainTurnMessageId))) ||
+      Option.isNone(parentShell)
+    ) {
+      return;
+    }
+    const wakeWasDelivered = deliveredActivities.some(
+      (activity) =>
+        Predicate.isObject(activity.payload) &&
+        Array.isArray(activity.payload.wakeMessageIds) &&
+        activity.payload.wakeMessageIds.some(
+          (messageId) =>
+            messageId === wakeMessageId ||
+            (messageId === legacyWakeMessageId && unambiguousLegacyIds.has(messageId)),
+        ),
+    );
+    if (wakeWasDelivered) return;
     if (!(yield* delegationWakeTargetIsIdle(input.parentThreadId))) {
       return;
     }
-    const shell = Option.getOrUndefined(
-      yield* projectionSnapshotQuery.getThreadShellById(input.parentThreadId),
-    );
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
-      commandId: CommandId.make(
-        `delegation-wake-turn:${input.childThreadId}:${input.delegatedTurnId}`,
-      ),
+      commandId: CommandId.make(String(directTurnMessageId)),
       threadId: input.parentThreadId,
       message: {
-        messageId: MessageId.make(
-          `delegation-wake-turn:${input.childThreadId}:${input.delegatedTurnId}`,
-        ),
+        messageId: directTurnMessageId,
         role: "user",
         text: DELEGATION_WAKE_TURN_MESSAGE_TEXT,
         attachments: [],
       },
-      runtimeMode: shell?.runtimeMode ?? "full-access",
-      interactionMode: shell?.interactionMode ?? "default",
+      runtimeMode: parentShell.value.runtimeMode,
+      interactionMode: parentShell.value.interactionMode,
       createdAt: input.completedAt,
+    });
+  });
+
+  const persistDelegationCompletedWake = Effect.fnUntraced(function* (input: {
+    readonly parentThreadId: ThreadId;
+    readonly childThreadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly status: DelegationCompletedActivityPayload["status"];
+    readonly outputStatus?: DelegationCompletedActivityPayload["outputStatus"];
+    readonly completedAt: string;
+    readonly assistantText: string | null;
+    readonly terminalError?: string;
+  }) {
+    const safeAssistantText =
+      input.assistantText === null ? "" : scrubDelegatedTaskText(input.assistantText);
+    const reportedOutputStatus =
+      input.status === "completed"
+        ? (input.outputStatus ?? (safeAssistantText.length > 0 ? "available" : "unavailable"))
+        : undefined;
+    const outputStatus =
+      reportedOutputStatus === "available" && safeAssistantText.length === 0
+        ? "unavailable"
+        : reportedOutputStatus === "empty" && safeAssistantText.length > 0
+          ? "unavailable"
+          : reportedOutputStatus;
+    const terminalErrorExcerpt =
+      input.terminalError === undefined
+        ? undefined
+        : truncateDetail(scrubDelegatedTaskText(input.terminalError), 200);
+    const resultExcerpt =
+      input.status !== "completed"
+        ? undefined
+        : outputStatus === "available"
+          ? truncateDetail(safeAssistantText, 200)
+          : outputStatus === "empty"
+            ? "Complete provider history confirms no assistant text was produced."
+            : "Assistant output unavailable; the provider turn completed and was not replayed.";
+    const childTurnKey = delegatedChildTurnKey(input.childThreadId, input.turnId);
+    const activityId = `provider:delegation-completed:${childTurnKey}`;
+    const wakeMessageId = MessageId.make(`delegation-wake:${childTurnKey}`);
+    const activityPayload = {
+      version: 1 as const,
+      childThreadId: input.childThreadId,
+      delegatedTurnId: input.turnId,
+      status: input.status,
+      ...(outputStatus !== undefined ? { outputStatus } : {}),
+      completedAt: input.completedAt,
+      ...(resultExcerpt !== undefined ? { resultExcerpt } : {}),
+      ...(terminalErrorExcerpt !== undefined ? { terminalError: terminalErrorExcerpt } : {}),
+    } satisfies DelegationCompletedActivityPayload;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(`${activityId}:append`),
+      threadId: input.parentThreadId,
+      activity: {
+        id: EventId.make(activityId),
+        tone: input.status === "completed" ? "info" : "error",
+        kind: DELEGATION_COMPLETED_ACTIVITY,
+        summary: `Delegated child ${input.status}`,
+        payload: activityPayload,
+        turnId: null,
+        createdAt: input.completedAt,
+      },
+      createdAt: input.completedAt,
+    });
+
+    const preview =
+      resultExcerpt ?? terminalErrorExcerpt ?? "No final result preview is available.";
+    const taskReadHint = `Full child transcript: use task_read with taskId "${input.childThreadId}".`;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.message.system.append",
+      commandId: CommandId.make(`${activityId}:message`),
+      threadId: input.parentThreadId,
+      message: {
+        messageId: wakeMessageId,
+        text: `Delegated child ${input.childThreadId} ${input.status}. Preview: ${preview}. ${taskReadHint}`,
+      },
+      createdAt: input.completedAt,
+    });
+
+    yield* dispatchDelegationWakeAutoTurn({
+      parentThreadId: input.parentThreadId,
+      childThreadId: input.childThreadId,
+      delegatedTurnId: input.turnId,
+      completedAt: input.completedAt,
     });
   });
 
@@ -1132,22 +1285,22 @@ const make = Effect.gen(function* () {
       threadId: event.threadId,
       turnId,
     });
-    if (Option.isNone(turnOption) || turnOption.value.pendingMessageId === null) return;
-
-    const childActivities = yield* projectionThreadActivityRepository.listByThreadId({
-      threadId: event.threadId,
-    });
-    const lineage = childActivities.findLast(
-      (activity) =>
-        activity.kind === DELEGATION_CREATED_ACTIVITY &&
-        Predicate.isObject(activity.payload) &&
-        activity.payload.childThreadId === event.threadId &&
-        typeof activity.payload.parentThreadId === "string" &&
-        activity.payload.delegatedMessageId === turnOption.value.pendingMessageId,
-    );
-    if (!lineage || !Predicate.isObject(lineage.payload)) return;
-
-    const parentThreadId = ThreadId.make(String(lineage.payload.parentThreadId));
+    if (Option.isNone(turnOption)) return;
+    const [summaryInput, childActivities] = yield* Effect.all([
+      projectionSnapshotQuery.getDelegatedTaskSummaryInput({
+        childThreadId: event.threadId,
+        sourceTurnId: turnId,
+      }),
+      projectionThreadActivityRepository.listByThreadId({
+        threadId: event.threadId,
+        activityKinds: [
+          DELEGATION_CREATED_ACTIVITY,
+          "delegation.cancel-requested",
+          "delegation.cancelled",
+        ],
+      }),
+    ]);
+    if (Option.isNone(summaryInput)) return;
     const cancelled = childActivities.some(
       (activity) =>
         (activity.kind === "delegation.cancel-requested" ||
@@ -1169,99 +1322,72 @@ const make = Effect.gen(function* () {
           (status === "cancelled"
             ? "Delegated turn was cancelled."
             : "Delegated turn was interrupted."));
-    const terminalErrorExcerpt =
-      terminalError === undefined ? undefined : truncateDetail(terminalError, 2_000);
-    const childMessages = yield* projectionThreadMessages.listByThreadId({
-      threadId: event.threadId,
-    });
-    const assistantMessage = childMessages.findLast(
-      (message) => message.role === "assistant" && message.turnId === turnId,
-    );
-    const resultExcerpt =
-      status === "completed"
-        ? truncateDetail(assistantMessage?.text || "No textual result.", 200)
+    const outputStatus =
+      status === "completed" && event.type === "turn.completed"
+        ? (event.payload.outputStatus ??
+          (summaryInput.value.assistantText ? "available" : "unavailable"))
         : undefined;
-    const completedAt = event.createdAt;
-    const activityId = `provider:delegation-completed:${turnId}`;
-    const wakeMessageId = MessageId.make(`delegation-wake:${turnId}`);
-    const activityPayload = {
-      version: 1 as const,
+    yield* persistDelegationCompletedWake({
+      parentThreadId: summaryInput.value.parentThreadId,
       childThreadId: event.threadId,
-      delegatedTurnId: turnId,
+      turnId,
       status,
-      completedAt,
-      ...(resultExcerpt !== undefined ? { resultExcerpt } : {}),
-      ...(terminalErrorExcerpt !== undefined ? { terminalError: terminalErrorExcerpt } : {}),
-    } satisfies DelegationCompletedActivityPayload;
-    const parentActivities = yield* projectionThreadActivityRepository.listByThreadId({
-      threadId: parentThreadId,
-      activityKinds: [DELEGATION_COMPLETED_ACTIVITY],
+      ...(outputStatus === undefined ? {} : { outputStatus }),
+      completedAt: event.createdAt,
+      assistantText: summaryInput.value.assistantText,
+      ...(terminalError === undefined ? {} : { terminalError }),
     });
-    const hasActivity = parentActivities.some(
-      (activity) =>
-        Predicate.isObject(activity.payload) && activity.payload.delegatedTurnId === turnId,
-    );
-    if (!hasActivity) {
-      yield* orchestrationEngine.dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make(`${activityId}:append`),
-        threadId: parentThreadId,
-        activity: {
-          id: EventId.make(activityId),
-          tone: status === "completed" ? "info" : "error",
-          kind: DELEGATION_COMPLETED_ACTIVITY,
-          summary: `Delegated child ${status}`,
-          payload: activityPayload,
-          turnId: null,
-          createdAt: completedAt,
-        },
-        createdAt: completedAt,
-      });
-    }
-
-    const parentMessages = yield* projectionThreadMessages.listByThreadId({
-      threadId: parentThreadId,
-    });
-    if (!parentMessages.some((message) => message.messageId === wakeMessageId)) {
-      const resultText =
-        resultExcerpt !== undefined
-          ? ` Result: ${resultExcerpt}`
-          : terminalErrorExcerpt !== undefined
-            ? ` Error: ${terminalErrorExcerpt}`
-            : "";
-      yield* orchestrationEngine.dispatch({
-        type: "thread.message.system.append",
-        commandId: CommandId.make(`${activityId}:message`),
-        threadId: parentThreadId,
-        message: {
-          messageId: wakeMessageId,
-          text: `Delegated child ${event.threadId} ${status}.${resultText}`,
-        },
-        createdAt: completedAt,
-      });
-    }
-
-    yield* dispatchDelegationWakeAutoTurn({
-      parentThreadId,
-      childThreadId: event.threadId,
-      delegatedTurnId: turnId,
-      completedAt,
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning(
-              "provider runtime ingestion failed to auto-start a delegation wake turn",
-              {
-                eventId: event.eventId,
-                threadId: event.threadId,
-                turnId,
-                cause: Cause.pretty(cause),
-              },
-            ),
-      ),
-    );
   });
+
+  const recoverDelegationCompletions = Effect.fn(
+    "ProviderRuntimeIngestion.recoverDelegationCompletions",
+  )(function* () {
+    let afterChildThreadId: ThreadId | undefined;
+    let afterSourceTurnId: TurnId | undefined;
+    while (true) {
+      const page = yield* projectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates({
+        ...(afterChildThreadId === undefined ? {} : { afterChildThreadId }),
+        ...(afterSourceTurnId === undefined ? {} : { afterSourceTurnId }),
+        limit: 100,
+      });
+      for (const candidate of page.rows) {
+        const summaryInput = yield* projectionSnapshotQuery.getDelegatedTaskSummaryInput({
+          childThreadId: candidate.childThreadId,
+          sourceTurnId: candidate.sourceTurnId,
+        });
+        if (
+          Option.isSome(summaryInput) &&
+          summaryInput.value.parentThreadId === candidate.parentThreadId
+        ) {
+          yield* persistDelegationCompletedWake({
+            parentThreadId: candidate.parentThreadId,
+            childThreadId: candidate.childThreadId,
+            turnId: candidate.sourceTurnId,
+            status: candidate.status,
+            ...(candidate.outputStatus === null ? {} : { outputStatus: candidate.outputStatus }),
+            completedAt: candidate.completedAt,
+            assistantText: summaryInput.value.assistantText,
+            ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
+          });
+        }
+      }
+      if (!page.hasMore) return;
+      const last = page.rows.at(-1);
+      if (last === undefined) return;
+      afterChildThreadId = last.childThreadId;
+      afterSourceTurnId = last.sourceTurnId;
+    }
+  });
+
+  const recoverDelegationCompletionsSafely = recoverDelegationCompletions().pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("delegated child parent callback recovery failed; it will retry", {
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  );
 
   // A wake that arrived while its thread was busy waits for the busy turn to
   // settle, then starts here instead of a later natural turn. A board-start
@@ -1272,20 +1398,22 @@ const make = Effect.gen(function* () {
     ignoreTurnId?: TurnId,
   ) {
     const messages = yield* projectionThreadMessages.listByThreadId({ threadId });
-    const deliveredActivities = yield* projectionThreadActivityRepository.listByThreadId({
+    const wakeActivities = yield* projectionThreadActivityRepository.listByThreadId({
       threadId,
-      activityKinds: [DELEGATION_WAKE_DELIVERED_ACTIVITY],
+      activityKinds: [
+        DELEGATION_COMPLETED_ACTIVITY,
+        DELEGATION_WAKE_DELIVERED_ACTIVITY,
+        PROVIDER_TURN_START_FAILED_ACTIVITY,
+      ],
     });
-    const deliveredMessageIds = new Set<MessageId>(
-      deliveredActivities.flatMap((activity) =>
-        Predicate.isObject(activity.payload) && Array.isArray(activity.payload.wakeMessageIds)
-          ? activity.payload.wakeMessageIds.filter(
-              (messageId): messageId is MessageId => typeof messageId === "string",
-            )
-          : [],
-      ),
-    );
     const messageIds = new Set<MessageId>(messages.map((message) => message.messageId));
+    const handledWakeMessageIds = handledDelegationWakeMessageIds({
+      threadId: String(threadId),
+      messageIds: new Set(messageIds),
+      activities: wakeActivities,
+    });
+    const delegationWakeWasHandled = (wakeMessageId: MessageId): boolean =>
+      handledWakeMessageIds.has(String(wakeMessageId));
     // A board-start notice counts as delivered once ws.ts (idle path) or this
     // drain has started the turn for its card.
     const boardStartDelivered = (cardId: string): boolean =>
@@ -1307,7 +1435,7 @@ const make = Effect.gen(function* () {
     const undelivered = messages.find((message) => {
       if (message.role !== "system") return false;
       if (message.messageId.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX)) {
-        return !deliveredMessageIds.has(message.messageId);
+        return !delegationWakeWasHandled(message.messageId);
       }
       if (message.messageId.startsWith(BOARD_START_MESSAGE_PREFIX)) {
         return !boardStartDelivered(message.messageId.slice(BOARD_START_MESSAGE_PREFIX.length));
@@ -2734,6 +2862,12 @@ const make = Effect.gen(function* () {
           }
           return worker.enqueue({ source: "domain", event });
         }),
+      );
+      yield* forkParked(
+        recoverDelegationCompletionsSafely.pipe(
+          Effect.repeat(Schedule.spaced("1 minute")),
+          Effect.asVoid,
+        ),
       );
     });
 

@@ -2,6 +2,7 @@ import {
   AgentSessionImportSource,
   ApprovalRequestId,
   ChatAttachment,
+  DelegationCompletedActivityPayload,
   OrchestrationMessageContext,
   CheckpointRef,
   IsoDateTime,
@@ -14,6 +15,7 @@ import {
   OrchestrationShellSnapshot,
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
+  OrchestrationThreadDetailWindow,
   ProjectScript,
   ProjectIconOverride,
   TurnId,
@@ -64,6 +66,7 @@ import { ProjectionThreadProposedPlan } from "../../persistence/Services/Project
 import { ProjectionThreadPullRequest } from "../../persistence/ProjectionThreadPullRequests.ts";
 import { ProjectionThreadSession } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThread } from "../../persistence/Services/ProjectionThreads.ts";
+import { ProjectionTurnState } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   decodeThreadDetailPageCursor,
   encodeThreadDetailPageCursor,
@@ -78,6 +81,8 @@ import {
   type ProjectionSnapshotCounts,
   type ProjectionThreadCheckpointContext,
   type ProjectionThreadDetailQuery,
+  type DelegatedTaskMemoryRow,
+  type DelegatedTaskSummaryInputSnapshot,
   type ProjectionSnapshotQueryShape,
 } from "../Services/ProjectionSnapshotQuery.ts";
 
@@ -204,10 +209,88 @@ const ProjectionImportedAgentSessionSourcesRowSchema = Schema.Struct({
 });
 const ThreadIdLookupInput = Schema.Struct({
   threadId: ThreadId,
+  includeArchived: Schema.optional(Schema.Boolean),
 });
 const TurnStartMessageLookupInput = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
+});
+const TurnByPendingMessageLookupInput = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+});
+const TurnByPendingMessageRowSchema = Schema.Struct({
+  turnId: TurnId,
+  state: ProjectionTurnState,
+});
+const DelegatedTaskMemoryRequest = Schema.Struct({
+  parentEnvironmentId: Schema.String,
+  parentThreadId: ThreadId,
+  afterTaskId: Schema.NullOr(ThreadId),
+  taskId: Schema.NullOr(ThreadId),
+  limit: NonNegativeInt,
+});
+const DelegatedSummaryRecoveryRequest = Schema.Struct({
+  afterChildThreadId: Schema.NullOr(ThreadId),
+  afterSourceTurnId: Schema.NullOr(TurnId),
+  limit: NonNegativeInt,
+});
+const DelegatedSummaryRecoveryRowSchema = Schema.Struct({
+  parentThreadId: ThreadId,
+  childThreadId: ThreadId,
+  sourceTurnId: TurnId,
+  status: DelegationCompletedActivityPayload.fields.status,
+  outputStatus: Schema.NullOr(DelegationCompletedActivityPayload.fields.outputStatus),
+  completedAt: IsoDateTime,
+  resultExcerpt: Schema.NullOr(Schema.String),
+  terminalError: Schema.NullOr(Schema.String),
+});
+const DelegatedTaskMemoryDbRowSchema = Schema.Struct({
+  taskId: ThreadId,
+  projectId: ProjectId,
+  role: Schema.String,
+  title: Schema.String,
+  updatedAt: IsoDateTime,
+  worktreePath: Schema.NullOr(Schema.String),
+  latestTurnId: Schema.NullOr(TurnId),
+  latestTurnState: Schema.NullOr(ProjectionTurnState),
+  hasPendingApprovals: Schema.Number,
+  hasPendingUserInput: Schema.Number,
+  hasPendingFollowUp: Schema.Number,
+  threadWatermark: NonNegativeInt,
+  summarySourceTurnId: Schema.NullOr(TurnId),
+  summaryText: Schema.NullOr(Schema.String),
+  summarySource: Schema.NullOr(Schema.Literals(["model", "deterministic"])),
+  summarySourceTurnIds: Schema.NullOr(Schema.String),
+  summaryWatermark: Schema.NullOr(NonNegativeInt),
+  summaryState: Schema.NullOr(Schema.Literals(["pending", "ready", "error"])),
+  summaryError: Schema.NullOr(Schema.String),
+}).mapFields(
+  Struct.assign({
+    summarySourceTurnIds: Schema.NullOr(Schema.fromJsonString(Schema.Array(TurnId))),
+  }),
+);
+const DelegatedSummaryThreadRequest = Schema.Struct({
+  childThreadId: ThreadId,
+});
+const DelegatedSummaryThreadRowSchema = Schema.Struct({
+  projectId: ProjectId,
+  branch: Schema.NullOr(Schema.String),
+  worktreePath: Schema.NullOr(Schema.String),
+  threadWatermark: NonNegativeInt,
+});
+const DelegatedSummaryLineageRowSchema = Schema.Struct({
+  childThreadId: Schema.NullOr(ThreadId),
+  parentEnvironmentId: Schema.NullOr(Schema.String),
+  parentThreadId: Schema.NullOr(ThreadId),
+  projectId: Schema.NullOr(ProjectId),
+});
+const DelegatedSummaryAssistantRowSchema = Schema.Struct({
+  text: Schema.String,
+});
+const DelegatedSummaryActivityRowSchema = Schema.Struct({
+  kind: Schema.String,
+  summary: Schema.String,
 });
 const ThreadActivityKindsLookupInput = Schema.Struct({
   threadId: ThreadId,
@@ -1223,7 +1306,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const getActiveThreadRowById = SqlSchema.findOneOption({
     Request: ThreadIdLookupInput,
     Result: ProjectionThreadDbRowSchema,
-    execute: ({ threadId }) =>
+    execute: ({ threadId, includeArchived }) =>
       sql`
         SELECT
           thread_id AS "threadId",
@@ -1259,7 +1342,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         WHERE thread_id = ${threadId}
           AND deleted_at IS NULL
-          AND archived_at IS NULL
+          AND (${includeArchived ? 1 : 0} = 1 OR archived_at IS NULL)
         LIMIT 1
       `,
   });
@@ -1331,6 +1414,390 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       FROM projection_thread_messages
       WHERE thread_id = ${threadId} AND message_id = ${messageId}
       LIMIT 1
+    `,
+  });
+
+  const getTurnByPendingMessageIdRow = SqlSchema.findOneOption({
+    Request: TurnByPendingMessageLookupInput,
+    Result: TurnByPendingMessageRowSchema,
+    execute: ({ threadId, messageId }) => sql`
+      SELECT
+        turn_id AS "turnId",
+        state
+      FROM projection_turns
+      WHERE thread_id = ${threadId}
+        AND pending_message_id = ${messageId}
+        AND turn_id IS NOT NULL
+      LIMIT 1
+    `,
+  });
+
+  const listDelegatedTaskMemoryRowsQuery = SqlSchema.findAll({
+    Request: DelegatedTaskMemoryRequest,
+    Result: DelegatedTaskMemoryDbRowSchema,
+    execute: ({ parentEnvironmentId, parentThreadId, afterTaskId, taskId, limit }) => sql`
+      WITH candidates AS (
+        SELECT
+          threads.thread_id AS task_id,
+          threads.project_id,
+          threads.title,
+          threads.updated_at,
+          threads.worktree_path,
+          threads.latest_turn_id,
+          threads.pending_approval_count,
+          threads.pending_user_input_count
+        FROM projection_thread_activities lineage
+        JOIN projection_threads threads ON threads.thread_id = lineage.thread_id
+        WHERE lineage.kind = 'delegation.created'
+          AND json_extract(lineage.payload_json, '$.parentEnvironmentId') = ${parentEnvironmentId}
+          AND json_extract(lineage.payload_json, '$.parentThreadId') = ${parentThreadId}
+          AND json_extract(lineage.payload_json, '$.childThreadId') = threads.thread_id
+          AND lineage.activity_id = (
+            SELECT latest.activity_id
+            FROM projection_thread_activities latest
+            WHERE latest.thread_id = threads.thread_id
+              AND latest.kind = 'delegation.created'
+            ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
+            LIMIT 1
+          )
+          AND threads.deleted_at IS NULL
+          AND ( ${afterTaskId} IS NULL OR threads.thread_id > ${afterTaskId} )
+          AND ( ${taskId} IS NULL OR threads.thread_id = ${taskId} )
+        GROUP BY
+          threads.thread_id,
+          threads.project_id,
+          threads.title,
+          threads.updated_at,
+          threads.worktree_path,
+          threads.latest_turn_id,
+          threads.pending_approval_count,
+          threads.pending_user_input_count
+        ORDER BY threads.thread_id ASC
+        LIMIT ${Math.min(101, limit + 1)}
+      )
+      SELECT
+        candidates.task_id AS "taskId",
+        candidates.project_id AS "projectId",
+        substr(COALESCE((
+          SELECT json_extract(lineage.payload_json, '$.role')
+          FROM projection_thread_activities lineage
+          WHERE lineage.thread_id = candidates.task_id
+            AND lineage.kind = 'delegation.created'
+          ORDER BY lineage.sequence DESC, lineage.created_at DESC, lineage.activity_id DESC
+          LIMIT 1
+        ), 'unknown'), 1, 100) AS role,
+        substr(candidates.title, 1, 500) AS title,
+        candidates.updated_at AS "updatedAt",
+        substr(COALESCE(candidates.worktree_path, projects.workspace_root), 1, 1024) AS "worktreePath",
+        candidates.latest_turn_id AS "latestTurnId",
+        turns.state AS "latestTurnState",
+        candidates.pending_approval_count AS "hasPendingApprovals",
+        candidates.pending_user_input_count AS "hasPendingUserInput",
+        CASE WHEN followups.message_id IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM projection_turns consumed
+          WHERE consumed.thread_id = candidates.task_id
+            AND consumed.pending_message_id = followups.message_id
+            AND consumed.turn_id IS NOT NULL
+        ) THEN 1 ELSE 0 END AS "hasPendingFollowUp",
+        COALESCE((
+          SELECT MAX(activity.sequence)
+          FROM projection_thread_activities activity
+          WHERE activity.thread_id = candidates.task_id
+        ), 0) AS "threadWatermark",
+        summaries.source_turn_id AS "summarySourceTurnId",
+        substr(summaries.summary_text, 1, 600) AS "summaryText",
+        summaries.source AS "summarySource",
+        summaries.source_turn_ids_json AS "summarySourceTurnIds",
+        summaries.watermark AS "summaryWatermark",
+        summaries.state AS "summaryState",
+        substr(summaries.error, 1, 500) AS "summaryError"
+      FROM candidates
+      LEFT JOIN projection_projects projects ON projects.project_id = candidates.project_id
+      LEFT JOIN projection_turns turns
+        ON turns.thread_id = candidates.task_id AND turns.turn_id = candidates.latest_turn_id
+      LEFT JOIN projection_delegated_task_summaries summaries
+        ON summaries.child_thread_id = candidates.task_id
+        AND summaries.source_turn_id = (
+          SELECT latest.source_turn_id
+          FROM projection_delegated_task_summaries latest
+          WHERE latest.child_thread_id = candidates.task_id
+          ORDER BY latest.completed_at DESC, latest.source_turn_id DESC
+          LIMIT 1
+        )
+      LEFT JOIN (
+        SELECT activity.thread_id,
+          json_extract(activity.payload_json, '$.result.messageId') AS message_id
+        FROM projection_thread_activities activity
+        WHERE activity.activity_id = (
+          SELECT latest.activity_id
+          FROM projection_thread_activities latest
+          WHERE latest.thread_id = activity.thread_id
+            AND latest.kind = 'delegation.follow-up-queued'
+            AND json_extract(latest.payload_json, '$.parentEnvironmentId') = ${parentEnvironmentId}
+            AND json_extract(latest.payload_json, '$.parentThreadId') = ${parentThreadId}
+          ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
+          LIMIT 1
+        )
+      ) followups ON followups.thread_id = candidates.task_id
+      ORDER BY candidates.task_id ASC
+    `,
+  });
+
+  const listDelegatedSummaryRecoveryRows = SqlSchema.findAll({
+    Request: DelegatedSummaryRecoveryRequest,
+    Result: DelegatedSummaryRecoveryRowSchema,
+    execute: ({ afterChildThreadId, afterSourceTurnId, limit }) => sql`
+      WITH terminal_turn_aliases AS MATERIALIZED (
+        SELECT
+          turns.thread_id AS child_thread_id,
+          turns.turn_id AS source_turn_id,
+          json_extract(lineage.payload_json, '$.parentThreadId') AS parent_thread_id,
+          'delegation-wake:' || turns.turn_id AS legacy_wake_id,
+          'delegation-wake-turn:' || turns.thread_id || ':' || turns.turn_id AS legacy_direct_turn_id,
+          'delegation-wake-drain:' || json_extract(lineage.payload_json, '$.parentThreadId')
+            || ':' || turns.turn_id AS legacy_drain_turn_id
+        FROM projection_turns turns
+        JOIN projection_threads child ON child.thread_id = turns.thread_id
+        JOIN projection_thread_activities lineage
+          ON lineage.activity_id = (
+            SELECT latest.activity_id
+            FROM projection_thread_activities latest
+            WHERE latest.thread_id = turns.thread_id
+              AND latest.kind = 'delegation.created'
+            ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
+            LIMIT 1
+          )
+        WHERE turns.turn_id IS NOT NULL
+          AND turns.completed_at IS NOT NULL
+          AND turns.state IN ('completed', 'interrupted', 'error')
+          AND child.deleted_at IS NULL
+          AND lineage.kind = 'delegation.created'
+          AND json_extract(lineage.payload_json, '$.childThreadId') = turns.thread_id
+          AND json_extract(lineage.payload_json, '$.parentEnvironmentId') IS NOT NULL
+          AND json_extract(lineage.payload_json, '$.parentThreadId') IS NOT NULL
+      ), terminal_turns AS (
+        SELECT
+          turns.thread_id AS child_thread_id,
+          turns.turn_id AS source_turn_id,
+          turns.state AS turn_state,
+          turns.completed_at,
+          json_extract(lineage.payload_json, '$.parentThreadId') AS parent_thread_id
+        FROM projection_turns turns
+        JOIN projection_threads child ON child.thread_id = turns.thread_id
+        JOIN projection_thread_activities lineage
+          ON lineage.activity_id = (
+            SELECT latest.activity_id
+            FROM projection_thread_activities latest
+            WHERE latest.thread_id = turns.thread_id
+              AND latest.kind = 'delegation.created'
+            ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
+            LIMIT 1
+          )
+        WHERE turns.turn_id IS NOT NULL
+          AND turns.completed_at IS NOT NULL
+          AND turns.state IN ('completed', 'interrupted', 'error')
+          AND child.deleted_at IS NULL
+          AND lineage.kind = 'delegation.created'
+          AND json_extract(lineage.payload_json, '$.childThreadId') = turns.thread_id
+          AND json_extract(lineage.payload_json, '$.parentEnvironmentId') IS NOT NULL
+          AND json_extract(lineage.payload_json, '$.parentThreadId') IS NOT NULL
+          AND (
+            NOT EXISTS (
+              SELECT 1 FROM projection_delegated_task_summaries summaries
+              WHERE summaries.child_thread_id = turns.thread_id
+                AND summaries.source_turn_id = turns.turn_id
+                AND summaries.state IN ('ready', 'error')
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM projection_threads parent
+              WHERE parent.thread_id = json_extract(lineage.payload_json, '$.parentThreadId')
+                AND parent.deleted_at IS NULL
+                AND (
+                  NOT EXISTS (
+                    SELECT 1 FROM projection_thread_activities completion
+                      INDEXED BY idx_projection_activities_delegation_completed_lookup
+                    WHERE completion.thread_id = parent.thread_id
+                      AND completion.kind = 'delegation.completed'
+                      AND json_extract(completion.payload_json, '$.childThreadId') = turns.thread_id
+                      AND json_extract(completion.payload_json, '$.delegatedTurnId') = turns.turn_id
+                  )
+                  OR NOT EXISTS (
+                    SELECT 1 FROM projection_thread_messages wake
+                    WHERE wake.thread_id = parent.thread_id
+                      AND wake.role = 'system'
+                      AND wake.message_id IN (
+                        'delegation-wake:'
+                          || length(turns.thread_id) || ':' || turns.thread_id
+                          || length(turns.turn_id) || ':' || turns.turn_id,
+                        CASE WHEN NOT EXISTS (
+                          SELECT 1 FROM terminal_turn_aliases sibling
+                          WHERE sibling.parent_thread_id = parent.thread_id
+                            AND sibling.source_turn_id = turns.turn_id
+                            AND sibling.child_thread_id <> turns.thread_id
+                        ) THEN 'delegation-wake:' || turns.turn_id END
+                      )
+                  )
+                  OR (
+                    parent.archived_at IS NULL
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM projection_thread_activities delivery,
+                        json_each(delivery.payload_json, '$.wakeMessageIds') delivered
+                      WHERE delivery.thread_id = parent.thread_id
+                        AND delivery.kind = 'delegation.wake-delivered'
+                        AND delivered.value IN (
+                          'delegation-wake:'
+                          || length(turns.thread_id) || ':' || turns.thread_id
+                            || length(turns.turn_id) || ':' || turns.turn_id,
+                          CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM terminal_turn_aliases sibling
+                            WHERE sibling.parent_thread_id = parent.thread_id
+                              AND sibling.source_turn_id = turns.turn_id
+                              AND sibling.child_thread_id <> turns.thread_id
+                          ) THEN 'delegation-wake:' || turns.turn_id END
+                        )
+                    )
+                    AND NOT EXISTS (
+                      SELECT 1 FROM projection_thread_messages start_anchor
+                      WHERE start_anchor.thread_id = parent.thread_id
+                        AND start_anchor.message_id IN (
+                          'delegation-wake-turn:'
+                            || length(turns.thread_id) || ':' || turns.thread_id
+                            || length(turns.turn_id) || ':' || turns.turn_id,
+                          'delegation-wake-drain:' || parent.thread_id || ':'
+                            || length(turns.thread_id) || ':' || turns.thread_id
+                            || length(turns.turn_id) || ':' || turns.turn_id,
+                          CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM terminal_turn_aliases sibling
+                            WHERE sibling.parent_thread_id = parent.thread_id
+                              AND (sibling.child_thread_id <> turns.thread_id
+                                OR sibling.source_turn_id <> turns.turn_id)
+                              AND sibling.legacy_direct_turn_id =
+                                'delegation-wake-turn:' || turns.thread_id || ':' || turns.turn_id
+                          ) THEN 'delegation-wake-turn:' || turns.thread_id || ':' || turns.turn_id END,
+                          CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM terminal_turn_aliases sibling
+                            WHERE sibling.parent_thread_id = parent.thread_id
+                              AND sibling.source_turn_id = turns.turn_id
+                              AND sibling.child_thread_id <> turns.thread_id
+                          ) THEN 'delegation-wake-turn:' || turns.turn_id END,
+                          CASE WHEN NOT EXISTS (
+                            SELECT 1 FROM terminal_turn_aliases sibling
+                            WHERE sibling.parent_thread_id = parent.thread_id
+                              AND sibling.source_turn_id = turns.turn_id
+                              AND sibling.child_thread_id <> turns.thread_id
+                          ) THEN 'delegation-wake-drain:' || parent.thread_id || ':' || turns.turn_id END
+                        )
+                    )
+                  )
+                )
+            )
+          )
+          AND (
+            ${afterChildThreadId} IS NULL
+            OR turns.thread_id > ${afterChildThreadId}
+            OR (
+              turns.thread_id = ${afterChildThreadId}
+              AND turns.turn_id > COALESCE(${afterSourceTurnId}, '')
+            )
+          )
+        ORDER BY turns.thread_id ASC, turns.turn_id ASC
+        LIMIT ${Math.min(101, limit + 1)}
+      )
+      SELECT
+        terminal.parent_thread_id AS "parentThreadId",
+        terminal.child_thread_id AS "childThreadId",
+        terminal.source_turn_id AS "sourceTurnId",
+        COALESCE(
+          json_extract(completion.payload_json, '$.status'),
+          CASE
+            WHEN terminal.turn_state = 'interrupted' AND EXISTS (
+              SELECT 1 FROM projection_thread_activities cancelled
+              WHERE cancelled.thread_id = terminal.child_thread_id
+                AND cancelled.kind IN ('delegation.cancel-requested', 'delegation.cancelled')
+                AND json_extract(cancelled.payload_json, '$.delegatedTurnId') = terminal.source_turn_id
+            ) THEN 'cancelled'
+            ELSE CASE terminal.turn_state
+            WHEN 'completed' THEN 'completed'
+            WHEN 'error' THEN 'failed'
+            ELSE 'interrupted'
+            END
+          END
+        ) AS status,
+        json_extract(completion.payload_json, '$.outputStatus') AS "outputStatus",
+        COALESCE(
+          json_extract(completion.payload_json, '$.completedAt'), terminal.completed_at
+        ) AS "completedAt",
+        substr(json_extract(completion.payload_json, '$.resultExcerpt'), 1, 200) AS "resultExcerpt",
+        substr(json_extract(completion.payload_json, '$.terminalError'), 1, 2000) AS "terminalError"
+      FROM terminal_turns terminal
+      LEFT JOIN projection_thread_activities completion
+        ON completion.activity_id = (
+          SELECT latest.activity_id
+          FROM projection_thread_activities latest
+            INDEXED BY idx_projection_activities_delegation_completed_lookup
+          WHERE latest.thread_id = terminal.parent_thread_id
+            AND latest.kind = 'delegation.completed'
+            AND json_extract(latest.payload_json, '$.childThreadId') = terminal.child_thread_id
+            AND json_extract(latest.payload_json, '$.delegatedTurnId') = terminal.source_turn_id
+          ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
+          LIMIT 1
+        )
+      ORDER BY terminal.child_thread_id ASC, terminal.source_turn_id ASC
+    `,
+  });
+
+  const delegatedSummaryThreadRow = SqlSchema.findOneOption({
+    Request: DelegatedSummaryThreadRequest,
+    Result: DelegatedSummaryThreadRowSchema,
+    execute: ({ childThreadId }) => sql`
+      SELECT project_id AS "projectId", branch, worktree_path AS "worktreePath",
+        COALESCE((
+          SELECT MAX(activity.sequence)
+          FROM projection_thread_activities activity
+          WHERE activity.thread_id = projection_threads.thread_id
+        ), 0) AS "threadWatermark"
+      FROM projection_threads
+      WHERE thread_id = ${childThreadId} AND deleted_at IS NULL
+      LIMIT 1
+    `,
+  });
+  const delegatedSummaryLineageRow = SqlSchema.findOneOption({
+    Request: DelegatedSummaryThreadRequest,
+    Result: DelegatedSummaryLineageRowSchema,
+    execute: ({ childThreadId }) => sql`
+      SELECT
+        json_extract(payload_json, '$.childThreadId') AS "childThreadId",
+        json_extract(payload_json, '$.parentEnvironmentId') AS "parentEnvironmentId",
+        json_extract(payload_json, '$.parentThreadId') AS "parentThreadId",
+        json_extract(payload_json, '$.projectId') AS "projectId"
+      FROM projection_thread_activities
+      WHERE thread_id = ${childThreadId} AND kind = 'delegation.created'
+      ORDER BY sequence DESC, created_at DESC, activity_id DESC
+      LIMIT 1
+    `,
+  });
+  const delegatedSummaryAssistantRow = SqlSchema.findOneOption({
+    Request: Schema.Struct({ childThreadId: ThreadId, sourceTurnId: TurnId }),
+    Result: DelegatedSummaryAssistantRowSchema,
+    execute: ({ childThreadId, sourceTurnId }) => sql`
+      SELECT substr(text, 1, 5_000) AS text
+      FROM projection_thread_messages
+      WHERE thread_id = ${childThreadId} AND turn_id = ${sourceTurnId} AND role = 'assistant'
+      ORDER BY created_at DESC, message_id DESC
+      LIMIT 1
+    `,
+  });
+  const listDelegatedSummaryActivityRows = SqlSchema.findAll({
+    Request: Schema.Struct({ childThreadId: ThreadId, sourceTurnId: TurnId }),
+    Result: DelegatedSummaryActivityRowSchema,
+    execute: ({ childThreadId, sourceTurnId }) => sql`
+      SELECT kind, substr(summary, 1, 400) AS summary
+      FROM projection_thread_activities
+      WHERE thread_id = ${childThreadId} AND turn_id = ${sourceTurnId}
+      ORDER BY sequence DESC, created_at DESC, activity_id DESC
+      LIMIT 20
     `,
   });
 
@@ -1494,6 +1961,26 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       ORDER BY a.created_at ASC, a.activity_id ASC
     `,
   });
+  const listActivityRowsByKindIncludingArchived = SqlSchema.findAll({
+    Request: Schema.Struct({ kind: Schema.String }),
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ kind }) => sql`
+      SELECT
+        a.activity_id AS "activityId",
+        a.thread_id AS "threadId",
+        a.turn_id AS "turnId",
+        a.tone,
+        a.kind,
+        a.summary,
+        a.payload_json AS "payload",
+        a.sequence,
+        a.created_at AS "createdAt"
+      FROM projection_thread_activities a
+      JOIN projection_threads t ON t.thread_id = a.thread_id
+      WHERE a.kind = ${kind} AND t.deleted_at IS NULL
+      ORDER BY a.created_at ASC, a.activity_id ASC
+    `,
+  });
 
   const listActivitiesByKind: ProjectionSnapshotQueryShape["listActivitiesByKind"] = (kind) =>
     listActivityRowsByKind({ kind }).pipe(
@@ -1505,6 +1992,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ),
       ),
     );
+
+  const listActivitiesByKindIncludingArchived: ProjectionSnapshotQueryShape["listActivitiesByKindIncludingArchived"] =
+    (kind) =>
+      listActivityRowsByKindIncludingArchived({ kind }).pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({ threadId: row.threadId, activity: mapThreadActivityRow(row) })),
+        ),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listActivitiesByKindIncludingArchived:query",
+            "ProjectionSnapshotQuery.listActivitiesByKindIncludingArchived:decodeRow",
+          ),
+        ),
+      );
 
   // One batched read for shell markers: latest delegation.created payload per
   // non-deleted thread, archived included. Rows arrive oldest-first so the
@@ -3386,6 +3887,19 @@ pending_approval_requests AS (
       }));
     });
 
+  const getTurnByPendingMessageId: ProjectionSnapshotQueryShape["getTurnByPendingMessageId"] =
+    Effect.fn("ProjectionSnapshotQuery.getTurnByPendingMessageId")(function* (input) {
+      const turn = yield* getTurnByPendingMessageIdRow(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getTurnByPendingMessageId:query",
+            "ProjectionSnapshotQuery.getTurnByPendingMessageId:decodeRow",
+          ),
+        ),
+      );
+      return Option.map(turn, (row) => ({ turnId: row.turnId, state: row.state }));
+    });
+
   const getTurnStartMessage: ProjectionSnapshotQueryShape["getTurnStartMessage"] = Effect.fn(
     "ProjectionSnapshotQuery.getTurnStartMessage",
   )(function* (input) {
@@ -3427,9 +3941,11 @@ pending_approval_requests AS (
     | {
         readonly mode: "raw";
         readonly query?: ProjectionThreadDetailQuery;
+        readonly includeArchived?: boolean;
       }
     | {
         readonly mode: "client";
+        readonly includeArchived?: boolean;
       };
 
   const listProjectedThreadActivities = Effect.fn(
@@ -3560,7 +4076,10 @@ pending_approval_requests AS (
         latestTurnRow,
         sessionRow,
       ] = yield* Effect.all([
-        getActiveThreadRowById({ threadId }).pipe(
+        getActiveThreadRowById({
+          threadId,
+          includeArchived: activityRead.includeArchived,
+        }).pipe(
           Effect.mapError(
             toPersistenceSqlOrDecodeError(
               "ProjectionSnapshotQuery.getThreadDetailById:getThread:query",
@@ -3709,6 +4228,14 @@ pending_approval_requests AS (
       ...(query === undefined ? {} : { query }),
     });
 
+  const getThreadDetailByIdIncludingArchived: ProjectionSnapshotQueryShape["getThreadDetailByIdIncludingArchived"] =
+    (threadId, query) =>
+      getThreadDetailByIdBounded(threadId, undefined, {
+        mode: "raw",
+        includeArchived: true,
+        ...(query === undefined ? {} : { query }),
+      });
+
   // Bounds pathological fan-out: one user turn that spawned hundreds of
   // subagent turns still pages in bounded chunks, at the cost of splitting the
   // fan-out group across pages (the cursor continues the same group). Also
@@ -3717,9 +4244,10 @@ pending_approval_requests AS (
   // Sentinels for unbounded keyset ends; "~" sorts after any ISO timestamp.
   const ANCHOR_UNBOUNDED = "~";
 
-  const getThreadDetailSnapshot: ProjectionSnapshotQueryShape["getThreadDetailSnapshot"] = (
-    threadId,
-    window,
+  const getThreadDetailSnapshotFor = (
+    threadId: ThreadId,
+    window: OrchestrationThreadDetailWindow | undefined,
+    includeArchived: boolean,
   ) =>
     // Read the thread detail and the snapshot sequence within a single
     // transaction so the sequence is consistent with the returned state; a
@@ -3733,6 +4261,7 @@ pending_approval_requests AS (
           if (window?.turnLimit === undefined) {
             const thread = yield* getThreadDetailByIdBounded(threadId, undefined, {
               mode: "client",
+              includeArchived,
             });
             if (Option.isNone(thread)) {
               return Option.none<OrchestrationThreadDetailSnapshot>();
@@ -3806,6 +4335,7 @@ pending_approval_requests AS (
 
           const thread = yield* getThreadDetailByIdBounded(threadId, emptyBounds ?? bounds, {
             mode: "client",
+            includeArchived,
           });
           if (Option.isNone(thread)) {
             return Option.none<OrchestrationThreadDetailSnapshot>();
@@ -3856,10 +4386,167 @@ pending_approval_requests AS (
         ),
       );
 
+  const getThreadDetailSnapshot: ProjectionSnapshotQueryShape["getThreadDetailSnapshot"] = (
+    threadId,
+    window,
+  ) => getThreadDetailSnapshotFor(threadId, window, false);
+
+  const getThreadDetailSnapshotIncludingArchived: ProjectionSnapshotQueryShape["getThreadDetailSnapshotIncludingArchived"] =
+    (threadId, window) => getThreadDetailSnapshotFor(threadId, window, true);
+
+  const listDelegatedTaskMemoryRows: ProjectionSnapshotQueryShape["listDelegatedTaskMemoryRows"] = (
+    input,
+  ) => {
+    const limit = Math.max(1, Math.min(100, Math.floor(input.limit)));
+    return listDelegatedTaskMemoryRowsQuery({
+      parentEnvironmentId: input.parentEnvironmentId,
+      parentThreadId: input.parentThreadId,
+      afterTaskId: input.afterTaskId ?? null,
+      taskId: input.taskId ?? null,
+      limit,
+    }).pipe(
+      Effect.map((rows) => ({
+        rows: rows.slice(0, limit).map((row): DelegatedTaskMemoryRow => ({
+          taskId: row.taskId,
+          projectId: row.projectId,
+          role: row.role,
+          title: row.title,
+          updatedAt: row.updatedAt,
+          worktreePath: row.worktreePath,
+          latestTurnId: row.latestTurnId,
+          latestTurnState: row.latestTurnState,
+          hasPendingApprovals: row.hasPendingApprovals > 0,
+          hasPendingUserInput: row.hasPendingUserInput > 0,
+          hasPendingFollowUp: row.hasPendingFollowUp > 0,
+          threadWatermark: row.threadWatermark,
+          summary:
+            row.summarySourceTurnId === null ||
+            row.summarySource === null ||
+            row.summarySourceTurnIds === null ||
+            row.summaryWatermark === null ||
+            row.summaryState === null
+              ? null
+              : {
+                  sourceTurnId: row.summarySourceTurnId,
+                  text: row.summaryText ?? "",
+                  source: row.summarySource,
+                  sourceTurnIds: row.summarySourceTurnIds,
+                  watermark: row.summaryWatermark,
+                  state: row.summaryState,
+                  error: row.summaryError,
+                },
+        })),
+        hasMore: rows.length > limit,
+      })),
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionSnapshotQuery.listDelegatedTaskMemoryRows:query",
+          "ProjectionSnapshotQuery.listDelegatedTaskMemoryRows:decodeRows",
+        ),
+      ),
+    );
+  };
+
+  const listDelegatedTaskSummaryRecoveryCandidates: ProjectionSnapshotQueryShape["listDelegatedTaskSummaryRecoveryCandidates"] =
+    (input) => {
+      const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)));
+      return listDelegatedSummaryRecoveryRows({
+        afterChildThreadId: input.afterChildThreadId ?? null,
+        afterSourceTurnId: input.afterSourceTurnId ?? null,
+        limit,
+      }).pipe(
+        Effect.map((rows) => ({
+          rows: rows.slice(0, limit),
+          hasMore: rows.length > limit,
+        })),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates:query",
+            "ProjectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates:decodeRows",
+          ),
+        ),
+      );
+    };
+
+  const getDelegatedTaskSummaryInput: ProjectionSnapshotQueryShape["getDelegatedTaskSummaryInput"] =
+    (input) =>
+      sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const request = { childThreadId: input.childThreadId };
+            const turnRequest = { ...request, sourceTurnId: input.sourceTurnId };
+            const [thread, lineage, assistant, activities] = yield* Effect.all([
+              delegatedSummaryThreadRow(request).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:getThread:query",
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:getThread:decodeRow",
+                  ),
+                ),
+              ),
+              delegatedSummaryLineageRow(request).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:getLineage:query",
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:getLineage:decodeRow",
+                  ),
+                ),
+              ),
+              delegatedSummaryAssistantRow(turnRequest).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:getAssistant:query",
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:getAssistant:decodeRow",
+                  ),
+                ),
+              ),
+              listDelegatedSummaryActivityRows(turnRequest).pipe(
+                Effect.mapError(
+                  toPersistenceSqlOrDecodeError(
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:listActivities:query",
+                    "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:listActivities:decodeRows",
+                  ),
+                ),
+              ),
+            ]);
+            if (Option.isNone(thread) || Option.isNone(lineage)) return Option.none();
+            const parentEnvironmentId = lineage.value.parentEnvironmentId;
+            const parentThreadId = lineage.value.parentThreadId;
+            if (parentEnvironmentId === null || parentThreadId === null) return Option.none();
+            if (
+              lineage.value.childThreadId !== input.childThreadId ||
+              (lineage.value.projectId !== null &&
+                lineage.value.projectId !== thread.value.projectId)
+            ) {
+              return Option.none();
+            }
+            return Option.some({
+              projectId: thread.value.projectId,
+              parentEnvironmentId,
+              parentThreadId,
+              branch: thread.value.branch,
+              worktreePath: thread.value.worktreePath,
+              assistantText: Option.isSome(assistant) ? assistant.value.text : null,
+              activities: activities.toReversed(),
+              threadWatermark: thread.value.threadWatermark,
+            } satisfies DelegatedTaskSummaryInputSnapshot);
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            isPersistenceError(error)
+              ? error
+              : toPersistenceSqlError(
+                  "ProjectionSnapshotQuery.getDelegatedTaskSummaryInput:transaction",
+                )(error),
+          ),
+        );
+
   return {
     getCommandReadModel,
     getUserInputActivity,
     listActivitiesByKind,
+    listActivitiesByKindIncludingArchived,
     getSnapshot,
     getShellSnapshot,
     getArchivedShellSnapshot,
@@ -3877,8 +4564,14 @@ pending_approval_requests AS (
     getThreadShellById,
     getThreadRuntimeContext,
     getTurnStartMessage,
+    getTurnByPendingMessageId,
     getThreadDetailById,
+    getThreadDetailByIdIncludingArchived,
     getThreadDetailSnapshot,
+    getThreadDetailSnapshotIncludingArchived,
+    listDelegatedTaskMemoryRows,
+    listDelegatedTaskSummaryRecoveryCandidates,
+    getDelegatedTaskSummaryInput,
   } satisfies ProjectionSnapshotQueryShape;
 });
 

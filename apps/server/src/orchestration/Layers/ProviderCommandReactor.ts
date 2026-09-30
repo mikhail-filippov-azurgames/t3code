@@ -50,7 +50,10 @@ import { TextGeneration } from "../../textGeneration/TextGeneration.ts";
 import { ProviderAuthService } from "../../provider/Services/ProviderAuthService.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
-import { loadDelegationPermissionEnvelope } from "../../provider/DelegationPermissionEnvelope.ts";
+import {
+  loadDelegationPermissionEnvelope,
+  recoverDelegationChildCaps,
+} from "../../provider/DelegationPermissionEnvelope.ts";
 import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -64,6 +67,7 @@ import {
   type ThreadTitleMessage,
 } from "../../textGeneration/ThreadTitleContext.ts";
 import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
+import { handledDelegationWakeMessageIds } from "../delegatedTaskWake.ts";
 import {
   resolveSourceControlWriterModelSelection,
   ServerSettingsService,
@@ -83,7 +87,11 @@ const PROVIDER_HANDOFF_CONTEXT_OPEN =
 const PROVIDER_HANDOFF_CONTEXT_CLOSE = "</previous_provider_conversation>";
 const DELEGATION_WAKE_MESSAGE_PREFIX = "delegation-wake:";
 const DELEGATION_WAKE_DELIVERED_ACTIVITY = "delegation.wake-delivered";
+const DELEGATION_COMPLETED_ACTIVITY = "delegation.completed";
+const PROVIDER_TURN_START_FAILED_ACTIVITY = "provider.turn.start.failed";
 const DELEGATION_WAKE_CONTEXT_MAX_CHARS = 2_000;
+const TURN_SEND_CLAIMED_ACTIVITY = "provider.turn.send.claimed";
+const TURN_SEND_UNCERTAIN_ACTIVITY = "provider.turn.send.uncertain";
 
 type ProviderHandoffMessage = {
   readonly role: "user" | "assistant" | "system";
@@ -158,43 +166,87 @@ function buildProviderHandoffContext(input: {
   ].join("\n");
 }
 
+export type CrossDriverHandoffResolution =
+  | { readonly kind: "not-required" | "trivial-history" }
+  | { readonly kind: "context"; readonly text: string }
+  | { readonly kind: "unsupported"; readonly reason: string };
+
+/**
+ * Gate a cross-driver restart onto a fresh provider session. The durable
+ * transcript must travel explicitly; an empty history (or nothing beyond the
+ * current prompt) is allowed by explicit check, anything else without a
+ * transferable transcript fails instead of sending a bare prompt.
+ */
+export function resolveCrossDriverHandoff(input: {
+  readonly required: boolean;
+  readonly detail: OrchestrationThread | undefined;
+  readonly currentMessageId: MessageId;
+  readonly currentMessageText: string;
+  readonly excludedMessageIds?: ReadonlySet<MessageId>;
+}): CrossDriverHandoffResolution {
+  if (!input.required) return { kind: "not-required" };
+  if (input.detail === undefined) {
+    return {
+      kind: "unsupported",
+      reason:
+        "The previous provider session ended without readable conversation history, so the new provider cannot continue it.",
+    };
+  }
+  const context = buildProviderHandoffContext({
+    messages: input.detail.messages,
+    currentMessageId: input.currentMessageId,
+    currentMessageText: input.currentMessageText,
+    ...(input.excludedMessageIds === undefined
+      ? {}
+      : { excludedMessageIds: input.excludedMessageIds }),
+  });
+  if (context !== undefined) return { kind: "context", text: context };
+  const priorContent = input.detail.messages.filter(
+    (message) =>
+      message.id !== input.currentMessageId &&
+      input.excludedMessageIds?.has(message.id) !== true &&
+      (message.text.trim().length > 0 ||
+        (message.attachments?.some((attachment) => attachment.name.trim().length > 0) ?? false)),
+  );
+  if (priorContent.length === 0) return { kind: "trivial-history" };
+  return {
+    kind: "unsupported",
+    reason:
+      "The previous provider conversation could not be transferred within the provider input budget, so the new provider cannot continue it.",
+  };
+}
+
 type WakeDelivery = {
   readonly inputPrefix: string | undefined;
   readonly wakeMessageIds: ReadonlyArray<MessageId>;
-  readonly deliveredMessageIds: ReadonlySet<MessageId>;
+  readonly handoffExcludedMessageIds: ReadonlySet<MessageId>;
 };
 
-function wakeMessageIdsFromActivity(
-  activity: OrchestrationThread["activities"][number],
-): ReadonlyArray<MessageId> {
-  if (
-    activity.kind !== DELEGATION_WAKE_DELIVERED_ACTIVITY ||
-    !Predicate.isObject(activity.payload)
-  ) {
-    return [];
-  }
-  const wakeMessageIds = activity.payload.wakeMessageIds;
-  return Array.isArray(wakeMessageIds)
-    ? wakeMessageIds.filter((messageId): messageId is MessageId => typeof messageId === "string")
-    : [];
-}
-
-function buildWakeDelivery(detail: OrchestrationThread | undefined): WakeDelivery {
+function buildWakeDelivery(
+  detail: OrchestrationThread | undefined,
+  currentMessageId?: MessageId,
+): WakeDelivery {
   if (detail === undefined) {
-    return { inputPrefix: undefined, wakeMessageIds: [], deliveredMessageIds: new Set() };
+    return { inputPrefix: undefined, wakeMessageIds: [], handoffExcludedMessageIds: new Set() };
   }
 
-  const deliveredMessageIds = new Set<MessageId>(
-    detail.activities.flatMap(wakeMessageIdsFromActivity),
+  const handledMessageIds = handledDelegationWakeMessageIds({
+    threadId: String(detail.id),
+    ...(currentMessageId === undefined ? {} : { currentMessageId: String(currentMessageId) }),
+    messageIds: new Set(detail.messages.map((message) => String(message.id))),
+    activities: detail.activities,
+  });
+  const handoffExcludedMessageIds = new Set<MessageId>(
+    [...handledMessageIds].map((messageId) => MessageId.make(messageId)),
   );
   const undeliveredWakeMessages = detail.messages.filter(
     (message) =>
       message.role === "system" &&
       message.id.startsWith(DELEGATION_WAKE_MESSAGE_PREFIX) &&
-      !deliveredMessageIds.has(message.id),
+      !handledMessageIds.has(message.id),
   );
   if (undeliveredWakeMessages.length === 0) {
-    return { inputPrefix: undefined, wakeMessageIds: [], deliveredMessageIds };
+    return { inputPrefix: undefined, wakeMessageIds: [], handoffExcludedMessageIds };
   }
 
   const selectedBlocks: Array<string> = [];
@@ -215,7 +267,7 @@ function buildWakeDelivery(detail: OrchestrationThread | undefined): WakeDeliver
   return {
     inputPrefix: selectedBlocks.join("\n\n"),
     wakeMessageIds: selectedMessageIds,
-    deliveredMessageIds,
+    handoffExcludedMessageIds,
   };
 }
 
@@ -410,6 +462,111 @@ const make = Effect.gen(function* () {
       },
       createdAt: input.createdAt,
     });
+  });
+  // Durable at-most-once marker for one provider send. Persisted before
+  // sendTurn runs: any provider-side turn implies a persisted claim, so a
+  // restart never re-sends a claimed request without a human resending it.
+  const appendTurnSendClaim = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly createdAt: string;
+  }) {
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: yield* serverCommandId("provider-turn-send-claim"),
+      threadId: input.threadId,
+      activity: {
+        id: yield* serverEventId(),
+        tone: "info",
+        kind: TURN_SEND_CLAIMED_ACTIVITY,
+        summary: "Provider turn send claimed",
+        payload: { requestId: input.messageId },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+  // A claim (or legacy binding) without a recorded turn means the send
+  // may never have reached the provider. Never re-send it automatically;
+  // flag it once so a human can check and resend. A failed linkage read
+  // also stays silent.
+  const maybeFlagUncertainTurnSend = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly hasUncertainDiagnostic: boolean;
+    readonly createdAt: string;
+  }) {
+    if (input.hasUncertainDiagnostic) return;
+    const linkedTurn = yield* projectionSnapshotQuery
+      .getTurnByPendingMessageId({ threadId: input.threadId, messageId: input.messageId })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider command reactor skips uncertain turn send check", {
+            threadId: input.threadId,
+            messageId: input.messageId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+    if (linkedTurn === undefined || Option.isSome(linkedTurn)) return;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: yield* serverCommandId("provider-turn-send-uncertain"),
+      threadId: input.threadId,
+      activity: {
+        id: yield* serverEventId(),
+        tone: "error",
+        kind: TURN_SEND_UNCERTAIN_ACTIVITY,
+        summary: "Queued follow-up may not have been sent",
+        payload: {
+          requestId: input.messageId,
+          detail:
+            "A provider send for this queued follow-up was recorded (send claim or provider binding) but no turn was recorded for it, likely a crash before the provider accepted it. It was not billed again automatically. Resend the message to retry.",
+        },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+  // Durable duplicate guard for delegation sends. The in-memory
+  // turn-start key is TTL/size bound, so a redelivered event processed
+  // after eviction must still not send twice: the first attempt claims
+  // before sending, so any prior failed/claimed/bound marker for this
+  // message means this attempt is stale. Unreadable history skips without
+  // sending; a restart retries the request.
+  const hasPriorDelegatedSendAttempt = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+  }) {
+    const detail = yield* projectionSnapshotQuery
+      .getThreadDetailById(input.threadId, {
+        activityKinds: [
+          PROVIDER_TURN_START_FAILED_ACTIVITY,
+          TURN_SEND_CLAIMED_ACTIVITY,
+          TURN_SEND_UNCERTAIN_ACTIVITY,
+          DELEGATION_PROVIDER_BOUND_ACTIVITY,
+        ],
+        activityHistory: "complete",
+      })
+      .pipe(
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
+            return Effect.interrupt;
+          }
+          return Effect.logWarning(
+            "provider command reactor skips turn start with unreadable history",
+            {
+              threadId: input.threadId,
+              messageId: input.messageId,
+              cause: Cause.pretty(cause),
+            },
+          ).pipe(Effect.as(Option.none()));
+        }),
+      );
+    if (Option.isNone(detail)) return undefined;
+    return readQueuedTurnSendMarkers(detail.value.activities, input.messageId);
   });
   const handledTurnStartKeys = yield* Cache.make<string, true>({
     capacity: HANDLED_TURN_START_KEY_MAX,
@@ -878,11 +1035,15 @@ const make = Effect.gen(function* () {
         detail: `provider_configuration_changed: provider instance '${modelSelection.instanceId}' is no longer configured.`,
       });
     }
-    const capabilities = new Set<string>(["pull-requests", "orchestration"]);
-    if (settings.enableAgentBrowserAccess) capabilities.add("preview");
-    if (settings.enableAgentDeviceAccess) capabilities.add("device");
+    // Verify against the canonical frozen child caps, not the current surface
+    // settings: the current set is only a fast path, the exact-subset search
+    // recovers delegations accepted under different flags. Anything else is
+    // configuration drift and fails closed.
+    const preferredCaps = new Set<string>(["pull-requests", "orchestration"]);
+    if (settings.enableAgentBrowserAccess) preferredCaps.add("preview");
+    if (settings.enableAgentDeviceAccess) preferredCaps.add("device");
     const worktreePath = thread.worktreePath ?? project.workspaceRoot;
-    const permissionEnvelope = yield* loadDelegationPermissionEnvelope({
+    const baseEnvelopeInput = {
       driverKind: instanceConfig.driver,
       runtimeMode: thread.runtimeMode,
       interactionMode: input.interactionMode ?? thread.interactionMode,
@@ -891,19 +1052,21 @@ const make = Effect.gen(function* () {
       workspaceRoot: project.workspaceRoot,
       worktreePath,
       branch: thread.branch,
-      t3McpCapabilities: capabilities,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, path),
-    );
-    if (
-      permissionEnvelope.status !== "verified" ||
-      permissionEnvelope.fingerprint !== input.expectedFingerprint
-    ) {
+    } as const;
+    const recovery = yield* recoverDelegationChildCaps({
+      expectedFingerprint: input.expectedFingerprint,
+      preferredCaps,
+      loadWithCaps: (t3McpCapabilities) =>
+        loadDelegationPermissionEnvelope({ ...baseEnvelopeInput, t3McpCapabilities }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+        ),
+    });
+    if (recovery.status !== "recovered") {
       const reason =
-        permissionEnvelope.status === "verified"
-          ? "the effective provider configuration changed after delegation was accepted"
-          : permissionEnvelope.reason;
+        recovery.status === "ambiguous"
+          ? "the delegated capability scope is ambiguous"
+          : "the effective provider configuration changed after delegation was accepted";
       return yield* new ProviderAdapterRequestError({
         provider: providerErrorLabel(instanceConfig.driver),
         method: "thread.turn.start",
@@ -1257,36 +1420,77 @@ const make = Effect.gen(function* () {
       );
       providerHandoffRequired = currentProviderInfo.driverKind !== requestedProviderInfo.driverKind;
     }
+    if (!providerHandoffRequired) {
+      // The live session may already be gone (restart, settle); the
+      // read-model session still names the previous provider. A cross-driver
+      // change without any live session must not start bare either.
+      const previousInstanceId =
+        activeSessionBeforeEnsure?.providerInstanceId ?? thread.session?.providerInstanceId;
+      if (
+        previousInstanceId !== undefined &&
+        previousInstanceId !== requestedModelSelection.instanceId
+      ) {
+        const previousInfo = yield* providerService.getInstanceInfo(previousInstanceId).pipe(
+          Effect.map(Option.some),
+          Effect.orElseSucceed(() => Option.none()),
+        );
+        const requestedProviderInfo = yield* providerService.getInstanceInfo(
+          requestedModelSelection.instanceId,
+        );
+        providerHandoffRequired =
+          Option.isNone(previousInfo) ||
+          previousInfo.value.driverKind !== requestedProviderInfo.driverKind;
+      }
+    }
+    const isSyntheticDelegationWakeTurn =
+      String(input.currentMessageId).startsWith("delegation-wake-turn:") ||
+      String(input.currentMessageId).startsWith("delegation-wake-drain:");
     const threadDetailForWake = yield* projectionSnapshotQuery
       .getThreadDetailById(input.threadId, {
-        activityKinds: [DELEGATION_WAKE_DELIVERED_ACTIVITY],
+        activityKinds: [
+          DELEGATION_COMPLETED_ACTIVITY,
+          DELEGATION_WAKE_DELIVERED_ACTIVITY,
+          "provider.turn.start.failed",
+        ],
         activityHistory: "complete",
       })
+      .pipe(Effect.retry({ times: 2, schedule: Schedule.exponential("100 millis") }))
       .pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("delegation wake delivery context could not be loaded", {
+        Effect.catchCause((cause) => {
+          const logged = Effect.logWarning("delegation wake delivery context could not be loaded", {
             threadId: input.threadId,
             cause: Cause.pretty(cause),
-          }).pipe(Effect.as(Option.none<OrchestrationThread>())),
-        ),
+          });
+          return isSyntheticDelegationWakeTurn
+            ? logged.pipe(Effect.andThen(Effect.failCause(cause)))
+            : logged.pipe(Effect.as(Option.none<OrchestrationThread>()));
+        }),
       );
-    const wakeDelivery = buildWakeDelivery(Option.getOrUndefined(threadDetailForWake));
+    const wakeDelivery = buildWakeDelivery(
+      Option.getOrUndefined(threadDetailForWake),
+      input.currentMessageId,
+    );
     // A cross-driver restart creates a fresh provider-native session. Carry the
     // durable transcript into its first prompt; subsequent turns stay native
-    // and must not receive the transcript a second time.
-    const providerHandoffContext = providerHandoffRequired
-      ? (() => {
-          const detail = Option.getOrUndefined(threadDetailForWake);
-          return detail === undefined
-            ? undefined
-            : buildProviderHandoffContext({
-                messages: detail.messages,
-                currentMessageId: input.currentMessageId,
-                currentMessageText: input.messageText,
-                excludedMessageIds: wakeDelivery.deliveredMessageIds,
-              });
-        })()
-      : undefined;
+    // and must not receive the transcript a second time. Missing history fails
+    // before any session restart, never as a silent bare prompt.
+    const handoff = resolveCrossDriverHandoff({
+      required: providerHandoffRequired,
+      detail: Option.getOrUndefined(threadDetailForWake),
+      currentMessageId: input.currentMessageId,
+      currentMessageText: input.messageText,
+      excludedMessageIds: wakeDelivery.handoffExcludedMessageIds,
+    });
+    if (handoff.kind === "unsupported") {
+      return yield* new ProviderAdapterRequestError({
+        provider: providerErrorLabelFromInstanceHint({
+          instanceId: String(requestedModelSelection.instanceId),
+        }),
+        method: "thread.turn.start",
+        detail: `provider_handoff_unsupported: ${handoff.reason}`,
+      });
+    }
+    const providerHandoffContext = handoff.kind === "context" ? handoff.text : undefined;
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(modelSelectionForEnsure !== undefined ? { modelSelection: modelSelectionForEnsure } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
@@ -1746,6 +1950,14 @@ const make = Effect.gen(function* () {
       });
       return;
     }
+    if (event.payload.delegationConfigFingerprint !== undefined) {
+      const priorAttempt = yield* hasPriorDelegatedSendAttempt({
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+      });
+      if (priorAttempt === undefined) return;
+      if (priorAttempt.hasFailed || priorAttempt.hasClaim || priorAttempt.hasLegacyBound) return;
+    }
     // Resolve how a follow-up sent while a turn is still running is
     // delivered. The adapter executes the steer (interrupt first, then send);
     // the reactor only resolves and forwards the behavior. Muse sessions
@@ -2038,6 +2250,17 @@ const make = Effect.gen(function* () {
         Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(false))),
       );
       if (!providerBound) return;
+      // Claim before send: a failed claim records the failure and never
+      // sends, so every provider-side turn has a persisted claim behind it.
+      const sendClaimed = yield* appendTurnSendClaim({
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        createdAt: event.payload.createdAt,
+      }).pipe(
+        Effect.as(true),
+        Effect.catchCause((cause) => handleTurnStartFailure(cause).pipe(Effect.as(false))),
+      );
+      if (!sendClaimed) return;
     }
 
     const send = providerService
@@ -2526,6 +2749,130 @@ const make = Effect.gen(function* () {
     const domainEvents = yield* orchestrationEngine.subscribeDomainEvents;
     yield* forkParked(Stream.runForEach(domainEvents, processEvent));
 
+    // Follow-up receipts and start requests are durable, but this hot stream
+    // does not replay events committed before the reactor subscribed. Recover
+    // per message, in log order: user messages keep turnId null after their
+    // turn finishes, so the message check alone re-bills completed work.
+    // A failed or claimed request never runs again; a claim without a
+    // recorded turn is uncertain and gets an explicit diagnostic instead.
+    // Group queue candidates per thread: one complete detail read per
+    // thread, latest event per message wins (a compaction replay supersedes
+    // its original; distinct messages keep log order). Markers need the
+    // complete scoped read: the default window keeps only the last 500
+    // activities, so an older marker would be missed and an already-handled
+    // prompt replayed.
+    const queuedByThread = new Map<
+      string,
+      {
+        readonly threadId: ThreadId;
+        readonly byMessage: Map<
+          string,
+          Extract<OrchestrationEvent, { type: "thread.turn-start-requested" }>
+        >;
+      }
+    >();
+    // A failed scan leaves a partial map behind; deciding on it could
+    // bill for a request a later unread event already handled.
+    const scanSucceeded = yield* Stream.runForEach(
+      orchestrationEngine.readPendingDelegatedTurnStarts(),
+      (event) =>
+        Effect.sync(() => {
+          if (
+            event.type !== "thread.turn-start-requested" ||
+            event.payload.followUpBehavior !== "queue" ||
+            event.payload.delegationConfigFingerprint === undefined
+          ) {
+            return;
+          }
+          const key = String(event.payload.threadId);
+          const queued = queuedByThread.get(key) ?? {
+            threadId: event.payload.threadId,
+            byMessage: new Map<
+              string,
+              Extract<OrchestrationEvent, { type: "thread.turn-start-requested" }>
+            >(),
+          };
+          queued.byMessage.set(String(event.payload.messageId), event);
+          queuedByThread.set(key, queued);
+        }),
+    ).pipe(
+      Effect.as(true),
+      Effect.catch((error) =>
+        Effect.logWarning("provider command reactor failed to recover queued turn starts", {
+          error,
+        }).pipe(Effect.as(false)),
+      ),
+    );
+    if (scanSucceeded) {
+      for (const queued of queuedByThread.values()) {
+        const detail = yield* projectionSnapshotQuery
+          .getThreadDetailById(queued.threadId, {
+            activityKinds: [
+              "provider.turn.start.failed",
+              TURN_SEND_CLAIMED_ACTIVITY,
+              TURN_SEND_UNCERTAIN_ACTIVITY,
+              DELEGATION_PROVIDER_BOUND_ACTIVITY,
+            ],
+            activityHistory: "complete",
+          })
+          .pipe(
+            Effect.catchCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) {
+                return Effect.interrupt;
+              }
+              return Effect.logWarning(
+                "provider command reactor skips queued turn starts with unreadable history",
+                {
+                  threadId: queued.threadId,
+                  cause: Cause.pretty(cause),
+                },
+              ).pipe(Effect.as(Option.none()));
+            }),
+          );
+        if (Option.isNone(detail)) continue;
+        const ordered = [...queued.byMessage.values()].sort(
+          (left, right) => left.sequence - right.sequence,
+        );
+        for (const event of ordered) {
+          const message = detail.value.messages.find(
+            (candidate) => candidate.id === event.payload.messageId,
+          );
+          const markers = readQueuedTurnSendMarkers(
+            detail.value.activities,
+            event.payload.messageId,
+          );
+          if (markers.hasFailed) continue;
+          if (markers.hasClaim || markers.hasLegacyBound) {
+            yield* maybeFlagUncertainTurnSend({
+              threadId: event.payload.threadId,
+              messageId: event.payload.messageId,
+              hasUncertainDiagnostic: markers.hasUncertainDiagnostic,
+              createdAt: event.payload.createdAt,
+            }).pipe(
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterruptsOnly(cause)) {
+                  return Effect.interrupt;
+                }
+                return Effect.logWarning(
+                  "provider command reactor failed to flag uncertain turn send",
+                  {
+                    threadId: event.payload.threadId,
+                    messageId: event.payload.messageId,
+                    cause: Cause.pretty(cause),
+                  },
+                );
+              }),
+            );
+            continue;
+          }
+          if (!shouldRecoverQueuedTurnStart(message, markers.hasFailed)) {
+            continue;
+          }
+          yield* worker.enqueue(event);
+        }
+      }
+    }
+
     // Earlier events do not replay. Clear interrupted requests by their captured
     // IDs, then schedule persisted refinements after subscribing to their events.
     const recoverTitles = clearInterruptedThreadTitleRegenerations(
@@ -2567,3 +2914,68 @@ const make = Effect.gen(function* () {
 });
 
 export const ProviderCommandReactorLive = Layer.effect(ProviderCommandReactor, make);
+
+/**
+ * Message-level recovery check. Necessary but not sufficient: user messages
+ * keep turnId null after their turn finishes, so this alone re-bills
+ * completed work. Combine with the per-message send markers from
+ * readQueuedTurnSendMarkers: failed or claimed requests never run again.
+ */
+export function shouldRecoverQueuedTurnStart(
+  message: { readonly role: string; readonly turnId: unknown } | undefined,
+  hasStartFailed: boolean,
+): boolean {
+  return message?.role === "user" && message.turnId === null && !hasStartFailed;
+}
+
+export type QueuedTurnSendMarkers = {
+  readonly hasFailed: boolean;
+  readonly hasClaim: boolean;
+  readonly hasLegacyBound: boolean;
+  readonly hasUncertainDiagnostic: boolean;
+};
+
+/**
+ * Per-message send evidence for one queued turn start. A claim means the
+ * reactor already attempted this exact send; a legacy provider binding
+ * means a pre-claim send did. Without a recorded turn either attempt is
+ * uncertain (likely a crash before the provider accepted it).
+ */
+export function readQueuedTurnSendMarkers(
+  activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+  messageId: MessageId,
+): QueuedTurnSendMarkers {
+  let hasFailed = false;
+  let hasClaim = false;
+  let hasLegacyBound = false;
+  let hasUncertainDiagnostic = false;
+  for (const activity of activities) {
+    if (!Predicate.isObject(activity.payload)) {
+      continue;
+    }
+    if (activity.payload.requestId === messageId) {
+      if (activity.kind === "provider.turn.start.failed") {
+        hasFailed = true;
+      } else if (activity.kind === TURN_SEND_CLAIMED_ACTIVITY) {
+        hasClaim = true;
+      } else if (activity.kind === TURN_SEND_UNCERTAIN_ACTIVITY) {
+        hasUncertainDiagnostic = true;
+      }
+      continue;
+    }
+    if (
+      activity.kind === DELEGATION_PROVIDER_BOUND_ACTIVITY &&
+      activity.payload.delegatedMessageId === messageId
+    ) {
+      hasLegacyBound = true;
+    }
+  }
+  return { hasFailed, hasClaim, hasLegacyBound, hasUncertainDiagnostic };
+}
+
+export const __testing = {
+  resolveCrossDriverHandoff,
+  buildWakeDelivery,
+  shouldRecoverQueuedTurnStart,
+  readQueuedTurnSendMarkers,
+};

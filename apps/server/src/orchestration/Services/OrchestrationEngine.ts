@@ -49,6 +49,12 @@ export interface OrchestrationEngineShape {
     limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
 
+  /** Replay only delegated sends that still need a first provider attempt. */
+  readonly readPendingDelegatedTurnStarts: () => Stream.Stream<
+    OrchestrationEvent,
+    OrchestrationEventStoreError
+  >;
+
   /** Read only this thread's events through a captured authoritative head. */
   readonly readThreadEvents: (
     input: OrchestrationThreadReplayRange & { readonly limit?: number },

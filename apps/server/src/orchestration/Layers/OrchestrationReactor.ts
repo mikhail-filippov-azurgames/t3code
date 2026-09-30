@@ -15,6 +15,7 @@ import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { CalendarReactor } from "../../background/CalendarReactor.ts";
 import * as BoardReactor from "../BoardReactor.ts";
+import * as DelegatedTaskSummaryReactor from "../DelegatedTaskSummaryReactor.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -27,6 +28,8 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const calendarReactor = yield* CalendarReactor;
   const boardReactor = yield* BoardReactor.BoardReactor;
+  const delegatedTaskSummaryReactor =
+    yield* DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor;
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -39,6 +42,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* agentAwarenessRelay.start();
     yield* calendarReactor.start();
     yield* boardReactor.start();
+    yield* delegatedTaskSummaryReactor.start();
   });
 
   return {

@@ -60,6 +60,12 @@ export interface OrchestrationEventStoreShape {
     limit?: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
+  /** Read the durable, still-pending delegated send inbox in request order. */
+  readonly readPendingDelegatedTurnStarts: () => Stream.Stream<
+    OrchestrationEvent,
+    OrchestrationEventStoreError
+  >;
+
   /** Read one aggregate through a captured global head, without decoding other streams. */
   readonly readAggregateRange: (
     input: OrchestrationAggregateReplayRange & { readonly limit?: number },

@@ -36,6 +36,7 @@ import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as Tracer from "effect/Tracer";
 import { it as effectIt } from "@effect/vitest";
 import { afterEach, describe, expect, it } from "vite-plus/test";
@@ -82,6 +83,10 @@ const asEventId = (value: string): EventId => EventId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
 const asThreadId = (value: string): ThreadId => ThreadId.make(value);
 const asTurnId = (value: string): TurnId => TurnId.make(value);
+const delegatedChildTurnKey = (childThreadId: ThreadId, turnId: TurnId): string =>
+  `${String(childThreadId).length}:${childThreadId}${String(turnId).length}:${turnId}`;
+const delegationWakeMessageId = (childThreadId: ThreadId, turnId: TurnId): MessageId =>
+  asMessageId(`delegation-wake:${delegatedChildTurnKey(childThreadId, turnId)}`);
 
 type LegacyProviderRuntimeEvent = {
   readonly type: string;
@@ -327,7 +332,10 @@ describe("ProviderRuntimeIngestion", () => {
         ? Logger.layer(
             [
               Logger.make(({ message }) => {
-                capturedLogs.push(message.map((entry) => String(entry)).join(" "));
+                const entries: ReadonlyArray<unknown> = Array.isArray(message)
+                  ? message
+                  : [message];
+                capturedLogs.push(entries.map((entry) => String(entry)).join(" "));
               }),
             ],
             { mergeWithExisting: false },
@@ -355,11 +363,29 @@ describe("ProviderRuntimeIngestion", () => {
     const testRuntime = ManagedRuntime.make(layer);
     runtime = testRuntime;
     const engine = await testRuntime.runPromise(Effect.service(OrchestrationEngineService));
+    const sqlClient = await testRuntime.runPromise(Effect.service(SqlClient.SqlClient));
+    let failNextDispatch: ((command: OrchestrationCommand) => boolean) | undefined;
+    const originalEngineDispatch = engine.dispatch;
+    Object.defineProperty(engine, "dispatch", {
+      configurable: true,
+      value: (
+        command: OrchestrationCommand,
+        dispatchOptions?: Parameters<typeof originalEngineDispatch>[1],
+      ) => {
+        if (failNextDispatch?.(command)) {
+          failNextDispatch = undefined;
+          return Effect.die(new Error("injected transient orchestration dispatch failure"));
+        }
+        return originalEngineDispatch(command, dispatchOptions);
+      },
+    });
     const snapshotQuery = await testRuntime.runPromise(Effect.service(ProjectionSnapshotQuery));
     const ingestion = await testRuntime.runPromise(Effect.service(ProviderRuntimeIngestionService));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await testRuntime.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => testRuntime.runPromise(ingestion.drain);
+    const restartIngestionRecovery = () =>
+      testRuntime.runPromise(ingestion.start().pipe(Scope.provide(scope!)));
     const readPendingTurnStart = (threadId: ThreadId) =>
       testRuntime.runPromise(
         Effect.service(ProjectionTurnRepository).pipe(
@@ -435,6 +461,22 @@ describe("ProviderRuntimeIngestion", () => {
     return {
       engine,
       dispatch,
+      failNextDispatch: (predicate: (command: OrchestrationCommand) => boolean) => {
+        failNextDispatch = predicate;
+      },
+      seedReadySummary: (childThreadId: ThreadId, turnId: TurnId, completedAt: string) =>
+        testRuntime.runPromise(sqlClient`
+          INSERT INTO projection_delegated_task_summaries (
+            child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+            summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+            error, attempt_count, retry_after, updated_at
+          ) VALUES (
+            ${childThreadId}, 'test-environment', 'thread-1', ${turnId}, ${completedAt},
+            'Outcome: already summarized.', 'deterministic', ${JSON.stringify([turnId])}, 1,
+            'preexisting-summary', 'ready', NULL, 1, NULL, ${completedAt}
+          )
+        `),
+      restartIngestionRecovery,
       readModel: () => testRuntime.runPromise(snapshotQuery.getSnapshot()),
       readThreadShell: () =>
         testRuntime.runPromise(
@@ -673,6 +715,8 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt: now,
     });
 
+    const dummySecret = `ghp_${"DUMMYSECRET".repeat(4)}`;
+    const oversizedTail = "TRAILING_REPORT_TEXT_SHOULD_NOT_LEAK ".repeat(60);
     await harness.emitAndDrain([
       {
         type: "turn.started",
@@ -691,7 +735,10 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt: now,
         turnId: delegatedTurnId,
         itemId: asItemId("child-answer-item"),
-        payload: { streamKind: "assistant_text", delta: "CHILD_OK" },
+        payload: {
+          streamKind: "assistant_text",
+          delta: `${dummySecret} ${"report ".repeat(40)}${oversizedTail}`,
+        },
       },
       {
         type: "turn.completed",
@@ -726,19 +773,406 @@ describe("ProviderRuntimeIngestion", () => {
       delegatedTurnId,
       status: "completed",
       completedAt: "2026-01-01T00:00:01.000Z",
-      resultExcerpt: "CHILD_OK",
     });
-    expect(parent?.messages.filter((message) => message.role === "system")).toEqual([
-      expect.objectContaining({
-        text: expect.stringContaining("CHILD_OK"),
-        turnId: null,
-      }),
-    ]);
+    const persistedParentActivity = JSON.stringify(completionActivities?.[0]?.payload);
+    const persistedParentMessage = parent?.messages.find((message) => message.role === "system");
+    expect(persistedParentActivity).not.toContain(dummySecret);
+    expect(persistedParentMessage?.text).not.toContain(dummySecret);
+    expect(persistedParentActivity).not.toContain("TRAILING_REPORT_TEXT_SHOULD_NOT_LEAK");
+    expect(persistedParentMessage?.text).not.toContain("TRAILING_REPORT_TEXT_SHOULD_NOT_LEAK");
+    expect(
+      (completionActivities?.[0]?.payload as { resultExcerpt?: string }).resultExcerpt?.length,
+    ).toBeLessThanOrEqual(200);
+    expect(completionActivities?.[0]?.payload).toMatchObject({
+      resultExcerpt: expect.stringContaining("[REDACTED]"),
+    });
+    expect(persistedParentMessage?.text).toContain("task_read");
+    expect(persistedParentMessage?.text).toContain(String(childThreadId));
+    expect(persistedParentMessage?.text.length).toBeLessThan(400);
+    expect(parent?.messages.filter((message) => message.role === "system")).toHaveLength(1);
     expect(parent?.latestTurn).toMatchObject({
       turnId: asTurnId("parent-turn"),
       state: "running",
     });
     expect(parent?.session?.activeTurnId).toBe(asTurnId("parent-turn"));
+  });
+
+  it("isolates executor completion notifications to the Coordinator", async () => {
+    const harness = await createHarness();
+    const coordinatorThreadId = asThreadId("thread-1");
+    const architectThreadId = asThreadId("arch:notify-isolation");
+    const childThreadId = asThreadId("child-notify-isolation");
+    const delegatedTurnId = asTurnId("notify-isolation-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await harness.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("notify-isolation-architect-create"),
+      threadId: architectThreadId,
+      projectId: asProjectId("project-1"),
+      title: "Architect",
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      branch: null,
+      worktreePath: null,
+      createdAt: now,
+    });
+    const ordinaryArchitectTurnId = asTurnId("architect-ordinary-turn");
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("notify-isolation-ordinary-turn"),
+      threadId: architectThreadId,
+      message: {
+        messageId: asMessageId("notify-isolation-ordinary-message"),
+        role: "user",
+        text: "A normal Architect conversation must not notify the Coordinator.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: now,
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("notify-isolation-ordinary-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: architectThreadId,
+        createdAt: now,
+        turnId: ordinaryArchitectTurnId,
+        payload: { model: "gpt-5" },
+      },
+      {
+        type: "content.delta",
+        eventId: asEventId("notify-isolation-ordinary-answer"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: architectThreadId,
+        createdAt: "2026-01-01T00:00:00.500Z",
+        turnId: ordinaryArchitectTurnId,
+        itemId: asItemId("notify-isolation-ordinary-answer-item"),
+        payload: { streamKind: "assistant_text", delta: "Still no Coordinator notice." },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("notify-isolation-ordinary-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: architectThreadId,
+        createdAt: "2026-01-01T00:00:00.750Z",
+        turnId: ordinaryArchitectTurnId,
+        payload: { state: "completed" },
+      },
+    ]);
+    const beforeExecutorCompletion = await harness.readModel();
+    const coordinatorBeforeExecutor = beforeExecutorCompletion.threads.find(
+      (thread) => thread.id === coordinatorThreadId,
+    );
+    expect(
+      coordinatorBeforeExecutor?.activities.some(
+        (activity) => activity.kind === "delegation.completed",
+      ),
+    ).toBe(false);
+    expect(
+      coordinatorBeforeExecutor?.messages.filter((message) => message.role === "system"),
+    ).toEqual([]);
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId: coordinatorThreadId,
+      delegatedMessageId: asMessageId("notify-isolation-child-message"),
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    const model = await harness.readModel();
+    const coordinator = model.threads.find((thread) => thread.id === coordinatorThreadId);
+    const architect = model.threads.find((thread) => thread.id === architectThreadId);
+    expect(
+      coordinator?.activities.some((activity) => activity.kind === "delegation.completed"),
+    ).toBe(true);
+    expect(coordinator?.messages.some((message) => message.role === "system")).toBe(true);
+    expect(
+      coordinator?.messages.some(
+        (message) => message.id === delegationWakeMessageId(childThreadId, delegatedTurnId),
+      ),
+    ).toBe(true);
+    expect(architect?.activities).toEqual([]);
+    expect(architect?.messages.some((message) => message.role === "system")).toBe(false);
+    expect(
+      architect?.activities.some((activity) => activity.kind.startsWith("architecture.")),
+    ).toBe(false);
+    expect(
+      architect?.messages.some((message) => String(message.id).startsWith("delegation-wake:")),
+    ).toBe(false);
+  });
+
+  it("scrubs and caps a long terminal failure preview in parent activity and wake", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-failed-preview");
+    const turnId = asTurnId("child-failed-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+    const dummySecret = `ghp_${"FAILURESECRET".repeat(3)}`;
+    const discardedTail = "FAILURE_PREVIEW_TAIL_SHOULD_NOT_PERSIST ".repeat(40);
+    const terminalError = `${dummySecret} ${"provider failure detail ".repeat(20)}${discardedTail}`;
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("child-failed-message"),
+      createdAt: now,
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("child-failed-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: now,
+        turnId,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("child-failed-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId,
+        payload: { state: "failed", errorMessage: terminalError },
+      },
+    ]);
+
+    const parent = (await harness.readModel()).threads.find(
+      (thread) => thread.id === parentThreadId,
+    );
+    const completion = parent?.activities.find(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    const storedError = (completion?.payload as { readonly terminalError?: string }).terminalError;
+    const wake = parent?.messages.find(
+      (message) => message.id === delegationWakeMessageId(childThreadId, turnId),
+    );
+    const wakePreview = wake?.text.match(/Preview: ([\s\S]*?)\. Full child transcript:/)?.[1];
+
+    expect(storedError).toHaveLength(200);
+    expect(wakePreview).toHaveLength(200);
+    expect(storedError).toContain("[REDACTED]");
+    expect(storedError).not.toContain(dummySecret);
+    expect(storedError).not.toContain("FAILURE_PREVIEW_TAIL_SHOULD_NOT_PERSIST");
+    expect(wake?.text).toContain("[REDACTED]");
+    expect(wake?.text).not.toContain(dummySecret);
+    expect(wake?.text).not.toContain("FAILURE_PREVIEW_TAIL_SHOULD_NOT_PERSIST");
+    expect(JSON.stringify(completion?.payload)).not.toContain(dummySecret);
+  });
+
+  it("replays the parent callback and wake from a terminal child after a callback crash gap", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-crash-gap");
+    const turnId = asTurnId("child-terminal-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("child-crash-gap-message"),
+      createdAt: now,
+    });
+    harness.failNextDispatch(
+      (command) =>
+        command.type === "thread.activity.append" &&
+        command.activity.kind === "delegation.completed",
+    );
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    let parent = (await harness.readModel()).threads.find((thread) => thread.id === parentThreadId);
+    expect(
+      parent?.activities.filter((activity) => activity.kind === "delegation.completed"),
+    ).toHaveLength(0);
+    expect(
+      parent?.messages.some(
+        (message) => message.id === delegationWakeMessageId(childThreadId, turnId),
+      ),
+    ).toBe(false);
+    // This is the reviewer's crash window: the summary projection completed,
+    // but terminal child notification had not yet reached the parent.
+    await harness.seedReadySummary(childThreadId, turnId, "2026-01-01T00:00:01.000Z");
+
+    // A fresh startup recovery pass derives the lost callback from the durable terminal turn.
+    await harness.restartIngestionRecovery();
+    const parentAfterRecovery = await waitForThread(
+      harness.readModel,
+      (thread) =>
+        thread.activities.some((activity) => activity.kind === "delegation.completed") &&
+        thread.messages.some(
+          (message) => message.id === delegationWakeMessageId(childThreadId, turnId),
+        ) &&
+        thread.messages.some(
+          (message) =>
+            message.id ===
+            asMessageId(`delegation-wake-turn:${delegatedChildTurnKey(childThreadId, turnId)}`),
+        ),
+    );
+    expect(
+      parentAfterRecovery.activities.filter((activity) => activity.kind === "delegation.completed"),
+    ).toHaveLength(1);
+
+    await harness.restartIngestionRecovery();
+    await Effect.runPromise(Effect.sleep("100 millis"));
+    parent = (await harness.readModel()).threads.find((thread) => thread.id === parentThreadId);
+    expect(
+      parent?.activities.filter((activity) => activity.kind === "delegation.completed"),
+    ).toHaveLength(1);
+    expect(
+      parent?.messages.filter(
+        (message) =>
+          message.id ===
+          asMessageId(`delegation-wake-turn:${delegatedChildTurnKey(childThreadId, turnId)}`),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("does not backfill a historical legacy completion with a durable wake-turn anchor after restart", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-legacy-delivered");
+    const turnId = asTurnId("legacy-delivered-turn");
+    const completedAt = "2026-01-01T00:00:01.000Z";
+    const legacyWakeMessageId = asMessageId(`delegation-wake:${turnId}`);
+    const compositeWakeMessageId = delegationWakeMessageId(childThreadId, turnId);
+    const directTurnMessageId = asMessageId(`delegation-wake-turn:${childThreadId}:${turnId}`);
+    const completionActivityId = `provider:delegation-completed:${delegatedChildTurnKey(childThreadId, turnId)}`;
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("legacy-delivered-message"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    harness.failNextDispatch(
+      (command) =>
+        command.type === "thread.activity.append" &&
+        command.activity.kind === "delegation.completed",
+    );
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnId,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt,
+    });
+    await harness.seedReadySummary(childThreadId, turnId, completedAt);
+
+    await harness.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(`${completionActivityId}:append`),
+      threadId: parentThreadId,
+      activity: {
+        id: EventId.make(completionActivityId),
+        tone: "info",
+        kind: "delegation.completed",
+        summary: "Delegated child completed",
+        payload: {
+          version: 1,
+          childThreadId,
+          delegatedTurnId: turnId,
+          status: "completed",
+          completedAt,
+          resultExcerpt: "Historical result already delivered.",
+        },
+        turnId: null,
+        createdAt: completedAt,
+      },
+      createdAt: completedAt,
+    });
+    await harness.dispatch({
+      type: "thread.message.system.append",
+      commandId: CommandId.make("legacy-delivered-wake-message"),
+      threadId: parentThreadId,
+      message: {
+        messageId: legacyWakeMessageId,
+        text: "Delegated child completed. Preview: Historical result already delivered.",
+      },
+      createdAt: completedAt,
+    });
+    await harness.dispatch({
+      type: "thread.message.user.append",
+      commandId: CommandId.make("legacy-delivered-wake-turn-anchor"),
+      threadId: parentThreadId,
+      message: {
+        messageId: directTurnMessageId,
+        text: "Historical child completion wake turn.",
+        attachments: [],
+      },
+      createdAt: completedAt,
+    });
+
+    await harness.restartIngestionRecovery();
+    await harness.drain();
+
+    const parent = (await harness.readModel()).threads.find(
+      (thread) => thread.id === parentThreadId,
+    );
+    expect(parent?.messages.some((message) => message.id === legacyWakeMessageId)).toBe(true);
+    expect(parent?.messages.some((message) => message.id === compositeWakeMessageId)).toBe(false);
+    expect(parent?.messages.some((message) => message.id === directTurnMessageId)).toBe(true);
+    expect(
+      parent?.messages.some((message) => String(message.id).startsWith("delegation-wake-drain:")),
+    ).toBe(false);
+    expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+  });
+
+  it("retries a transient parent auto-start failure without creating duplicate parent turns", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-start-retry");
+    const turnId = asTurnId("child-start-retry-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+    const parentAnchorId = asMessageId(
+      `delegation-wake-turn:${delegatedChildTurnKey(childThreadId, turnId)}`,
+    );
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("child-start-retry-message"),
+      createdAt: now,
+    });
+    harness.failNextDispatch(
+      (command) =>
+        command.type === "thread.turn.start" && command.message.messageId === parentAnchorId,
+    );
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    let parent = (await harness.readModel()).threads.find((thread) => thread.id === parentThreadId);
+    expect(
+      parent?.activities.filter((activity) => activity.kind === "delegation.completed"),
+    ).toHaveLength(1);
+    expect(parent?.messages.some((message) => message.id === parentAnchorId)).toBe(false);
+
+    await harness.restartIngestionRecovery();
+    await waitForThread(harness.readModel, (thread) =>
+      thread.messages.some((message) => message.id === parentAnchorId),
+    );
+    await harness.restartIngestionRecovery();
+    await Effect.runPromise(Effect.sleep("100 millis"));
+    parent = (await harness.readModel()).threads.find((thread) => thread.id === parentThreadId);
+    expect(
+      parent?.activities.filter((activity) => activity.kind === "delegation.completed"),
+    ).toHaveLength(1);
+    expect(parent?.messages.filter((message) => message.id === parentAnchorId)).toHaveLength(1);
   });
 
   it("auto-starts a parent turn for an idle parent when the child terminal lands", async () => {
@@ -747,9 +1181,11 @@ describe("ProviderRuntimeIngestion", () => {
     const childThreadId = asThreadId("child-thread-1");
     const delegatedMessageId = asMessageId("delegated-message-1");
     const delegatedTurnId = asTurnId("delegated-turn-1");
-    const anchorMessageId = asMessageId(`delegation-wake-turn:${childThreadId}:${delegatedTurnId}`);
+    const anchorMessageId = asMessageId(
+      `delegation-wake-turn:${delegatedChildTurnKey(childThreadId, delegatedTurnId)}`,
+    );
     const anchorText =
-      "Delegated child finished. The result is included above. React to it and act on it if needed.";
+      "A delegated child finished. Read the bounded preview above. If it is insufficient for your decision, use task_read with the child task ID to read the full transcript.";
     const now = "2026-01-01T00:00:00.000Z";
 
     await harness.dispatch({
@@ -829,7 +1265,7 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
     const pendingStart = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStart)).toBe(true);
-    expect(pendingStart.value.messageId).toBe(anchorMessageId);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(anchorMessageId);
 
     await harness.emitAndDrain([
       {
@@ -846,13 +1282,13 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
     const pendingStartAfterReplay = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStartAfterReplay)).toBe(true);
-    expect(pendingStartAfterReplay.value.messageId).toBe(anchorMessageId);
+    expect(Option.getOrThrow(pendingStartAfterReplay).messageId).toBe(anchorMessageId);
   });
 
   it.each([
     {
       variant: "a running parent turn" as const,
-      busy: async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+      busy: async (harness: Awaited<ReturnType<typeof createHarness>>): Promise<TurnId | null> => {
         await harness.dispatch({
           type: "thread.session.set",
           commandId: CommandId.make("parent-running"),
@@ -868,12 +1304,12 @@ describe("ProviderRuntimeIngestion", () => {
           },
           createdAt: "2026-01-01T00:00:00.000Z",
         });
-        return "parent-turn";
+        return asTurnId("parent-turn");
       },
     },
     {
       variant: "a queued parent turn start" as const,
-      busy: async (harness: Awaited<ReturnType<typeof createHarness>>) => {
+      busy: async (harness: Awaited<ReturnType<typeof createHarness>>): Promise<TurnId | null> => {
         await harness.dispatch({
           type: "thread.turn.start",
           commandId: CommandId.make("parent-pending-start"),
@@ -897,7 +1333,9 @@ describe("ProviderRuntimeIngestion", () => {
     const childThreadId = asThreadId("child-thread-1");
     const delegatedMessageId = asMessageId("delegated-message-1");
     const delegatedTurnId = asTurnId("delegated-turn-1");
-    const anchorMessageId = asMessageId(`delegation-wake-turn:${childThreadId}:${delegatedTurnId}`);
+    const anchorMessageId = asMessageId(
+      `delegation-wake-turn:${delegatedChildTurnKey(childThreadId, delegatedTurnId)}`,
+    );
     const now = "2026-01-01T00:00:00.000Z";
 
     const pendingStartOwnerTurnId = await busy(harness);
@@ -978,7 +1416,7 @@ describe("ProviderRuntimeIngestion", () => {
     const pendingStart = await harness.readPendingTurnStart(parentThreadId);
     if (pendingStartOwnerTurnId === null) {
       expect(Option.isSome(pendingStart)).toBe(true);
-      expect(pendingStart.value.messageId).toBe(asMessageId("parent-pending-message"));
+      expect(Option.getOrThrow(pendingStart).messageId).toBe(asMessageId("parent-pending-message"));
     } else {
       expect(Option.isNone(pendingStart)).toBe(true);
     }
@@ -1120,9 +1558,60 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("keeps completion activities and wakes distinct when children reuse a turn ID", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childA = asThreadId("child-same-turn-a");
+    const childB = asThreadId("child-same-turn-b");
+    const turnId = asTurnId("provider-reused-turn");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    for (const [childThreadId, suffix] of [
+      [childA, "a"],
+      [childB, "b"],
+    ] as const) {
+      await seedDelegatedChild(harness, {
+        childThreadId,
+        parentThreadId,
+        delegatedMessageId: asMessageId(`same-turn-message-${suffix}`),
+        createdAt: now,
+      });
+      await completeDelegatedChild(harness, {
+        childThreadId,
+        delegatedTurnId: turnId,
+        startedAt: now,
+        completedAt: `2026-01-01T00:00:0${suffix === "a" ? "1" : "2"}.000Z`,
+      });
+    }
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const completions = parent?.activities.filter(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    expect(completions).toHaveLength(2);
+    expect(
+      completions?.map(
+        (activity) => (activity.payload as { childThreadId: ThreadId }).childThreadId,
+      ),
+    ).toEqual([childA, childB]);
+    expect(
+      completions?.map(
+        (activity) => (activity.payload as { delegatedTurnId: TurnId }).delegatedTurnId,
+      ),
+    ).toEqual([turnId, turnId]);
+    expect(parent?.messages.filter((message) => message.role === "system")).toHaveLength(2);
+    expect(
+      parent?.messages.some((message) => message.id === delegationWakeMessageId(childA, turnId)),
+    ).toBe(true);
+    expect(
+      parent?.messages.some((message) => message.id === delegationWakeMessageId(childB, turnId)),
+    ).toBe(true);
+  });
+
   type WakeHarness = Awaited<ReturnType<typeof createHarness>>;
   const WAKE_ANCHOR_TEXT =
-    "Delegated child finished. The result is included above. React to it and act on it if needed.";
+    "A delegated child finished. Read the bounded preview above. If it is insufficient for your decision, use task_read with the child task ID to read the full transcript.";
 
   async function seedDelegatedChild(
     harness: WakeHarness,
@@ -1192,12 +1681,13 @@ describe("ProviderRuntimeIngestion", () => {
       readonly delegatedTurnId: TurnId;
       readonly startedAt: string;
       readonly completedAt: string;
+      readonly outputStatus?: "available" | "empty" | "unavailable";
     },
   ) {
     await harness.emitAndDrain([
       {
         type: "turn.started",
-        eventId: asEventId(`${input.delegatedTurnId}-started`),
+        eventId: asEventId(`${input.childThreadId}:${input.delegatedTurnId}-started`),
         provider: ProviderDriverKind.make("codex"),
         threadId: input.childThreadId,
         createdAt: input.startedAt,
@@ -1206,12 +1696,15 @@ describe("ProviderRuntimeIngestion", () => {
       },
       {
         type: "turn.completed",
-        eventId: asEventId(`${input.delegatedTurnId}-completed`),
+        eventId: asEventId(`${input.childThreadId}:${input.delegatedTurnId}-completed`),
         provider: ProviderDriverKind.make("codex"),
         threadId: input.childThreadId,
         createdAt: input.completedAt,
         turnId: input.delegatedTurnId,
-        payload: { state: "completed" },
+        payload: {
+          state: "completed",
+          ...(input.outputStatus === undefined ? {} : { outputStatus: input.outputStatus }),
+        },
       },
     ]);
   }
@@ -1273,6 +1766,7 @@ describe("ProviderRuntimeIngestion", () => {
   const userMessageIds = (messages: ReadonlyArray<ProviderRuntimeTestMessage>) =>
     messages.filter((message) => message.role === "user").map((message) => message.id);
 
+  // This legacy fixture models stored history; a newly started turn must use the current brief.
   async function seedBoardOrchestratorNotice(
     harness: WakeHarness,
     input: { readonly threadId: ThreadId; readonly createdAt: string },
@@ -1360,6 +1854,308 @@ describe("ProviderRuntimeIngestion", () => {
     });
   }
 
+  it("announces every terminal turn of a multi-turn delegated child", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const followUpMessageId = asMessageId("follow-up-message-1");
+    const turnOne = asTurnId("delegated-turn-1");
+    const turnTwo = asTurnId("delegated-turn-2");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId,
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnOne,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("child-follow-up-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: followUpMessageId,
+        role: "user",
+        text: "Continue the work.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnTwo,
+      startedAt: "2026-01-01T00:00:02.000Z",
+      completedAt: "2026-01-01T00:00:03.000Z",
+    });
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const completionActivities = parent?.activities.filter(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    expect(completionActivities).toHaveLength(2);
+    const systemMessages = parent?.messages.filter((m) => m.role === "system");
+    expect(systemMessages).toHaveLength(2);
+  });
+
+  it("tells the parent when delegated output is unavailable and was not replayed", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const delegatedTurnId = asTurnId("delegated-turn-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId,
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+      outputStatus: "unavailable",
+    });
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const completion = parent?.activities.find(
+      (activity) =>
+        activity.kind === "delegation.completed" &&
+        typeof activity.payload === "object" &&
+        activity.payload !== null &&
+        "delegatedTurnId" in activity.payload &&
+        activity.payload.delegatedTurnId === delegatedTurnId,
+    );
+    expect(completion?.payload).toMatchObject({
+      outputStatus: "unavailable",
+      resultExcerpt:
+        "Assistant output unavailable; the provider turn completed and was not replayed.",
+    });
+    expect(parent?.messages.find((message) => message.role === "system")?.text).toContain(
+      "Assistant output unavailable; the provider turn completed and was not replayed.",
+    );
+  });
+
+  it("wakes the parent for a manual follow-up turn in the child", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const manualMessageId = asMessageId("manual-message-1");
+    const turnOne = asTurnId("delegated-turn-1");
+    const manualTurn = asTurnId("manual-turn-1");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId,
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnOne,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("manual-turn-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: manualMessageId,
+        role: "user",
+        text: "Manual follow-up.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("manual-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        turnId: manualTurn,
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("manual-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+        turnId: manualTurn,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const completionActivities = parent?.activities.filter(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    expect(completionActivities).toHaveLength(2);
+  });
+
+  it("replays exactly once per delegated turn", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const followUpMessageId = asMessageId("follow-up-message-1");
+    const turnOne = asTurnId("delegated-turn-1");
+    const turnTwo = asTurnId("delegated-turn-2");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId,
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnOne,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("turn-1-replay"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:01.000Z",
+        turnId: turnOne,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("child-follow-up-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: followUpMessageId,
+        role: "user",
+        text: "Continue.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnTwo,
+      startedAt: "2026-01-01T00:00:02.000Z",
+      completedAt: "2026-01-01T00:00:03.000Z",
+    });
+    await harness.emitAndDrain([
+      {
+        type: "turn.completed",
+        eventId: asEventId("turn-2-replay"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: childThreadId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+        turnId: turnTwo,
+        payload: { state: "completed" },
+      },
+    ]);
+
+    const parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const completionActivities = parent?.activities.filter(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    expect(completionActivities).toHaveLength(2);
+    const systemMessages = parent?.messages.filter((m) => m.role === "system");
+    expect(systemMessages).toHaveLength(2);
+  });
+
+  it("drains multi-turn wakes one at a time after a busy parent settles", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child-thread-1");
+    const delegatedMessageId = asMessageId("delegated-message-1");
+    const followUpMessageId = asMessageId("follow-up-message-1");
+    const turnOne = asTurnId("delegated-turn-1");
+    const turnTwo = asTurnId("delegated-turn-2");
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId,
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnOne,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+    await harness.dispatch({
+      type: "thread.turn.start",
+      commandId: CommandId.make("child-follow-up-start"),
+      threadId: childThreadId,
+      message: {
+        messageId: followUpMessageId,
+        role: "user",
+        text: "Continue.",
+        attachments: [],
+      },
+      interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+      runtimeMode: "approval-required",
+      createdAt: "2026-01-01T00:00:02.000Z",
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: turnTwo,
+      startedAt: "2026-01-01T00:00:02.000Z",
+      completedAt: "2026-01-01T00:00:03.000Z",
+    });
+
+    let parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const wakeOneId = delegationWakeMessageId(childThreadId, turnOne);
+    const wakeTwoId = delegationWakeMessageId(childThreadId, turnTwo);
+    expect(parent?.messages.some((m) => m.id === wakeOneId)).toBe(true);
+    expect(parent?.messages.some((m) => m.id === wakeTwoId)).toBe(true);
+    expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+
+    await settleParent(
+      harness,
+      parentThreadId,
+      asTurnId("parent-turn"),
+      "2026-01-01T00:00:04.000Z",
+      "settled",
+      "turn.completed",
+    );
+
+    parent = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    const drainOneId = asMessageId(
+      `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childThreadId, turnOne)}`,
+    );
+    expect(parent?.messages.some((m) => m.id === drainOneId)).toBe(true);
+  });
+
   it.each(["turn.completed", "turn.aborted"] as const)(
     "drains an undelivered wake with an auto-turn once the occupying %s settles",
     async (terminalType) => {
@@ -1369,7 +2165,7 @@ describe("ProviderRuntimeIngestion", () => {
       const delegatedMessageId = asMessageId("delegated-message-1");
       const delegatedTurnId = asTurnId("delegated-turn-1");
       const drainMessageId = asMessageId(
-        `delegation-wake-drain:${parentThreadId}:${delegatedTurnId}`,
+        `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childThreadId, delegatedTurnId)}`,
       );
       const now = "2026-01-01T00:00:00.000Z";
 
@@ -1407,7 +2203,7 @@ describe("ProviderRuntimeIngestion", () => {
       ]);
       const pendingStart = await harness.readPendingTurnStart(parentThreadId);
       expect(Option.isSome(pendingStart)).toBe(true);
-      expect(pendingStart.value.messageId).toBe(drainMessageId);
+      expect(Option.getOrThrow(pendingStart).messageId).toBe(drainMessageId);
     },
   );
 
@@ -1466,7 +2262,7 @@ describe("ProviderRuntimeIngestion", () => {
     const childThreadId = asThreadId("child-thread-1");
     const delegatedTurnId = asTurnId("delegated-turn-1");
     const drainMessageId = asMessageId(
-      `delegation-wake-drain:${parentThreadId}:${delegatedTurnId}`,
+      `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childThreadId, delegatedTurnId)}`,
     );
     const now = "2026-01-01T00:00:00.000Z";
 
@@ -1529,37 +2325,112 @@ describe("ProviderRuntimeIngestion", () => {
     expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
   });
 
+  it("does not drain or replay a delivered direct wake after its marker write was lost", async () => {
+    const harness = await createHarness();
+    const parentThreadId = asThreadId("thread-1");
+    const childThreadId = asThreadId("child:direct-wake");
+    const childTurnId = asTurnId("child:direct-turn");
+    const directTurnMessageId = asMessageId(
+      `delegation-wake-turn:${delegatedChildTurnKey(childThreadId, childTurnId)}`,
+    );
+    const drainMessageId = asMessageId(
+      `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childThreadId, childTurnId)}`,
+    );
+    const wakeMessageId = delegationWakeMessageId(childThreadId, childTurnId);
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await seedDelegatedChild(harness, {
+      childThreadId,
+      parentThreadId,
+      delegatedMessageId: asMessageId("child-direct-message"),
+      createdAt: now,
+    });
+    await completeDelegatedChild(harness, {
+      childThreadId,
+      delegatedTurnId: childTurnId,
+      startedAt: now,
+      completedAt: "2026-01-01T00:00:01.000Z",
+    });
+
+    let parent = (await harness.readModel()).threads.find((thread) => thread.id === parentThreadId);
+    expect(parent?.messages.some((message) => message.id === directTurnMessageId)).toBe(true);
+    expect(parent?.messages.some((message) => message.id === wakeMessageId)).toBe(true);
+    expect(
+      parent?.activities.some((activity) => activity.kind === "delegation.wake-delivered"),
+    ).toBe(false);
+
+    // Provider sendTurn accepted this durable direct turn, but its later delivery
+    // marker append was lost. A real terminal event followed by recovery must use
+    // the direct-turn anchor as evidence and never start a second drain turn.
+    await harness.emitAndDrain([
+      {
+        type: "turn.started",
+        eventId: asEventId("parent-direct-turn-started"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:02.000Z",
+        turnId: asTurnId("provider-parent-direct-turn"),
+        payload: { model: "gpt-5-codex" },
+      },
+      {
+        type: "turn.completed",
+        eventId: asEventId("parent-direct-turn-completed"),
+        provider: ProviderDriverKind.make("codex"),
+        threadId: parentThreadId,
+        createdAt: "2026-01-01T00:00:03.000Z",
+        turnId: asTurnId("provider-parent-direct-turn"),
+        payload: { state: "completed" },
+      },
+    ]);
+    await harness.restartIngestionRecovery();
+    await harness.drain();
+
+    parent = (await harness.readModel()).threads.find((thread) => thread.id === parentThreadId);
+    expect(userMessageIds(parent?.messages ?? [])).toEqual([directTurnMessageId]);
+    expect(parent?.messages.some((message) => message.id === drainMessageId)).toBe(false);
+    expect(
+      parent?.activities.some((activity) => activity.kind === "delegation.wake-delivered"),
+    ).toBe(false);
+    expect(Option.isNone(await harness.readPendingTurnStart(parentThreadId))).toBe(true);
+  });
+
   it("drains the next undelivered wake after the first wake auto-turn settles", async () => {
     const harness = await createHarness();
     const parentThreadId = asThreadId("thread-1");
     const now = "2026-01-01T00:00:00.000Z";
     const turnA = asTurnId("turn-a");
     const turnB = asTurnId("turn-b");
-    const wakeA = asMessageId(`delegation-wake:${turnA}`);
-    const drainA = asMessageId(`delegation-wake-drain:${parentThreadId}:${turnA}`);
-    const drainB = asMessageId(`delegation-wake-drain:${parentThreadId}:${turnB}`);
+    const childA = asThreadId("child-a");
+    const childB = asThreadId("child-b");
+    const wakeA = delegationWakeMessageId(childA, turnA);
+    const drainA = asMessageId(
+      `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childA, turnA)}`,
+    );
+    const drainB = asMessageId(
+      `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childB, turnB)}`,
+    );
 
     await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
     await seedDelegatedChild(harness, {
-      childThreadId: asThreadId("child-a"),
+      childThreadId: childA,
       parentThreadId,
       delegatedMessageId: asMessageId("delegated-a"),
       createdAt: now,
     });
     await seedDelegatedChild(harness, {
-      childThreadId: asThreadId("child-b"),
+      childThreadId: childB,
       parentThreadId,
       delegatedMessageId: asMessageId("delegated-b"),
       createdAt: now,
     });
     await completeDelegatedChild(harness, {
-      childThreadId: asThreadId("child-a"),
+      childThreadId: childA,
       delegatedTurnId: turnA,
       startedAt: now,
       completedAt: "2026-01-01T00:00:01.000Z",
     });
     await completeDelegatedChild(harness, {
-      childThreadId: asThreadId("child-b"),
+      childThreadId: childB,
       delegatedTurnId: turnB,
       startedAt: now,
       completedAt: "2026-01-01T00:00:02.000Z",
@@ -1617,7 +2488,7 @@ describe("ProviderRuntimeIngestion", () => {
     expect(userMessageIds(parent?.messages ?? [])).toEqual([drainA, drainB]);
     const pendingStart = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStart)).toBe(true);
-    expect(pendingStart.value.messageId).toBe(drainB);
+    expect(Option.getOrThrow(pendingStart).messageId).toBe(drainB);
   });
 
   it("drains an undelivered wake exactly once when the occupying turn completes", async () => {
@@ -1626,7 +2497,7 @@ describe("ProviderRuntimeIngestion", () => {
     const childThreadId = asThreadId("child-thread-1");
     const delegatedTurnId = asTurnId("delegated-turn-1");
     const drainMessageId = asMessageId(
-      `delegation-wake-drain:${parentThreadId}:${delegatedTurnId}`,
+      `delegation-wake-drain:${parentThreadId}:${delegatedChildTurnKey(childThreadId, delegatedTurnId)}`,
     );
     const now = "2026-01-01T00:00:00.000Z";
 

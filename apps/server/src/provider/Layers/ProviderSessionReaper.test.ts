@@ -255,6 +255,7 @@ describe("ProviderSessionReaper", () => {
           getFullThreadDiffContext: () => Effect.die("unused"),
           getThreadRuntimeContext: () => Effect.die("unused"),
           getTurnStartMessage: () => Effect.die("unused"),
+          getTurnByPendingMessageId: () => Effect.die("unused"),
           getThreadShellById: (threadId) =>
             Effect.succeed(
               input.readModel.threads.find((thread) => thread.id === threadId)
@@ -263,6 +264,13 @@ describe("ProviderSessionReaper", () => {
             ),
           getThreadDetailById: () => Effect.die("unused"),
           getThreadDetailSnapshot: () => Effect.die("unused"),
+          listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+          listDelegatedTaskSummaryRecoveryCandidates: () =>
+            Effect.succeed({ rows: [], hasMore: false }),
+          getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
+          getThreadDetailSnapshotIncludingArchived: () => Effect.succeedNone,
+          listDelegatedTaskMemoryRows: () => Effect.succeed({ rows: [], hasMore: false }),
+          getDelegatedTaskSummaryInput: () => Effect.succeedNone,
           searchThreads: () => Effect.succeed({ matches: [] }),
         }),
       ),

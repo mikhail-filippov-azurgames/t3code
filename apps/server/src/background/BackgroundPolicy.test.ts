@@ -18,7 +18,9 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import { ProjectionSnapshotQuery } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { CalendarEventRepository } from "../persistence/Services/CalendarEvents.ts";
+import { ProviderService } from "../provider/Services/ProviderService.ts";
 import * as DesktopTelemetryReceiver from "../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as BackgroundPolicy from "./BackgroundPolicy.ts";
@@ -425,6 +427,8 @@ describe("HostPowerMonitor layer sharing", () => {
         Layer.provide(shared),
         Layer.provide(Layer.mock(CalendarEventRepository)({})),
         Layer.provide(Layer.mock(OrchestrationEngine.OrchestrationEngineService)({})),
+        Layer.provide(Layer.mock(ProjectionSnapshotQuery)({})),
+        Layer.provide(Layer.mock(ProviderService)({})),
         Layer.provide(Layer.succeed(Crypto.Crypto, testCrypto)),
         Layer.provide(CalendarNotices.layer),
       ),

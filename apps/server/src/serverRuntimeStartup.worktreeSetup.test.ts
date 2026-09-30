@@ -88,6 +88,7 @@ const run = (activities: ReadonlyArray<ReturnType<typeof recordedSetup>>) =>
       } as unknown as ProjectionSnapshotQuery.ProjectionSnapshotQuery["Service"]),
       Effect.provideService(OrchestrationEngine.OrchestrationEngineService, {
         readEvents: () => Stream.empty,
+        readPendingDelegatedTurnStarts: () => Stream.empty,
         readThreadEvents: () => Stream.empty,
         getThreadReplayStats: () => Effect.die("unused"),
         dispatch: (command) =>

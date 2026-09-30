@@ -201,6 +201,32 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const readPendingDelegatedRows = SqlSchema.findAll({
+    Request: ReadFromSequenceRequestSchema,
+    Result: OrchestrationEventPersistedRowSchema,
+    execute: (request) =>
+      sql`
+        SELECT
+          event.sequence,
+          event.event_id AS "eventId",
+          event.event_type AS "type",
+          event.aggregate_kind AS "aggregateKind",
+          event.stream_id AS "aggregateId",
+          event.occurred_at AS "occurredAt",
+          event.command_id AS "commandId",
+          event.causation_event_id AS "causationEventId",
+          event.correlation_id AS "correlationId",
+          event.payload_json AS "payload",
+          event.metadata_json AS "metadata"
+        FROM delegated_turn_send_queue AS queue
+        JOIN orchestration_events AS event ON event.sequence = queue.request_sequence
+        WHERE queue.state IN ('pending', 'attempted')
+          AND queue.request_sequence > ${request.sequenceExclusive}
+        ORDER BY queue.request_sequence ASC
+        LIMIT ${request.limit}
+      `,
+  });
+
   const readAggregateEventRows = SqlSchema.findAll({
     Request: AggregateReplayRequestSchema,
     Result: OrchestrationEventPersistedRowSchema,
@@ -323,6 +349,39 @@ const makeEventStore = Effect.gen(function* () {
     );
   };
 
+  const readPendingDelegatedTurnStarts: OrchestrationEventStoreShape["readPendingDelegatedTurnStarts"] =
+    () =>
+      Stream.paginate(0, (cursor) =>
+        readPendingDelegatedRows({ sequenceExclusive: cursor, limit: READ_PAGE_SIZE }).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              "OrchestrationEventStore.readPendingDelegatedTurnStarts:query",
+              "OrchestrationEventStore.readPendingDelegatedTurnStarts:decodeRows",
+            ),
+          ),
+          Effect.flatMap((rows) =>
+            Effect.forEach(rows, (row) =>
+              decodeEvent(row).pipe(
+                Effect.mapError(
+                  toPersistenceDecodeError(
+                    "OrchestrationEventStore.readPendingDelegatedTurnStarts:rowToEvent",
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Effect.map(
+            (events) =>
+              [
+                events,
+                events.length < READ_PAGE_SIZE
+                  ? Option.none()
+                  : Option.some(events[events.length - 1]!.sequence),
+              ] as const,
+          ),
+        ),
+      );
+
   const findEventAfter = SqlSchema.findOneOption({
     Request: HasEventAfterRequestSchema,
     Result: Schema.Struct({ sequence: Schema.Number }),
@@ -414,6 +473,7 @@ const makeEventStore = Effect.gen(function* () {
   return {
     append,
     readFromSequence,
+    readPendingDelegatedTurnStarts,
     readAggregateRange,
     getAggregateReplayStats,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
