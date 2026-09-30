@@ -11,6 +11,7 @@ import type {
   ProviderTurnStartResult,
   ProviderUploadFeedbackInput,
   ProviderUploadFeedbackResult,
+  OrchestrationThread,
 } from "@t3tools/contracts";
 import {
   ASSISTANT_CITATION_MAX_TEXT_LENGTH,
@@ -78,8 +79,12 @@ import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as AnalyticsService from "../../telemetry/AnalyticsService.ts";
 import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
+import { normalizeDelegationPermissionEnvelope } from "../DelegationPermissionEnvelope.ts";
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { McpOrchestrationScope } from "../../mcp/McpInvocationContext.ts";
+import { CoordinatorArchitectRepository } from "../../persistence/Services/CoordinatorArchitect.ts";
+import type { CoordinatorArchitectRepositoryShape } from "../../persistence/Services/CoordinatorArchitect.ts";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const defaultServerSettingsLayer = ServerSettings.ServerSettingsService.layerTest();
@@ -92,7 +97,9 @@ const serverConfigTestLayer = ServerConfig.layerTest(process.cwd(), process.cwd(
 const fixtureCwdRoot = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "provider-service-test-"));
 afterAll(() => NodeFS.rmSync(fixtureCwdRoot, { recursive: true, force: true }));
 function fixtureCwd(name: string): string {
-  const dir = NodePath.join(fixtureCwdRoot, name);
+  // Thread ids may contain the stable `arch:` namespace separator, which is
+  // not legal in a Windows directory name.
+  const dir = NodePath.join(fixtureCwdRoot, name.replaceAll(":", "_"));
   NodeFS.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -4951,6 +4958,19 @@ describe("agent browser access", () => {
       readonly withoutOrchestration?: boolean;
       readonly withOrchestrationScope?: boolean;
       readonly withLegacyOrchestrationScope?: boolean;
+      readonly delegatedChild?: {
+        readonly requested: Readonly<Record<string, unknown>>;
+        readonly childCaps: ReadonlyArray<string>;
+      };
+      readonly shellReadFailure?: boolean;
+      readonly unknownThread?: boolean;
+      readonly coordinatorArchitectRepository?: CoordinatorArchitectRepositoryShape;
+      readonly issuedSink?: Array<{
+        threadId: ThreadId;
+        capabilities: ReadonlyArray<string>;
+        controlPlaneRole?: "architect";
+        orchestration?: McpOrchestrationScope;
+      }>;
     },
   ) =>
     Effect.gen(function* () {
@@ -4971,8 +4991,9 @@ describe("agent browser access", () => {
       const issued: Array<{
         threadId: ThreadId;
         capabilities: ReadonlyArray<string>;
+        controlPlaneRole?: "architect";
         orchestration?: McpOrchestrationScope;
-      }> = [];
+      }> = options?.issuedSink ?? [];
       const codex = makeFakeCodexAdapter();
       const providerAdapterLayer = Layer.succeed(
         ProviderAdapterRegistry.ProviderAdapterRegistry,
@@ -4986,6 +5007,7 @@ describe("agent browser access", () => {
       );
       const projectionLayer = Layer.succeed(ProjectionSnapshotQuery.ProjectionSnapshotQuery, {
         getTurnStartMessage: () => Effect.die("unused"),
+        getTurnByPendingMessageId: () => Effect.die("unused"),
         getImportedAgentSessionSources: () => Effect.die("unused"),
         getUserInputActivity: () => Effect.die("unused"),
         listActivitiesByKind: () => Effect.die("unused"),
@@ -5008,30 +5030,97 @@ describe("agent browser access", () => {
         getFullThreadDiffContext: () => Effect.die("unused"),
         getThreadRuntimeContext: () => Effect.die("unused"),
         getThreadShellById: (requestedThreadId) =>
-          Effect.gen(function* () {
-            assert.equal(requestedThreadId, threadId);
-            return Option.some(
-              yield* decodeBrowserAccessThreadShell({
-                id: threadId,
-                projectId,
-                title: "Browser access test",
-                modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
-                runtimeMode: "full-access",
-                branch: null,
-                worktreePath: null,
-                latestTurn: null,
-                createdAt: "2026-01-01T00:00:00.000Z",
-                updatedAt: "2026-01-01T00:00:00.000Z",
-                session: null,
-                latestUserMessageAt: null,
-                hasPendingApprovals: false,
-                hasPendingUserInput: false,
-                hasActionableProposedPlan: false,
-              }),
-            );
-          }).pipe(Effect.orDie),
-        getThreadDetailById: () => Effect.die("unused"),
+          options?.shellReadFailure === true
+            ? Effect.fail(
+                new PersistenceSqlError({
+                  operation: "test-shell-read",
+                  detail: "injected shell-read failure",
+                }),
+              )
+            : options?.unknownThread === true
+              ? Effect.sync(() => {
+                  assert.equal(requestedThreadId, threadId);
+                  return Option.none();
+                })
+              : Effect.gen(function* () {
+                  assert.equal(requestedThreadId, threadId);
+                  return Option.some(
+                    yield* decodeBrowserAccessThreadShell({
+                      id: threadId,
+                      projectId,
+                      title: "Browser access test",
+                      modelSelection: createModelSelection(codexInstanceId, "gpt-5.4"),
+                      runtimeMode: "full-access",
+                      branch: null,
+                      worktreePath: null,
+                      latestTurn: null,
+                      createdAt: "2026-01-01T00:00:00.000Z",
+                      updatedAt: "2026-01-01T00:00:00.000Z",
+                      session: null,
+                      latestUserMessageAt: null,
+                      hasPendingApprovals: false,
+                      hasPendingUserInput: false,
+                      hasActionableProposedPlan: false,
+                      ...(options?.delegatedChild === undefined
+                        ? {}
+                        : {
+                            delegationParent: {
+                              parentThreadId: asThreadId("parent-of-delegated"),
+                              parentEnvironmentId: "environment-test",
+                              role: "implementation",
+                            },
+                          }),
+                    }),
+                  );
+                }).pipe(Effect.orDie),
+        getThreadDetailById: (requestedThreadId) =>
+          options?.delegatedChild === undefined
+            ? Effect.die("unused")
+            : Effect.succeed(
+                Option.some({
+                  activities: [
+                    {
+                      id: EventId.make(`delegation-created-${String(requestedThreadId)}`),
+                      tone: "info",
+                      kind: "delegation.created",
+                      summary: "Delegated task created",
+                      payload: {
+                        version: 1,
+                        taskId: requestedThreadId,
+                        parentEnvironmentId: "environment-test",
+                        parentThreadId: asThreadId("parent-of-delegated"),
+                        parentTurnId: asTurnId("parent-turn-test"),
+                        projectId,
+                        childThreadId: requestedThreadId,
+                        delegatedMessageId: MessageId.make("delegated-message-test"),
+                        callerRequestFingerprint: "caller-fingerprint",
+                        requestFingerprint: "request-fingerprint",
+                        requested: options.delegatedChild.requested,
+                        requestedAt: "2026-01-01T00:00:00.000Z",
+                        role: "implementation",
+                        stage: null,
+                        evidenceRefs: [],
+                        ocl: null,
+                        branch: null,
+                        workspaceRoot,
+                        worktreePath: workspaceRoot,
+                        childCaps: options.delegatedChild.childCaps,
+                      },
+                      turnId: null,
+                      createdAt: "2026-01-01T00:00:00.000Z",
+                    },
+                  ],
+                  messages: [],
+                } as unknown as OrchestrationThread),
+              ),
         getThreadDetailSnapshot: () => Effect.die("unused"),
+        listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+        listDelegatedTaskSummaryRecoveryCandidates: () =>
+          Effect.succeed({ rows: [], hasMore: false }),
+        getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
+        getThreadDetailSnapshotIncludingArchived: () => Effect.succeedNone,
+        listDelegatedTaskMemoryRows: () => Effect.succeed({ rows: [], hasMore: false }),
+        getDelegatedTaskSummaryInput: () => Effect.succeedNone,
         searchThreads: () => Effect.die("unused"),
       });
       const providerLayer = makeProviderServiceLive({
@@ -5040,6 +5129,9 @@ describe("agent browser access", () => {
             issued.push({
               threadId: request.threadId,
               capabilities: [...request.capabilities].toSorted(),
+              ...(request.controlPlaneRole === "architect"
+                ? { controlPlaneRole: request.controlPlaneRole }
+                : {}),
               ...(request.orchestration === undefined
                 ? {}
                 : { orchestration: request.orchestration }),
@@ -5050,6 +5142,11 @@ describe("agent browser access", () => {
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(options?.withoutOrchestration ? Layer.empty : projectionLayer),
+        Layer.provide(
+          options?.coordinatorArchitectRepository === undefined
+            ? Layer.empty
+            : Layer.succeed(CoordinatorArchitectRepository, options.coordinatorArchitectRepository),
+        ),
         Layer.provide(
           ServerSettings.ServerSettingsService.layerTest({
             enableAgentBrowserAccess,
@@ -5250,6 +5347,176 @@ describe("agent browser access", () => {
       assert.deepEqual(credential.capabilities, ["orchestration", "pull-requests"]);
       assert.ok(credential.orchestration);
       assert.equal(credential.orchestration.permissionEnvelope.status, "verified");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  // A delegated session is clamped to its frozen caps S: settings that
+  // broadened after delegation (browser+device on) must not leak device or
+  // preview tools into the issued credential.
+  it.effect("clamps a delegated session credential to its frozen caps", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-delegated-clamped");
+      const workspaceRoot = fixtureCwd(`mcp-scope-${String(threadId)}`);
+      const homePath = fixtureCwd(`mcp-config-${String(threadId)}`);
+      const childCaps = ["orchestration", "pull-requests"];
+      const narrowed = normalizeDelegationPermissionEnvelope({
+        driverKind: CODEX_DRIVER,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        instanceConfig: {
+          driver: CODEX_DRIVER,
+          enabled: true,
+          config: { homePath, launchArgs: "" },
+        },
+        environment: process.env,
+        workspaceRoot,
+        worktreePath: workspaceRoot,
+        branch: null,
+        t3McpCapabilities: new Set(childCaps),
+        providerConfigurationFiles: [
+          { path: NodePath.join(homePath, "config.toml"), content: null },
+          { path: NodePath.join(workspaceRoot, ".codex", "config.toml"), content: null },
+        ],
+      });
+      assert.equal(narrowed.status, "verified");
+      if (narrowed.status !== "verified") return;
+      const issued = yield* startSessionWith({ browser: true, device: true }, threadId, undefined, {
+        withOrchestrationScope: true,
+        delegatedChild: {
+          requested: {
+            providerInstanceId: codexInstanceId,
+            driverKind: CODEX_DRIVER,
+            model: "gpt-5.4",
+            options: [],
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            providerConfigFingerprint: narrowed.fingerprint,
+          },
+          childCaps,
+        },
+      });
+
+      assert.equal(issued.length, 1);
+      const credential = issued[0];
+      assert.ok(credential);
+      assert.deepEqual(credential.capabilities, ["orchestration", "pull-requests"]);
+      const orchestration = credential.orchestration;
+      assert.ok(orchestration);
+      assert.equal(orchestration.permissionEnvelope.status, "verified");
+      if (orchestration.permissionEnvelope.status !== "verified") return;
+      assert.equal(orchestration.permissionEnvelope.fingerprint, narrowed.fingerprint);
+      assert.deepEqual(orchestration.permissionEnvelope.t3McpCapabilities, [
+        "orchestration",
+        "pull-requests",
+      ]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  // With an unreadable thread shell the lineage is unknown, so no session
+  // credential may be issued — not even a settings-derived one. The lineage
+  // recovery below is unreachable, hence the placeholder fingerprint.
+  it.effect("refuses a session credential when the thread shell cannot be read", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-shell-read-failure");
+      const issuedSink: Array<{
+        threadId: ThreadId;
+        capabilities: ReadonlyArray<string>;
+        orchestration?: McpOrchestrationScope;
+      }> = [];
+      const failure = yield* Effect.flip(
+        startSessionWith({ browser: true, device: true }, threadId, undefined, {
+          withOrchestrationScope: true,
+          delegatedChild: {
+            requested: {
+              providerInstanceId: codexInstanceId,
+              driverKind: CODEX_DRIVER,
+              model: "gpt-5.4",
+              options: [],
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              providerConfigFingerprint: "unverified-fingerprint",
+            },
+            childCaps: ["orchestration", "pull-requests"],
+          },
+          shellReadFailure: true,
+          issuedSink,
+        }),
+      );
+      assert.equal(failure._tag, "ProviderValidationError");
+      if (failure._tag !== "ProviderValidationError") return;
+      assert.match(failure.issue, /unverified delegation lineage/);
+      assert.equal(issuedSink.length, 0);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  // A successful projection query that finds no shell (Option.none) is not
+  // an ordinary thread either: the lineage is unverifiable, so the session
+  // start fails closed before any credential is issued.
+  it.effect("refuses a session credential when the thread shell is unknown", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("thread-shell-unknown");
+      const issuedSink: Array<{
+        threadId: ThreadId;
+        capabilities: ReadonlyArray<string>;
+        orchestration?: McpOrchestrationScope;
+      }> = [];
+      const failure = yield* Effect.flip(
+        startSessionWith({ browser: true, device: true }, threadId, undefined, {
+          withOrchestrationScope: true,
+          unknownThread: true,
+          issuedSink,
+        }),
+      );
+      assert.equal(failure._tag, "ProviderValidationError");
+      if (failure._tag !== "ProviderValidationError") return;
+      assert.match(failure.issue, /unverified delegation lineage/);
+      assert.equal(issuedSink.length, 0);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("revalidates active Architect bindings before each fresh credential", () =>
+    Effect.gen(function* () {
+      const threadId = asThreadId("arch:provider-bootstrap");
+      const issuedSink: Array<{
+        threadId: ThreadId;
+        capabilities: ReadonlyArray<string>;
+        controlPlaneRole?: "architect";
+      }> = [];
+      const missingRepository = yield* Effect.flip(
+        startSessionWith(false, threadId, undefined, { issuedSink }),
+      );
+      assert.equal(missingRepository._tag, "ProviderValidationError");
+      if (missingRepository._tag === "ProviderValidationError") {
+        assert.match(missingRepository.issue, /no durable binding store/);
+      }
+      assert.equal(issuedSink.length, 0);
+
+      let active = true;
+      const repository = {
+        getActiveBindingByArchitect: (architectThreadId: ThreadId) =>
+          Effect.succeed(active ? ({ architectThreadId } as never) : null),
+      } as unknown as CoordinatorArchitectRepositoryShape;
+
+      const first = yield* startSessionWith(false, threadId, undefined, {
+        coordinatorArchitectRepository: repository,
+        issuedSink,
+      });
+      assert.deepEqual(first, [
+        { threadId, capabilities: ["orchestration"], controlPlaneRole: "architect" },
+      ]);
+
+      active = false;
+      const denied = yield* Effect.flip(
+        startSessionWith(false, threadId, undefined, {
+          coordinatorArchitectRepository: repository,
+          issuedSink,
+        }),
+      );
+      assert.equal(denied._tag, "ProviderValidationError");
+      if (denied._tag === "ProviderValidationError") {
+        assert.match(denied.issue, /no active durable binding/);
+      }
+      assert.equal(issuedSink.length, 1);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

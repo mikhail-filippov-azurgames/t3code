@@ -98,6 +98,7 @@ import {
   MessageId,
   type OrchestrationShellSnapshot,
   type OrchestrationThreadShell,
+  type ProviderInstanceId,
   ThreadId,
   type TerminalAttachStreamEvent,
   type TerminalError,
@@ -124,6 +125,7 @@ import {
   projectThreadDetailSnapshot,
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
+import { assertNotArchitectThread } from "./orchestration/coordinatorArchitect.ts";
 import { makeLiveStreamBudget, type RetainedLiveItem } from "./orchestration/LiveStreamBudget.ts";
 import {
   cleanupFailedUploadedAttachments,
@@ -147,6 +149,8 @@ import {
   type BoardRepositoryShape,
 } from "./persistence/Services/Board.ts";
 import { BoardRepositoryLive } from "./persistence/Layers/Board.ts";
+import { CoordinatorArchitectRepository } from "./persistence/Services/CoordinatorArchitect.ts";
+import { CoordinatorArchitectRepositoryLive } from "./persistence/Layers/CoordinatorArchitect.ts";
 import { loadDelegationPermissionEnvelope } from "./provider/DelegationPermissionEnvelope.ts";
 import {
   observeRpcEffect as instrumentRpcEffect,
@@ -157,6 +161,7 @@ import * as ProviderRegistry from "./provider/Services/ProviderRegistry.ts";
 import * as ProviderService from "./provider/Services/ProviderService.ts";
 import * as ProviderSessionDirectory from "./provider/Services/ProviderSessionDirectory.ts";
 import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
+import { detectPiBonsaiPreset } from "./provider/pi/piInferenceServer.ts";
 import { ProviderAuthService } from "./provider/Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import { makeProviderInstallation } from "./provider/providerInstallation.ts";
@@ -560,6 +565,12 @@ export interface BoardRpcDependencies {
   ) => Effect.Effect<ReadonlyArray<ProjectionTurns.ProjectionTurn>, Error>;
   readonly newId: () => Effect.Effect<string, Error>;
   readonly now: Effect.Effect<string>;
+  /**
+   * Phase 1 (S3): durable active-binding lookup. Absent in unit fakes, where
+   * the handlers keep their pre-split behavior; the live wiring always
+   * supplies it, and the MCP service path enforces the same guard.
+   */
+  readonly isArchitectThread?: (threadId: ThreadId) => Effect.Effect<boolean, BoardError>;
 }
 
 export interface BoardRpcHandlers {
@@ -694,12 +705,43 @@ const assertNotDelegatedChild = (
     ? null
     : new BoardError({
         operation,
-        detail: `Delegated child thread ${threadId} cannot be a board orchestrator.`,
+        detail: `Delegated child thread ${threadId} cannot be a board Coordinator.`,
       });
+
+/**
+ * Phase 1 shared guard (S3): an architect thread is never a board
+ * orchestrator and never an executor. The durable binding lookup is the
+ * enforcement source; the in-memory credential registry is defense in depth.
+ */
+const assertNotArchitectThreadId = (
+  operation: string,
+  threadId: ThreadId,
+  isArchitect: boolean,
+): BoardError | null => {
+  const violation = assertNotArchitectThread(operation, threadId, isArchitect);
+  return violation === null ? null : new BoardError({ operation, detail: violation });
+};
 
 /** @public Board RPC handlers; wired into the WS group in `makeWsRpcLayer`. */
 export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandlers => {
   const { repository } = deps;
+
+  // Phase 1 (S3): resolve the durable architect binding for one thread id.
+  // Lookup errors propagate as BoardError (never silent allow); an absent
+  // lookup keeps pre-split behavior for unit fakes.
+  const checkArchitectThread = (
+    operation: string,
+    threadId: ThreadId,
+  ): Effect.Effect<BoardError | null, BoardError> =>
+    deps.isArchitectThread === undefined
+      ? Effect.succeed(null)
+      : deps
+          .isArchitectThread(threadId)
+          .pipe(
+            Effect.map((isArchitect) =>
+              assertNotArchitectThreadId(operation, threadId, isArchitect),
+            ),
+          );
 
   const orchestratorsList: BoardRpcHandlers["orchestratorsList"] = (_input) =>
     repository.listOrchestrators().pipe(
@@ -724,6 +766,8 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         shell.value,
       );
       if (delegatedChild !== null) return yield* delegatedChild;
+      const architectThread = yield* checkArchitectThread("board.orchestrator.add", input.threadId);
+      if (architectThread !== null) return yield* architectThread;
 
       const orchestrators = yield* repository
         .listOrchestrators()
@@ -817,7 +861,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
       if (!orchestrators.some((row) => row.threadId === input.threadId)) {
         return yield* new BoardError({
           operation: "board.orchestrator.resendBrief",
-          detail: `Thread ${input.threadId} is not a registered orchestrator.`,
+          detail: `Thread ${input.threadId} is not a registered Coordinator.`,
         });
       }
       const shell = yield* deps
@@ -835,6 +879,11 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         shell.value,
       );
       if (delegatedChild !== null) return yield* delegatedChild;
+      const architectThread = yield* checkArchitectThread(
+        "board.orchestrator.resendBrief",
+        input.threadId,
+      );
+      if (architectThread !== null) return yield* architectThread;
       const createdAt = yield* deps.now;
       // A fresh nonce keeps each resend out of the engine's command receipt, so
       // a human can re-deliver the brief as often as they need.
@@ -1006,7 +1055,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
       new BoardError({
         operation: "board.delete",
         detail:
-          "Human clients cannot delete board cards; the orchestrator deletes cards through MCP.",
+          "Human clients cannot delete board cards; the Coordinator deletes cards through MCP.",
       }),
     );
 
@@ -1244,6 +1293,12 @@ const makeWsRpcLayer = (
       const calendarEvents = yield* CalendarEventRepository;
       const calendarNotices = yield* CalendarNotices;
       const boardRepository = yield* BoardRepository;
+      // Phase 1 (S3): optional so unit fakes keep working; the live stack
+      // below always provides it, and the MCP service path enforces the same
+      // guard from the durable store on every call.
+      const coordinatorArchitect = yield* Effect.serviceOption(CoordinatorArchitectRepository).pipe(
+        Effect.map(Option.getOrUndefined),
+      );
       const projectionTurns = yield* ProjectionTurns.ProjectionTurnRepository;
       const toCalendarError = (operation: string, cause: unknown) =>
         new CalendarError({
@@ -2409,7 +2464,41 @@ const makeWsRpcLayer = (
         listTurns: (threadId) => projectionTurns.listByThreadId({ threadId }),
         newId: () => crypto.randomUUIDv4,
         now: nowIso,
+        // Phase 1 (S3): durable binding check behind every board path that
+        // can set or use an executorThreadId-adjacent identity.
+        isArchitectThread: (threadId: ThreadId) =>
+          coordinatorArchitect === undefined
+            ? Effect.succeed(String(threadId).startsWith("arch:"))
+            : coordinatorArchitect.getAnyBindingByArchitect(threadId).pipe(
+                Effect.map((binding) => binding !== null || String(threadId).startsWith("arch:")),
+                Effect.mapError(toBoardError("board.architect.guard")),
+              ),
       });
+
+      const requirePiInferenceControl = (instanceId: ProviderInstanceId) =>
+        providerInstances.getInstance(instanceId).pipe(
+          Effect.flatMap((instance) =>
+            instance?.driverKind === "pi" && instance.localInferenceServer
+              ? Effect.succeed(instance.localInferenceServer)
+              : Effect.fail(
+                  new ProviderSetupError({
+                    instanceId,
+                    operation: "inference-server",
+                    detail: "The selected Pi provider instance is unavailable.",
+                  }),
+                ),
+          ),
+        );
+
+      const mapPiInferenceControlError =
+        (instanceId: ProviderInstanceId, operation: string) =>
+        (error: { readonly detail?: string; readonly cause?: unknown }) =>
+          new ProviderSetupError({
+            instanceId,
+            operation,
+            detail: error.detail ?? `Pi inference server ${operation} failed.`,
+            cause: error,
+          });
 
       return WsRpcGroup.of({
         [ORCHESTRATION_WS_METHODS.dispatchCommand]: (command) =>
@@ -2726,6 +2815,61 @@ const makeWsRpcLayer = (
                   }),
               ),
             ),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to read the coordinator Architect feature setting",
+                      cause,
+                    }),
+                ),
+              );
+              if (!settings.coordinatorArchitectSplit || coordinatorArchitect === undefined) {
+                return { binding: null, reviews: [] };
+              }
+              const thread = yield* projectionSnapshotQuery
+                .getThreadShellById(input.coordinatorThreadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to read the coordinator for its Architect sidebar pin",
+                        cause,
+                      }),
+                  ),
+                );
+              if (Option.isNone(thread)) return { binding: null, reviews: [] };
+              const binding = yield* coordinatorArchitect
+                .getActiveBindingByCoordinator(input.coordinatorThreadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to read the coordinator Architect binding",
+                        cause,
+                      }),
+                  ),
+                );
+              if (binding === null) return { binding: null, reviews: [] };
+              const reviews = yield* coordinatorArchitect
+                .listReviewsByCoordinator({ coordinatorThreadId: input.coordinatorThreadId })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to read coordinator Architect reviews",
+                        cause,
+                      }),
+                  ),
+                );
+              return { binding, reviews };
+            }),
             { "rpc.aggregate": "orchestration" },
           ),
         [ORCHESTRATION_WS_METHODS.subscribeThread]: (input) =>
@@ -3055,6 +3199,48 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.providerInstallRemove, providerInstallation.remove(input), {
             "rpc.aggregate": "provider",
           }),
+        [WS_METHODS.providerPiInferenceServerStatus]: ({ instanceId, model }) =>
+          observeRpcEffect(
+            WS_METHODS.providerPiInferenceServerStatus,
+            requirePiInferenceControl(instanceId).pipe(
+              Effect.flatMap((control) =>
+                control
+                  .getStatus(model)
+                  .pipe(Effect.mapError(mapPiInferenceControlError(instanceId, "status"))),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerPiInferenceServerStart]: ({ instanceId, threadId, model }) =>
+          observeRpcEffect(
+            WS_METHODS.providerPiInferenceServerStart,
+            requirePiInferenceControl(instanceId).pipe(
+              Effect.flatMap((control) =>
+                control
+                  .start(threadId, model)
+                  .pipe(Effect.mapError(mapPiInferenceControlError(instanceId, "start"))),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerPiInferenceServerStop]: ({ instanceId, threadId, model }) =>
+          observeRpcEffect(
+            WS_METHODS.providerPiInferenceServerStop,
+            requirePiInferenceControl(instanceId).pipe(
+              Effect.flatMap((control) =>
+                control
+                  .stop(threadId, model)
+                  .pipe(Effect.mapError(mapPiInferenceControlError(instanceId, "stop"))),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
+          ),
+        [WS_METHODS.providerPiBonsaiPresetDetect]: ({ rootPath }) =>
+          observeRpcEffect(
+            WS_METHODS.providerPiBonsaiPresetDetect,
+            Effect.promise(() => detectPiBonsaiPreset(rootPath === undefined ? {} : { rootPath })),
+            { "rpc.aggregate": "provider" },
+          ),
         [WS_METHODS.serverUpdateServer]: (input) =>
           observeRpcEffect(WS_METHODS.serverUpdateServer, serverUpdate.update(input), {
             "rpc.aggregate": "server",
@@ -4485,6 +4671,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(CalendarEventRepositoryLive),
               Layer.provide(BoardRepositoryLive),
+              Layer.provide(CoordinatorArchitectRepositoryLive),
               Layer.provide(ProjectionTurnRepositoryLive),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),

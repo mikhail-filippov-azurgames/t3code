@@ -4,13 +4,26 @@ import * as Context from "effect/Context";
 import * as Tool from "effect/unstable/ai/Tool";
 
 import {
+  ArchitectCreateOrGetTool,
+  ArchitectDetachTool,
+  ArchitectReplaceTool,
+  ArchitectureReviewAnswerTool,
+  ArchitectureReviewCancelTool,
+  ArchitectureReviewRequestTool,
   BoardCreateCardTool,
   BoardDeleteCardTool,
   BoardListCardsTool,
   BoardUpdateCardTool,
   DelegateTaskTool,
+  GetCoordinatorBindingTool,
+  ListArchitectureReviewsTool,
   OrchestratorCapabilitiesTool,
+  PublishToCoordinatorTool,
+  SendToTaskTool,
   SwitchProviderTool,
+  TaskListTool,
+  TaskReadTool,
+  TaskSearchTool,
   TaskCancelTool,
   TaskStatusTool,
   TaskWaitTool,
@@ -20,6 +33,10 @@ describe("orchestrator MCP tools", () => {
   const tools = [
     OrchestratorCapabilitiesTool,
     DelegateTaskTool,
+    SendToTaskTool,
+    TaskListTool,
+    TaskSearchTool,
+    TaskReadTool,
     TaskStatusTool,
     TaskWaitTool,
     TaskCancelTool,
@@ -28,9 +45,18 @@ describe("orchestrator MCP tools", () => {
     BoardUpdateCardTool,
     BoardDeleteCardTool,
     BoardListCardsTool,
+    ArchitectCreateOrGetTool,
+    ArchitectReplaceTool,
+    ArchitectDetachTool,
+    ArchitectureReviewRequestTool,
+    ArchitectureReviewAnswerTool,
+    ArchitectureReviewCancelTool,
+    PublishToCoordinatorTool,
+    GetCoordinatorBindingTool,
+    ListArchitectureReviewsTool,
   ];
 
-  it("publishes exactly the accepted ten-tool surface", () => {
+  it("publishes the accepted orchestrator tool surface", () => {
     expect(tools.map(({ name }) => name)).toEqual(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES));
   });
 
@@ -41,7 +67,14 @@ describe("orchestrator MCP tools", () => {
   });
 
   it("marks reads and mutations with accurate MCP annotations", () => {
-    for (const tool of [OrchestratorCapabilitiesTool, TaskStatusTool, TaskWaitTool]) {
+    for (const tool of [
+      OrchestratorCapabilitiesTool,
+      TaskListTool,
+      TaskSearchTool,
+      TaskReadTool,
+      TaskStatusTool,
+      TaskWaitTool,
+    ]) {
       expect(Context.get(tool.annotations, Tool.Readonly)).toBe(true);
       expect(Context.get(tool.annotations, Tool.Destructive)).toBe(false);
       expect(Context.get(tool.annotations, Tool.Idempotent)).toBe(true);
@@ -50,6 +83,9 @@ describe("orchestrator MCP tools", () => {
     expect(Context.get(DelegateTaskTool.annotations, Tool.Readonly)).toBe(false);
     expect(Context.get(DelegateTaskTool.annotations, Tool.Destructive)).toBe(false);
     expect(Context.get(DelegateTaskTool.annotations, Tool.Idempotent)).toBe(true);
+    expect(Context.get(SendToTaskTool.annotations, Tool.Readonly)).toBe(false);
+    expect(Context.get(SendToTaskTool.annotations, Tool.Destructive)).toBe(false);
+    expect(Context.get(SendToTaskTool.annotations, Tool.Idempotent)).toBe(true);
     expect(Context.get(SwitchProviderTool.annotations, Tool.Readonly)).toBe(false);
     expect(Context.get(SwitchProviderTool.annotations, Tool.Destructive)).toBe(false);
     expect(Context.get(SwitchProviderTool.annotations, Tool.Idempotent)).toBe(true);
@@ -73,10 +109,39 @@ describe("orchestrator MCP tools", () => {
       BoardDeleteCardTool,
       BoardListCardsTool,
     ]) {
-      expect(Tool.getDescription(tool), tool.name).toContain("orchestrator thread");
+      expect(Tool.getDescription(tool), tool.name).toContain("Coordinator thread");
     }
     expect(Tool.getDescription(BoardUpdateCardTool)).toContain("reported as not found");
-    expect(Tool.getDescription(BoardCreateCardTool)).toContain("defaults to orchestrator");
+    expect(Tool.getDescription(BoardCreateCardTool)).toContain("The status value orchestrator");
+    expect(Tool.getDescription(BoardCreateCardTool)).toContain("and is the default");
+  });
+
+  it("annotates the coordinator/architect tools with publish-only wake semantics", () => {
+    for (const tool of [GetCoordinatorBindingTool, ListArchitectureReviewsTool]) {
+      expect(Context.get(tool.annotations, Tool.Readonly)).toBe(true);
+      expect(Context.get(tool.annotations, Tool.Destructive)).toBe(false);
+      expect(Context.get(tool.annotations, Tool.Idempotent)).toBe(true);
+      expect(Context.get(tool.annotations, Tool.OpenWorld)).toBe(false);
+    }
+    for (const tool of [
+      ArchitectCreateOrGetTool,
+      ArchitectureReviewRequestTool,
+      ArchitectureReviewAnswerTool,
+      ArchitectureReviewCancelTool,
+      PublishToCoordinatorTool,
+    ]) {
+      expect(Context.get(tool.annotations, Tool.Readonly)).toBe(false);
+      expect(Context.get(tool.annotations, Tool.Destructive)).toBe(false);
+      expect(Context.get(tool.annotations, Tool.Idempotent)).toBe(true);
+    }
+    for (const tool of [ArchitectReplaceTool, ArchitectDetachTool]) {
+      expect(Context.get(tool.annotations, Tool.Destructive)).toBe(true);
+      expect(Context.get(tool.annotations, Tool.Idempotent)).toBe(true);
+    }
+    expect(Tool.getDescription(ArchitectureReviewRequestTool)).toContain("executionPosture");
+    expect(Tool.getDescription(ArchitectureReviewAnswerTool)).toContain("never wake");
+    expect(Tool.getDescription(PublishToCoordinatorTool)).toContain("only architect-originated");
+    expect(Tool.getDescription(ArchitectDetachTool)).toContain("never restore");
   });
 
   it("describes inherited workspace, exact-turn isolation, and non-cancelling waits", () => {
@@ -90,6 +155,8 @@ describe("orchestrator MCP tools", () => {
     expect(Tool.getDescription(TaskStatusTool)).toContain("never follows a later ordinary turn");
     expect(Tool.getDescription(TaskWaitTool)).toContain("never cancels");
     expect(Tool.getDescription(TaskCancelTool)).toContain("later ordinary child turn");
+    expect(Tool.getDescription(SendToTaskTool)).toContain("followUpBehavior=queue");
+    expect(Tool.getDescription(SendToTaskTool)).toContain("task_status and task_cancel");
     expect(Tool.getDescription(DelegateTaskTool)).toContain(
       "durable message in this parent thread",
     );

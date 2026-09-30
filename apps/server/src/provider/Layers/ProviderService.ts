@@ -28,12 +28,14 @@ import {
   ProviderUploadFeedbackInput,
   ThreadId,
   TurnId,
+  type OrchestrationThreadShell,
   type ProjectId,
   type ProviderInstanceId,
   type ProviderDriverKind,
   type ProviderRuntimeEvent,
   type ProviderSession,
   type ServerSettings as ServerSettingsValue,
+  OrchestratorMcpRequestedIdentity,
 } from "@t3tools/contracts";
 import { expandAssistantCitationsForProvider } from "@t3tools/shared/assistantCitations";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -86,7 +88,12 @@ import * as McpProviderSession from "../../mcp/McpProviderSession.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProjectionSnapshotQuery from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
-import { loadDelegationPermissionEnvelope } from "../DelegationPermissionEnvelope.ts";
+import { CoordinatorArchitectRepository } from "../../persistence/Services/CoordinatorArchitect.ts";
+import {
+  loadDelegationPermissionEnvelope,
+  recoverDelegationChildCaps,
+  sanitizeDelegationChildCapsSnapshot,
+} from "../DelegationPermissionEnvelope.ts";
 import { deriveProviderInstanceConfigMap } from "./ProviderInstanceRegistryHydration.ts";
 const isModelSelection = Schema.is(ModelSelection);
 const encodePromptJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -494,6 +501,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectionQuery = yield* Effect.serviceOption(
     ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+  );
+  const coordinatorArchitectRepository = yield* Effect.serviceOption(
+    CoordinatorArchitectRepository,
   );
   const issueMcpCredential =
     options?.issueMcpCredential ?? McpSessionRegistry.issueActiveMcpCredential;
@@ -957,21 +967,227 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     } satisfies Record<string, string>;
   });
 
+  // Minimal reader for the delegation lineage this layer did not write. The
+  // orchestrator toolkit owns the payload shape (version 1); anything
+  // unparseable fails closed instead of minting a broad credential.
+  const DELEGATION_CREATED_ACTIVITY = "delegation.created";
+  const DELEGATION_ACTIVITY_VERSION = 1 as const;
+  const readDelegationCredentialLineage = (
+    threadId: ThreadId,
+    activities: ReadonlyArray<{ readonly kind: string; readonly payload: unknown }>,
+  ): Effect.Effect<
+    {
+      readonly requested: typeof OrchestratorMcpRequestedIdentity.Type;
+      readonly workspaceRoot: string;
+      readonly worktreePath: string;
+      readonly branch: string | null;
+      readonly childCaps: unknown;
+    },
+    ProviderValidationError
+  > =>
+    Effect.gen(function* () {
+      const created = activities.findLast(
+        (activity) => activity.kind === DELEGATION_CREATED_ACTIVITY,
+      );
+      if (created === undefined) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Thread '${threadId}' is delegated but carries no delegation lineage.`,
+        );
+      }
+      const record =
+        typeof created.payload === "object" && created.payload !== null
+          ? (created.payload as Record<string, unknown>)
+          : null;
+      if (
+        record === null ||
+        record.version !== DELEGATION_ACTIVITY_VERSION ||
+        record.taskId !== threadId ||
+        record.childThreadId !== threadId
+      ) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Thread '${threadId}' carries an unrecognized delegation lineage.`,
+        );
+      }
+      const requested = yield* decodeInputOrValidationError({
+        operation: "ProviderService.startSession",
+        schema: OrchestratorMcpRequestedIdentity,
+        payload: record.requested,
+      });
+      if (
+        typeof record.workspaceRoot !== "string" ||
+        typeof record.worktreePath !== "string" ||
+        (typeof record.branch !== "string" && record.branch !== null)
+      ) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Thread '${threadId}' carries an unrecognized delegation lineage.`,
+        );
+      }
+      return {
+        requested,
+        workspaceRoot: record.workspaceRoot,
+        worktreePath: record.worktreePath,
+        branch: record.branch,
+        childCaps: record.childCaps,
+      };
+    });
+
+  // Frozen authority for a delegated thread: the canonical child caps the
+  // delegation fingerprint was minted with. Ordinary threads have none and
+  // keep the current settings. Anything unverifiable fails the session start
+  // instead of minting a credential the delegation never authorized.
+  const resolveDelegationCredentialCaps = (
+    threadId: ThreadId,
+    thread: OrchestrationThreadShell | undefined,
+  ): Effect.Effect<ReadonlySet<string> | undefined, ProviderValidationError> =>
+    Effect.gen(function* () {
+      if (Option.isNone(projectionQuery)) return undefined;
+      if ((thread?.delegationParent ?? null) === null) return undefined;
+      const detail = yield* projectionQuery.value
+        .getThreadDetailById(threadId, {
+          activityKinds: [DELEGATION_CREATED_ACTIVITY],
+          activityHistory: "complete",
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            toValidationError(
+              "ProviderService.startSession",
+              `Delegated thread '${threadId}' lineage could not be read.`,
+              cause,
+            ),
+          ),
+        );
+      if (Option.isNone(detail)) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Delegated thread '${threadId}' no longer exists.`,
+        );
+      }
+      const lineage = yield* readDelegationCredentialLineage(threadId, detail.value.activities);
+      const settings = yield* serverSettings.getSettings.pipe(
+        Effect.mapError((cause) =>
+          toValidationError(
+            "ProviderService.startSession",
+            `Delegated thread '${threadId}' settings could not be read.`,
+            cause,
+          ),
+        ),
+      );
+      const instanceConfig =
+        deriveProviderInstanceConfigMap(settings)[lineage.requested.providerInstanceId];
+      if (instanceConfig === undefined || instanceConfig.driver !== lineage.requested.driverKind) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Delegated thread '${threadId}' provider instance is no longer configured.`,
+        );
+      }
+      const recovery = yield* recoverDelegationChildCaps({
+        expectedFingerprint: lineage.requested.providerConfigFingerprint,
+        preferredCaps: sanitizeDelegationChildCapsSnapshot(lineage.childCaps),
+        loadWithCaps: (caps) =>
+          loadDelegationPermissionEnvelope({
+            driverKind: lineage.requested.driverKind,
+            runtimeMode: lineage.requested.runtimeMode,
+            interactionMode: lineage.requested.interactionMode,
+            instanceConfig,
+            environment: process.env,
+            workspaceRoot: lineage.workspaceRoot,
+            worktreePath: lineage.worktreePath,
+            branch: lineage.branch,
+            t3McpCapabilities: caps,
+          }).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, pathService),
+          ),
+      });
+      if (recovery.status !== "recovered") {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          recovery.status === "ambiguous"
+            ? `Delegated thread '${threadId}' capability scope is ambiguous.`
+            : `Delegated thread '${threadId}' provider configuration changed after delegation was accepted.`,
+        );
+      }
+      return recovery.caps;
+    });
+
   const prepareMcpSession = (threadId: ThreadId, providerInstanceId: ProviderInstanceId) =>
     Effect.gen(function* () {
+      // A failed or empty shell read fails the session start: with an unknown
+      // lineage the thread cannot be proven ordinary, so no credential may be
+      // issued. Only an absent projection (provider-only runtime) or a
+      // successfully read non-delegated shell keeps the unclamped path.
+      const threadOption = Option.isNone(projectionQuery)
+        ? undefined
+        : yield* projectionQuery.value
+            .getThreadShellById(threadId)
+            .pipe(
+              Effect.mapError((cause) =>
+                toValidationError(
+                  "ProviderService.startSession",
+                  `Thread '${String(threadId)}' shell could not be read; refusing a session credential with unverified delegation lineage.`,
+                  cause,
+                ),
+              ),
+            );
+      if (threadOption !== undefined && Option.isNone(threadOption)) {
+        return yield* toValidationError(
+          "ProviderService.startSession",
+          `Thread '${String(threadId)}' is unknown; refusing a session credential with unverified delegation lineage.`,
+        );
+      }
+      const thread = threadOption?.value;
+      const delegationCaps = yield* resolveDelegationCredentialCaps(threadId, thread);
       const capabilities = yield* agentAccessCapabilities(threadId);
+      const architectThread = String(threadId).startsWith("arch:");
+      if (architectThread) {
+        if (Option.isNone(coordinatorArchitectRepository)) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Architect thread '${String(threadId)}' has no durable binding store; refusing to issue a credential.`,
+          );
+        }
+        const activeBinding = yield* coordinatorArchitectRepository.value
+          .getActiveBindingByArchitect(threadId)
+          .pipe(
+            Effect.mapError((cause) =>
+              toValidationError(
+                "ProviderService.startSession",
+                `Architect thread '${String(threadId)}' binding could not be verified; refusing to issue a credential.`,
+                cause,
+              ),
+            ),
+          );
+        if (activeBinding === null || activeBinding.architectThreadId !== threadId) {
+          return yield* toValidationError(
+            "ProviderService.startSession",
+            `Architect thread '${String(threadId)}' has no active durable binding; refusing to issue a credential.`,
+          );
+        }
+      }
+      // Clamp a delegated session to its frozen authority S: current settings
+      // may only narrow (a revocation stays honored), never broaden beyond S.
+      const sessionCaps = new Set(
+        architectThread
+          ? (["orchestration"] as const)
+          : delegationCaps === undefined
+            ? capabilities
+            : [...capabilities].filter((capability) => delegationCaps.has(capability)),
+      );
+      if (delegationCaps !== undefined && delegationCaps.has("orchestration")) {
+        sessionCaps.add("orchestration");
+      }
       const orchestration = yield* Effect.gen(function* () {
-        if (Option.isNone(projectionQuery)) return undefined;
-        const threadOption = yield* projectionQuery.value.getThreadShellById(threadId);
-        if (Option.isNone(threadOption)) return undefined;
-        const thread = threadOption.value;
+        if (Option.isNone(projectionQuery) || thread === undefined) return undefined;
         const projectOption = yield* projectionQuery.value.getProjectShellById(thread.projectId);
         if (Option.isNone(projectOption)) return undefined;
         const project = projectOption.value;
         const settings = yield* serverSettings.getSettings;
         const instanceConfig = deriveProviderInstanceConfigMap(settings)[providerInstanceId];
         if (instanceConfig === undefined) return undefined;
-        capabilities.add("orchestration");
+        if (delegationCaps === undefined) sessionCaps.add("orchestration");
         const worktreePath = thread.worktreePath ?? project.workspaceRoot;
         return {
           projectId: thread.projectId,
@@ -989,7 +1205,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
             workspaceRoot: project.workspaceRoot,
             worktreePath,
             branch: thread.branch,
-            t3McpCapabilities: capabilities,
+            t3McpCapabilities: sessionCaps,
           }).pipe(
             Effect.provideService(FileSystem.FileSystem, fileSystem),
             Effect.provideService(Path.Path, pathService),
@@ -1007,11 +1223,12 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const credential = yield* issueMcpCredential({
         threadId,
         providerInstanceId,
-        capabilities,
+        capabilities: sessionCaps,
+        ...(architectThread ? { controlPlaneRole: "architect" as const } : {}),
         ...(orchestration === undefined ? {} : { orchestration }),
       });
       if (credential) {
-        const deviceEnvironment = capabilities.has("device")
+        const deviceEnvironment = sessionCaps.has("device")
           ? yield* agentDeviceEnvironment
           : undefined;
         yield* Effect.sync(() =>

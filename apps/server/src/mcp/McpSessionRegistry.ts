@@ -16,6 +16,8 @@ export interface McpCredentialRequest {
   readonly providerInstanceId: ProviderInstanceId;
   readonly capabilities: ReadonlySet<McpInvocationContext.McpCapability>;
   readonly orchestration?: McpInvocationContext.McpOrchestrationScope;
+  /** Phase 1 frozen control-plane role. Absent means coordinator. */
+  readonly controlPlaneRole?: McpInvocationContext.McpInvocationScope["controlPlaneRole"];
 }
 
 export interface McpIssuedCredential {
@@ -135,6 +137,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
           ...request.capabilities,
         ]),
         ...(request.orchestration === undefined ? {} : { orchestration: request.orchestration }),
+        ...(request.controlPlaneRole === undefined
+          ? {}
+          : { controlPlaneRole: request.controlPlaneRole }),
         issuedAt,
       };
       yield* SynchronizedRef.update(state, ({ records }) => {

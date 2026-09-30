@@ -11,8 +11,12 @@ import * as Path from "effect/Path";
 
 import {
   compareDelegationPermissionEnvelopes,
+  DELEGATION_MCP_CAPABILITY_UNIVERSE,
+  delegationMcpCapabilitySubsets,
   loadDelegationPermissionEnvelope,
   normalizeDelegationPermissionEnvelope,
+  recoverDelegationChildCaps,
+  sanitizeDelegationChildCapsSnapshot,
   type DelegationPermissionEnvelopeInput,
 } from "./DelegationPermissionEnvelope.ts";
 
@@ -364,3 +368,195 @@ describe("compareDelegationPermissionEnvelopes", () => {
 });
 
 void instanceId;
+
+describe("Pi delegation permission envelope", () => {
+  const piDriver = driver("pi");
+  const piConfigValues = {
+    binaryPath: "pi",
+    baseUrl: "http://127.0.0.1:11434/v1",
+    apiKey: "ollama",
+    model: "qwen2.5-coder:7b",
+  };
+  const piConfig: ProviderInstanceConfig = {
+    driver: piDriver,
+    enabled: true,
+    config: piConfigValues,
+  };
+  const piInput = (
+    runtimeMode: DelegationPermissionEnvelopeInput["runtimeMode"],
+    config: ProviderInstanceConfig = piConfig,
+    environment: Readonly<Record<string, string | undefined>> = {},
+  ) => ({
+    ...input("pi", runtimeMode, config.config, environment),
+    t3McpCapabilities: new Set<string>(),
+  });
+  const workspace = {
+    projectId: "project-1",
+    workspaceRoot: "C:/repo",
+    worktreePath: "C:/repo",
+    branch: "main",
+  };
+
+  it("accepts Pi only under a verified full-access parent because its host process is unrestricted", () => {
+    const parent = normalizeDelegationPermissionEnvelope(input("codex", "full-access"));
+    const target = normalizeDelegationPermissionEnvelope(piInput("approval-required"));
+
+    expect(target).toMatchObject({
+      status: "verified",
+      filesystem: "unrestricted",
+      externalDirectories: "unrestricted",
+      commandExecution: "unrestricted",
+      network: "unrestricted",
+      approvalBypass: true,
+      externalTools: [],
+      t3McpCapabilities: [],
+    });
+    expect(
+      compareDelegationPermissionEnvelopes({
+        parent,
+        target,
+        parentInteractionMode: "default",
+        targetInteractionMode: "default",
+        parentWorkspace: workspace,
+        targetWorkspace: workspace,
+      }),
+    ).toEqual({ allowed: true });
+
+    const narrowParent = normalizeDelegationPermissionEnvelope(input("codex", "approval-required"));
+    expect(
+      compareDelegationPermissionEnvelopes({
+        parent: narrowParent,
+        target,
+        parentInteractionMode: "default",
+        targetInteractionMode: "default",
+        parentWorkspace: workspace,
+        targetWorkspace: workspace,
+      }),
+    ).toMatchObject({ allowed: false, code: "permission_escalation_denied" });
+  });
+
+  it("accepts local Pi endpoints and freezes runtime, endpoint, and effective environment changes", () => {
+    const first = normalizeDelegationPermissionEnvelope(piInput("approval-required"));
+    const otherRuntime = normalizeDelegationPermissionEnvelope(piInput("full-access"));
+    const otherEndpoint = normalizeDelegationPermissionEnvelope(
+      piInput("approval-required", {
+        ...piConfig,
+        config: { ...piConfigValues, baseUrl: "http://localhost:1234/v1" },
+      }),
+    );
+    const ignoredAmbientAgentDir = normalizeDelegationPermissionEnvelope(
+      piInput("approval-required", piConfig, { PI_CODING_AGENT_DIR: "C:/ambient/pi" }),
+    );
+
+    expect(first.status).toBe("verified");
+    expect(otherRuntime.status).toBe("verified");
+    expect(otherEndpoint.status).toBe("verified");
+    if (
+      first.status === "verified" &&
+      otherRuntime.status === "verified" &&
+      otherEndpoint.status === "verified" &&
+      ignoredAmbientAgentDir.status === "verified"
+    ) {
+      expect(first.fingerprint).not.toBe(otherRuntime.fingerprint);
+      expect(first.fingerprint).not.toBe(otherEndpoint.fingerprint);
+      expect(first.fingerprint).toBe(ignoredAmbientAgentDir.fingerprint);
+    }
+  });
+
+  it("fails closed for custom runtime, runtime hooks, proxies, and non-loopback endpoints", () => {
+    const unsafeTargets: Array<DelegationPermissionEnvelopeInput> = [
+      piInput("full-access", {
+        ...piConfig,
+        config: { ...piConfigValues, binaryPath: "C:/custom/pi.exe" },
+      }),
+      piInput("full-access", piConfig, { PI_BUNDLED_PI_BIN: "C:/custom/pi.exe" }),
+      piInput("full-access", piConfig, { NODE_OPTIONS: "--require C:/hooks/inject.cjs" }),
+      piInput("full-access", piConfig, { HTTPS_PROXY: "http://proxy.example:8080" }),
+      piInput("full-access", piConfig, { LD_PRELOAD: "/tmp/inject.so" }),
+      piInput("full-access", piConfig, { DYLD_INSERT_LIBRARIES: "/tmp/inject.dylib" }),
+      piInput("full-access", {
+        ...piConfig,
+        config: {
+          ...piConfigValues,
+          baseUrl: "https://api.example.com/v1",
+        },
+      }),
+    ];
+
+    for (const candidate of unsafeTargets) {
+      expect(normalizeDelegationPermissionEnvelope(candidate)).toMatchObject({
+        status: "unverifiable",
+      });
+    }
+  });
+});
+
+describe("delegationMcpCapabilitySubsets", () => {
+  it("enumerates all 16 sorted subsets of the frozen universe", () => {
+    expect(DELEGATION_MCP_CAPABILITY_UNIVERSE).toEqual([
+      "device",
+      "orchestration",
+      "preview",
+      "pull-requests",
+    ]);
+    const subsets = delegationMcpCapabilitySubsets();
+    expect(subsets).toHaveLength(16);
+    expect(new Set(subsets.map((subset) => subset.join(","))).size).toBe(16);
+    for (const subset of subsets) {
+      expect([...subset].toSorted()).toEqual(subset);
+    }
+  });
+
+  it("sanitizes stored child caps snapshots", () => {
+    expect(sanitizeDelegationChildCapsSnapshot(["orchestration", "device"])).toEqual(
+      new Set(["orchestration", "device"]),
+    );
+    expect(sanitizeDelegationChildCapsSnapshot(undefined)).toBeUndefined();
+    expect(sanitizeDelegationChildCapsSnapshot(["orchestration", "calendar"])).toBeUndefined();
+    expect(sanitizeDelegationChildCapsSnapshot("orchestration")).toBeUndefined();
+  });
+
+  it.effect("recovers the exact subset for a stored fingerprint", () =>
+    Effect.gen(function* () {
+      const expected = normalizeDelegationPermissionEnvelope({
+        ...input("codex"),
+        t3McpCapabilities: new Set(["orchestration", "pull-requests"]),
+      });
+      expect(expected.status).toBe("verified");
+      if (expected.status !== "verified") return;
+      const recovery = yield* recoverDelegationChildCaps({
+        expectedFingerprint: expected.fingerprint,
+        loadWithCaps: (caps) =>
+          Effect.succeed(
+            normalizeDelegationPermissionEnvelope({ ...input("codex"), t3McpCapabilities: caps }),
+          ),
+      });
+      expect(recovery).toMatchObject({ status: "recovered" });
+      if (recovery.status !== "recovered") return;
+      expect([...recovery.caps].toSorted()).toEqual(["orchestration", "pull-requests"]);
+      expect(recovery.envelope.status).toBe("verified");
+      if (recovery.envelope.status !== "verified") return;
+      expect(recovery.envelope.fingerprint).toBe(expected.fingerprint);
+    }),
+  );
+
+  it.effect("reports no-match when the config drifted", () =>
+    Effect.gen(function* () {
+      const expected = normalizeDelegationPermissionEnvelope({
+        ...input("codex"),
+        t3McpCapabilities: new Set(["orchestration", "pull-requests"]),
+      });
+      expect(expected.status).toBe("verified");
+      if (expected.status !== "verified") return;
+      const drifted = { ...input("codex"), runtimeMode: "full-access" as const };
+      const recovery = yield* recoverDelegationChildCaps({
+        expectedFingerprint: expected.fingerprint,
+        loadWithCaps: (caps) =>
+          Effect.succeed(
+            normalizeDelegationPermissionEnvelope({ ...drifted, t3McpCapabilities: caps }),
+          ),
+      });
+      expect(recovery).toEqual({ status: "no-match" });
+    }),
+  );
+});

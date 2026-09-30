@@ -47,6 +47,7 @@ import {
 } from "./commandInvariants.ts";
 import { projectEvent } from "./projector.ts";
 import { threadHasQueuedTurnStart } from "./ThreadSettlementPolicy.ts";
+import { NEVER_WAKES_SETTLED_THREAD_KINDS } from "./coordinatorArchitect.ts";
 
 const isScriptRunCommand = Schema.is(SCRIPT_RUN_COMMAND_PATTERN);
 
@@ -2204,14 +2205,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const commandActivityPayload = command.activity.payload;
       if (
         command.activity.kind === "delegation.completed" &&
-        isDelegationCompletedActivityPayload(command.activity.payload) &&
+        isDelegationCompletedActivityPayload(commandActivityPayload) &&
         thread.activities.some(
           (activity) =>
             activity.kind === "delegation.completed" &&
             isDelegationCompletedActivityPayload(activity.payload) &&
-            activity.payload.delegatedTurnId === command.activity.payload.delegatedTurnId,
+            activity.payload.childThreadId === commandActivityPayload.childThreadId &&
+            activity.payload.delegatedTurnId === commandActivityPayload.delegatedTurnId,
         )
       ) {
         return [];
@@ -2239,10 +2242,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         },
       };
       // An approval or user-input request is blocked-on-you work — it must
-      // never stay hidden inside a settled slim row.
+      // never stay hidden inside a settled slim row. Phase 1
+      // coordinator/architect markers stay content-only even here.
       const wakesSettledThread =
-        command.activity.kind === "approval.requested" ||
-        command.activity.kind === "user-input.requested";
+        (command.activity.kind === "approval.requested" ||
+          command.activity.kind === "user-input.requested") &&
+        !NEVER_WAKES_SETTLED_THREAD_KINDS.has(command.activity.kind);
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !wakesSettledThread) {
         return activityAppendedEvent;

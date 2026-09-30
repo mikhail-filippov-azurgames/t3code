@@ -16,6 +16,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { expandHomePath } from "../pathExpansion.ts";
+import { normalizePiBaseUrl, parsePiLocalEndpoint } from "./pi/piAgentDir.ts";
+import {
+  isPiBlockedLaunchEnvironmentKey,
+  resolvePiLaunchProfile,
+} from "./pi/piPermissionBridge.ts";
+import { PI_RUNTIME_ENV_VAR } from "./pi/piRuntime.ts";
 
 const AUTOMATICITY_RANK: Readonly<Record<OrchestratorMcpPermissionAutomaticity, number>> = {
   none: 0,
@@ -43,11 +49,98 @@ const DRIVER_ENV_PREFIXES: Readonly<Record<string, ReadonlyArray<string>>> = {
   codex: ["CODEX_", "T3CODE_CODEX_"],
   claudeAgent: ["ANTHROPIC_", "CLAUDE_"],
   opencode: ["OPENCODE_"],
+  pi: ["PI_", "T3CODE_PI_", "OPENAI_"],
   grok: ["GROK_", "XAI_"],
   antigravity: ["ANTIGRAVITY_", "GOOGLE_", "GEMINI_"],
   cursor: ["CURSOR_"],
   museCode: ["MUSE_", "META_"],
 };
+
+export const DELEGATION_MCP_CAPABILITY_UNIVERSE: ReadonlyArray<string> = [
+  "device",
+  "orchestration",
+  "preview",
+  "pull-requests",
+];
+
+/** Every subset of the frozen capability universe, each already sorted. */
+export function delegationMcpCapabilitySubsets(): Array<ReadonlyArray<string>> {
+  const subsets: Array<ReadonlyArray<string>> = [];
+  for (let mask = 0; mask < 1 << DELEGATION_MCP_CAPABILITY_UNIVERSE.length; mask++) {
+    subsets.push(
+      DELEGATION_MCP_CAPABILITY_UNIVERSE.filter((_, index) => (mask & (1 << index)) !== 0),
+    );
+  }
+  return subsets;
+}
+
+/** Accept only a stored snapshot drawn from the frozen universe. */
+export function sanitizeDelegationChildCapsSnapshot(
+  value: unknown,
+): ReadonlySet<string> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const universe = new Set(DELEGATION_MCP_CAPABILITY_UNIVERSE);
+  const caps = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || !universe.has(entry)) return undefined;
+    caps.add(entry);
+  }
+  return caps;
+}
+
+export type DelegationChildCapsRecovery =
+  | {
+      readonly status: "recovered";
+      readonly caps: ReadonlySet<string>;
+      readonly envelope: OrchestratorMcpPermissionEnvelopeSummary;
+    }
+  | { readonly status: "no-match" }
+  | { readonly status: "ambiguous" };
+
+/**
+ * Recover the canonical frozen child caps for an expected fingerprint.
+ * The fingerprint algorithm is unchanged (caps stay in the hash), so at most
+ * one subset can match; zero or several matches fail closed at the call site.
+ */
+export function recoverDelegationChildCaps<E>(input: {
+  readonly expectedFingerprint: string;
+  readonly preferredCaps?: ReadonlySet<string> | undefined;
+  readonly loadWithCaps: (
+    caps: ReadonlySet<string>,
+  ) => Effect.Effect<OrchestratorMcpPermissionEnvelopeSummary, E>;
+}): Effect.Effect<DelegationChildCapsRecovery, E> {
+  return Effect.gen(function* () {
+    const seen = new Set<string>();
+    const candidates: Array<ReadonlyArray<string>> = [];
+    if (input.preferredCaps !== undefined) {
+      const first = [...input.preferredCaps].toSorted();
+      seen.add(first.join(","));
+      candidates.push(first);
+    }
+    for (const subset of delegationMcpCapabilitySubsets()) {
+      const key = subset.join(",");
+      if (!seen.has(key)) {
+        seen.add(key);
+        candidates.push(subset);
+      }
+    }
+    const matches: Array<{
+      readonly caps: ReadonlySet<string>;
+      readonly envelope: OrchestratorMcpPermissionEnvelopeSummary;
+    }> = [];
+    for (const subset of candidates) {
+      const envelope = yield* input.loadWithCaps(new Set(subset));
+      if (envelope.status === "verified" && envelope.fingerprint === input.expectedFingerprint) {
+        matches.push({ caps: new Set(subset), envelope });
+        if (matches.length > 1) return { status: "ambiguous" } as const;
+      }
+    }
+    const single = matches[0];
+    return single === undefined
+      ? ({ status: "no-match" } as const)
+      : { ...single, status: "recovered" as const };
+  });
+}
 
 export interface DelegationPermissionEnvelopeInput {
   readonly driverKind: ProviderDriverKind;
@@ -118,11 +211,17 @@ function environmentRecord(
     Object.entries(inherited)
       .filter(
         ([name, value]) =>
-          value !== undefined && prefixes.some((prefix) => name.startsWith(prefix)),
+          value !== undefined &&
+          !(input.driverKind === "pi" && name.toUpperCase() === "PI_CODING_AGENT_DIR") &&
+          (prefixes.some((prefix) => name.toUpperCase().startsWith(prefix)) ||
+            (input.driverKind === "pi" && isPiBlockedLaunchEnvironmentKey(name))),
       )
       .map(([name, value]) => [name, value ?? ""]),
   );
   for (const variable of input.instanceConfig.environment ?? []) {
+    if (input.driverKind === "pi" && variable.name.toUpperCase() === "PI_CODING_AGENT_DIR") {
+      continue;
+    }
     relevant[variable.name] = variable.value;
   }
   return relevant;
@@ -132,11 +231,42 @@ function unverifiable(reason: string): OrchestratorMcpPermissionEnvelopeSummary 
   return { status: "unverifiable", reason };
 }
 
-function configString(input: DelegationPermissionEnvelopeInput, name: string): string | undefined {
+function configValue(input: DelegationPermissionEnvelopeInput, name: string): unknown {
   const config = input.instanceConfig.config;
   if (typeof config !== "object" || config === null) return undefined;
-  const value = (config as Readonly<Record<string, unknown>>)[name];
+  return (config as Readonly<Record<string, unknown>>)[name];
+}
+
+function configString(input: DelegationPermissionEnvelopeInput, name: string): string | undefined {
+  const value = configValue(input, name);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function piConfigurationReason(input: DelegationPermissionEnvelopeInput): string | undefined {
+  const binaryPath = configValue(input, "binaryPath");
+  if (binaryPath !== undefined && typeof binaryPath !== "string") {
+    return "Pi binary configuration is not comparable.";
+  }
+  if (typeof binaryPath === "string" && binaryPath.trim() !== "" && binaryPath.trim() !== "pi") {
+    return "Pi delegation requires the pinned bundled runtime; custom binaries are not comparable.";
+  }
+
+  const configuredBaseUrl = configValue(input, "baseUrl");
+  if (configuredBaseUrl !== undefined && typeof configuredBaseUrl !== "string") {
+    return "Pi endpoint configuration is not comparable.";
+  }
+  if (!parsePiLocalEndpoint(normalizePiBaseUrl(configuredBaseUrl as string | undefined))) {
+    return "Pi delegation requires a verifiable local HTTP loopback endpoint.";
+  }
+
+  for (const [name, value] of Object.entries(environmentRecord(input))) {
+    if (value.trim() === "") continue;
+    const normalized = name.toUpperCase();
+    if (normalized === PI_RUNTIME_ENV_VAR || isPiBlockedLaunchEnvironmentKey(name)) {
+      return `Pi launch environment variable ${name} is not comparable.`;
+    }
+  }
+  return undefined;
 }
 
 function configurationFilePaths(
@@ -196,6 +326,10 @@ function codexComparableConfigurationContent(content: string): string {
 
 function providerConfigurationReason(input: DelegationPermissionEnvelopeInput): string | undefined {
   const files = input.providerConfigurationFiles;
+  if (input.driverKind === "pi") {
+    const reason = piConfigurationReason(input);
+    if (reason !== undefined) return reason;
+  }
   if ((input.driverKind === "codex" || input.driverKind === "claudeAgent") && files === undefined) {
     return `${input.driverKind} provider configuration files were not inspected.`;
   }
@@ -482,6 +616,10 @@ function normalizedRuntimeForDriver(input: DelegationPermissionEnvelopeInput):
         ),
         externalTools: [],
       };
+    }
+    case "pi": {
+      const profile = resolvePiLaunchProfile(input.runtimeMode);
+      return { runtime: profile.authority, externalTools: [] };
     }
     case "grok":
       return { runtime: runtimeEnvelope(input.runtimeMode), externalTools: [] };

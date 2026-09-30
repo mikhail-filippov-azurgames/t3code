@@ -1,4 +1,5 @@
 import {
+  type ControlPlaneRole,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   type OrchestratorMcpPermissionEnvelopeSummary,
@@ -32,6 +33,13 @@ export interface McpInvocationScope {
   readonly capabilities: ReadonlySet<McpCapability>;
   readonly orchestration?: McpOrchestrationScope;
   readonly issuedAt: number;
+  /**
+   * Phase 1 control-plane role, frozen at credential issue. Coordinators own
+   * execution lineage; architects hold a read-only subset scoped to their
+   * active binding. Absent means coordinator (pre-split credentials).
+   * Advisory only: every architect path re-checks the durable binding store.
+   */
+  readonly controlPlaneRole?: ControlPlaneRole;
 }
 
 export class McpInvocationContext extends Context.Service<

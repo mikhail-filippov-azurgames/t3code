@@ -5,6 +5,7 @@ import {
   ProviderInstanceId,
   ProjectId,
   ThreadId,
+  WS_METHODS,
   type BoardCard,
   type BoardCardEvent,
   type BoardOrchestrator,
@@ -25,7 +26,17 @@ import { makeBoardRpcHandlers, type BoardRpcDependencies } from "./ws.ts";
 
 const ORCHESTRATOR = ThreadId.make("orch-thread");
 const CHILD = ThreadId.make("child-thread");
+const ARCHITECT = ThreadId.make("arch:board-rpc-denied");
 const AT = "2026-09-20T00:00:00.000Z";
+
+describe("Phase 1 board RPC compatibility", () => {
+  it("keeps the existing board orchestrator RPC names", () => {
+    assert.strictEqual(WS_METHODS.boardOrchestratorsList, "board.orchestrators.list");
+    assert.strictEqual(WS_METHODS.boardOrchestratorAdd, "board.orchestrator.add");
+    assert.strictEqual(WS_METHODS.boardOrchestratorRemove, "board.orchestrator.remove");
+    assert.strictEqual(WS_METHODS.boardOrchestratorResendBrief, "board.orchestrator.resendBrief");
+  });
+});
 
 function makeCard(overrides: Partial<BoardCard> = {}): BoardCard {
   return {
@@ -179,6 +190,7 @@ function makeHarness(
     getShellSnapshot: () => Effect.succeed(snapshot(options.shells ?? [])),
     getArchivedShellSnapshot: () => Effect.succeed(snapshot(options.archivedShells ?? [])),
     listTurns: () => Effect.succeed(options.turns ?? []),
+    isArchitectThread: (threadId) => Effect.succeed(threadId === ARCHITECT),
     newId: () => {
       nextId += 1;
       return Effect.succeed(nextId === 1 ? "generated-id" : `generated-id-${nextId}`);
@@ -337,6 +349,7 @@ describe("board RPC handlers", () => {
 
       assert.instanceOf(error, BoardError);
       assert.strictEqual(error.operation, "board.delete");
+      assert.include(error.detail, "the Coordinator deletes cards through MCP");
       assert.strictEqual(state.cards.length, 1);
     }),
   );
@@ -360,7 +373,27 @@ describe("board RPC handlers", () => {
 
       assert.instanceOf(error, BoardError);
       assert.strictEqual(error.operation, "board.orchestrator.add");
+      assert.include(error.detail, "cannot be a board Coordinator");
       assert.strictEqual(state.orchestrators.length, 0);
+    }),
+  );
+
+  it.effect("orchestrator.add and resendBrief deny Architect threads without side effects", () =>
+    Effect.gen(function* () {
+      const { handlers, state, dispatched } = makeHarness({
+        shells: [makeThread({ id: ARCHITECT })],
+      });
+      const addError = yield* Effect.flip(handlers.orchestratorAdd({ threadId: ARCHITECT }));
+      assert.instanceOf(addError, BoardError);
+      assert.strictEqual(addError.operation, "board.orchestrator.add");
+      assert.strictEqual(state.orchestrators.length, 0);
+      assert.strictEqual(dispatched.length, 0);
+
+      state.orchestrators.push({ threadId: ARCHITECT, createdBy: "human", createdAt: AT });
+      const resendError = yield* Effect.flip(handlers.resendBrief({ threadId: ARCHITECT }));
+      assert.instanceOf(resendError, BoardError);
+      assert.strictEqual(resendError.operation, "board.orchestrator.resendBrief");
+      assert.strictEqual(dispatched.length, 0);
     }),
   );
 
@@ -390,6 +423,10 @@ describe("board RPC handlers", () => {
         (messageIdOf(command) ?? "").startsWith(`board-orchestrator:${ORCHESTRATOR}:`),
       );
       assert.isDefined(notice);
+      assert.strictEqual(notice?.type, "thread.message.system.append");
+      if (notice?.type === "thread.message.system.append") {
+        assert.strictEqual(notice.message.text, BOARD_ORCHESTRATOR_TURN_TEXT);
+      }
       const wake = dispatched.find(
         (command) =>
           command.type === "thread.turn.start" &&
@@ -496,6 +533,7 @@ describe("board RPC handlers", () => {
 
       assert.instanceOf(error, BoardError);
       assert.strictEqual(error.operation, "board.orchestrator.resendBrief");
+      assert.include(error.detail, "is not a registered Coordinator");
       assert.strictEqual(dispatched.length, 0);
     }),
   );
@@ -540,10 +578,10 @@ describe("board RPC handlers", () => {
       assert.strictEqual(notices.length, 2);
       assert.notStrictEqual(messageIdOf(notices[0]!), messageIdOf(notices[1]!));
       assert.isTrue(
-        notices.some(
+        notices.every(
           (command) =>
             command.type === "thread.message.system.append" &&
-            command.message.text.includes("orchestrator for this board"),
+            command.message.text === BOARD_ORCHESTRATOR_TURN_TEXT,
         ),
       );
       const turns = dispatched.filter(
@@ -552,6 +590,13 @@ describe("board RPC handlers", () => {
           command.message.messageId.startsWith(`board-orchestrator-turn:${ORCHESTRATOR}:`),
       );
       assert.strictEqual(turns.length, 2);
+      assert.isTrue(
+        turns.every(
+          (command) =>
+            command.type === "thread.turn.start" &&
+            command.message.text === BOARD_ORCHESTRATOR_TURN_TEXT,
+        ),
+      );
     }),
   );
 

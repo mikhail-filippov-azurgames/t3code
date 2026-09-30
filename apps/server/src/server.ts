@@ -43,6 +43,8 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "./persistence/Layers/Sqlite.ts";
 import { CalendarEventRepositoryLive } from "./persistence/Services/CalendarEvents.ts";
 import { BoardRepositoryLive } from "./persistence/Layers/Board.ts";
+import { DelegatedTaskSummaryRepositoryLive } from "./persistence/Layers/DelegatedTaskSummaries.ts";
+import { CoordinatorArchitectRepositoryLive } from "./persistence/Layers/CoordinatorArchitect.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory.ts";
@@ -91,6 +93,7 @@ import * as ThreadSettlementReactor from "./orchestration/ThreadSettlementReacto
 import * as PullRequestSyncReactor from "./orchestration/PullRequestSyncReactor.ts";
 import * as ThreadPullRequestReactor from "./orchestration/ThreadPullRequestReactor.ts";
 import * as BoardReactor from "./orchestration/BoardReactor.ts";
+import * as DelegatedTaskSummaryReactor from "./orchestration/DelegatedTaskSummaryReactor.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry.ts";
@@ -252,6 +255,7 @@ const CalendarReactorLayerLive = CalendarReactor.layer.pipe(
 
 const ReactorLayerLive = Layer.empty.pipe(
   Layer.provideMerge(OrchestrationReactorLive),
+  Layer.provideMerge(DelegatedTaskSummaryReactor.layer),
   Layer.provideMerge(CalendarReactorLayerLive),
   Layer.provideMerge(ProviderRuntimeIngestionLive),
   Layer.provideMerge(ProviderCommandReactorLive),
@@ -280,9 +284,12 @@ const ProviderLayerLive = ProviderServiceLive.pipe(
   Layer.provideMerge(ProviderSessionDirectoryLayerLive),
 );
 
-const PersistenceLayerLive = Layer.mergeAll(CalendarEventRepositoryLive, BoardRepositoryLive).pipe(
-  Layer.provideMerge(SqlitePersistenceLayerLive),
-);
+const PersistenceLayerLive = Layer.mergeAll(
+  CalendarEventRepositoryLive,
+  BoardRepositoryLive,
+  DelegatedTaskSummaryRepositoryLive,
+  CoordinatorArchitectRepositoryLive,
+).pipe(Layer.provideMerge(SqlitePersistenceLayerLive));
 
 const VcsDriverRegistryLayerLive = VcsDriverRegistry.layer.pipe(
   Layer.provide(VcsProjectConfig.layer),

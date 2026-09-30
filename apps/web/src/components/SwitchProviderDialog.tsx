@@ -11,7 +11,7 @@ import { getAppModelOptionsForInstance } from "../modelSelection";
 import {
   applyProviderInstanceSettings,
   deriveProviderInstanceEntries,
-  isProviderInstancePickerReady,
+  isProviderInstancePickerSelectable,
   sortProviderInstanceEntries,
   type ProviderInstanceEntry,
 } from "../providerInstances";
@@ -39,10 +39,20 @@ export interface SwitchProviderChoice {
   readonly reason: string | null;
 }
 
+export interface SwitchProviderDialogPurpose {
+  readonly title: string;
+  readonly description: string;
+  readonly reasonLabel: string;
+  readonly reasonPlaceholder: string;
+  readonly submitLabel: string;
+  readonly requireReason?: boolean;
+}
+
 interface SwitchProviderRequest {
   readonly environmentId: EnvironmentId;
   readonly currentInstanceId: ProviderInstanceId | null;
   readonly currentModel: string | null;
+  readonly purpose?: SwitchProviderDialogPurpose;
   readonly resolve: (choice: SwitchProviderChoice | null) => void;
 }
 
@@ -52,6 +62,7 @@ export function requestSwitchProviderTarget(input: {
   readonly environmentId: EnvironmentId;
   readonly currentInstanceId?: ProviderInstanceId | null;
   readonly currentModel?: string | null;
+  readonly purpose?: SwitchProviderDialogPurpose;
 }): Promise<SwitchProviderChoice | null> {
   useRequest.getState().request?.resolve(null);
   return new Promise((resolve) =>
@@ -60,6 +71,7 @@ export function requestSwitchProviderTarget(input: {
         environmentId: input.environmentId,
         currentInstanceId: input.currentInstanceId ?? null,
         currentModel: input.currentModel ?? null,
+        ...(input.purpose === undefined ? {} : { purpose: input.purpose }),
         resolve,
       },
     }),
@@ -80,7 +92,7 @@ export function SwitchProviderDialogHost() {
 
 function modelsForEntry(settings: UnifiedSettings, entry: ProviderInstanceEntry) {
   // Same option list the composer picker shows for this instance, minus
-  // rows flagged unavailable — a switch target must be selectable now.
+  // rows flagged unavailable — a switch target must have a configured model.
   return getAppModelOptionsForInstance(settings, entry, null).filter(
     (option) => !option.isUnavailable,
   );
@@ -107,7 +119,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
     () =>
       sortProviderInstanceEntries(
         applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings),
-      ).filter(isProviderInstancePickerReady),
+      ).filter(isProviderInstancePickerSelectable),
     [providers, settings],
   );
 
@@ -133,7 +145,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // The instance list arrives asynchronously; adopt the first ready entry
+  // The instance list arrives asynchronously; adopt the first selectable entry
   // (or the current instance when it is present), together with a valid model
   // instead of stranding the selects or silently changing the user's current
   // provider while the catalog is loading.
@@ -173,6 +185,10 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
               );
               return;
             }
+            if (request.purpose?.requireReason === true && reason.trim().length === 0) {
+              setError("Enter a reason before continuing.");
+              return;
+            }
             finish({
               instanceId: entry.instanceId,
               driverKind: entry.driverKind,
@@ -182,9 +198,10 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
           }}
         >
           <DialogHeader>
-            <DialogTitle>Switch provider</DialogTitle>
+            <DialogTitle>{request.purpose?.title ?? "Switch provider"}</DialogTitle>
             <DialogDescription>
-              Move this thread to another provider and model without losing its work.
+              {request.purpose?.description ??
+                "Move this thread to another provider and model without losing its work."}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="flex flex-col gap-4 text-base sm:text-sm">
@@ -240,7 +257,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
               </Select>
             </Label>
             <Label className="flex min-w-0 flex-col items-stretch gap-1.5" htmlFor={`${id}-reason`}>
-              Reason (optional)
+              {request.purpose?.reasonLabel ?? "Reason (optional)"}
               <Input
                 nativeInput
                 id={`${id}-reason`}
@@ -248,7 +265,8 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
                 type="text"
                 value={reason}
                 maxLength={SWITCH_PROVIDER_REASON_MAX_LENGTH}
-                placeholder="Why is this thread moving?"
+                placeholder={request.purpose?.reasonPlaceholder ?? "Why is this thread moving?"}
+                required={request.purpose?.requireReason === true}
                 onChange={(event) => {
                   setReason(event.target.value);
                   setError(null);
@@ -265,7 +283,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
             <Button type="button" variant="outline" onClick={() => finish(null)}>
               Cancel
             </Button>
-            <Button type="submit">Switch</Button>
+            <Button type="submit">{request.purpose?.submitLabel ?? "Switch"}</Button>
           </DialogFooter>
         </form>
       </DialogPopup>

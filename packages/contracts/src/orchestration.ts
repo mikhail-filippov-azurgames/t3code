@@ -39,6 +39,7 @@ export const ORCHESTRATION_WS_METHODS = {
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
+  getCoordinatorArchitectSidebar: "orchestration.getCoordinatorArchitectSidebar",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
@@ -604,6 +605,7 @@ export const DelegationCompletedActivityPayload = Schema.Struct({
   childThreadId: ThreadId,
   delegatedTurnId: TurnId,
   status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
+  outputStatus: Schema.optional(Schema.Literals(["available", "empty", "unavailable"])),
   completedAt: IsoDateTime,
   resultExcerpt: Schema.optional(Schema.String.check(Schema.isMaxLength(200))),
   terminalError: Schema.optional(Schema.String.check(Schema.isMaxLength(2_000))),

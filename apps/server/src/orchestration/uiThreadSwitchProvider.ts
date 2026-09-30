@@ -35,10 +35,11 @@ export interface UiThreadSwitchProviderOptions {
 /**
  * Capabilities a UI-initiated switch acts with. UI callers are authorized by
  * the operate scope (they can already run any provider via turn.start), not
- * by per-tool MCP grants — so both the frozen parent envelope and the target
- * envelope are computed with the full set, keeping the comparison
- * apples-to-apples. The meaningful gate stays intact: the target must not
- * exceed the parent thread's authority and its envelope must verify.
+ * by per-tool MCP grants — so the caller parent envelope is computed with
+ * the full set. The delegated target envelope is never built from this set:
+ * the engine anchors it to the delegation's canonical frozen child caps and
+ * the original target envelope, so a broader UI surface cannot smuggle new
+ * rights into the child.
  */
 const UI_SWITCH_MCP_CAPABILITIES: ReadonlySet<McpCapability> = new Set<McpCapability>([
   "preview",
@@ -75,10 +76,12 @@ const parentNotActive = (reason: string, message: string, hint: string) =>
 
 /**
  * Synthesize the MCP invocation scope the engine `switchProvider` requires
- * from live thread/project shells. The frozen parent slice is rebuilt from
- * the parent's current state (so the drift check passes by construction —
- * the UI just read this state), while lineage ownership, capability gates,
- * and the target checks stay entirely inside the engine.
+ * from live thread/project shells. The caller slice is rebuilt from the
+ * parent's current state (so the drift check passes by construction — the
+ * UI just read this state); it carries caller authority only and is never
+ * the frozen delegation authority. Lineage ownership, capability gates, the
+ * canonical child caps, and the original-target anchor stay inside the
+ * engine.
  *
  * Parent authority for the permission comparison is the parent thread's
  * current session provider, falling back to its stored model selection when
