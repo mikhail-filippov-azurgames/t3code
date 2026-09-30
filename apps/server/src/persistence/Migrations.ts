@@ -66,6 +66,13 @@ import Migration0051 from "./Migrations/051_ProjectionThreadMessageContext.ts";
 import Migration0052 from "./Migrations/052_ProjectionThreadTitleState.ts";
 import Migration0053 from "./Migrations/053_CalendarEvents.ts";
 import Migration0054 from "./Migrations/054_Board.ts";
+import Migration0055 from "./Migrations/055_DelegatedTaskSummaries.ts";
+import Migration0056 from "./Migrations/056_DelegationRecoveryIndexes.ts";
+import Migration0057 from "./Migrations/057_DelegatedTurnSendQueue.ts";
+import Migration0058 from "./Migrations/058_CoordinatorArchitectBinding.ts";
+import Migration0059 from "./Migrations/059_CoordinatorArchitectIdempotency.ts";
+import Migration0060 from "./Migrations/060_CoordinatorArchitectRoutingEvidence.ts";
+import Migration0061 from "./Migrations/061_ArchitectureReviewDelivery.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -132,6 +139,13 @@ const migrationEntries = [
   [52, "ProjectionThreadTitleState", Migration0052],
   [53, "CalendarEvents", Migration0053],
   [54, "Board", Migration0054],
+  [55, "DelegatedTaskSummaries", Migration0055],
+  [56, "DelegationRecoveryIndexes", Migration0056],
+  [57, "DelegatedTurnSendQueue", Migration0057],
+  [58, "CoordinatorArchitectBinding", Migration0058],
+  [59, "CoordinatorArchitectIdempotency", Migration0059],
+  [60, "CoordinatorArchitectRoutingEvidence", Migration0060],
+  [61, "ArchitectureReviewDelivery", Migration0061],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);
