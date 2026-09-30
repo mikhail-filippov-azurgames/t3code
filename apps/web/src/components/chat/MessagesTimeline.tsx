@@ -368,6 +368,17 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END_SMOOTH = {
   animated: true,
 } as const satisfies MaintainScrollAtEndOptions;
 
+const DELEGATION_OUTPUT_UNAVAILABLE_MARKER =
+  "Assistant output is unavailable; the provider turn completed and was not replayed.";
+
+function isDelegationOutputUnavailableMessage(message: ChatMessage): boolean {
+  return (
+    message.role === "system" &&
+    message.text.startsWith("Delegated child ") &&
+    message.text.includes(DELEGATION_OUTPUT_UNAVAILABLE_MARKER)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Props (public API)
 // ---------------------------------------------------------------------------
@@ -1458,6 +1469,19 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "message" && row.message.role === "user" ? <UserTimelineRow row={row} /> : null}
       {row.kind === "message" && row.message.role === "assistant" ? (
         <AssistantTimelineRow row={row} />
+      ) : null}
+      {row.kind === "message" && isDelegationOutputUnavailableMessage(row.message) ? (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-start gap-2 rounded-md border border-amber-500/35 bg-amber-500/5 px-3 py-2 text-sm text-foreground"
+        >
+          <CircleAlertIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-amber-600" />
+          <span>
+            The delegated provider turn completed, but its assistant output is unavailable. It was
+            not replayed.
+          </span>
+        </div>
       ) : null}
       {row.kind === "assistant-meta" ? <AssistantMetaTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}

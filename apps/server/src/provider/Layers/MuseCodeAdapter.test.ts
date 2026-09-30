@@ -30,6 +30,7 @@ import {
   museNeedsElevatedHost,
   musePlanStepsFromTodos,
   parseMuseEffort,
+  reconcileMuseTurnOutput,
   shouldFoldDelta,
 } from "./MuseCodeAdapter.ts";
 
@@ -244,6 +245,35 @@ const CHOICES = [
   { choiceId: "deny", decision: "denied", scope: "once" },
 ] as const;
 
+function makeMuseHistoryReadTarget(input: {
+  readonly history: unknown;
+  readonly pages: ReadonlyArray<unknown>;
+  readonly activeTurnId?: string | null;
+}) {
+  const methods: Array<string> = [];
+  let pageReads = 0;
+  return {
+    methods,
+    target: {
+      connection: {
+        request(method: string, params: Record<string, unknown>) {
+          methods.push(method);
+          if (method === "session/read") {
+            return Promise.resolve({
+              session: {
+                sessionId: "session-1",
+                activeTurnId: input.activeTurnId ?? null,
+              },
+              ...(params["excludeItems"] === false ? { history: input.history } : {}),
+            });
+          }
+          return Promise.resolve(input.pages[pageReads++] ?? { events: [], nextCursor: null });
+        },
+      },
+    },
+  };
+}
+
 describe("museChoiceForDecision", () => {
   it("maps accept onto the one-shot approval", () => {
     expect(museChoiceForDecision("accept", [...CHOICES])).toBe("approve");
@@ -431,7 +461,11 @@ describe("awaitMuseHostStall", () => {
       const fiber = yield* awaitMuseHostStall({
         watchdog,
         probeHostLiveness: Effect.succeed(true),
-        probeTurnProgress: Effect.succeed({ kind: "reconciled", terminal }),
+        probeTurnProgress: Effect.succeed({
+          kind: "reconciled",
+          terminal,
+          history: { kind: "unavailable" },
+        }),
       }).pipe(Effect.forkChild);
       yield* TestClock.adjust(Duration.millis(MUSE_TURN_SILENCE_TIMEOUT_MS));
       expect(fiber.pollUnsafe()).toMatchObject({ _tag: "Success", value: { kind: "reconciled" } });
@@ -458,38 +492,67 @@ describe("museTurnProgressProbe", () => {
   it.effect("recovers only the matching durable turn terminal", () =>
     Effect.gen(function* () {
       const methods: string[] = [];
+      const itemExclusionPreferences: Array<unknown> = [];
+      let sessionReads = 0;
       const progress = yield* museTurnProgressProbe(
         {
           connection: {
-            request(method) {
+            request(method, params) {
               methods.push(method);
-              return Promise.resolve(
-                method === "session/read"
-                  ? { session: { sessionId: "session-1", activeTurnId: null } }
-                  : {
-                      events: [
-                        {
-                          method: "turn/completed",
-                          params: {
-                            sessionId: "session-1",
-                            turnId: "other-turn",
-                            terminal: "completed",
-                            sourceRange: {},
-                          },
+              if (method === "session/read") {
+                sessionReads += 1;
+                itemExclusionPreferences.push(params["excludeItems"]);
+                return Promise.resolve(
+                  sessionReads === 1
+                    ? { session: { sessionId: "session-1", activeTurnId: null } }
+                    : {
+                        session: { sessionId: "session-1", activeTurnId: null },
+                        history: {
+                          mode: "inline",
+                          items: [
+                            {
+                              itemId: "assistant-item-1",
+                              kind: "agentMessage",
+                              status: "completed",
+                              turnId: "turn-1",
+                              text: "Recovered answer.",
+                            },
+                            {
+                              itemId: "tool-item-1",
+                              kind: "toolCall",
+                              status: "completed",
+                              turnId: "turn-1",
+                              tool: "read_file",
+                              visibleOutput: "file contents",
+                            },
+                          ],
                         },
-                        {
-                          method: "turn/completed",
-                          params: {
-                            sessionId: "session-1",
-                            turnId: "turn-1",
-                            terminal: "completed",
-                            sourceRange: {},
-                          },
-                        },
-                      ],
-                      nextCursor: null,
+                      },
+                );
+              }
+              return Promise.resolve({
+                events: [
+                  {
+                    method: "turn/completed",
+                    params: {
+                      sessionId: "session-1",
+                      turnId: "other-turn",
+                      terminal: "completed",
+                      sourceRange: {},
                     },
-              );
+                  },
+                  {
+                    method: "turn/completed",
+                    params: {
+                      sessionId: "session-1",
+                      turnId: "turn-1",
+                      terminal: "completed",
+                      sourceRange: {},
+                    },
+                  },
+                ],
+                nextCursor: null,
+              });
             },
           },
         },
@@ -499,8 +562,24 @@ describe("museTurnProgressProbe", () => {
       expect(progress).toMatchObject({
         kind: "reconciled",
         terminal: { kind: "completed", params: { turnId: "turn-1" } },
+        history: {
+          kind: "available",
+          assistantItems: [
+            { itemId: "assistant-item-1", text: "Recovered answer.", truncated: false },
+          ],
+          completedItems: [
+            {
+              kind: "toolCall",
+              itemId: "tool-item-1",
+              tool: "read_file",
+              visibleOutput: "file contents",
+              status: "completed",
+            },
+          ],
+        },
       });
-      expect(methods).toEqual(["session/read", "view/page"]);
+      expect(methods).toEqual(["session/read", "view/page", "session/read"]);
+      expect(itemExclusionPreferences).toEqual([true, false]);
     }),
   );
 
@@ -541,6 +620,616 @@ describe("museTurnProgressProbe", () => {
         "turn-1",
       );
       expect(progress).toMatchObject({ kind: "unknown" });
+    }),
+  );
+
+  it.effect(
+    "restores only the missing assistant suffix when a hung stream has terminal history",
+    () =>
+      Effect.gen(function* () {
+        const methods: string[] = [];
+        let sessionReads = 0;
+        const progress = yield* museTurnProgressProbe(
+          {
+            connection: {
+              request(method) {
+                methods.push(method);
+                if (method === "session/read") {
+                  sessionReads += 1;
+                  return Promise.resolve(
+                    sessionReads === 1
+                      ? { session: { sessionId: "session-1", activeTurnId: null } }
+                      : {
+                          session: { sessionId: "session-1", activeTurnId: null },
+                          history: {
+                            mode: "snapshot",
+                            snapshot: {
+                              state: {
+                                items: [
+                                  {
+                                    itemId: "assistant-item-1",
+                                    kind: "agentMessage",
+                                    status: "completed",
+                                    turnId: "turn-1",
+                                    text: "The recovered answer.",
+                                  },
+                                ],
+                              },
+                            },
+                          },
+                        },
+                  );
+                }
+                return Promise.resolve({
+                  events: [
+                    {
+                      method: "turn/completed",
+                      params: {
+                        sessionId: "session-1",
+                        turnId: "turn-1",
+                        terminal: "completed",
+                        sourceRange: {},
+                      },
+                    },
+                  ],
+                  nextCursor: null,
+                });
+              },
+            },
+          },
+          "session-1",
+          "turn-1",
+        );
+        expect(progress.kind).toBe("reconciled");
+        if (progress.kind !== "reconciled") return;
+
+        const awaited = yield* awaitMuseTurn({
+          drainDeltas: Effect.never,
+          awaitTerminal: Effect.never,
+          awaitStall: Effect.succeed(progress),
+        });
+        expect(awaited.source).toBe("reconciled");
+        if (awaited.source !== "reconciled") return;
+        expect(
+          reconcileMuseTurnOutput(
+            awaited.history,
+            new Map([["assistant-item-1", "The recovered "]]),
+          ),
+        ).toEqual({
+          outputStatus: "available",
+          textDeltas: [{ itemId: "assistant-item-1", delta: "answer.", order: 0 }],
+          completedItems: [],
+        });
+        expect(reconcileMuseTurnOutput(awaited.history, new Map(), true)).toEqual({
+          outputStatus: "unavailable",
+          textDeltas: [],
+          completedItems: [],
+        });
+        expect(methods).toEqual(["session/read", "view/page", "session/read"]);
+        expect(methods).not.toContain("turn/start");
+      }),
+  );
+
+  it.effect("marks missing history unavailable and verified no-text history empty", () =>
+    Effect.gen(function* () {
+      const historyUnavailable = yield* museTurnProgressProbe(
+        {
+          connection: {
+            request(method) {
+              if (method === "session/read") {
+                return Promise.resolve({
+                  session: { sessionId: "session-1", activeTurnId: null },
+                  history: { mode: "none", items: null, snapshot: null },
+                });
+              }
+              return Promise.resolve({
+                events: [
+                  {
+                    method: "turn/completed",
+                    params: {
+                      sessionId: "session-1",
+                      turnId: "turn-1",
+                      terminal: "completed",
+                      sourceRange: {},
+                    },
+                  },
+                ],
+                nextCursor: null,
+              });
+            },
+          },
+        },
+        "session-1",
+        "turn-1",
+      );
+      expect(historyUnavailable.kind).toBe("reconciled");
+      if (historyUnavailable.kind !== "reconciled") return;
+      expect(reconcileMuseTurnOutput(historyUnavailable.history, new Map())).toEqual({
+        outputStatus: "unavailable",
+        textDeltas: [],
+        completedItems: [],
+      });
+
+      const verifiedEmpty = yield* museTurnProgressProbe(
+        {
+          connection: {
+            request(method) {
+              if (method === "session/read") {
+                return Promise.resolve({
+                  session: { sessionId: "session-1", activeTurnId: null },
+                  history: { mode: "none", items: null, snapshot: null },
+                });
+              }
+              return Promise.resolve({
+                events: [
+                  {
+                    method: "turn/started",
+                    params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+                  },
+                  {
+                    method: "turn/completed",
+                    params: {
+                      sessionId: "session-1",
+                      turnId: "turn-1",
+                      terminal: "completed",
+                      sourceRange: {},
+                    },
+                  },
+                ],
+                nextCursor: null,
+              });
+            },
+          },
+        },
+        "session-1",
+        "turn-1",
+      );
+      expect(verifiedEmpty.kind).toBe("reconciled");
+      if (verifiedEmpty.kind !== "reconciled") return;
+      expect(reconcileMuseTurnOutput(verifiedEmpty.history, new Map())).toEqual({
+        outputStatus: "empty",
+        textDeltas: [],
+        completedItems: [],
+      });
+    }),
+  );
+
+  it.effect("reconciles missed text and tool items after a normal terminal", () =>
+    Effect.gen(function* () {
+      const terminal = {
+        kind: "completed",
+        params: { terminal: "completed", turnId: "turn-1" },
+      } as unknown as TurnOutcome;
+      const mock = makeMuseHistoryReadTarget({
+        activeTurnId: "turn-1",
+        history: { mode: "none", items: null, snapshot: null },
+        pages: [
+          {
+            events: [
+              {
+                method: "turn/started",
+                params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+              },
+              {
+                method: "item/completed",
+                params: {
+                  sessionId: "session-1",
+                  item: {
+                    itemId: "assistant-item-1",
+                    kind: "agentMessage",
+                    status: "completed",
+                    turnId: "turn-1",
+                    text: "Recovered after terminal.",
+                  },
+                  sourceRange: {},
+                },
+              },
+              {
+                method: "item/completed",
+                params: {
+                  sessionId: "session-1",
+                  item: {
+                    itemId: "tool-item-1",
+                    kind: "toolCall",
+                    status: "completed",
+                    turnId: "turn-1",
+                    tool: "read_file",
+                    visibleOutput: "tool output",
+                  },
+                  sourceRange: {},
+                },
+              },
+              {
+                method: "turn/completed",
+                params: {
+                  sessionId: "session-1",
+                  turnId: "turn-1",
+                  terminal: "completed",
+                  sourceRange: {},
+                },
+              },
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+
+      const progress = yield* museTurnProgressProbe(
+        mock.target,
+        "session-1",
+        "turn-1",
+        undefined,
+        terminal,
+      );
+
+      expect(progress).toMatchObject({
+        kind: "reconciled",
+        terminal,
+        history: {
+          kind: "available",
+          assistantItems: [{ itemId: "assistant-item-1", text: "Recovered after terminal." }],
+          completedItems: [{ itemId: "tool-item-1", tool: "read_file" }],
+        },
+      });
+      expect(mock.methods).toEqual(["session/read", "view/page", "session/read"]);
+      expect(mock.methods).not.toContain("turn/start");
+    }),
+  );
+
+  it.effect("restores chronological item order across backward history pages", () =>
+    Effect.gen(function* () {
+      const mock = makeMuseHistoryReadTarget({
+        history: { mode: "none", items: null, snapshot: null },
+        pages: [
+          {
+            events: [
+              {
+                method: "item/completed",
+                params: {
+                  sessionId: "session-1",
+                  item: {
+                    itemId: "tool-item-1",
+                    kind: "toolCall",
+                    status: "completed",
+                    turnId: "turn-1",
+                    tool: "read_file",
+                  },
+                  sourceRange: {},
+                },
+              },
+              {
+                method: "turn/completed",
+                params: {
+                  sessionId: "session-1",
+                  turnId: "turn-1",
+                  terminal: "completed",
+                  sourceRange: {},
+                },
+              },
+            ],
+            nextCursor: "older-page",
+          },
+          {
+            events: [
+              {
+                method: "turn/started",
+                params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+              },
+              {
+                method: "item/completed",
+                params: {
+                  sessionId: "session-1",
+                  item: {
+                    itemId: "assistant-item-1",
+                    kind: "agentMessage",
+                    status: "completed",
+                    turnId: "turn-1",
+                    text: "Earlier assistant text.",
+                  },
+                  sourceRange: {},
+                },
+              },
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+
+      const progress = yield* museTurnProgressProbe(mock.target, "session-1", "turn-1");
+
+      expect(progress).toMatchObject({
+        kind: "reconciled",
+        history: {
+          kind: "available",
+          assistantItems: [{ itemId: "assistant-item-1", order: 0 }],
+          completedItems: [{ itemId: "tool-item-1", order: 1 }],
+        },
+      });
+      expect(mock.methods).toEqual(["session/read", "view/page", "view/page", "session/read"]);
+    }),
+  );
+
+  it.effect("fails closed when paged output conflicts with the session snapshot", () =>
+    Effect.gen(function* () {
+      const mock = makeMuseHistoryReadTarget({
+        history: {
+          mode: "inline",
+          items: [
+            {
+              itemId: "assistant-item-1",
+              kind: "agentMessage",
+              status: "completed",
+              turnId: "turn-1",
+              text: "Snapshot version.",
+            },
+          ],
+        },
+        pages: [
+          {
+            events: [
+              {
+                method: "turn/started",
+                params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+              },
+              {
+                method: "item/completed",
+                params: {
+                  sessionId: "session-1",
+                  item: {
+                    itemId: "assistant-item-1",
+                    kind: "agentMessage",
+                    status: "completed",
+                    turnId: "turn-1",
+                    text: "Paged version.",
+                  },
+                  sourceRange: {},
+                },
+              },
+              {
+                method: "item/completed",
+                params: {
+                  sessionId: "session-1",
+                  item: {
+                    itemId: "tool-item-1",
+                    kind: "toolCall",
+                    status: "completed",
+                    turnId: "turn-1",
+                    tool: "page-only-tool",
+                    visibleOutput: "must not be recovered",
+                  },
+                  sourceRange: {},
+                },
+              },
+              {
+                method: "turn/completed",
+                params: {
+                  sessionId: "session-1",
+                  turnId: "turn-1",
+                  terminal: "completed",
+                  sourceRange: {},
+                },
+              },
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+
+      const progress = yield* museTurnProgressProbe(mock.target, "session-1", "turn-1");
+
+      expect(progress).toMatchObject({ kind: "reconciled", history: { kind: "unavailable" } });
+      if (progress.kind !== "reconciled") return;
+      const recovered = reconcileMuseTurnOutput(progress.history, new Map());
+      expect(recovered).toEqual({
+        outputStatus: "unavailable",
+        textDeltas: [],
+        completedItems: [],
+      });
+      expect(progress.history).toMatchObject({
+        kind: "unavailable",
+        conflictedItemIds: ["assistant-item-1", "tool-item-1"],
+      });
+      expect(mock.methods).not.toContain("turn/start");
+    }),
+  );
+
+  it.effect(
+    "keeps failed and cancelled agent messages unavailable with or without partial text",
+    () =>
+      Effect.gen(function* () {
+        for (const status of ["failed", "cancelled"] as const) {
+          for (const text of ["", "Partial agent output."]) {
+            const mock = makeMuseHistoryReadTarget({
+              history: {
+                mode: "inline",
+                items: [
+                  {
+                    itemId: `${status}-${text.length}`,
+                    kind: "agentMessage",
+                    status,
+                    turnId: "turn-1",
+                    text,
+                  },
+                ],
+              },
+              pages: [
+                {
+                  events: [
+                    {
+                      method: "turn/started",
+                      params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+                    },
+                    {
+                      method: "turn/completed",
+                      params: {
+                        sessionId: "session-1",
+                        turnId: "turn-1",
+                        terminal: "completed",
+                        sourceRange: {},
+                      },
+                    },
+                  ],
+                  nextCursor: null,
+                },
+              ],
+            });
+
+            const progress = yield* museTurnProgressProbe(mock.target, "session-1", "turn-1");
+
+            expect(progress).toMatchObject({
+              kind: "reconciled",
+              history: { kind: "unavailable", issue: "nonCompletedItem" },
+            });
+            if (progress.kind !== "reconciled") continue;
+            expect(reconcileMuseTurnOutput(progress.history, new Map()).outputStatus).toBe(
+              "unavailable",
+            );
+          }
+        }
+      }),
+  );
+
+  it.effect("treats missing turn ownership and in-progress messages as unavailable", () =>
+    Effect.gen(function* () {
+      for (const item of [
+        {
+          itemId: "ambiguous-item",
+          kind: "agentMessage",
+          status: "completed",
+          text: "Ownership is unknown.",
+        },
+        {
+          itemId: "in-progress-item",
+          kind: "agentMessage",
+          status: "inProgress",
+          turnId: "turn-1",
+          text: "Partial text.",
+        },
+      ]) {
+        const mock = makeMuseHistoryReadTarget({
+          history: { mode: "inline", items: [item] },
+          pages: [
+            {
+              events: [
+                {
+                  method: "turn/started",
+                  params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+                },
+                {
+                  method: "turn/completed",
+                  params: {
+                    sessionId: "session-1",
+                    turnId: "turn-1",
+                    terminal: "completed",
+                    sourceRange: {},
+                  },
+                },
+              ],
+              nextCursor: null,
+            },
+          ],
+        });
+
+        const progress = yield* museTurnProgressProbe(mock.target, "session-1", "turn-1");
+
+        expect(progress).toMatchObject({ kind: "reconciled", history: { kind: "unavailable" } });
+        if (progress.kind !== "reconciled") continue;
+        expect(reconcileMuseTurnOutput(progress.history, new Map()).outputStatus).toBe(
+          "unavailable",
+        );
+      }
+    }),
+  );
+
+  it.effect("recovers durable item snapshots when session history is withheld", () =>
+    Effect.gen(function* () {
+      let sessionReads = 0;
+      const progress = yield* museTurnProgressProbe(
+        {
+          connection: {
+            request(method) {
+              if (method === "session/read") {
+                sessionReads += 1;
+                return Promise.resolve({
+                  session: { sessionId: "session-1", activeTurnId: null },
+                  ...(sessionReads === 1
+                    ? {}
+                    : { history: { mode: "none", items: null, snapshot: null } }),
+                });
+              }
+              return Promise.resolve({
+                events: [
+                  {
+                    method: "turn/started",
+                    params: { sessionId: "session-1", turnId: "turn-1", sourceRange: {} },
+                  },
+                  {
+                    method: "item/completed",
+                    params: {
+                      sessionId: "session-1",
+                      item: {
+                        itemId: "assistant-item-1",
+                        kind: "agentMessage",
+                        status: "completed",
+                        turnId: "turn-1",
+                        text: "Page recovered answer.",
+                      },
+                      sourceRange: {},
+                    },
+                  },
+                  {
+                    method: "item/completed",
+                    params: {
+                      sessionId: "session-1",
+                      item: {
+                        itemId: "tool-item-1",
+                        kind: "toolCall",
+                        status: "completed",
+                        turnId: "turn-1",
+                        tool: "read_file",
+                        visibleOutput: "file contents",
+                      },
+                      sourceRange: {},
+                    },
+                  },
+                  {
+                    method: "turn/completed",
+                    params: {
+                      sessionId: "session-1",
+                      turnId: "turn-1",
+                      terminal: "completed",
+                      sourceRange: {},
+                    },
+                  },
+                ],
+                nextCursor: null,
+              });
+            },
+          },
+        },
+        "session-1",
+        "turn-1",
+      );
+
+      expect(progress).toMatchObject({
+        kind: "reconciled",
+        history: {
+          kind: "available",
+          assistantItems: [
+            { itemId: "assistant-item-1", text: "Page recovered answer.", truncated: false },
+          ],
+          completedItems: [{ itemId: "tool-item-1", kind: "toolCall", tool: "read_file" }],
+        },
+      });
+      expect(progress.kind).toBe("reconciled");
+      if (progress.kind !== "reconciled") return;
+      expect(reconcileMuseTurnOutput(progress.history, new Map())).toEqual({
+        outputStatus: "available",
+        textDeltas: [{ itemId: "assistant-item-1", delta: "Page recovered answer.", order: 0 }],
+        completedItems: [
+          expect.objectContaining({ itemId: "tool-item-1", kind: "toolCall", tool: "read_file" }),
+        ],
+      });
     }),
   );
 });
@@ -591,9 +1280,17 @@ describe("awaitMuseTurn", () => {
       const outcome = yield* awaitMuseTurn({
         drainDeltas: Effect.never,
         awaitTerminal: Effect.never,
-        awaitStall: Effect.succeed({ kind: "reconciled", terminal }),
+        awaitStall: Effect.succeed({
+          kind: "reconciled",
+          terminal,
+          history: { kind: "unavailable" },
+        }),
       });
-      expect(outcome).toEqual({ source: "reconciled", terminal });
+      expect(outcome).toEqual({
+        source: "reconciled",
+        terminal,
+        history: { kind: "unavailable" },
+      });
     }),
   );
 });

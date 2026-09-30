@@ -274,6 +274,24 @@ function buildSnapShotTimelineEntry(previewUrl?: string) {
 }
 
 describe("MessagesTimeline", () => {
+  it("shows unavailable delegated output notices in the ordinary chat timeline", () => {
+    const entry = buildUserTimelineEntry(
+      "Delegated child child-thread completed. Assistant output is unavailable; the provider turn completed and was not replayed.",
+    );
+    const systemEntry = {
+      ...entry,
+      message: { ...entry.message, role: "system" as const },
+    };
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[systemEntry]} />,
+    );
+
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("The delegated provider turn completed");
+    expect(markup).toContain("assistant output is unavailable");
+    expect(markup).toContain("It was not replayed");
+  });
+
   it("renders previous and next controls with the minimap", () => {
     const first = buildUserTimelineEntry("First turn");
     const secondBase = buildUserTimelineEntry("Second turn");

@@ -485,9 +485,68 @@ export function museHostLivenessProbe(
   );
 }
 
+export interface MuseRecoveredAssistantItem {
+  readonly itemId: string;
+  readonly text: string;
+  readonly status: string;
+  readonly truncated: boolean;
+  /** Position in the exact turn's ordered MSP item history. */
+  readonly order: number;
+}
+
+export interface MuseRecoveredBridgeItem {
+  readonly kind: string;
+  readonly itemId: string;
+  readonly tool?: string;
+  readonly commandText?: string;
+  readonly visibleOutput?: string;
+  readonly status?: string;
+  /** Position in the exact turn's ordered MSP item history. */
+  readonly order: number;
+}
+
+export type MuseTurnOutputHistory =
+  | {
+      readonly kind: "available";
+      readonly assistantItems: ReadonlyArray<MuseRecoveredAssistantItem>;
+      readonly completedItems: ReadonlyArray<MuseRecoveredBridgeItem>;
+    }
+  | {
+      readonly kind: "unavailable";
+      readonly assistantItems?: ReadonlyArray<MuseRecoveredAssistantItem>;
+      readonly completedItems?: ReadonlyArray<MuseRecoveredBridgeItem>;
+      readonly conflictedItemIds?: ReadonlyArray<string>;
+      readonly issue?:
+        | "historyUnavailable"
+        | "ambiguousOwnership"
+        | "inProgressItem"
+        | "nonCompletedItem"
+        | "sourceConflict";
+    };
+
+interface ParsedMuseTurnOutputItems {
+  readonly assistantItems: ReadonlyArray<MuseRecoveredAssistantItem>;
+  readonly completedItems: ReadonlyArray<MuseRecoveredBridgeItem>;
+  readonly issue?: "ambiguousOwnership" | "inProgressItem" | "nonCompletedItem";
+}
+
+export type MuseRecoveredTurnOutput = {
+  readonly outputStatus: "available" | "empty" | "unavailable";
+  readonly textDeltas: ReadonlyArray<{
+    readonly itemId: string;
+    readonly delta: string;
+    readonly order: number;
+  }>;
+  readonly completedItems: ReadonlyArray<MuseRecoveredBridgeItem>;
+};
+
 export type MuseTurnProgress =
   | { readonly kind: "active" }
-  | { readonly kind: "reconciled"; readonly terminal: TurnOutcome }
+  | {
+      readonly kind: "reconciled";
+      readonly terminal: TurnOutcome;
+      readonly history: MuseTurnOutputHistory;
+    }
   | { readonly kind: "unknown"; readonly reason: string }
   | { readonly kind: "unavailable" };
 
@@ -497,12 +556,305 @@ export interface MuseTurnReadTarget {
   };
 }
 
+function readMuseTurnOutputItems(
+  items: unknown,
+  turnId: string,
+): ParsedMuseTurnOutputItems | undefined {
+  if (!Array.isArray(items)) return undefined;
+  const assistantItems: Array<MuseRecoveredAssistantItem> = [];
+  const completedItems: Array<MuseRecoveredBridgeItem> = [];
+  let issue: ParsedMuseTurnOutputItems["issue"];
+  for (const [order, entry] of items.entries()) {
+    if (!isRecord(entry)) continue;
+    const kind = entry.kind;
+    const isAssistant = kind === "agentMessage";
+    const isBridge = kind === "toolCall" || kind === "userShell";
+    if (!isAssistant && !isBridge) continue;
+    if (entry.turnId !== turnId) {
+      // userShell may be an explicitly out-of-turn shell action. Missing turn
+      // ownership on any other output item is ambiguous and cannot prove an
+      // empty or complete result.
+      if (kind === "userShell" && entry.turnId === null) continue;
+      if (typeof entry.turnId === "string") continue;
+      issue ??= "ambiguousOwnership";
+      continue;
+    }
+    if (entry.kind === "agentMessage") {
+      if (typeof entry.itemId !== "string" || entry.itemId.length === 0) {
+        issue ??= "ambiguousOwnership";
+        continue;
+      }
+      const status = typeof entry.status === "string" ? entry.status : "";
+      if (status !== "completed") {
+        issue ??= status === "inProgress" ? "inProgressItem" : "nonCompletedItem";
+      }
+      const text =
+        typeof entry.text === "string"
+          ? entry.text
+          : entry.text === undefined && status.length > 0 && status !== "inProgress"
+            ? ""
+            : undefined;
+      if (text === undefined) issue ??= "inProgressItem";
+      assistantItems.push({
+        itemId: entry.itemId,
+        text: text ?? "",
+        status,
+        truncated: entry.truncated === true,
+        order,
+      });
+    }
+    if (isBridge) {
+      if (typeof entry.itemId !== "string" || entry.itemId.length === 0) {
+        issue ??= "ambiguousOwnership";
+        continue;
+      }
+      if (typeof entry.status !== "string" || entry.status === "inProgress") {
+        issue ??= "inProgressItem";
+        continue;
+      }
+      completedItems.push({
+        kind,
+        itemId: entry.itemId,
+        ...(typeof entry.tool === "string" ? { tool: entry.tool } : {}),
+        ...(typeof entry.commandText === "string" ? { commandText: entry.commandText } : {}),
+        ...(typeof entry.visibleOutput === "string" ? { visibleOutput: entry.visibleOutput } : {}),
+        status: entry.status,
+        order,
+      });
+    }
+  }
+  return { assistantItems, completedItems, ...(issue !== undefined ? { issue } : {}) };
+}
+
+function readMuseTurnOutputHistory(value: unknown, turnId: string): MuseTurnOutputHistory {
+  if (!isRecord(value) || !isRecord(value.history)) return { kind: "unavailable" };
+  const history = value.history;
+  let items: unknown;
+  if (history.mode === "inline") {
+    items = history.items;
+  } else if (history.mode === "snapshot" || history.mode === "anchoredSnapshot") {
+    const snapshot = history.snapshot;
+    items = isRecord(snapshot) && isRecord(snapshot.state) ? snapshot.state.items : undefined;
+  }
+  const parsed = readMuseTurnOutputItems(items, turnId);
+  if (parsed === undefined) return { kind: "unavailable", issue: "historyUnavailable" };
+  return parsed.issue === undefined
+    ? {
+        kind: "available",
+        assistantItems: parsed.assistantItems,
+        completedItems: parsed.completedItems,
+      }
+    : { kind: "unavailable", ...parsed };
+}
+
+function orderedMuseOutputItems(history: MuseTurnOutputHistory) {
+  return [
+    ...(history.assistantItems ?? []).map((item) => ({ kind: "assistant" as const, item })),
+    ...(history.completedItems ?? []).map((item) => ({ kind: "bridge" as const, item })),
+  ].toSorted((left, right) => left.item.order - right.item.order);
+}
+
+function sameMuseOutputItem(
+  left: ReturnType<typeof orderedMuseOutputItems>[number],
+  right: ReturnType<typeof orderedMuseOutputItems>[number],
+): boolean {
+  if (left.kind !== right.kind || left.item.itemId !== right.item.itemId) return false;
+  if (left.kind === "assistant" && right.kind === "assistant") {
+    return (
+      left.item.text === right.item.text &&
+      left.item.status === right.item.status &&
+      left.item.truncated === right.item.truncated
+    );
+  }
+  if (left.kind === "bridge" && right.kind === "bridge") {
+    return (
+      left.item.kind === right.item.kind &&
+      left.item.status === right.item.status &&
+      left.item.tool === right.item.tool &&
+      left.item.commandText === right.item.commandText &&
+      left.item.visibleOutput === right.item.visibleOutput
+    );
+  }
+  return false;
+}
+
+function mergeMuseTurnOutputHistory(
+  sessionHistory: MuseTurnOutputHistory,
+  pageHistory: MuseTurnOutputHistory,
+  pageCoversTurn: boolean,
+): MuseTurnOutputHistory {
+  const sessionItems = orderedMuseOutputItems(sessionHistory);
+  const pageItems = orderedMuseOutputItems(pageHistory);
+  const sessionById = new Map(sessionItems.map((entry) => [entry.item.itemId, entry]));
+  const pageById = new Map(pageItems.map((entry) => [entry.item.itemId, entry]));
+  const conflictingItemIds = new Set<string>();
+  const overlappingItemsConflict = pageItems.some((entry) => {
+    const snapshot = sessionById.get(entry.item.itemId);
+    const conflict = snapshot !== undefined && !sameMuseOutputItem(snapshot, entry);
+    if (conflict) conflictingItemIds.add(entry.item.itemId);
+    return conflict;
+  });
+  const sessionCommonOrder = sessionItems
+    .filter((entry) => pageById.has(entry.item.itemId))
+    .map((entry) => entry.item.itemId);
+  const pageCommonOrder = pageItems
+    .filter((entry) => sessionById.has(entry.item.itemId))
+    .map((entry) => entry.item.itemId);
+  const commonOrderConflict = sessionCommonOrder.some(
+    (itemId, index) => pageCommonOrder[index] !== itemId,
+  );
+  const setsConflict =
+    sessionHistory.kind === "available" &&
+    pageCoversTurn &&
+    (sessionItems.length !== pageItems.length ||
+      sessionItems.some((entry, index) => {
+        const page = pageItems[index];
+        return page === undefined || page.item.itemId !== entry.item.itemId;
+      }));
+  if (setsConflict) {
+    for (const entry of sessionItems) {
+      if (!pageById.has(entry.item.itemId)) conflictingItemIds.add(entry.item.itemId);
+    }
+    for (const entry of pageItems) {
+      if (!sessionById.has(entry.item.itemId)) conflictingItemIds.add(entry.item.itemId);
+    }
+  }
+  if (commonOrderConflict) {
+    for (const itemId of sessionCommonOrder) conflictingItemIds.add(itemId);
+    for (const itemId of pageCommonOrder) conflictingItemIds.add(itemId);
+  }
+  const sessionHasUnusableOutput =
+    sessionHistory.kind === "unavailable" &&
+    (sessionHistory.issue === "ambiguousOwnership" ||
+      sessionHistory.issue === "inProgressItem" ||
+      sessionHistory.issue === "nonCompletedItem");
+  const pageHasUnusableOutput =
+    pageHistory.kind === "unavailable" &&
+    (pageHistory.issue === "ambiguousOwnership" ||
+      pageHistory.issue === "inProgressItem" ||
+      pageHistory.issue === "nonCompletedItem");
+
+  if (
+    sessionHistory.kind === "available" &&
+    !overlappingItemsConflict &&
+    !commonOrderConflict &&
+    !setsConflict &&
+    !sessionHasUnusableOutput &&
+    !pageHasUnusableOutput
+  ) {
+    return sessionHistory;
+  }
+  if (
+    sessionHistory.kind === "unavailable" &&
+    pageHistory.kind === "available" &&
+    pageCoversTurn &&
+    sessionHistory.issue !== "sourceConflict" &&
+    !sessionHasUnusableOutput &&
+    !pageHasUnusableOutput &&
+    !overlappingItemsConflict
+  ) {
+    return pageHistory;
+  }
+
+  const union = new Map<string, ReturnType<typeof orderedMuseOutputItems>[number]>();
+  for (const entry of pageItems) union.set(entry.item.itemId, entry);
+  for (const entry of sessionItems) {
+    const existing = union.get(entry.item.itemId);
+    if (existing === undefined) union.set(entry.item.itemId, entry);
+    else if (!sameMuseOutputItem(existing, entry)) union.set(entry.item.itemId, entry);
+  }
+  const unionItems = [...union.values()].toSorted((left, right) => {
+    const leftPage = pageById.get(left.item.itemId);
+    const rightPage = pageById.get(right.item.itemId);
+    if (leftPage !== undefined && rightPage !== undefined) {
+      return leftPage.item.order - rightPage.item.order;
+    }
+    const leftSnapshot = sessionById.get(left.item.itemId);
+    const rightSnapshot = sessionById.get(right.item.itemId);
+    if (leftPage === undefined && rightPage === undefined && leftSnapshot && rightSnapshot) {
+      return leftSnapshot.item.order - rightSnapshot.item.order;
+    }
+    if (leftPage !== undefined) return -1;
+    if (rightPage !== undefined) return 1;
+    return 0;
+  });
+  const assistantItems = unionItems.flatMap((entry, order) =>
+    entry.kind === "assistant" ? [{ ...entry.item, order }] : [],
+  );
+  const completedItems = unionItems.flatMap((entry, order) =>
+    entry.kind === "bridge" ? [{ ...entry.item, order }] : [],
+  );
+  return {
+    kind: "unavailable",
+    assistantItems,
+    completedItems,
+    ...(conflictingItemIds.size > 0 ? { conflictedItemIds: [...conflictingItemIds] } : {}),
+    issue:
+      overlappingItemsConflict || commonOrderConflict || setsConflict
+        ? "sourceConflict"
+        : sessionHistory.kind === "unavailable"
+          ? (sessionHistory.issue ?? "historyUnavailable")
+          : pageHistory.kind === "unavailable"
+            ? (pageHistory.issue ?? "historyUnavailable")
+            : "historyUnavailable",
+  };
+}
+
+/** Return only history suffixes that can be proven not to duplicate live deltas. */
+export function reconcileMuseTurnOutput(
+  history: MuseTurnOutputHistory,
+  streamedTextByItem: ReadonlyMap<string, string>,
+  sawUncorrelatedAssistantText = false,
+): MuseRecoveredTurnOutput {
+  if (sawUncorrelatedAssistantText) {
+    return { outputStatus: "unavailable", textDeltas: [], completedItems: [] };
+  }
+  const textDeltas: Array<{ itemId: string; delta: string; order: number }> = [];
+  const matchedItems = new Set<string>();
+  const conflictedItemIds = new Set(
+    history.kind === "unavailable" ? (history.conflictedItemIds ?? []) : [],
+  );
+  let complete = history.kind === "available";
+  let hasText = false;
+  for (const item of history.assistantItems ?? []) {
+    matchedItems.add(item.itemId);
+    if (item.text.length > 0) hasText = true;
+    if (item.truncated || item.status !== "completed") complete = false;
+    if (conflictedItemIds.has(item.itemId)) {
+      complete = false;
+      continue;
+    }
+    const streamed = streamedTextByItem.get(item.itemId) ?? "";
+    if (!item.text.startsWith(streamed)) {
+      complete = false;
+      continue;
+    }
+    const delta = item.text.slice(streamed.length);
+    if (delta.length > 0) textDeltas.push({ itemId: item.itemId, delta, order: item.order });
+  }
+  if (
+    [...streamedTextByItem.entries()].some(
+      ([itemId, text]) => text.length > 0 && !matchedItems.has(itemId),
+    )
+  ) {
+    complete = false;
+  }
+  return {
+    outputStatus: complete ? (hasText ? "available" : "empty") : "unavailable",
+    textDeltas,
+    completedItems: (history.completedItems ?? []).filter(
+      (item) => !conflictedItemIds.has(item.itemId),
+    ),
+  };
+}
+
 /** Read durable host state when the notification stream has stopped advancing. */
 export function museTurnProgressProbe(
   target: MuseTurnReadTarget,
   sessionId: string,
   turnId: string,
   timeoutMs: number = MUSE_PROGRESS_PROBE_TIMEOUT_MS,
+  observedTerminal?: TurnOutcome,
 ): Effect.Effect<MuseTurnProgress> {
   const bounded = (method: string, params: Record<string, unknown>) =>
     Effect.promise(() => target.connection.request(method, params)).pipe(
@@ -518,13 +870,21 @@ export function museTurnProgressProbe(
     if (!isRecord(session) || session["sessionId"] !== sessionId) {
       return { kind: "unavailable" } as const;
     }
-    if (session["activeTurnId"] === turnId) {
+    const terminalAlreadyObserved = observedTerminal?.kind === "completed";
+    if (session["activeTurnId"] === turnId && !terminalAlreadyObserved) {
       return { kind: "active" } as const;
     }
     if (session["activeTurnId"] !== null && typeof session["activeTurnId"] !== "string") {
       return { kind: "unavailable" } as const;
     }
     let cursor: string | undefined;
+    let matchingTerminal: Record<string, unknown> | undefined;
+    let observedTurnStart = false;
+    const pagedItemEvents: Array<{
+      readonly pageNumber: number;
+      readonly eventIndex: number;
+      readonly item: unknown;
+    }> = [];
     for (let pageNumber = 0; pageNumber < 10; pageNumber += 1) {
       const page = yield* bounded("view/page", {
         sessionId,
@@ -533,30 +893,105 @@ export function museTurnProgressProbe(
         ...(cursor === undefined ? {} : { cursor }),
       });
       if (Option.isNone(page) || page.value._tag !== "Success" || !isRecord(page.value.value)) {
+        if (matchingTerminal !== undefined || terminalAlreadyObserved) break;
         return { kind: "unavailable" } as const;
       }
       const result = page.value.value;
-      if (!Array.isArray(result["events"])) return { kind: "unavailable" } as const;
-      for (const event of result["events"]) {
-        if (!isRecord(event) || event["method"] !== "turn/completed") continue;
+      if (!Array.isArray(result["events"])) {
+        if (matchingTerminal !== undefined || terminalAlreadyObserved) break;
+        return { kind: "unavailable" } as const;
+      }
+      for (const [eventIndex, event] of result["events"].entries()) {
+        if (!isRecord(event)) continue;
         const params = event["params"];
-        if (
-          isRecord(params) &&
-          params["sessionId"] === sessionId &&
+        if (!isRecord(params) || params["sessionId"] !== sessionId) continue;
+        if (event["method"] === "turn/started" && params["turnId"] === turnId) {
+          observedTurnStart = true;
+        } else if (
+          event["method"] === "turn/completed" &&
           params["turnId"] === turnId &&
           typeof params["terminal"] === "string" &&
           isRecord(params["sourceRange"])
         ) {
-          return {
-            kind: "reconciled",
-            terminal: { kind: "completed", params, observedStart: true } as unknown as TurnOutcome,
-          } as const;
+          matchingTerminal = params;
+        } else if (
+          (event["method"] === "item/started" ||
+            event["method"] === "item/completed" ||
+            event["method"] === "item/updated") &&
+          isRecord(params["item"]) &&
+          (params["item"]["kind"] === "agentMessage" ||
+            params["item"]["kind"] === "toolCall" ||
+            params["item"]["kind"] === "userShell")
+        ) {
+          pagedItemEvents.push({ pageNumber, eventIndex, item: params["item"] });
         }
       }
+      if ((matchingTerminal !== undefined || terminalAlreadyObserved) && observedTurnStart) break;
       const next = result["nextCursor"];
       if (next === null) break;
-      if (typeof next !== "string" || next === cursor) return { kind: "unavailable" } as const;
+      if (typeof next !== "string" || next === cursor) {
+        if (matchingTerminal !== undefined || terminalAlreadyObserved) break;
+        return { kind: "unavailable" } as const;
+      }
       cursor = next;
+    }
+    if (matchingTerminal !== undefined || terminalAlreadyObserved) {
+      const historyRead = yield* bounded("session/read", { sessionId, excludeItems: false });
+      const sessionHistory =
+        Option.isSome(historyRead) &&
+        historyRead.value._tag === "Success" &&
+        isRecord(historyRead.value.value) &&
+        isRecord(historyRead.value.value.session) &&
+        historyRead.value.value.session.sessionId === sessionId
+          ? readMuseTurnOutputHistory(historyRead.value.value, turnId)
+          : ({ kind: "unavailable", issue: "historyUnavailable" } as const);
+      // view/page serves ascending events inside each page, while a backward
+      // walk yields newer pages first. Reverse page order before folding item
+      // updates so final arrays retain turn chronology.
+      const orderedPageEvents = pagedItemEvents.toSorted(
+        (left, right) => right.pageNumber - left.pageNumber || left.eventIndex - right.eventIndex,
+      );
+      const foldedPageItems = new Map<string, { readonly item: unknown; readonly order: number }>();
+      const unkeyedPageItems: Array<{ readonly item: unknown; readonly order: number }> = [];
+      for (const [order, entry] of orderedPageEvents.entries()) {
+        if (isRecord(entry.item) && typeof entry.item.itemId === "string") {
+          const previous = foldedPageItems.get(entry.item.itemId);
+          foldedPageItems.set(entry.item.itemId, {
+            item: entry.item,
+            order: previous?.order ?? order,
+          });
+        } else {
+          unkeyedPageItems.push({ item: entry.item, order });
+        }
+      }
+      const orderedPageItems = [...foldedPageItems.values(), ...unkeyedPageItems]
+        .toSorted((left, right) => left.order - right.order)
+        .map((entry) => entry.item);
+      const parsedPageItems = readMuseTurnOutputItems(orderedPageItems, turnId);
+      const pageCoversTurn =
+        observedTurnStart && (matchingTerminal !== undefined || terminalAlreadyObserved);
+      const pageHistory: MuseTurnOutputHistory =
+        parsedPageItems === undefined
+          ? { kind: "unavailable", issue: "historyUnavailable" }
+          : parsedPageItems.issue === undefined && pageCoversTurn
+            ? {
+                kind: "available",
+                assistantItems: parsedPageItems.assistantItems,
+                completedItems: parsedPageItems.completedItems,
+              }
+            : { kind: "unavailable", ...parsedPageItems };
+      const history = mergeMuseTurnOutputHistory(sessionHistory, pageHistory, pageCoversTurn);
+      return {
+        kind: "reconciled",
+        terminal:
+          observedTerminal ??
+          ({
+            kind: "completed",
+            params: matchingTerminal,
+            observedStart: observedTurnStart,
+          } as unknown as TurnOutcome),
+        history,
+      } as const;
     }
     return {
       kind: "unknown",
@@ -567,7 +1002,11 @@ export function museTurnProgressProbe(
 
 export type MuseHostSilence =
   | "stalled"
-  | { readonly kind: "reconciled"; readonly terminal: TurnOutcome }
+  | {
+      readonly kind: "reconciled";
+      readonly terminal: TurnOutcome;
+      readonly history: MuseTurnOutputHistory;
+    }
   | { readonly kind: "unknown"; readonly reason: string };
 
 /** A live host must also account for this turn in durable state. */
@@ -598,7 +1037,11 @@ export const awaitMuseHostStall = (input: {
 
 export type MuseTurnWaitOutcome =
   | { readonly source: "terminal"; readonly terminal: TurnOutcome }
-  | { readonly source: "reconciled"; readonly terminal: TurnOutcome }
+  | {
+      readonly source: "reconciled";
+      readonly terminal: TurnOutcome;
+      readonly history: MuseTurnOutputHistory;
+    }
   | { readonly source: "progressUnknown"; readonly reason: string }
   | { readonly source: "stalled" }
   | { readonly source: "streamFailed"; readonly failure: unknown };
@@ -626,7 +1069,7 @@ export const awaitMuseTurn = (input: {
           result === "stalled"
             ? { source: "stalled" }
             : result.kind === "reconciled"
-              ? { source: "reconciled", terminal: result.terminal }
+              ? { source: "reconciled", terminal: result.terminal, history: result.history }
               : { source: "progressUnknown", reason: result.reason },
         ),
       ),
@@ -692,21 +1135,26 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
 
     const emitItemBridge = (
       record: MuseSessionRecord,
-      item: {
-        readonly kind: string;
-        readonly itemId?: string | undefined;
-        readonly tool?: string | undefined;
-        readonly commandText?: string | undefined;
-        readonly visibleOutput?: string | undefined;
-        readonly status?: string | undefined;
-      },
+      item: MuseRecoveredBridgeItem,
       lifecycle: "item.started" | "item.completed",
       method: string,
+      eventTurnId?: TurnId,
     ) =>
       Effect.gen(function* () {
         const mapped = museItemLifecycle(item, lifecycle);
         if (mapped === undefined) return;
-        if (item.itemId !== undefined) {
+        if (item.itemId.length > 0) {
+          const claimed = yield* Ref.modify(itemLifecycleRef, (entries) => {
+            const key = `${item.itemId}:${lifecycle}`;
+            const known = entries.get(record.mspSessionId) ?? new Set<string>();
+            if (known.has(key)) return [false, entries] as const;
+            const next = new Map(entries);
+            const updated = new Set(known);
+            updated.add(key);
+            next.set(record.mspSessionId, updated);
+            return [true, next] as const;
+          });
+          if (!claimed) return;
           yield* markCardItem(record.mspSessionId, item.itemId);
         }
         const stamp = yield* makeEventStamp();
@@ -716,7 +1164,11 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: record.threadId,
-          ...(record.activeTurnId ? { turnId: TurnId.make(record.activeTurnId) } : {}),
+          ...(eventTurnId
+            ? { turnId: eventTurnId }
+            : record.activeTurnId
+              ? { turnId: TurnId.make(record.activeTurnId) }
+              : {}),
           payload: mapped,
           raw: { source: RAW_SOURCE, method, payload: { sessionId: record.mspSessionId } },
         });
@@ -742,33 +1194,26 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
       return items;
     };
 
-    const readBridgeItem = (
-      value: unknown,
-    ):
-      | {
-          readonly kind: string;
-          readonly itemId?: string | undefined;
-          readonly tool?: string | undefined;
-          readonly commandText?: string | undefined;
-          readonly visibleOutput?: string | undefined;
-          readonly status?: string | undefined;
-        }
-      | undefined => {
+    const readBridgeItem = (value: unknown): MuseRecoveredBridgeItem | undefined => {
       const raw = isRecord(value) && isRecord(value.item) ? value.item : value;
-      if (!isRecord(raw) || typeof raw.kind !== "string") return undefined;
+      if (!isRecord(raw) || typeof raw.kind !== "string" || typeof raw.itemId !== "string") {
+        return undefined;
+      }
       return {
         kind: raw.kind,
-        ...(typeof raw.itemId === "string" ? { itemId: raw.itemId } : {}),
+        itemId: raw.itemId,
         ...(typeof raw.tool === "string" ? { tool: raw.tool } : {}),
         ...(typeof raw.commandText === "string" ? { commandText: raw.commandText } : {}),
         ...(typeof raw.visibleOutput === "string" ? { visibleOutput: raw.visibleOutput } : {}),
         ...(typeof raw.status === "string" ? { status: raw.status } : {}),
+        order: 0,
       };
     };
 
     // Item ids that already have a tool card: their output deltas must not
     // duplicate into chat text. Keyed per session, dropped on stop.
     const cardItemsRef = yield* Ref.make(new Map<string, Set<string>>());
+    const itemLifecycleRef = yield* Ref.make(new Map<string, Set<string>>());
     const markCardItem = (sessionId: string, itemId: string) =>
       Ref.update(cardItemsRef, (entries) => {
         const next = new Map(entries);
@@ -778,12 +1223,17 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         return next;
       });
     const dropCardItems = (sessionId: string) =>
-      Ref.update(cardItemsRef, (entries) => {
-        if (!entries.has(sessionId)) return entries;
-        const next = new Map(entries);
-        next.delete(sessionId);
-        return next;
-      });
+      Effect.all(
+        [cardItemsRef, itemLifecycleRef].map((state) =>
+          Ref.update(state, (entries) => {
+            if (!entries.has(sessionId)) return entries;
+            const next = new Map(entries);
+            next.delete(sessionId);
+            return next;
+          }),
+        ),
+        { discard: true },
+      );
 
     // Raw MSP notifications, for post-mortem diagnostics of a wedged turn.
     const logNative = (threadId: ThreadId | null, method: string, payload: unknown) =>
@@ -1160,6 +1610,8 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           raw: { source: RAW_SOURCE, method: "turn/started", payload: { turnId: turn.turnId } },
         });
         const idleWatchdog = yield* makeMuseTurnIdleWatchdog(MUSE_TURN_SILENCE_TIMEOUT_MS);
+        const streamedTextByItem = new Map<string, string>();
+        let uncorrelatedAssistantTextSeen = false;
         const drainDeltas = Stream.fromAsyncIterable(
           turn.deltas(),
           (cause) =>
@@ -1173,6 +1625,20 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           Stream.runForEach((delta) =>
             Effect.gen(function* () {
               yield* idleWatchdog.markActivity;
+              if (
+                (delta.field === undefined || delta.field === "text") &&
+                typeof delta.delta === "string" &&
+                delta.delta.length > 0
+              ) {
+                if (typeof delta.itemId === "string" && delta.itemId.length > 0) {
+                  streamedTextByItem.set(
+                    delta.itemId,
+                    (streamedTextByItem.get(delta.itemId) ?? "") + delta.delta,
+                  );
+                } else {
+                  uncorrelatedAssistantTextSeen = true;
+                }
+              }
               // Output deltas of items that already have a tool card live in
               // the card detail; streaming them into chat too is the wall of
               // unreadable text. Anything else keeps flowing.
@@ -1226,14 +1692,6 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           return;
         }
         const outcome: TurnOutcome = awaited.terminal;
-        if (awaited.source === "reconciled") {
-          yield* Effect.logWarning("Recovered a Muse turn terminal from durable history.", {
-            threadId: record.threadId,
-            turnId: turn.turnId,
-          });
-        }
-        // A steer that timed out waiting for this terminal already settled it
-        // synthetically: re-emitting would double-close the turn downstream.
         const live = (yield* Ref.get(sessionsRef)).get(record.threadId);
         const settledBeforeTerminal =
           live !== undefined &&
@@ -1245,6 +1703,92 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             },
             turn.turnId,
           );
+        let outputHistory: MuseTurnOutputHistory = {
+          kind: "unavailable",
+          issue: "historyUnavailable",
+        };
+        if (awaited.source === "reconciled") {
+          outputHistory = awaited.history;
+          yield* Effect.logWarning("Recovered a Muse turn terminal from durable history.", {
+            threadId: record.threadId,
+            turnId: turn.turnId,
+          });
+        } else if (outcome.kind === "completed") {
+          // A normally delivered terminal still needs exact durable output
+          // reconciliation: item deltas may have been lost independently of
+          // turn/completed, and tool item lifecycles are not text deltas.
+          const progress = yield* museTurnProgressProbe(
+            record.host,
+            record.mspSessionId,
+            turn.turnId,
+            undefined,
+            outcome,
+          );
+          if (progress.kind === "reconciled") outputHistory = progress.history;
+        }
+        const recovered = reconcileMuseTurnOutput(
+          outputHistory,
+          streamedTextByItem,
+          uncorrelatedAssistantTextSeen,
+        );
+        const outputStatus = recovered.outputStatus;
+        if (!settledBeforeTerminal) {
+          const recoveredEvents = [
+            ...recovered.textDeltas.map((item) => ({
+              kind: "text" as const,
+              order: item.order,
+              item,
+            })),
+            ...recovered.completedItems.map((item) => ({
+              kind: "bridge" as const,
+              order: item.order,
+              item,
+            })),
+          ].toSorted((left, right) => left.order - right.order);
+          for (const recoveredEvent of recoveredEvents) {
+            if (recoveredEvent.kind === "text") {
+              const deltaStamp = yield* makeEventStamp();
+              yield* offerRuntimeEvent({
+                type: "content.delta",
+                ...deltaStamp,
+                provider: PROVIDER,
+                providerInstanceId: boundInstanceId,
+                threadId: record.threadId,
+                turnId,
+                payload: { streamKind: "assistant_text", delta: recoveredEvent.item.delta },
+                raw: {
+                  source: RAW_SOURCE,
+                  method: "session/read",
+                  payload: {
+                    sessionId: record.mspSessionId,
+                    turnId: turn.turnId,
+                    itemId: recoveredEvent.item.itemId,
+                    recovered: true,
+                  },
+                },
+              });
+            } else {
+              yield* emitItemBridge(
+                record,
+                recoveredEvent.item,
+                "item.completed",
+                outputHistory.kind === "available" ? "session/read" : "view/page",
+                turnId,
+              );
+            }
+          }
+        }
+        if (outcome.kind === "completed" && outputStatus === "unavailable") {
+          yield* Effect.logWarning(
+            "Muse completed a turn without verifiable complete output history.",
+            {
+              threadId: record.threadId,
+              turnId: turn.turnId,
+            },
+          );
+        }
+        // A steer that timed out waiting for this terminal already settled it
+        // synthetically: re-emitting would double-close the turn downstream.
         const completedStamp = yield* makeEventStamp();
         if (!settledBeforeTerminal) {
           if (outcome.kind === "completed") {
@@ -1258,6 +1802,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
               turnId,
               payload: {
                 state,
+                ...(state === "completed" ? { outputStatus } : {}),
                 ...(outcome.params.reason ? { stopReason: outcome.params.reason } : {}),
                 ...(state === "failed" && outcome.params.error
                   ? { errorMessage: mspErrorText(outcome.params.error) }
