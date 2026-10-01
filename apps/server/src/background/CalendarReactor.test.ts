@@ -46,7 +46,12 @@ import {
 } from "../persistence/Services/CalendarEvents.ts";
 import { CalendarNotices } from "./CalendarNotices.ts";
 import {
+  assessCalendarEventUpdateCadence,
+  assessCalendarNewThreadCadence,
   CALENDAR_FIRE_GRACE_MS,
+  CALENDAR_NEW_THREAD_MIN_INTERVAL_MS,
+  CALENDAR_NEW_THREAD_WARN_INTERVAL_MS,
+  calendarMinFireIntervalMs,
   FIRE_PER_SWEEP_LIMIT,
   formatCalendarRunMessage,
   make as makeCalendarReactor,
@@ -197,6 +202,84 @@ describe("planCalendarEventUpdate", () => {
       "2026-01-15T13:30:00.000Z",
     );
     assert.equal(updated, null);
+  });
+});
+
+describe("calendar new-thread cadence", () => {
+  const FROM = "2026-01-15T13:30:00.000Z";
+
+  it("pins the floor at fifteen minutes and the warning at one hour", () => {
+    assert.equal(CALENDAR_NEW_THREAD_MIN_INTERVAL_MS, 15 * 60 * 1000);
+    assert.equal(CALENDAR_NEW_THREAD_WARN_INTERVAL_MS, 60 * 60 * 1000);
+  });
+
+  it("measures the smallest gap between consecutive fires", () => {
+    // Fires at :00 and :14 within each hour, so the smallest gap is 14 minutes.
+    assert.equal(calendarMinFireIntervalMs("0,14 9-16 * * *", "UTC", FROM), 14 * 60_000);
+  });
+
+  it("refuses a new-thread minute schedule but allows continue", () => {
+    const forbidden = assessCalendarNewThreadCadence("new-thread", "* * * * *", "UTC", FROM);
+    assert.ok(forbidden.forbiddenDetail !== null);
+    assert.ok(forbidden.forbiddenDetail.includes("new-thread"));
+    assert.ok(forbidden.forbiddenDetail.includes("continue"));
+    assert.equal(forbidden.warning, null);
+    assert.deepEqual(assessCalendarNewThreadCadence("continue", "* * * * *", "UTC", FROM), {
+      forbiddenDetail: null,
+      warning: null,
+    });
+  });
+
+  it("refuses just under the floor and accepts just over", () => {
+    // Smallest gap 14 minutes: below the floor.
+    assert.ok(
+      assessCalendarNewThreadCadence("new-thread", "0,14 9-16 * * *", "UTC", FROM)
+        .forbiddenDetail !== null,
+    );
+    // Smallest gap 16 minutes: accepted with the sub-hour warning.
+    const accepted = assessCalendarNewThreadCadence("new-thread", "0,16 9-16 * * *", "UTC", FROM);
+    assert.equal(accepted.forbiddenDetail, null);
+    assert.ok(accepted.warning !== null);
+  });
+
+  it("warns below one hour and stays silent at hourly or rarer", () => {
+    const warned = assessCalendarNewThreadCadence("new-thread", "0,30 9-16 * * *", "UTC", FROM);
+    assert.ok(warned.warning !== null);
+    assert.ok(warned.warning.includes("one real thread on every fire"));
+    assert.deepEqual(assessCalendarNewThreadCadence("new-thread", "0 9 * * *", "UTC", FROM), {
+      forbiddenDetail: null,
+      warning: null,
+    });
+  });
+
+  it("grandfathers a text-only edit but re-validates a changed schedule", () => {
+    const current = makeCalendarEvent({
+      nextFireAt: "2026-01-15T14:00:00.000Z",
+      mode: "new-thread",
+      cronExpression: "* * * * *",
+    });
+    const keepSchedule: CalendarUpdateInput = {
+      eventId: current.eventId,
+      title: "Renamed",
+      message: "New body",
+      mode: current.mode,
+      cronExpression: current.cronExpression,
+      timeZone: current.timeZone,
+      modelSelection: current.modelSelection,
+      runtimeMode: current.runtimeMode,
+      interactionMode: current.interactionMode,
+    };
+    assert.deepEqual(assessCalendarEventUpdateCadence(current, keepSchedule, FROM), {
+      forbiddenDetail: null,
+      warning: null,
+    });
+
+    const slower = assessCalendarEventUpdateCadence(
+      current,
+      { ...keepSchedule, mode: "continue" },
+      FROM,
+    );
+    assert.deepEqual(slower, { forbiddenDetail: null, warning: null });
   });
 });
 

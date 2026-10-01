@@ -142,7 +142,12 @@ import {
   CalendarEventRepositoryLive,
 } from "./persistence/Services/CalendarEvents.ts";
 import { CalendarNotices } from "./background/CalendarNotices.ts";
-import { nextCalendarFireAt, planCalendarEventUpdate } from "./background/CalendarReactor.ts";
+import {
+  assessCalendarEventUpdateCadence,
+  assessCalendarNewThreadCadence,
+  nextCalendarFireAt,
+  planCalendarEventUpdate,
+} from "./background/CalendarReactor.ts";
 import {
   BoardRepository,
   buildBoardCardEvent,
@@ -3666,6 +3671,18 @@ const makeWsRpcLayer = (
                   detail: "Cron expression has no upcoming fire time.",
                 });
               }
+              const cadence = assessCalendarNewThreadCadence(
+                input.mode,
+                input.cronExpression,
+                input.timeZone,
+                createdAt,
+              );
+              if (cadence.forbiddenDetail !== null) {
+                return yield* new CalendarError({
+                  operation: "calendar.create",
+                  detail: cadence.forbiddenDetail,
+                });
+              }
               const event: CalendarEvent = {
                 eventId: CalendarEventId.make(
                   yield* crypto.randomUUIDv4.pipe(
@@ -3691,7 +3708,7 @@ const makeWsRpcLayer = (
               yield* calendarEvents
                 .create(event)
                 .pipe(Effect.mapError((cause) => toCalendarError("calendar.create", cause)));
-              return event;
+              return cadence.warning === null ? event : { ...event, warning: cadence.warning };
             }),
             { "rpc.aggregate": "calendar" },
           ),
@@ -3716,10 +3733,17 @@ const makeWsRpcLayer = (
                   detail: "Cron expression has no upcoming fire time.",
                 });
               }
+              const cadence = assessCalendarEventUpdateCadence(current.value, input, updatedAt);
+              if (cadence.forbiddenDetail !== null) {
+                return yield* new CalendarError({
+                  operation: "calendar.update",
+                  detail: cadence.forbiddenDetail,
+                });
+              }
               yield* calendarEvents
                 .update(updated)
                 .pipe(Effect.mapError((cause) => toCalendarError("calendar.update", cause)));
-              return updated;
+              return cadence.warning === null ? updated : { ...updated, warning: cadence.warning };
             }),
             { "rpc.aggregate": "calendar" },
           ),

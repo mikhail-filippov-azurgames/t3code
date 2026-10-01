@@ -19,6 +19,7 @@ import {
   CalendarEvent,
   calendarCronMatchesDay,
   calendarCronSortedValues,
+  type CalendarEventMode,
   calendarNameExcerpt,
   type CalendarUpdateInput,
   CommandId,
@@ -157,6 +158,115 @@ export function nextCalendarFireAt(
     }
   }
   return null;
+}
+
+/**
+ * Dense `new-thread` schedules are refused: every fire starts a real thread, so
+ * a per-minute event is a thread flood rather than a schedule. `continue`
+ * events never see this rule.
+ */
+export const CALENDAR_NEW_THREAD_MIN_INTERVAL_MS = 15 * 60 * 1000;
+
+/** A `new-thread` schedule denser than this is accepted but carries a warning. */
+export const CALENDAR_NEW_THREAD_WARN_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * Smallest gap between two consecutive fires of `expression` in `timeZone`,
+ * sampled forward from `fromIso`. `null` when the expression is invalid or has
+ * no upcoming slot. Stops as soon as a gap below an hour is found, so only
+ * hourly-or-rarer schedules sample up to a year of fire times.
+ *
+ * @internal Exported for tests.
+ */
+export function calendarMinFireIntervalMs(
+  expression: string,
+  timeZone: string,
+  fromIso: string,
+): number | null {
+  const toMs = (iso: string) => DateTime.toEpochMillis(DateTime.makeUnsafe(iso));
+  let previous = nextCalendarFireAt(expression, timeZone, fromIso);
+  if (previous === null) return null;
+  const windowEndMs = toMs(previous) + 366 * 86_400_000;
+  let min = Number.POSITIVE_INFINITY;
+  for (let sampled = 0; sampled < 20_000; sampled += 1) {
+    const next = nextCalendarFireAt(expression, timeZone, previous);
+    if (next === null) break;
+    const gap = toMs(next) - toMs(previous);
+    if (gap < min) min = gap;
+    if (min < CALENDAR_NEW_THREAD_WARN_INTERVAL_MS) break;
+    if (toMs(next) > windowEndMs) break;
+    previous = next;
+  }
+  return Number.isFinite(min) ? min : null;
+}
+
+const formatCalendarInterval = (intervalMs: number): string => {
+  const minutes = Math.max(1, Math.round(intervalMs / 60_000));
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+};
+
+export interface CalendarNewThreadCadence {
+  /** Set when a `new-thread` schedule is denser than the minimum interval. */
+  readonly forbiddenDetail: string | null;
+  /** Set when the schedule is allowed but fires more than once an hour. */
+  readonly warning: string | null;
+}
+
+const ALLOWED_CADENCE: CalendarNewThreadCadence = { forbiddenDetail: null, warning: null };
+
+/**
+ * Enforce the `new-thread` cadence rule beside `nextCalendarFireAt`, so the RPC
+ * and the MCP toolkit share one gate instead of each re-deriving it.
+ *
+ * @internal Exported for tests.
+ */
+export function assessCalendarNewThreadCadence(
+  mode: CalendarEventMode,
+  expression: string,
+  timeZone: string,
+  fromIso: string,
+): CalendarNewThreadCadence {
+  if (mode !== "new-thread") return ALLOWED_CADENCE;
+  const intervalMs = calendarMinFireIntervalMs(expression, timeZone, fromIso);
+  if (intervalMs === null || intervalMs >= CALENDAR_NEW_THREAD_WARN_INTERVAL_MS) {
+    return ALLOWED_CADENCE;
+  }
+  if (intervalMs < CALENDAR_NEW_THREAD_MIN_INTERVAL_MS) {
+    return {
+      forbiddenDetail:
+        `A new-thread event cannot fire every ${formatCalendarInterval(intervalMs)}; ` +
+        `new-thread starts a new thread on every fire. Use continue mode to reuse one thread, ` +
+        `or a schedule no denser than every ${formatCalendarInterval(CALENDAR_NEW_THREAD_MIN_INTERVAL_MS)}.`,
+      warning: null,
+    };
+  }
+  return {
+    forbiddenDetail: null,
+    warning:
+      `new-thread produces one real thread on every fire, and this schedule can fire every ` +
+      `${formatCalendarInterval(intervalMs)}.`,
+  };
+}
+
+/**
+ * The cadence gate for an update. A text-only edit of an already-stored event is
+ * grandfathered; the rule applies only when the mode, cron, or zone changes.
+ *
+ * @internal Exported for tests.
+ */
+export function assessCalendarEventUpdateCadence(
+  current: CalendarEvent,
+  input: CalendarUpdateInput,
+  fromIso: string,
+): CalendarNewThreadCadence {
+  if (
+    input.mode === current.mode &&
+    input.cronExpression === current.cronExpression &&
+    input.timeZone === current.timeZone
+  ) {
+    return ALLOWED_CADENCE;
+  }
+  return assessCalendarNewThreadCadence(input.mode, input.cronExpression, input.timeZone, fromIso);
 }
 
 /**

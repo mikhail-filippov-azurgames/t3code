@@ -231,7 +231,15 @@ export const CalendarCreateInput = Schema.Struct({
 });
 export type CalendarCreateInput = typeof CalendarCreateInput.Type;
 
-export const CalendarCreateResult = CalendarEvent;
+/**
+ * The stored event plus an advisory `warning`. It is set when the server
+ * accepted a `new-thread` schedule that fires more than once an hour, and
+ * absent otherwise; a warning never means the write failed.
+ */
+export const CalendarCreateResult = Schema.Struct({
+  ...CalendarEvent.fields,
+  warning: Schema.optional(Schema.String),
+});
 export type CalendarCreateResult = typeof CalendarCreateResult.Type;
 
 /**
@@ -253,7 +261,11 @@ export const CalendarUpdateInput = Schema.Struct({
 });
 export type CalendarUpdateInput = typeof CalendarUpdateInput.Type;
 
-export const CalendarUpdateResult = CalendarEvent;
+/** The stored event plus the same advisory `warning` as `CalendarCreateResult`. */
+export const CalendarUpdateResult = Schema.Struct({
+  ...CalendarEvent.fields,
+  warning: Schema.optional(Schema.String),
+});
 export type CalendarUpdateResult = typeof CalendarUpdateResult.Type;
 
 export const CalendarDeleteInput = Schema.Struct({

@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import {
+  assessCalendarEventUpdateCadence,
+  assessCalendarNewThreadCadence,
   nextCalendarFireAt,
   planCalendarEventUpdate,
 } from "../../../background/CalendarReactor.ts";
@@ -50,6 +52,18 @@ const make = Effect.gen(function* () {
             detail: "Cron expression has no upcoming fire time.",
           });
         }
+        const cadence = assessCalendarNewThreadCadence(
+          input.mode,
+          input.cronExpression,
+          input.timeZone,
+          createdAt,
+        );
+        if (cadence.forbiddenDetail !== null) {
+          return yield* new CalendarError({
+            operation: "calendar.create",
+            detail: cadence.forbiddenDetail,
+          });
+        }
         const event: CalendarEvent = {
           eventId: CalendarEventId.make(yield* crypto.randomUUIDv4.pipe(Effect.orDie)),
           projectId: input.projectId,
@@ -71,7 +85,7 @@ const make = Effect.gen(function* () {
         yield* repository
           .create(event)
           .pipe(Effect.mapError((cause) => toCalendarError("calendar.create", cause)));
-        return event;
+        return cadence.warning === null ? event : { ...event, warning: cadence.warning };
       }),
     calendar_update: (input) =>
       Effect.gen(function* () {
@@ -93,10 +107,17 @@ const make = Effect.gen(function* () {
             detail: "Cron expression has no upcoming fire time.",
           });
         }
+        const cadence = assessCalendarEventUpdateCadence(current.value, input, updatedAt);
+        if (cadence.forbiddenDetail !== null) {
+          return yield* new CalendarError({
+            operation: "calendar.update",
+            detail: cadence.forbiddenDetail,
+          });
+        }
         yield* repository
           .update(updated)
           .pipe(Effect.mapError((cause) => toCalendarError("calendar.update", cause)));
-        return updated;
+        return cadence.warning === null ? updated : { ...updated, warning: cadence.warning };
       }),
     calendar_delete: (input) =>
       Effect.gen(function* () {

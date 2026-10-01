@@ -223,6 +223,87 @@ describe("calendar toolkit handlers", () => {
     }),
   );
 
+  it.effect("refuses a minute new-thread schedule on create but allows continue", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const error = yield* harness
+        .call("calendar_create", {
+          projectId: PROJECT_ID,
+          title: "Every minute",
+          message: "Too dense for new-thread",
+          mode: "new-thread",
+          cronExpression: "* * * * *",
+          timeZone: "UTC",
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "CalendarError", operation: "calendar.create" });
+      if (error._tag === "CalendarError") {
+        expect(error.detail).toContain("new-thread");
+        expect(error.detail).toContain("continue");
+      }
+      expect(yield* Ref.get(harness.created)).toEqual([]);
+
+      const accepted = yield* harness.call("calendar_create", {
+        projectId: PROJECT_ID,
+        title: "Every minute",
+        message: "Continue mode is fine",
+        mode: "continue",
+        cronExpression: "* * * * *",
+        timeZone: "UTC",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      });
+      expect(accepted.mode).toBe("continue");
+      expect(accepted.warning).toBeUndefined();
+    }),
+  );
+
+  it.effect("warns when a new-thread schedule fires more than once an hour", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness();
+      const result = yield* harness.call("calendar_create", {
+        projectId: PROJECT_ID,
+        title: "Twice hourly",
+        message: "Still allowed",
+        mode: "new-thread",
+        cronExpression: "0,30 9-16 * * *",
+        timeZone: "UTC",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+      });
+      expect(result.warning).toContain("one real thread on every fire");
+      expect(yield* Ref.get(harness.created)).toHaveLength(1);
+    }),
+  );
+
+  it.effect("refuses changing an event to a minute new-thread schedule on update", () =>
+    Effect.gen(function* () {
+      const existing = makeCalendarEvent({ mode: "continue", threadId: ThreadId.make("thread-1") });
+      const harness = yield* makeHarness([existing]);
+      const error = yield* harness
+        .call("calendar_update", updateInput({ mode: "new-thread", cronExpression: "* * * * *" }))
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "CalendarError", operation: "calendar.update" });
+      expect(yield* Ref.get(harness.updated)).toEqual([]);
+    }),
+  );
+
+  it.effect("grandfathers a text-only update of a stored violating event", () =>
+    Effect.gen(function* () {
+      const existing = makeCalendarEvent({
+        mode: "new-thread",
+        cronExpression: "* * * * *",
+      });
+      const harness = yield* makeHarness([existing]);
+      const result = yield* harness.call(
+        "calendar_update",
+        updateInput({ mode: "new-thread", cronExpression: "* * * * *" }),
+      );
+      expect(result.title).toBe("Renamed");
+      expect(result.warning).toBeUndefined();
+      expect(yield* Ref.get(harness.updated)).toHaveLength(1);
+    }),
+  );
+
   it.effect("rejects malformed arguments before reaching the calendar store", () =>
     Effect.gen(function* () {
       const harness = yield* makeHarness();
