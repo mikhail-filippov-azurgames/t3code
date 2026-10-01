@@ -55,4 +55,14 @@ describe("Coordinator board brief", () => {
       assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, boundary);
     }
   });
+
+  it("requires causes to be shown by observable facts before being reported", () => {
+    for (const requirement of [
+      "Do not report a cause as a fact until it is shown by an observable fact",
+      "Separate what was observed from what was inferred",
+      "label an inference as an inference",
+    ]) {
+      assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, requirement);
+    }
+  });
 });
