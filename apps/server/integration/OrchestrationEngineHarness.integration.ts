@@ -35,6 +35,7 @@ import * as ProviderSessionRuntime from "../src/persistence/ProviderSessionRunti
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
+import { CoordinatorArchitectRepository } from "../src/persistence/Services/CoordinatorArchitect.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
 import { makeProviderRegistryLayer } from "../src/provider/testUtils/providerRegistryMock.ts";
@@ -346,6 +347,7 @@ export const makeOrchestrationIntegrationHarness = (
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
       ),
+      Layer.provide(Layer.mock(CoordinatorArchitectRepository)({})),
       Layer.provideMerge(runtimeServicesLayer),
       Layer.provideMerge(gitWorkflowLayer),
       Layer.provideMerge(textGenerationLayer),

@@ -9,7 +9,6 @@ import {
   REVIEW_PUBLISHED_ACTIVITY,
   REVIEW_REQUESTED_ACTIVITY,
   REVIEW_REQUESTED_REF_ACTIVITY,
-  REVIEW_WAKE_DELIVERED_ACTIVITY,
   assertNotArchitectThread,
   hasPublishWakeDelivered,
   hasReviewWakeDelivered,
@@ -18,7 +17,6 @@ import {
   publishWakeMessageId,
   publishWakeTurnCommandId,
   reviewRefCommandId,
-  reviewWakeDeliveredMarkerId,
   reviewWakeMessageId,
   reviewWakeTurnCommandId,
 } from "../../../orchestration/coordinatorArchitect.ts";
@@ -2587,20 +2585,10 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         messageId: reviewWakeMessageId(review.reviewId),
         fallbackTurnCommandId: `arch:review-wake-turn:${binding.architectThreadId}:${review.reviewId}`,
         fallbackMessageId: `arch:review-wake:${binding.architectThreadId}:${review.reviewId}`,
-        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}`,
+        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator. Call publish_to_coordinator only if this answer should wake the Coordinator.`,
         modelSelection: shell.modelSelection,
         runtimeMode: shell.runtimeMode,
         interactionMode: shell.interactionMode,
-        createdAt: at,
-      });
-      yield* appendPhase1Activity({
-        threadId: binding.architectThreadId,
-        commandId: `arch:review-wake-delivered:${review.reviewId}`,
-        activityId: reviewWakeDeliveredMarkerId(binding.architectThreadId, review.reviewId),
-        fallbackCommandId: reviewWakeDeliveredMarkerId(binding.architectThreadId, review.reviewId),
-        kind: REVIEW_WAKE_DELIVERED_ACTIVITY,
-        summary: "Architect review wake delivered",
-        payload: { reviewId: review.reviewId },
         createdAt: at,
       });
     });
@@ -4603,11 +4591,9 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           yield* wakeCoordinatorForPublish(stored, binding, at);
         }).pipe(Effect.tapError((error) => recordPublishFailure(review.reviewId, error)));
         yield* deliver;
-        // The wake fired: prove delivery durably and clear any prior refusal.
-        // If this write fails the call fails too — never a silent success.
-        yield* store
-          .markPublishDelivered({ reviewId: review.reviewId, deliveredAt: at })
-          .pipe(Effect.mapError(mapStoreError("mark publish delivered")));
+        // This call proves the wake command was ACCEPTED, not delivered. The
+        // review row's `publishDeliveredAt` is written post-send by the
+        // provider reactor, so a failed send can never look delivered here.
         return {
           reviewId: review.reviewId,
           status: "published",

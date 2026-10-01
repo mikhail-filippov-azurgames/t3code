@@ -30,6 +30,7 @@ import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../persistence/Layers/OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
+import { CoordinatorArchitectRepository } from "../persistence/Services/CoordinatorArchitect.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import { OrchestrationEngineLive } from "../orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../orchestration/Layers/ProjectionPipeline.ts";
@@ -936,6 +937,7 @@ it.layer(integrationLayer)("AgentSessionImporter integration", (it) => {
           Layer.provide(Layer.mock(GitWorkflowService)({})),
           Layer.provide(Layer.mock(VcsStatusBroadcaster)({})),
           Layer.provide(Layer.mock(TextGeneration)({})),
+          Layer.provide(Layer.mock(CoordinatorArchitectRepository)({})),
           Layer.provide(ServerSettingsService.layerTest()),
         );
 

@@ -77,6 +77,7 @@ import {
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { CoordinatorArchitectRepository } from "../../persistence/Services/CoordinatorArchitect.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Clock from "effect/Clock";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -1009,6 +1010,12 @@ describe("ProviderCommandReactor", () => {
       input?.dbPath !== undefined
         ? makeSqlitePersistenceLive(input.dbPath)
         : SqlitePersistenceMemory;
+    const markPublishDelivered = vi.fn<
+      CoordinatorArchitectRepository["Service"]["markPublishDelivered"]
+    >(() => Effect.void);
+    const recordPublishFailure = vi.fn<
+      CoordinatorArchitectRepository["Service"]["recordPublishFailure"]
+    >(() => Effect.void);
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(ThreadBackgroundLiveness.layer),
@@ -1086,6 +1093,12 @@ describe("ProviderCommandReactor", () => {
       Layer.provideMerge(reactorOrchestrationLayer),
       Layer.provideMerge(projectionSnapshotLayer),
       Layer.provideMerge(Layer.succeed(ProviderService, service)),
+      Layer.provideMerge(
+        Layer.mock(CoordinatorArchitectRepository)({
+          markPublishDelivered,
+          recordPublishFailure,
+        }),
+      ),
       Layer.provide(Layer.mock(ProviderAuthService, { tryHandlePromptCommand })),
       Layer.provideMerge(makeProviderRegistryLayer(providerSnapshots as never)),
       Layer.provideMerge(
@@ -1259,6 +1272,8 @@ describe("ProviderCommandReactor", () => {
       tryHandlePromptCommand,
       startSession,
       sendTurn,
+      markPublishDelivered,
+      recordPublishFailure,
       compactThread,
       interruptTurn,
       respondToRequest,
@@ -6135,6 +6150,106 @@ describe("ProviderCommandReactor", () => {
       summary: "Confirm the rollout owner.",
       refs,
     });
+    // Confirmed send: the review row records delivery, never a failure.
+    expect(harness.markPublishDelivered).toHaveBeenCalledTimes(1);
+    expect(harness.markPublishDelivered).toHaveBeenCalledWith({
+      reviewId,
+      deliveredAt: now,
+    });
+    expect(harness.recordPublishFailure).not.toHaveBeenCalled();
+  });
+
+  it("records the Architect review-wake marker only after a confirmed provider send", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const reviewId = "architecture-review:review-marker";
+    const sendGate = await Effect.runPromise(Deferred.make<void>());
+    harness.sendTurn.mockImplementation((() => Deferred.await(sendGate)) as never);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`arch:review-wake-turn:${reviewId}`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`arch:review-wake:${reviewId}`),
+          role: "user",
+          text: "Architecture review requested.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const markerId = `arch:review-wake-delivered:${threadId}:${reviewId}`;
+    const beforeSendConfirmation = (await harness.readModel()).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(beforeSendConfirmation?.activities.some((activity) => activity.id === markerId)).toBe(
+      false,
+    );
+
+    await Effect.runPromise(Deferred.succeed(sendGate, undefined));
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return thread?.activities.some((activity) => activity.id === markerId) ?? false;
+    });
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const marker = thread?.activities.find(
+      (activity) => activity.kind === "architecture.review-wake-delivered",
+    );
+    expect(marker?.id).toBe(markerId);
+    expect(marker?.payload).toEqual({ reviewId });
+  });
+
+  it("does not leave a review-wake marker when the provider send fails", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const reviewId = "architecture-review:review-fail";
+
+    harness.sendTurn.mockImplementation((() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "thread.turn.start",
+          detail: "injected provider send failure",
+        }),
+      )) as never);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make(`arch:review-wake-turn:${reviewId}`),
+        threadId,
+        message: {
+          messageId: MessageId.make(`arch:review-wake:${reviewId}`),
+          role: "user",
+          text: "Architecture review requested.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await waitFor(async () => {
+      const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some((activity) => activity.kind === "provider.turn.start.failed") ??
+        false
+      );
+    });
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.some((activity) => activity.kind === "architecture.review-wake-delivered"),
+    ).toBe(false);
   });
 
   it("does not leave a publish-wake marker when the provider send fails", async () => {
@@ -6204,5 +6319,13 @@ describe("ProviderCommandReactor", () => {
         (activity) => activity.kind === "architecture.publish-wake-delivered",
       ),
     ).toBe(false);
+    // A failed send must never claim delivery, and it must carry the reason.
+    expect(harness.markPublishDelivered).not.toHaveBeenCalled();
+    expect(harness.recordPublishFailure).toHaveBeenCalledTimes(1);
+    const failure = harness.recordPublishFailure.mock.calls[0]?.[0];
+    expect(failure?.reviewId).toBe(reviewId);
+    expect(failure?.reason).toBe("provider_send_failed");
+    expect(failure?.attemptedAt).toBe(now);
+    expect(failure?.message).toContain("injected provider send failure");
   });
 });

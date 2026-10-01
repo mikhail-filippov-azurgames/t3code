@@ -61,7 +61,22 @@ export const isDelegationWakeAnchor = (id: string): boolean =>
 
 export const reviewRefCommandId = (reviewId: string): string => `arch:review-ref:${reviewId}`;
 
-export const reviewWakeMessageId = (reviewId: string): string => `arch:review-wake:${reviewId}`;
+export const REVIEW_WAKE_MESSAGE_PREFIX = "arch:review-wake:" as const;
+export const reviewWakeMessageId = (reviewId: string): string =>
+  `${REVIEW_WAKE_MESSAGE_PREFIX}${reviewId}`;
+/** The review this Architect wake belongs to, or null for any other message. */
+export const reviewWakeReviewIdFromMessageId = (
+  messageId: string,
+  architectThreadId: string,
+): string | null => {
+  if (!messageId.startsWith(REVIEW_WAKE_MESSAGE_PREFIX)) return null;
+  const suffix = messageId.slice(REVIEW_WAKE_MESSAGE_PREFIX.length);
+  const threadScopedPrefix = `${architectThreadId}:`;
+  const reviewId = suffix.startsWith(threadScopedPrefix)
+    ? suffix.slice(threadScopedPrefix.length)
+    : suffix;
+  return reviewId || null;
+};
 export const reviewWakeTurnCommandId = (reviewId: string): string =>
   `arch:review-wake-turn:${reviewId}`;
 export const reviewWakeDeliveredMarkerId = (architectThreadId: string, reviewId: string): string =>

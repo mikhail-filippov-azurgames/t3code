@@ -57,6 +57,7 @@ import {
 import { deriveProviderInstanceConfigMap } from "../../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { CoordinatorArchitectRepository } from "../../persistence/Services/CoordinatorArchitect.ts";
 import {
   ProviderCommandReactor,
   type ProviderCommandReactorShape,
@@ -70,9 +71,12 @@ import { canReplaceThreadTitle, DEFAULT_THREAD_TITLE } from "../threadTitles.ts"
 import { handledDelegationWakeMessageIds } from "../delegatedTaskWake.ts";
 import {
   PUBLISH_WAKE_DELIVERED_ACTIVITY,
+  REVIEW_WAKE_DELIVERED_ACTIVITY,
   REVIEW_PUBLISHED_ACTIVITY,
   publishWakeDeliveredMarkerId,
   publishWakeReviewIdFromMessageId,
+  reviewWakeDeliveredMarkerId,
+  reviewWakeReviewIdFromMessageId,
 } from "../coordinatorArchitect.ts";
 import {
   resolveSourceControlWriterModelSelection,
@@ -431,6 +435,7 @@ const make = Effect.gen(function* () {
   const vcsStatusBroadcaster = yield* VcsStatusBroadcaster;
   const textGeneration = yield* TextGeneration;
   const serverSettingsService = yield* ServerSettingsService;
+  const coordinatorArchitectRepository = yield* CoordinatorArchitectRepository;
   /** Environment settings with the thread's project overrides applied. */
   const projectSettingsForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const settings = yield* serverSettingsService.getSettings;
@@ -455,7 +460,7 @@ const make = Effect.gen(function* () {
       .join(",")}`;
     yield* orchestrationEngine.dispatch({
       type: "thread.activity.append",
-      commandId: CommandId.make(`${markerId}:command`),
+      commandId: CommandId.make(markerId),
       threadId: input.threadId,
       activity: {
         id: EventId.make(markerId),
@@ -469,6 +474,94 @@ const make = Effect.gen(function* () {
       createdAt: input.createdAt,
     });
   });
+  // The delivery proof for a published architecture review. The wake is only
+  // real once `sendTurn` resolves, so the review row is updated from this same
+  // post-send path, never at the dispatch site, where an accepted command is
+  // not a delivered send.
+  const markArchitecturePublishDelivered = (reviewId: string, deliveredAt: string) =>
+    coordinatorArchitectRepository.markPublishDelivered({ reviewId, deliveredAt }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("architecture publish delivery could not be recorded", {
+          reviewId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+
+  // Symmetric to the marker: a send that fails after dispatch must leave the
+  // reason on the review so the coordinator sees a failed delivery instead of
+  // a silent success. No-ops for any message that is not a publish wake.
+  const recordArchitecturePublishFailure = (input: {
+    readonly messageId: MessageId;
+    readonly detail: string;
+    readonly attemptedAt: string;
+  }) => {
+    const reviewId = publishWakeReviewIdFromMessageId(String(input.messageId));
+    if (reviewId === null) return Effect.void;
+    return coordinatorArchitectRepository
+      .recordPublishFailure({
+        reviewId,
+        reason: "provider_send_failed",
+        message: input.detail.slice(0, 2_000),
+        attemptedAt: input.attemptedAt,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("architecture publish failure could not be recorded", {
+            reviewId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+  };
+
+  // Record delivery only after the provider confirms `sendTurn`.
+  const appendArchitectureReviewWakeMarker = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly createdAt: string;
+  }) {
+    const reviewId = reviewWakeReviewIdFromMessageId(
+      String(input.messageId),
+      String(input.threadId),
+    );
+    if (reviewId === null) return;
+    const markerId = reviewWakeDeliveredMarkerId(String(input.threadId), reviewId);
+    const detail = yield* projectionSnapshotQuery
+      .getThreadDetailById(input.threadId, {
+        activityKinds: [REVIEW_WAKE_DELIVERED_ACTIVITY],
+        activityHistory: "complete",
+      })
+      .pipe(
+        Effect.retry({ times: 2, schedule: Schedule.exponential("50 millis") }),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+          return Effect.logWarning("review wake delivery marker context could not be loaded", {
+            threadId: input.threadId,
+            messageId: input.messageId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(Option.none<OrchestrationThread>()));
+        }),
+      );
+    if (Option.isNone(detail)) return;
+    if (detail.value.activities.some((activity) => activity.id === markerId)) return;
+    yield* orchestrationEngine.dispatch({
+      type: "thread.activity.append",
+      commandId: CommandId.make(markerId),
+      threadId: input.threadId,
+      activity: {
+        id: EventId.make(markerId),
+        tone: "info",
+        kind: REVIEW_WAKE_DELIVERED_ACTIVITY,
+        summary: "Architect review wake delivered",
+        payload: { reviewId },
+        turnId: null,
+        createdAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
   // The architecture publish wake proves the coordinator wake reached the
   // provider only after `sendTurn` resolves. Appending it here (never at the
   // dispatch site) keeps a failed send from being recorded as a delivered
@@ -499,34 +592,39 @@ const make = Effect.gen(function* () {
         }),
       );
     if (Option.isNone(detail)) return;
-    if (detail.value.activities.some((activity) => activity.id === markerId)) return;
-    const published = detail.value.activities.find(
-      (activity) =>
-        activity.kind === REVIEW_PUBLISHED_ACTIVITY &&
-        Predicate.isObject(activity.payload) &&
-        activity.payload.reviewId === reviewId,
-    );
-    const publishedPayload = Predicate.isObject(published?.payload) ? published.payload : undefined;
-    yield* orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: CommandId.make(`${markerId}:command`),
-      threadId: input.threadId,
-      activity: {
-        id: EventId.make(markerId),
-        tone: "info",
-        kind: PUBLISH_WAKE_DELIVERED_ACTIVITY,
-        summary: "Coordinator publish wake delivered",
-        payload: {
-          reviewId,
-          disposition: publishedPayload?.disposition ?? null,
-          summary: publishedPayload?.summary ?? null,
-          refs: publishedPayload?.refs ?? null,
+    if (!detail.value.activities.some((activity) => activity.id === markerId)) {
+      const published = detail.value.activities.find(
+        (activity) =>
+          activity.kind === REVIEW_PUBLISHED_ACTIVITY &&
+          Predicate.isObject(activity.payload) &&
+          activity.payload.reviewId === reviewId,
+      );
+      const publishedPayload = Predicate.isObject(published?.payload)
+        ? published.payload
+        : undefined;
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: CommandId.make(`${markerId}:command`),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.make(markerId),
+          tone: "info",
+          kind: PUBLISH_WAKE_DELIVERED_ACTIVITY,
+          summary: "Coordinator publish wake delivered",
+          payload: {
+            reviewId,
+            disposition: publishedPayload?.disposition ?? null,
+            summary: publishedPayload?.summary ?? null,
+            refs: publishedPayload?.refs ?? null,
+          },
+          turnId: null,
+          createdAt: input.createdAt,
         },
-        turnId: null,
         createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
-    });
+      });
+    }
+    // Send confirmed (fresh or healed replay): record delivery on the row.
+    yield* markArchitecturePublishDelivered(reviewId, input.createdAt);
   });
   // Durable at-most-once marker for one provider send. Persisted before
   // sendTurn runs: any provider-side turn implies a persisted claim, so a
@@ -2056,6 +2154,13 @@ const make = Effect.gen(function* () {
               : undefined,
           ),
         ),
+        Effect.flatMap(() =>
+          recordArchitecturePublishFailure({
+            messageId: event.payload.messageId,
+            detail,
+            attemptedAt: event.payload.createdAt,
+          }),
+        ),
         Effect.asVoid,
       );
     };
@@ -2331,6 +2436,21 @@ const make = Effect.gen(function* () {
     const send = providerService
       .sendTurn(sendTurnRequest.value.request)
       .pipe(
+        Effect.tap(() =>
+          appendArchitectureReviewWakeMarker({
+            threadId: event.payload.threadId,
+            messageId: event.payload.messageId,
+            createdAt: event.payload.createdAt,
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("review wake delivery marker could not be appended", {
+                threadId: event.payload.threadId,
+                messageId: event.payload.messageId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+        ),
         Effect.tap(() =>
           appendWakeDeliveryMarker({
             threadId: event.payload.threadId,

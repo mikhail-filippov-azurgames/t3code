@@ -2,6 +2,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   BoardCardId,
+  CommandId,
   EnvironmentId,
   EventId,
   MessageId,
@@ -41,6 +42,12 @@ import {
 } from "../../../persistence/Services/CoordinatorArchitect.ts";
 import { CoordinatorArchitectRepositoryLive } from "../../../persistence/Layers/CoordinatorArchitect.ts";
 import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
+import {
+  publishWakeReviewIdFromMessageId,
+  REVIEW_WAKE_DELIVERED_ACTIVITY,
+  reviewWakeDeliveredMarkerId,
+  reviewWakeReviewIdFromMessageId,
+} from "../../../orchestration/coordinatorArchitect.ts";
 import { __testing, type OrchestratorMcpDependencies } from "./service.ts";
 
 const now = "2026-09-28T12:00:00.000Z";
@@ -622,7 +629,7 @@ function makeHarness(
         if (dispatchFailure.predicate?.(record) === true) {
           return Effect.fail(new Error("injected dispatch crash") as never);
         }
-        return Effect.sync(() => {
+        return Effect.gen(function* () {
           const commandId = command.commandId;
           const previousReceipt = commandReceipts.get(commandId);
           if (previousReceipt !== undefined) return { sequence: previousReceipt.sequence };
@@ -670,6 +677,46 @@ function makeHarness(
                       },
                     ],
               });
+            }
+            // Stand-in for the provider reactor's confirmed send: in
+            // production the review row is marked delivered only after
+            // `sendTurn` resolves, never by the service at dispatch time.
+            const reviewId = publishWakeReviewIdFromMessageId(String(command.message.messageId));
+            if (reviewId !== null) {
+              yield* store
+                .markPublishDelivered({
+                  reviewId,
+                  deliveredAt: command.createdAt,
+                })
+                .pipe(Effect.orDie);
+            }
+            // Stand-in for the provider reactor's post-send Architect marker.
+            const architectReviewId = reviewWakeReviewIdFromMessageId(
+              String(command.message.messageId),
+              String(command.threadId),
+            );
+            if (architectReviewId !== null) {
+              const markerId = reviewWakeDeliveredMarkerId(
+                String(command.threadId),
+                architectReviewId,
+              );
+              yield* dependencies
+                .dispatch({
+                  type: "thread.activity.append",
+                  commandId: CommandId.make(markerId),
+                  threadId: command.threadId,
+                  activity: {
+                    id: EventId.make(markerId),
+                    tone: "info",
+                    kind: REVIEW_WAKE_DELIVERED_ACTIVITY,
+                    summary: "Architect review wake delivered",
+                    payload: { reviewId: architectReviewId },
+                    turnId: null,
+                    createdAt: command.createdAt,
+                  },
+                  createdAt: command.createdAt,
+                })
+                .pipe(Effect.orDie);
             }
           }
           const sequence = dispatched.length;
@@ -1588,6 +1635,18 @@ describe("phase 1 coordinator/architect service", () => {
         archTurns[0]?.["commandId"],
         `arch:review-wake-turn:${requested.reviewId}`,
       );
+      const architectWakeText = String(
+        (archTurns[0]?.["message"] as { readonly text?: unknown } | undefined)?.text,
+      );
+      assert.include(
+        architectWakeText,
+        `Answer this review by calling architecture_review_answer with reviewId ${requested.reviewId}.`,
+      );
+      assert.include(architectWakeText, "An ordinary answer never wakes the Coordinator.");
+      assert.include(
+        architectWakeText,
+        "Call publish_to_coordinator only if this answer should wake the Coordinator.",
+      );
       // The coordinator aggregate carries the typed no-wake reference only:
       // no coordinator turn starts on request.
       assert.deepStrictEqual(
@@ -1743,7 +1802,8 @@ describe("phase 1 coordinator/architect service", () => {
         ).length,
         1,
       );
-      // Delivery is proven durably: the coordinator sees it in the list.
+      // Delivery is proven durably once the (simulated) reactor confirms the
+      // send; the coordinator sees it in the list.
       const listed = yield* harness.service.listArchitectureReviews(scope, {
         coordinatorThreadId: coordinatorId,
       });
