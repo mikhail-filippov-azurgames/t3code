@@ -134,6 +134,227 @@ describe("normalizeDelegationPermissionEnvelope", () => {
     ).toMatchObject({ status: "unverifiable" });
   });
 
+  it("names the .mcp.json file and the tool-surface risk when refusing it", () => {
+    const envelope = normalizeDelegationPermissionEnvelope({
+      ...input("claudeAgent"),
+      providerConfigurationFiles: [
+        {
+          path: "C:/repo/.mcp.json",
+          content: '{"mcpServers":{"remote":{"url":"https://example.com"}}}',
+        },
+      ],
+    });
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("C:/repo/.mcp.json");
+    expect(envelope.reason).toMatch(/\bMCP\b/);
+    expect(envelope.reason).toMatch(/tool surface/i);
+  });
+
+  it("names the configuration file for a security-affecting term", () => {
+    const envelope = normalizeDelegationPermissionEnvelope({
+      ...input("claudeAgent"),
+      providerConfigurationFiles: [
+        { path: "C:/repo/.claude/settings.json", content: '{"permissions":{"allow":["Bash"]}}' },
+      ],
+    });
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("C:/repo/.claude/settings.json");
+    expect(envelope.reason).toMatch(/permissions/);
+    expect(envelope.reason).toMatch(/configuration home/i);
+  });
+
+  it("names the driver when provider configuration files were not inspected", () => {
+    const { providerConfigurationFiles, ...withoutFiles } = input("codex");
+    void providerConfigurationFiles;
+    const envelope = normalizeDelegationPermissionEnvelope(withoutFiles);
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("codex");
+    expect(envelope.reason).toMatch(/not inspected/);
+    expect(envelope.reason).toMatch(/check could not run/);
+  });
+
+  it("names the Codex feature override that changes tool authority", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("codex", "approval-required", { launchArgs: "--enable web_search" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("--enable");
+    expect(envelope.reason).toMatch(/remove/i);
+  });
+
+  it("names the Codex config argument that is missing its value", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("codex", "approval-required", { launchArgs: "-c" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("-c");
+    expect(envelope.reason).toMatch(/missing its configuration value/i);
+  });
+
+  it("names the Codex security config override value", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("codex", "approval-required", { launchArgs: "-c sandbox_mode=danger-full-access" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("sandbox_mode=danger-full-access");
+    expect(envelope.reason).toMatch(/-c\/--config/);
+  });
+
+  it("names the Codex security config override token", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("codex", "approval-required", {
+        launchArgs: "--config=mcp_servers.remote.url=https://example.com",
+      }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("--config=mcp_servers.remote.url=https://example.com");
+  });
+
+  it("names the Codex security-affecting launch argument", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("codex", "approval-required", { launchArgs: "--sandbox danger-full-access" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("--sandbox");
+    expect(envelope.reason).toMatch(/remove the argument/i);
+  });
+
+  it("names the non-string Claude launch arguments", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("claudeAgent", "approval-required", { launchArgs: 42 }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("number");
+    expect(envelope.reason).toMatch(/not a string/i);
+  });
+
+  it("names the unknown Claude permission mode", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("claudeAgent", "approval-required", { launchArgs: "--permission-mode bogus" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("bogus");
+    expect(envelope.reason).toMatch(/remove it/i);
+  });
+
+  it("names the Claude security-affecting flag", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("claudeAgent", "approval-required", { launchArgs: "--mcp-config ./mcp.json" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("--mcp-config");
+    expect(envelope.reason).toMatch(/remove it/i);
+  });
+
+  it("names the Claude security-affecting positional argument", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("claudeAgent", "approval-required", { launchArgs: "sandbox" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("sandbox");
+    expect(envelope.reason).toMatch(/positional/i);
+  });
+
+  it("names the OpenCode config content type when it is not an object", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("opencode", "approval-required", {}, { OPENCODE_CONFIG_CONTENT: "42" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("number");
+    expect(envelope.reason).toMatch(/not an object/i);
+  });
+
+  it("names the security-affecting OpenCode config key", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input(
+        "opencode",
+        "approval-required",
+        {},
+        { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { bash: "allow" } }) },
+      ),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("permission");
+    expect(envelope.reason).toMatch(/remove permission/i);
+  });
+
+  it("reports invalid OpenCode config JSON with a recovery", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("opencode", "approval-required", {}, { OPENCODE_CONFIG_CONTENT: "{not json" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toMatch(/not valid JSON/i);
+    expect(envelope.reason).toMatch(/fix the JSON syntax/i);
+  });
+
+  it("names the driver with no accepted permission normalizer", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(input("forkDriver"));
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("forkDriver");
+    expect(envelope.reason).toMatch(/supported permission normalizer/i);
+  });
+
+  it("names both drivers when the instance driver does not match", () => {
+    const envelope = normalizeDelegationPermissionEnvelope({
+      ...input("codex"),
+      instanceConfig: { driver: driver("claudeAgent"), enabled: true, config: {} },
+    });
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("claudeAgent");
+    expect(envelope.reason).toContain("codex");
+    expect(envelope.reason).toMatch(/does not match/i);
+  });
+
+  it("names the security-affecting provider environment variable", () => {
+    const envelope = normalizeDelegationPermissionEnvelope(
+      input("codex", "approval-required", {}, { CODEX_SANDBOX_PROFILE: "danger" }),
+    );
+    expect(envelope.status).toBe("unverifiable");
+    if (envelope.status !== "unverifiable") return;
+    expect(envelope.reason).toContain("CODEX_SANDBOX_PROFILE");
+    expect(envelope.reason).toMatch(/unset/i);
+  });
+
+  it.effect("names the unreadable configuration file with a recovery", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-delegation-unreadable-" });
+      const homePath = path.join(root, "home");
+      const worktreePath = path.join(root, "worktree");
+      yield* fs.makeDirectory(homePath, { recursive: true });
+      yield* fs.makeDirectory(path.join(worktreePath, ".claude", "settings.json"), {
+        recursive: true,
+      });
+      const envelope = yield* loadDelegationPermissionEnvelope({
+        ...input("claudeAgent", "approval-required", { homePath, launchArgs: "" }),
+        worktreePath,
+      });
+      expect(envelope.status).toBe("unverifiable");
+      if (envelope.status !== "unverifiable") return;
+      expect(envelope.reason).toContain(path.join(worktreePath, ".claude", "settings.json"));
+      expect(envelope.reason).toMatch(/could not be read/i);
+      expect(envelope.reason).toMatch(/retry/i);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it("normalizes OpenCode auto as supervised and rejects configured permission content", () => {
     expect(normalizeDelegationPermissionEnvelope(input("opencode", "auto"))).toMatchObject({
       status: "verified",

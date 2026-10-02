@@ -11,6 +11,7 @@ import type {
   RuntimeMode,
 } from "@t3tools/contracts";
 import { parseCliArgs, tokenizeCliArgs } from "@t3tools/shared/cliArgs";
+import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -231,6 +232,11 @@ function unverifiable(reason: string): OrchestratorMcpPermissionEnvelopeSummary 
   return { status: "unverifiable", reason };
 }
 
+class ProviderConfigurationReadError extends Data.TaggedError("ProviderConfigurationReadError")<{
+  readonly filePath: string;
+  readonly detail: string;
+}> {}
+
 function configValue(input: DelegationPermissionEnvelopeInput, name: string): unknown {
   const config = input.instanceConfig.config;
   if (typeof config !== "object" || config === null) return undefined;
@@ -331,7 +337,11 @@ function providerConfigurationReason(input: DelegationPermissionEnvelopeInput): 
     if (reason !== undefined) return reason;
   }
   if ((input.driverKind === "codex" || input.driverKind === "claudeAgent") && files === undefined) {
-    return `${input.driverKind} provider configuration files were not inspected.`;
+    return (
+      `${input.driverKind} provider configuration files were not inspected, so the provider ` +
+      `configuration check could not run and delegation was refused. Retry delegation; if it ` +
+      `keeps failing, the ${input.driverKind} configuration source is unavailable.`
+    );
   }
   // A full-access Codex runtime is already the top authority envelope. Provider
   // configuration cannot broaden it, while the raw files remain fingerprinted
@@ -340,19 +350,37 @@ function providerConfigurationReason(input: DelegationPermissionEnvelopeInput): 
   for (const file of files ?? []) {
     const content = file.content?.trim();
     if (!content) continue;
-    if (file.path.toLowerCase().endsWith(".json")) {
+    const lowerPath = file.path.toLowerCase();
+    // An MCP file is refused on its presence alone: its servers widen the
+    // child's tool surface regardless of how its contents parse.
+    if (lowerPath.endsWith(".mcp.json")) {
+      return (
+        `An MCP configuration file was found at ${file.path}, so delegation was refused: ` +
+        "MCP servers add tools, so the child's tool surface cannot be proven no wider than the " +
+        "parent's. Remove or rename that file, or delegate with a working directory that has none."
+      );
+    }
+    if (lowerPath.endsWith(".json")) {
       try {
         JSON.parse(content);
       } catch {
-        return `Provider configuration file ${file.path} is not valid JSON.`;
+        return (
+          `Provider configuration file ${file.path} is not valid JSON, so it cannot be compared ` +
+          "and delegation was refused. Fix the JSON syntax or remove the file, then retry."
+        );
       }
     }
     const comparableContent =
-      input.driverKind === "codex" && file.path.toLowerCase().endsWith("config.toml")
+      input.driverKind === "codex" && lowerPath.endsWith("config.toml")
         ? codexComparableConfigurationContent(content)
         : content;
-    if (file.path.toLowerCase().endsWith(".mcp.json") || SECURITY_TERM.test(comparableContent)) {
-      return `Security-affecting provider configuration in ${file.path} is not comparable.`;
+    if (SECURITY_TERM.test(comparableContent)) {
+      return (
+        `Security-affecting configuration in ${file.path} is not comparable, so delegation was ` +
+        "refused: hooks, plugins, permissions, sandbox, network, or MCP settings make the " +
+        "provider configuration incomparable. Isolate the provider's configuration home so it " +
+        "contains no such settings, then retry."
+      );
     }
   }
   return undefined;
@@ -369,13 +397,20 @@ export const loadDelegationPermissionEnvelope = Effect.fn("loadDelegationPermiss
           PlatformError: (error) =>
             error.reason._tag === "NotFound"
               ? Effect.succeed({ path: filePath, content: null } as const)
-              : Effect.fail(error),
+              : Effect.fail(
+                  new ProviderConfigurationReadError({ filePath, detail: error.message }),
+                ),
         }),
       ),
     ).pipe(
       Effect.match({
         onFailure: (error) =>
-          unverifiable(`Provider configuration files could not be read: ${error.message}`),
+          unverifiable(
+            `Provider configuration file ${error.filePath} could not be read ` +
+              `(${error.detail}), so the provider configuration check could not run and ` +
+              "delegation was refused. Fix the file access or remove the unreadable provider " +
+              "configuration, then retry.",
+          ),
         onSuccess: (providerConfigurationFiles) =>
           normalizeDelegationPermissionEnvelope({ ...input, providerConfigurationFiles }),
       }),
@@ -449,22 +484,44 @@ function unverifiedCodexReason(input: DelegationPermissionEnvelopeInput): string
       token.startsWith("--enable=") ||
       token.startsWith("--disable=")
     ) {
-      return "Codex feature overrides can change provider tool authority.";
+      return (
+        `Codex launch argument ${token} enables or disables a feature, which can change provider ` +
+        "tool authority, so it is not comparable and delegation was refused. Remove the " +
+        "--enable/--disable override from the launch arguments and retry."
+      );
     }
     if (token === "-c" || token === "--config") {
       const value = args[index + 1];
-      if (value === undefined) return "Codex config launch argument is incomplete.";
+      if (value === undefined) {
+        return (
+          `Codex launch argument ${token} is missing its configuration value, so the override ` +
+          "cannot be compared and delegation was refused. Provide the value or remove the " +
+          "argument, then retry."
+        );
+      }
       if (SECURITY_TERM.test(value)) {
-        return "Codex permission, sandbox, tool, network, workspace, or MCP config override is not comparable.";
+        return (
+          `Codex config override ${value} sets permission, sandbox, tool, network, workspace, ` +
+          "or MCP authority, so it is not comparable and delegation was refused. Remove the " +
+          "-c/--config override and retry."
+        );
       }
       index++;
       continue;
     }
     if ((token.startsWith("-c=") || token.startsWith("--config=")) && SECURITY_TERM.test(token)) {
-      return "Codex permission, sandbox, tool, network, workspace, or MCP config override is not comparable.";
+      return (
+        `Codex config override ${token} sets permission, sandbox, tool, network, workspace, or ` +
+        "MCP authority, so it is not comparable and delegation was refused. Remove the " +
+        "-c/--config override and retry."
+      );
     }
     if (SECURITY_TERM.test(token)) {
-      return "Codex security-affecting launch argument is not comparable.";
+      return (
+        `Codex security-affecting launch argument ${token} can change permission, sandbox, tool, ` +
+        "network, workspace, or MCP authority, so it is not comparable and delegation was " +
+        "refused. Remove the argument and retry."
+      );
     }
   }
   return undefined;
@@ -485,7 +542,12 @@ function claudeOverrides(input: DelegationPermissionEnvelopeInput):
       ? (config as { readonly launchArgs?: unknown }).launchArgs
       : undefined;
   if (launchArgs !== undefined && typeof launchArgs !== "string") {
-    return { reason: "Claude launch arguments are not a string." };
+    return {
+      reason:
+        `Claude launch arguments are configured as ${typeof launchArgs}, not a string, so they ` +
+        "cannot be compared and delegation was refused. Set Claude launch arguments to a string " +
+        "or leave them empty, then retry.",
+    };
   }
   const parsed = parseCliArgs(typeof launchArgs === "string" ? launchArgs : "");
   const flags = parsed.flags;
@@ -500,7 +562,12 @@ function claudeOverrides(input: DelegationPermissionEnvelopeInput):
       permissionValue !== "bypassPermissions" &&
       permissionValue !== "plan"
     ) {
-      return { reason: `Claude permission mode ${String(permissionValue)} is not comparable.` };
+      return {
+        reason:
+          `Claude permission mode ${String(permissionValue)} is not one of default, acceptEdits, ` +
+          "auto, bypassPermissions, or plan, so it cannot be compared and delegation was " +
+          "refused. Set a known --permission-mode or remove it, then retry.",
+      };
     }
     mode = permissionValue;
   } else if (skip === null || skip === "true") {
@@ -528,11 +595,21 @@ function claudeOverrides(input: DelegationPermissionEnvelopeInput):
   for (const name of Object.keys(flags)) {
     if (reflected.has(name)) continue;
     if (SECURITY_TERM.test(name) || name === "chrome") {
-      return { reason: `Claude security-affecting launch argument --${name} is not comparable.` };
+      return {
+        reason:
+          `Claude launch argument --${name} affects security (tools, network, sandbox, or MCP), ` +
+          "so it is not comparable and delegation was refused. Remove it from the launch " +
+          "arguments and retry.",
+      };
     }
   }
-  if (parsed.positionals.some((entry) => SECURITY_TERM.test(entry))) {
-    return { reason: "Claude security-affecting positional launch argument is not comparable." };
+  const offendingPositional = parsed.positionals.find((entry) => SECURITY_TERM.test(entry));
+  if (offendingPositional !== undefined) {
+    return {
+      reason:
+        `Claude positional launch argument ${offendingPositional} affects security, so it is ` +
+        "not comparable and delegation was refused. Remove the positional argument and retry.",
+    };
   }
   return { mode, allowedTools, disallowedTools };
 }
@@ -568,15 +645,27 @@ function openCodeConfigReason(input: DelegationPermissionEnvelopeInput): string 
   try {
     const parsed = JSON.parse(content) as unknown;
     if (typeof parsed !== "object" || parsed === null) {
-      return "OpenCode config content is not an object.";
+      return (
+        `OpenCode config content is ${parsed === null ? "null" : typeof parsed}, not an object, ` +
+        "so it cannot be compared and delegation was refused. Set OPENCODE_CONFIG_CONTENT to a " +
+        "JSON object or remove it, then retry."
+      );
     }
     const keys = Object.keys(parsed as Readonly<Record<string, unknown>>);
-    if (keys.some((key) => SECURITY_TERM.test(key))) {
-      return "OpenCode configured permission, tool, network, workspace, or MCP authority is not comparable.";
+    const securityKey = keys.find((key) => SECURITY_TERM.test(key));
+    if (securityKey !== undefined) {
+      return (
+        `OpenCode config content sets the security-affecting key ${securityKey}, which configures ` +
+        "permission, tool, network, workspace, or MCP authority, so it is not comparable and " +
+        `delegation was refused. Remove ${securityKey} from OPENCODE_CONFIG_CONTENT and retry.`
+      );
     }
     return undefined;
   } catch {
-    return "OpenCode config content is not valid JSON.";
+    return (
+      "OpenCode config content is not valid JSON, so it cannot be compared and delegation was " +
+      "refused. Fix the JSON syntax or remove OPENCODE_CONFIG_CONTENT, then retry."
+    );
   }
 }
 
@@ -644,7 +733,10 @@ function normalizedRuntimeForDriver(input: DelegationPermissionEnvelopeInput):
       return { reason: "Cursor ACP does not expose a complete authoritative permission envelope." };
     default:
       return {
-        reason: `Provider driver ${input.driverKind} has no accepted permission normalizer.`,
+        reason:
+          `Provider driver ${input.driverKind} has no accepted permission normalizer, so its ` +
+          "permission envelope cannot be verified and delegation was refused. Delegate through a " +
+          "driver with a supported permission normalizer.",
       };
   }
 }
@@ -653,7 +745,11 @@ export function normalizeDelegationPermissionEnvelope(
   input: DelegationPermissionEnvelopeInput,
 ): OrchestratorMcpPermissionEnvelopeSummary {
   if (input.instanceConfig.driver !== input.driverKind) {
-    return unverifiable("Provider instance driver does not match the requested driver.");
+    return unverifiable(
+      `Provider instance driver ${input.instanceConfig.driver} does not match the requested ` +
+        `driver ${input.driverKind}, so the permission envelope cannot be trusted and delegation ` +
+        "was refused. Select the provider instance that matches the requested driver, then retry.",
+    );
   }
   const environment = environmentRecord(input);
   const configurationReason = providerConfigurationReason(input);
@@ -666,7 +762,9 @@ export function normalizeDelegationPermissionEnvelope(
       name !== "OPENCODE_CONFIG_CONTENT"
     ) {
       return unverifiable(
-        `Security-affecting provider environment variable ${name} is not comparable.`,
+        `Security-affecting provider environment variable ${name} is set, which can change ` +
+          "permission, tool, network, workspace, or MCP authority, so it is not comparable and " +
+          `delegation was refused. Unset ${name} for the delegation and retry.`,
       );
     }
   }
