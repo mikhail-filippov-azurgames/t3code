@@ -62,10 +62,16 @@ export const ORCHESTRATOR_MCP_TOOL_NAMES = {
 } as const;
 
 const BoundedIdempotencyKey = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
-const BoundedTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
-const BoundedPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
-const BoundedStage = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
-const BoundedHandoffItem = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const boundedAuthoredText = (maximum: number) =>
+  Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(maximum),
+    Schema.makeFilter((value) => value.trim().length > 0 || "Text must not be blank."),
+  );
+const BoundedTitle = boundedAuthoredText(512);
+const BoundedPrompt = boundedAuthoredText(120_000);
+const BoundedStage = boundedAuthoredText(256);
+const BoundedHandoffItem = boundedAuthoredText(2_000);
 const BoundedEvidenceRef = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
 const BoundedFingerprint = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const BoundedReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
@@ -525,6 +531,7 @@ export const OrchestratorMcpFailureCode = Schema.Literals([
   "executor_required",
   "provider_handoff_unsupported",
   "thread_has_no_history",
+  "author_text_rejected",
   "orchestration_error",
   "architect_denied",
   "binding_not_found",

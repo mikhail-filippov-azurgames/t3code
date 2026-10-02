@@ -126,6 +126,7 @@ async function waitFor(
 }
 
 describe("ProviderCommandReactor", () => {
+  const secretToken = `ghp_${"A".repeat(32)}`;
   let runtime: ManagedRuntime.ManagedRuntime<
     | OrchestrationEngineService
     | ProviderCommandReactor
@@ -4677,6 +4678,92 @@ describe("ProviderCommandReactor", () => {
     });
     expect(harness.runtimeSessions).toHaveLength(runtimeSessionCountBeforeDelegation);
     expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("blocks secret text in an already queued delegated start before provider receipts", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("legacy-secret-delegated-message");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-legacy-secret-delegated-start"),
+        threadId,
+        message: {
+          messageId,
+          role: "user",
+          text: `Continue using ${secretToken}.`,
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        delegationConfigFingerprint: "legacy-frozen-provider-config",
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const model = await harness.readModel();
+      return model.threads.some((thread) =>
+        thread.activities.some(
+          (activity) =>
+            activity.kind === "provider.turn.start.failed" &&
+            typeof activity.payload === "object" &&
+            activity.payload !== null &&
+            "code" in activity.payload &&
+            activity.payload.code === "author_text_rejected",
+        ),
+      );
+    });
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const failure = thread?.activities.find(
+      (activity) => activity.kind === "provider.turn.start.failed",
+    );
+    expect(failure?.payload).toMatchObject({ code: "author_text_rejected" });
+    expect(JSON.stringify(failure).includes(secretToken)).toBe(false);
+    expect(thread?.session?.status).toBe("error");
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "delegation.provider-bound" ||
+          activity.kind === "provider.turn.send.claimed",
+      ),
+    ).toBe(false);
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("passes clean user text byte-for-byte to the provider", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const text = "Implement the accepted widget contract.\r\nСохрани исходные байты.\n  ";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-clean-authored-text"),
+        threadId: ThreadId.make("thread-1"),
+        message: {
+          messageId: asMessageId("clean-authored-message"),
+          role: "user",
+          text,
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await harness.drain();
+
+    const providerInput = harness.sendTurn.mock.calls[0]?.[0].input;
+    expect(typeof providerInput).toBe("string");
+    if (typeof providerInput !== "string") throw new Error("Provider input was not captured");
+    expect(Buffer.from(providerInput).equals(Buffer.from(text))).toBe(true);
   });
 
   it("accepts delegated execution through a legacy default provider configuration", async () => {

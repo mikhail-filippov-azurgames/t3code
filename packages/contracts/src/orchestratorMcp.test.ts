@@ -151,6 +151,42 @@ describe("orchestrator MCP contracts", () => {
     expect(decoded.target.providerInstanceId).toBe("claude_work");
   });
 
+  it("preserves authored prompt, title, message, and handoff text exactly", () => {
+    const prompt = "  first line\r\n  Кириллица  \n";
+    const title = "  Task title  ";
+    const handoffText = "  Keep these handoff bytes.  ";
+    const decoded = decodeDelegate({
+      ...delegateInput,
+      title,
+      prompt,
+      handoff: {
+        contractRef: "oc://doc/123e4567-e89b-42d3-a456-426614174000",
+        requiredRevision: 2,
+        implementsRevision: 2,
+        stage: " implementation ",
+        owns: [handoffText],
+        reads: [],
+        forbidden: [],
+        acceptance: [],
+        outputs: [],
+        evidence: [],
+        predecessorRefs: [],
+      },
+    });
+    const followUp = "  Continue exactly as authored.\r\n";
+    const decodedFollowUp = decodeSendToTask({
+      taskId: "child-thread-1",
+      idempotencyKey: "follow-up-1",
+      message: followUp,
+    });
+
+    expect(Buffer.from(decoded.prompt).equals(Buffer.from(prompt))).toBe(true);
+    expect(Buffer.from(decoded.title).equals(Buffer.from(title))).toBe(true);
+    expect(Buffer.from(decoded.handoff!.stage).equals(Buffer.from(" implementation "))).toBe(true);
+    expect(Buffer.from(decoded.handoff!.owns[0]!).equals(Buffer.from(handoffText))).toBe(true);
+    expect(Buffer.from(decodedFollowUp.message).equals(Buffer.from(followUp))).toBe(true);
+  });
+
   it("decodes a follow-up message and its stable queue receipt", () => {
     expect(
       decodeSendToTask({
@@ -529,6 +565,7 @@ describe("orchestrator MCP contracts", () => {
       "task_not_cancellable",
       "provider_handoff_unsupported",
       "thread_has_no_history",
+      "author_text_rejected",
       "orchestration_error",
       "routing_evidence_mismatch",
       "delegated_executor_denied",

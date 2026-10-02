@@ -85,6 +85,7 @@ import {
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
+import { applyAuthorTextPolicy } from "../../security/SecretTextPolicy.ts";
 const isProviderAdapterRequestError = Schema.is(ProviderAdapterRequestError);
 const isProviderAdapterValidationError = Schema.is(ProviderAdapterValidationError);
 const isProviderWorkspaceMissingError = Schema.is(ProviderWorkspaceMissingError);
@@ -298,8 +299,7 @@ type ProviderIntentEvent = Extract<
 >;
 
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized && normalized.length > 0 ? normalized : undefined;
+  return value !== undefined && value.trim().length > 0 ? value : undefined;
 }
 
 const isCompactCommandMessage = (message: ThreadTitleMessage): boolean =>
@@ -778,7 +778,7 @@ const make = Effect.gen(function* () {
     readonly turnId: TurnId | null;
     readonly createdAt: string;
     readonly requestId?: string;
-    readonly code?: "provider_configuration_changed";
+    readonly code?: "provider_configuration_changed" | "author_text_rejected";
   }) =>
     Effect.all({
       commandId: serverCommandId("provider-failure-activity"),
@@ -2082,7 +2082,7 @@ const make = Effect.gen(function* () {
     const appendTurnStartFailure = (
       summary: string,
       detail: string,
-      code?: "provider_configuration_changed",
+      code?: "provider_configuration_changed" | "author_text_rejected",
     ) =>
       appendProviderFailureActivity({
         threadId: event.payload.threadId,
@@ -2120,6 +2120,31 @@ const make = Effect.gen(function* () {
       });
       if (priorAttempt === undefined) return;
       if (priorAttempt.hasFailed || priorAttempt.hasClaim || priorAttempt.hasLegacyBound) return;
+    }
+    if (event.payload.delegationConfigFingerprint !== undefined) {
+      const field = hasOtherUserMessages ? "message" : "prompt";
+      let accepted = false;
+      try {
+        accepted = applyAuthorTextPolicy(field, message.text)._tag === "Accepted";
+      } catch {
+        accepted = false;
+      }
+      if (!accepted) {
+        const detail =
+          `author_text_rejected: The authored ${field} could not be confirmed secret-free. ` +
+          "Remove sensitive values and submit again.";
+        yield* setThreadSessionErrorOnTurnStartFailure({
+          threadId: event.payload.threadId,
+          detail,
+          createdAt: event.payload.createdAt,
+        });
+        yield* appendTurnStartFailure(
+          "Delegated turn start refused",
+          detail,
+          "author_text_rejected",
+        );
+        return;
+      }
     }
     // Resolve how a follow-up sent while a turn is still running is
     // delivered. The adapter executes the steer (interrupt first, then send);

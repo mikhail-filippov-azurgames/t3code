@@ -47,6 +47,7 @@ const parentTurnId = TurnId.make("parent-turn");
 const projectId = ProjectId.make("project-one");
 const environmentId = EnvironmentId.make("environment-one");
 const providerInstanceId = ProviderInstanceId.make("codex_one");
+const secretToken = `ghp_${"A".repeat(32)}`;
 const legacyProviderInstanceId = ProviderInstanceId.make("codex");
 const driverKind = ProviderDriverKind.make("codex");
 const workspaceRoot = "C:/repo";
@@ -1146,6 +1147,7 @@ describe("OrchestratorMcpService", () => {
   it.effect("creates one inherited child, stores its handoff, and sends the exact prompt", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
+      const prompt = "Implement the accepted widget contract.\r\nСохрани исходные байты.\n  ";
       const handoff = {
         contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
         requiredRevision: 2,
@@ -1159,7 +1161,10 @@ describe("OrchestratorMcpService", () => {
         evidence: ["test log"],
         predecessorRefs: ["oc://doc/1a02392b-6ad7-4d21-aae9-dfaa911c8831"],
       } as const;
-      const result = yield* harness.service.delegateTask(makeScope(), delegateInput({ handoff }));
+      const result = yield* harness.service.delegateTask(
+        makeScope(),
+        delegateInput({ handoff, prompt }),
+      );
 
       expect(result.status).toBe("queued");
       expect(result.lineage.parentTurnId).toBe(parentTurnId);
@@ -1179,7 +1184,7 @@ describe("OrchestratorMcpService", () => {
       const start = harness.dispatched[2];
       expect(start?.type).toBe("thread.turn.start");
       if (start?.type === "thread.turn.start") {
-        expect(start.message.text).toBe("Implement the accepted widget contract.");
+        expect(Buffer.from(start.message.text).equals(Buffer.from(prompt))).toBe(true);
         expect(start.message.text).not.toContain(handoff.contractRef);
       }
       const child = harness.children.get(result.taskId)!;
@@ -1207,6 +1212,17 @@ describe("OrchestratorMcpService", () => {
       expect(harness.dispatched.filter(({ type }) => type === "thread.create")).toHaveLength(1);
       expect(harness.dispatched.filter(({ type }) => type === "thread.turn.start")).toHaveLength(1);
 
+      const acceptedDispatchCount = harness.dispatched.length;
+      const unsafeRetry = yield* harness.service
+        .delegateTask(
+          scope,
+          delegateInput({ prompt: `Use this credential ${secretToken} to continue.` }),
+        )
+        .pipe(Effect.flip);
+      expect(unsafeRetry.code).toBe("author_text_rejected");
+      expect(unsafeRetry.message).not.toContain(secretToken);
+      expect(harness.dispatched).toHaveLength(acceptedDispatchCount);
+
       const conflict = yield* harness.service
         .delegateTask(scope, delegateInput({ prompt: "Different work under the same key." }))
         .pipe(Effect.flip);
@@ -1233,6 +1249,79 @@ describe("OrchestratorMcpService", () => {
         )
         .pipe(Effect.flip);
       expect(handoffConflict.code).toBe("idempotency_conflict");
+    }),
+  );
+
+  it.effect("refuses secret prompts, titles, and handoff text before any delegation writes", () =>
+    Effect.gen(function* () {
+      const handoff = {
+        contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
+        requiredRevision: 2,
+        implementsRevision: 2,
+        stage: "implementation",
+        owns: [`Use ${secretToken}`],
+        reads: [],
+        forbidden: [],
+        acceptance: [],
+        outputs: [],
+        evidence: [],
+        predecessorRefs: [],
+      };
+      const cases = [
+        delegateInput({ prompt: `Use ${secretToken} in the task.` }),
+        delegateInput({ title: `Task ${secretToken}` }),
+        delegateInput({ handoff }),
+      ];
+
+      for (const input of cases) {
+        const harness = makeHarness();
+        const error = yield* harness.service.delegateTask(makeScope(), input).pipe(Effect.flip);
+
+        expect(error.code).toBe("author_text_rejected");
+        expect(error.message).not.toContain(secretToken);
+        expect(harness.dispatched).toEqual([]);
+        expect(harness.children.size).toBe(0);
+      }
+
+      const retryHarness = makeHarness();
+      const unsafe = delegateInput({ prompt: `Retry with ${secretToken}.` });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const error = yield* retryHarness.service
+          .delegateTask(makeScope(), unsafe)
+          .pipe(Effect.flip);
+        expect(error.code).toBe("author_text_rejected");
+        expect(retryHarness.dispatched).toEqual([]);
+      }
+    }),
+  );
+
+  it.effect("refuses secret follow-ups before creating a receipt or turn, including retries", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const existingDispatchCount = harness.dispatched.length;
+      const unsafeFollowUp = sendToTaskInput(delegated.taskId, {
+        idempotencyKey: "secret-follow-up",
+        message: `Use ${secretToken} for the next step.`,
+      });
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const error = yield* harness.service.sendToTask(scope, unsafeFollowUp).pipe(Effect.flip);
+        expect(error.code).toBe("author_text_rejected");
+        expect(error.message).not.toContain(secretToken);
+        expect(harness.dispatched).toHaveLength(existingDispatchCount);
+      }
+
+      const child = harness.children.get(delegated.taskId)!;
+      expect(child.activities.some(({ kind }) => kind === "delegation.follow-up-queued")).toBe(
+        false,
+      );
+      expect(
+        harness.dispatched
+          .slice(existingDispatchCount)
+          .some(({ type }) => type === "thread.turn.start"),
+      ).toBe(false);
     }),
   );
 
@@ -2485,6 +2574,39 @@ describe("OrchestratorMcpService", () => {
           model: "gpt-test",
         });
       }
+    }),
+  );
+
+  it.effect("refuses a secret stored prompt before switch-provider replay", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      harness.turns.set(delegated.taskId, []);
+      const child = harness.children.get(delegated.taskId)!;
+      const secretPrompt = `Use ${secretToken} after switching providers.`;
+      harness.children.set(delegated.taskId, {
+        ...child,
+        messages: child.messages.map((message) =>
+          message.id === delegated.lineage.delegatedMessageId
+            ? { ...message, text: secretPrompt }
+            : message,
+        ),
+      });
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service
+        .switchProvider(scope, switchInput(delegated.taskId))
+        .pipe(Effect.flip);
+
+      expect(error.code).toBe("author_text_rejected");
+      expect(error.message).not.toContain(secretToken);
+      expect(harness.dispatched).toHaveLength(dispatchCount);
+      expect(
+        harness.children
+          .get(delegated.taskId)
+          ?.activities.some(({ kind }) => kind === "delegation.provider-switched"),
+      ).toBe(false);
     }),
   );
 

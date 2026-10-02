@@ -146,6 +146,7 @@ import { McpSessionRegistry } from "../../McpSessionRegistry.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { McpInvocationScope } from "../../McpInvocationContext.ts";
+import { applyAuthorTextPolicy, type AuthorTextField } from "../../../security/SecretTextPolicy.ts";
 
 const DELEGATION_CREATED_ACTIVITY = "delegation.created";
 const DELEGATION_CANCEL_REQUESTED_ACTIVITY = "delegation.cancel-requested";
@@ -429,6 +430,39 @@ export class OrchestratorMcpService extends Context.Service<
 
 function failure(code: OrchestratorMcpFailureCode, message: string): OrchestratorMcpFailure {
   return new OrchestratorMcpFailure({ code, message });
+}
+
+function ensureAuthorTextAllowed(field: AuthorTextField, text: string) {
+  try {
+    if (applyAuthorTextPolicy(field, text)._tag === "Accepted") return Effect.void;
+  } catch {
+    // A failed check must reject authored text just like a detected secret.
+  }
+  return Effect.fail(
+    failure(
+      "author_text_rejected",
+      `The authored ${field} could not be confirmed secret-free. Remove sensitive values and try again.`,
+    ),
+  );
+}
+
+function ensureHandoffTextAllowed(handoff: OrchestratorMcpHandoff | undefined) {
+  if (handoff === undefined) return Effect.void;
+  return Effect.forEach(
+    [
+      handoff.contractRef,
+      handoff.stage,
+      ...handoff.owns,
+      ...handoff.reads,
+      ...handoff.forbidden,
+      ...handoff.acceptance,
+      ...handoff.outputs,
+      ...handoff.evidence,
+      ...handoff.predecessorRefs,
+    ],
+    (text) => ensureAuthorTextAllowed("handoff", text),
+    { discard: true },
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -2722,6 +2756,9 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       Effect.gen(function* () {
         const parent = yield* requireActiveParent(scope);
         yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "delegate tasks");
+        yield* ensureAuthorTextAllowed("prompt", input.prompt);
+        yield* ensureAuthorTextAllowed("title", input.title);
+        yield* ensureHandoffTextAllowed(input.handoff);
         if (
           input.handoff !== undefined &&
           input.handoff.requiredRevision !== input.handoff.implementsRevision
@@ -2972,6 +3009,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         ) {
           return yield* failure("task_not_found", "The delegated task was not found.");
         }
+        yield* ensureAuthorTextAllowed("message", input.message);
         const childWorktreePath = child.worktreePath ?? parent.scope.worktreePath;
         if (
           child.projectId !== lineage.projectId ||
@@ -3492,6 +3530,12 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               return yield* failure("task_not_found", "The delegated task was not found.");
             }
             const committed = committedOption.value;
+            const delegatedPrompt = committed.messages.find(
+              (message) => message.id === lineage.delegatedMessageId && message.role === "user",
+            );
+            if (delegatedPrompt !== undefined) {
+              yield* ensureAuthorTextAllowed("prompt", delegatedPrompt.text);
+            }
             // The original prompt survives only as fingerprints in lineage, so a
             // thread with no messages cannot be carried to a new provider and
             // cannot be advanced: refuse instead of recording a no-op switch.

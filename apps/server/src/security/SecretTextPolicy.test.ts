@@ -33,6 +33,16 @@ describe("SecretTextPolicy", () => {
     expect(applyAuthorTextPolicy("prompt", input)).toEqual({ _tag: "Accepted", text: input });
   });
 
+  it("identifies rejected free-text handoff values", () => {
+    const result = applyAuthorTextPolicy("handoff", `Use ${providerToken} for access.`);
+
+    expect(result).toEqual({
+      _tag: "Rejected",
+      error: { _tag: "SecretDetected", field: "handoff" },
+    });
+    expect(JSON.stringify(result)).not.toContain(providerToken);
+  });
+
   it("redacts detected secrets in derived text", () => {
     const input = `Provider token: ${providerToken}`;
     const result = applyDerivedTextPolicy("summary", input);
