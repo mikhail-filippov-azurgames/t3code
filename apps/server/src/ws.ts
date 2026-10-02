@@ -154,6 +154,7 @@ import {
   type BoardRepositoryShape,
 } from "./persistence/Services/Board.ts";
 import { BoardRepositoryLive } from "./persistence/Layers/Board.ts";
+import { applyAuthorTextPolicy, type AuthorTextField } from "./security/SecretTextPolicy.ts";
 import { CoordinatorArchitectRepository } from "./persistence/Services/CoordinatorArchitect.ts";
 import { CoordinatorArchitectRepositoryLive } from "./persistence/Layers/CoordinatorArchitect.ts";
 import { loadDelegationPermissionEnvelope } from "./provider/DelegationPermissionEnvelope.ts";
@@ -641,6 +642,29 @@ const assertBoardCardStartable = (card: BoardCard): BoardError | null =>
         detail: `Board card ${card.cardId} is '${card.status}'; only 'todo' cards can start.`,
       });
 
+const assertBoardCardTextAllowed = (
+  card: Pick<BoardCard, "title" | "body" | "lastError">,
+  operation: string,
+): BoardError | null => {
+  const texts: ReadonlyArray<readonly [AuthorTextField, string]> = [
+    ["title", card.title],
+    ["body", card.body],
+    ...(card.lastError === null ? [] : [["lastError", card.lastError] as const]),
+  ];
+  for (const [field, text] of texts) {
+    try {
+      if (applyAuthorTextPolicy(field, text)._tag === "Accepted") continue;
+    } catch {
+      // A failed check must reject board text.
+    }
+    return new BoardError({
+      operation,
+      detail: `The authored ${field} could not be confirmed secret-free. Remove sensitive values and try again.`,
+    });
+  }
+  return null;
+};
+
 const buildHumanBoardCard = (
   input: BoardCreateInput,
   cardId: BoardCardId,
@@ -944,6 +968,15 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
 
   const create: BoardRpcHandlers["create"] = (input) =>
     Effect.gen(function* () {
+      const textError = assertBoardCardTextAllowed(
+        {
+          title: input.title,
+          body: input.body,
+          lastError: null,
+        },
+        "board.create",
+      );
+      if (textError !== null) return yield* textError;
       const at = yield* deps.now;
       const cardId = BoardCardId.make(
         yield* deps.newId().pipe(Effect.mapError(toBoardError("board.create"))),
@@ -968,6 +1001,8 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         });
       }
       const card = current.value;
+      const textError = assertBoardCardTextAllowed(card, "board.start");
+      if (textError !== null) return yield* textError;
       const notStartable = assertBoardCardStartable(card);
       if (notStartable !== null) {
         return yield* notStartable;
@@ -1041,6 +1076,8 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         archived: input.archived ?? current.value.archived,
         updatedAt: at,
       };
+      const textError = assertBoardCardTextAllowed(next, "board.update");
+      if (textError !== null) return yield* textError;
       yield* repository.updateCard(next).pipe(Effect.mapError(toBoardError("board.update")));
       if (next.archived !== current.value.archived) {
         yield* repository

@@ -38,9 +38,29 @@ import {
   type ReviewPublishDeliveredInput,
   type ReviewPublishFailureInput,
 } from "../Services/CoordinatorArchitect.ts";
+import { applyAuthorTextPolicy, type AuthorTextField } from "../../security/SecretTextPolicy.ts";
 
 const toRepositoryError = (operation: string) => (cause: unknown) =>
   new CoordinatorArchitectRepositoryError({ operation, cause });
+
+const authorTextRejected = (field: AuthorTextField, text: string): boolean => {
+  try {
+    return applyAuthorTextPolicy(field, text)._tag === "Rejected";
+  } catch {
+    return true;
+  }
+};
+
+const authorTextFailure = (
+  operation: string,
+  field: AuthorTextField,
+  text: string,
+): CoordinatorArchitectRepositoryError | null =>
+  authorTextRejected(field, text)
+    ? new CoordinatorArchitectRepositoryError({
+        operation: `${operation}:author_text_rejected`,
+      })
+    : null;
 
 const isIdempotencyConflict = (cause: unknown): cause is CoordinatorArchitectIdempotencyConflict =>
   Predicate.isObject(cause) &&
@@ -713,8 +733,10 @@ const make = Effect.gen(function* () {
 
   const answerReview: CoordinatorArchitectRepositoryShape["answerReview"] = (
     input: ReviewAnswerInput,
-  ) =>
-    withImmediateTransactionRetry(
+  ) => {
+    const textFailure = authorTextFailure("answerReview", "summary", input.summary);
+    if (textFailure !== null) return Effect.fail(textFailure);
+    return withImmediateTransactionRetry(
       Effect.gen(function* () {
         const found = yield* selectReviewById({ reviewId: input.reviewId });
         if (Option.isNone(found)) return { _tag: "state" } as ReviewTransitionResult;
@@ -748,6 +770,7 @@ const make = Effect.gen(function* () {
         return { _tag: "applied" } as ReviewTransitionResult;
       }),
     ).pipe(Effect.mapError(toRepositoryError("answerReview")));
+  };
 
   // Note: architect oclRefs are folded into refs_json under
   // `architectOclRefs` (compact reference events stay on the
@@ -761,6 +784,12 @@ const make = Effect.gen(function* () {
         const found = yield* selectReviewById({ reviewId: input.reviewId });
         if (Option.isNone(found)) return { _tag: "state" } as ReviewTransitionResult;
         const row = found.value;
+        if (
+          authorTextRejected("question", row.question) ||
+          (row.answerSummary !== null && authorTextRejected("summary", row.answerSummary))
+        ) {
+          return { _tag: "unsafe_text" } as ReviewTransitionResult;
+        }
         if (row.status === "published") {
           return row.publishIdempotencyKey === input.publishIdempotencyKey
             ? ({ _tag: "replay" } as ReviewTransitionResult)
@@ -806,8 +835,10 @@ const make = Effect.gen(function* () {
 
   const cancelReview: CoordinatorArchitectRepositoryShape["cancelReview"] = (
     input: ReviewCancelInput,
-  ) =>
-    withImmediateTransactionRetry(
+  ) => {
+    const textFailure = authorTextFailure("cancelReview", "reason", input.reason);
+    if (textFailure !== null) return Effect.fail(textFailure);
+    return withImmediateTransactionRetry(
       Effect.gen(function* () {
         const found = yield* selectReviewById({ reviewId: input.reviewId });
         if (Option.isNone(found)) return { _tag: "state" } as ReviewTransitionResult;
@@ -835,6 +866,7 @@ const make = Effect.gen(function* () {
         return { _tag: "applied" } as ReviewTransitionResult;
       }),
     ).pipe(Effect.mapError(toRepositoryError("cancelReview")));
+  };
 
   const getActiveBindingByCoordinator: CoordinatorArchitectRepositoryShape["getActiveBindingByCoordinator"] =
     (coordinatorThreadId) =>
@@ -926,12 +958,15 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const insertReview: CoordinatorArchitectRepositoryShape["insertReview"] = (input) =>
-    runInsertReview(input).pipe(
+  const insertReview: CoordinatorArchitectRepositoryShape["insertReview"] = (input) => {
+    const textFailure = authorTextFailure("insertReview", "question", input.question);
+    if (textFailure !== null) return Effect.fail(textFailure);
+    return runInsertReview(input).pipe(
       Effect.mapError((cause) =>
         isIdempotencyConflict(cause) ? cause : toRepositoryError("insertReview")(cause),
       ),
     );
+  };
 
   const getReviewById: CoordinatorArchitectRepositoryShape["getReviewById"] = (reviewId) =>
     selectReviewById({ reviewId }).pipe(

@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { McpInvocationScope } from "../../McpInvocationContext.ts";
 import type { DelegatedTaskMemoryRow } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { OrchestrationCommandIdConflictError } from "../../../orchestration/Errors.ts";
@@ -44,6 +45,7 @@ import { CoordinatorArchitectRepositoryLive } from "../../../persistence/Layers/
 import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
 import {
   publishWakeReviewIdFromMessageId,
+  REVIEW_CANCELLED_ACTIVITY,
   REVIEW_WAKE_DELIVERED_ACTIVITY,
   reviewWakeDeliveredMarkerId,
   reviewWakeReviewIdFromMessageId,
@@ -1609,6 +1611,109 @@ describe("phase 1 coordinator/architect service", () => {
     }),
   );
 
+  it.effect(
+    "rejects unsafe review author text before writes and preserves coordinator no-wake",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        const scope = scopeFor(coordinatorId);
+        const created = yield* harness.service.architectCreateOrGet(scope, {
+          coordinatorThreadId: coordinatorId,
+          taskEffort: "medium",
+          idempotencyKey: "author-text-create",
+        });
+        const secret = `ghp_${"A".repeat(32)}`;
+        const unsafeQuestion = yield* Effect.flip(
+          harness.service.architectureReviewRequest(scope, {
+            coordinatorThreadId: coordinatorId,
+            reason: "hard-bug",
+            question: `Unsafe question ${secret}`,
+            executionPosture: "pause-branch",
+            idempotencyKey: "author-text-unsafe-question",
+          }),
+        );
+        assert.strictEqual(unsafeQuestion.code, "author_text_rejected");
+        assert.notInclude(unsafeQuestion.message, secret);
+        assert.deepEqual(
+          yield* harness.store.listReviewsByCoordinator({ coordinatorThreadId: coordinatorId }),
+          [],
+        );
+
+        const safeQuestion = "Question:\r\nKeep these bytes exactly.";
+        const requested = yield* harness.service.architectureReviewRequest(scope, {
+          coordinatorThreadId: coordinatorId,
+          reason: "hard-bug",
+          question: safeQuestion,
+          executionPosture: "pause-branch",
+          idempotencyKey: "author-text-safe-question",
+        });
+        const storedQuestion = yield* harness.store.getReviewById(requested.reviewId);
+        assert.strictEqual(storedQuestion?.question, safeQuestion);
+
+        const archScope = scopeFor(created.architectThreadId, "architect");
+        const unsafeSummary = yield* Effect.flip(
+          harness.service.architectureReviewAnswer(archScope, {
+            reviewId: requested.reviewId,
+            disposition: "recommendation",
+            summary: `Unsafe summary ${secret}`,
+            idempotencyKey: "author-text-unsafe-summary",
+          }),
+        );
+        assert.strictEqual(unsafeSummary.code, "author_text_rejected");
+        assert.notInclude(unsafeSummary.message, secret);
+        assert.strictEqual(
+          (yield* harness.store.getReviewById(requested.reviewId))?.status,
+          "open",
+        );
+
+        const safeSummary = "Summary:\r\nKeep these bytes exactly.";
+        yield* harness.service.architectureReviewAnswer(archScope, {
+          reviewId: requested.reviewId,
+          disposition: "recommendation",
+          summary: safeSummary,
+          idempotencyKey: "author-text-safe-summary",
+        });
+        assert.strictEqual(
+          (yield* harness.store.getReviewById(requested.reviewId))?.answerSummary,
+          safeSummary,
+        );
+
+        const unsafeReason = yield* Effect.flip(
+          harness.service.architectureReviewCancel(scope, {
+            reviewId: requested.reviewId,
+            reason: `Unsafe cancel reason ${secret}`,
+            idempotencyKey: "author-text-unsafe-cancel-reason",
+          }),
+        );
+        assert.strictEqual(unsafeReason.code, "author_text_rejected");
+        assert.notInclude(unsafeReason.message, secret);
+        assert.strictEqual(
+          (yield* harness.store.getReviewById(requested.reviewId))?.status,
+          "answered",
+        );
+        const safeReason = "Cancel note:\r\nKeep these bytes exactly.";
+        yield* harness.service.architectureReviewCancel(scope, {
+          reviewId: requested.reviewId,
+          reason: safeReason,
+          idempotencyKey: "author-text-safe-cancel-reason",
+        });
+        const cancelled = harness.threads
+          .get(coordinatorId)
+          ?.activities.find((activity) => activity.kind === REVIEW_CANCELLED_ACTIVITY);
+        assert.strictEqual(
+          (cancelled?.payload as { readonly reason?: unknown } | undefined)?.reason,
+          safeReason,
+        );
+        assert.strictEqual(
+          harness.dispatched.filter(
+            (command) =>
+              command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+          ).length,
+          0,
+        );
+      }),
+  );
+
   it.effect("wakes the architect once per request and never the coordinator on answers", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
@@ -1970,6 +2075,101 @@ describe("phase 1 coordinator/architect service", () => {
       assert.include(stored?.lastPublishFailure?.message, "[reason=parent_scope_drift]");
       assert.isNotNull(stored?.lastPublishFailure?.attemptedAt);
     }),
+  );
+
+  it.effect("refuses legacy unsafe reviews with metadata and no coordinator delivery marker", () =>
+    Effect.provide(
+      Effect.gen(function* () {
+        const store = yield* CoordinatorArchitectRepository;
+        const sql = yield* SqlClient.SqlClient;
+        const harness = makeHarness(store);
+        const scope = scopeFor(coordinatorId);
+        const secret = `ghp_${"A".repeat(32)}`;
+        const created = yield* harness.service.architectCreateOrGet(scope, {
+          coordinatorThreadId: coordinatorId,
+          taskEffort: "medium",
+          idempotencyKey: "legacy-unsafe-review-create",
+        });
+        const archScope = scopeFor(created.architectThreadId, "architect");
+
+        const unsafeSummaryReview = yield* harness.service.architectureReviewRequest(scope, {
+          coordinatorThreadId: coordinatorId,
+          reason: "hard-bug",
+          question: "Is the answer safe?",
+          executionPosture: "continue",
+          idempotencyKey: "legacy-unsafe-summary-request",
+        });
+        yield* harness.service.architectureReviewAnswer(archScope, {
+          reviewId: unsafeSummaryReview.reviewId,
+          disposition: "recommendation",
+          summary: "Safe before legacy mutation.",
+          idempotencyKey: "legacy-unsafe-summary-answer",
+        });
+        yield* sql`
+          UPDATE architecture_review
+          SET answer_summary = ${`Legacy summary ${secret}`}
+          WHERE review_id = ${unsafeSummaryReview.reviewId}
+        `;
+
+        const unsafeQuestionReview = yield* harness.service.architectureReviewRequest(scope, {
+          coordinatorThreadId: coordinatorId,
+          reason: "hard-bug",
+          question: "Safe before legacy mutation?",
+          executionPosture: "continue",
+          idempotencyKey: "legacy-unsafe-question-request",
+        });
+        yield* harness.service.architectureReviewAnswer(archScope, {
+          reviewId: unsafeQuestionReview.reviewId,
+          disposition: "recommendation",
+          summary: "Safe summary.",
+          idempotencyKey: "legacy-unsafe-question-answer",
+        });
+        yield* sql`
+          UPDATE architecture_review
+          SET question = ${`Legacy question ${secret}`}
+          WHERE review_id = ${unsafeQuestionReview.reviewId}
+        `;
+
+        const coordinatorWakeCount = () =>
+          harness.dispatched.filter(
+            (command) =>
+              command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+          ).length;
+        const beforePublishWakeCount = coordinatorWakeCount();
+        for (const [reviewId, field] of [
+          [unsafeSummaryReview.reviewId, "summary"],
+          [unsafeQuestionReview.reviewId, "question"],
+        ] as const) {
+          const error = yield* Effect.flip(
+            harness.service.publishToCoordinator(archScope, {
+              reviewId,
+              idempotencyKey: `legacy-unsafe-${field}-publish`,
+            }),
+          );
+          assert.strictEqual(error.code, "author_text_rejected");
+          assert.strictEqual(
+            error.message,
+            `The authored ${field} could not be confirmed secret-free. Remove sensitive values and try again.`,
+          );
+          assert.notInclude(error.message, secret);
+
+          const stored = yield* store.getReviewById(reviewId);
+          assert.strictEqual(stored?.status, "answered");
+          assert.isNull(stored?.publishDeliveredAt);
+          assert.strictEqual(stored?.lastPublishFailure?.reason, "author_text_rejected");
+          assert.strictEqual(stored?.lastPublishFailure?.message, error.message);
+        }
+        assert.strictEqual(coordinatorWakeCount(), beforePublishWakeCount);
+        assert.isFalse(
+          (harness.threads.get(coordinatorId)?.activities ?? []).some(
+            (activity) =>
+              activity.kind === "architecture.review-published" ||
+              activity.kind === REVIEW_WAKE_DELIVERED_ACTIVITY,
+          ),
+        );
+      }),
+      CoordinatorArchitectRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
+    ),
   );
 
   it.effect("records a failed publish wake without a silent success, then heals on retry", () =>

@@ -3247,6 +3247,75 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("rejects unsafe board author text before writes and preserves safe text", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const scope = makeScope();
+
+      for (const input of [
+        { title: `Unsafe ${secretToken}`, body: "Safe body." },
+        { title: "Safe title", body: `Unsafe ${secretToken}` },
+      ]) {
+        const error = yield* harness.service
+          .boardCreateCard(scope, { ...input, executorRole: "implementation" })
+          .pipe(Effect.flip);
+        expect(error.code).toBe("author_text_rejected");
+        expect(error.message).not.toContain(secretToken);
+        expect(board.cards.size).toBe(0);
+        expect(board.events.size).toBe(0);
+      }
+
+      const safeTitle = "Review the board\r\nwithout changing bytes";
+      const safeBody = "First line.\r\nSecond line.\n";
+      const card = yield* harness.service.boardCreateCard(scope, {
+        title: safeTitle,
+        body: safeBody,
+        executorRole: "implementation",
+      });
+      expect(card.title).toBe(safeTitle);
+      expect(card.body).toBe(safeBody);
+
+      const unsafeLegacyCard = seedBoardCard(board, { title: `Unsafe ${secretToken}` });
+      const unsafeStart = yield* harness.service
+        .boardUpdateCard(scope, {
+          cardId: unsafeLegacyCard.cardId,
+          status: "in_progress",
+          assignee: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "opencode-go/deepseek-v4.1-flash",
+          },
+          executorThreadId: ThreadId.make("delegated-task:unsafe-board-card"),
+        })
+        .pipe(Effect.flip);
+      expect(unsafeStart.code).toBe("author_text_rejected");
+      expect(unsafeStart.message).not.toContain(secretToken);
+      expect(board.cards.get(unsafeLegacyCard.cardId)?.status).toBe("orchestrator");
+      expect(board.events.get(unsafeLegacyCard.cardId)).toHaveLength(0);
+
+      for (const update of [
+        { title: `Unsafe ${secretToken}` },
+        { body: `Unsafe ${secretToken}` },
+        { lastError: `Unsafe ${secretToken}` },
+      ]) {
+        const error = yield* harness.service
+          .boardUpdateCard(scope, { cardId: card.cardId, ...update })
+          .pipe(Effect.flip);
+        expect(error.code).toBe("author_text_rejected");
+        expect(error.message).not.toContain(secretToken);
+        expect(board.cards.get(card.cardId)?.title).toBe(safeTitle);
+        expect(board.cards.get(card.cardId)?.body).toBe(safeBody);
+        expect(board.cards.get(card.cardId)?.lastError).toBeNull();
+      }
+
+      const updated = yield* harness.service.boardUpdateCard(scope, {
+        cardId: card.cardId,
+        lastError: "A safe note.\r\nKeep these bytes.",
+      });
+      expect(updated.lastError).toBe("A safe note.\r\nKeep these bytes.");
+    }),
+  );
+
   it.effect("creates a card for the calling orchestrator with provenance and history", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard([parentThreadId]);

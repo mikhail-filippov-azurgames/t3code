@@ -34,6 +34,26 @@ describe("SecretTextPolicy", () => {
     expect(applyAuthorTextPolicy("prompt", input)).toEqual({ _tag: "Accepted", text: input });
   });
 
+  it("rejects unsafe review and board author fields without returning secret content", () => {
+    for (const field of ["question", "reason", "summary", "body", "lastError"] as const) {
+      const result = applyAuthorTextPolicy(field, `Review text ${providerToken}`);
+
+      expect(result).toEqual({
+        _tag: "Rejected",
+        error: { _tag: "SecretDetected", field },
+      });
+      expect(JSON.stringify(result)).not.toContain(providerToken);
+    }
+  });
+
+  it("preserves safe review and board author fields byte-for-byte", () => {
+    const input = "Question and summary:\r\nKeep this line.\n";
+
+    for (const field of ["question", "reason", "summary", "body", "lastError"] as const) {
+      expect(applyAuthorTextPolicy(field, input)).toEqual({ _tag: "Accepted", text: input });
+    }
+  });
+
   it("identifies rejected free-text handoff values", () => {
     const result = applyAuthorTextPolicy("handoff", `Use ${providerToken} for access.`);
 

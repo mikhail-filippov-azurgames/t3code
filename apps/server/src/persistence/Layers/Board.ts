@@ -14,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Struct from "effect/Struct";
+import { applyAuthorTextPolicy, type AuthorTextField } from "../../security/SecretTextPolicy.ts";
 
 import {
   AddBoardOrchestratorInput,
@@ -61,6 +62,26 @@ const toBoardRepositoryError =
   (operation: string) =>
   (cause: unknown): BoardRepositoryError =>
     new BoardRepositoryError({ operation, cause });
+
+const boardCardAuthorTextFailure = (card: BoardCard): BoardRepositoryError | null => {
+  const texts: ReadonlyArray<readonly [AuthorTextField, string]> = [
+    ["title", card.title],
+    ["body", card.body],
+    ...(card.lastError === null ? [] : [["lastError", card.lastError] as const]),
+  ];
+  for (const [field, text] of texts) {
+    try {
+      if (applyAuthorTextPolicy(field, text)._tag === "Accepted") continue;
+    } catch {
+      // A failed check must reject persisted board text.
+    }
+    return new BoardRepositoryError({
+      operation: `BoardRepository.${field}:author_text_rejected`,
+      detail: `The authored ${field} could not be confirmed secret-free. Remove sensitive values and try again.`,
+    });
+  }
+  return null;
+};
 
 const makeBoardRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -323,15 +344,23 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.getCard:query")),
     );
 
-  const createCard: BoardRepositoryShape["createCard"] = (card) =>
-    insertCardRow(card).pipe(
-      Effect.mapError(toBoardRepositoryError("BoardRepository.createCard:query")),
-    );
+  const createCard: BoardRepositoryShape["createCard"] = (card) => {
+    const textFailure = boardCardAuthorTextFailure(card);
+    return textFailure === null
+      ? insertCardRow(card).pipe(
+          Effect.mapError(toBoardRepositoryError("BoardRepository.createCard:query")),
+        )
+      : Effect.fail(textFailure);
+  };
 
-  const updateCard: BoardRepositoryShape["updateCard"] = (card) =>
-    updateCardRow(card).pipe(
-      Effect.mapError(toBoardRepositoryError("BoardRepository.updateCard:query")),
-    );
+  const updateCard: BoardRepositoryShape["updateCard"] = (card) => {
+    const textFailure = boardCardAuthorTextFailure(card);
+    return textFailure === null
+      ? updateCardRow(card).pipe(
+          Effect.mapError(toBoardRepositoryError("BoardRepository.updateCard:query")),
+        )
+      : Effect.fail(textFailure);
+  };
 
   const deleteCard: BoardRepositoryShape["deleteCard"] = (cardId) =>
     deleteCardRow({ cardId }).pipe(

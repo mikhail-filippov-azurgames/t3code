@@ -1,4 +1,13 @@
-export type AuthorTextField = "prompt" | "message" | "title" | "handoff";
+export type AuthorTextField =
+  | "prompt"
+  | "message"
+  | "title"
+  | "handoff"
+  | "question"
+  | "reason"
+  | "summary"
+  | "body"
+  | "lastError";
 
 export type DerivedTextPurpose = "summary" | "wake" | "completion-preview" | "read";
 

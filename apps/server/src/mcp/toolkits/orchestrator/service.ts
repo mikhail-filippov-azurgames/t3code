@@ -448,6 +448,15 @@ function failure(code: OrchestratorMcpFailureCode, message: string): Orchestrato
   return new OrchestratorMcpFailure({ code, message });
 }
 
+function rejectedAuthorTextField(field: AuthorTextField, text: string): AuthorTextField | null {
+  try {
+    return applyAuthorTextPolicy(field, text)._tag === "Accepted" ? null : field;
+  } catch {
+    // A failed check must reject authored text just like a detected secret.
+    return field;
+  }
+}
+
 function ensureAuthorTextAllowed(field: AuthorTextField, text: string) {
   try {
     if (applyAuthorTextPolicy(field, text)._tag === "Accepted") return Effect.void;
@@ -3703,6 +3712,13 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       Effect.gen(function* () {
         yield* requireCapability(scope);
         yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "own boards");
+        yield* Effect.all(
+          [
+            ensureAuthorTextAllowed("title", input.title),
+            ensureAuthorTextAllowed("body", input.body),
+          ],
+          { discard: true },
+        );
         const repo = yield* requireBoardRepository();
         yield* requireRegisteredOrchestrator(repo, scope);
         const at = yield* nowIso();
@@ -3765,6 +3781,16 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ...(input.archived === undefined ? {} : { archived: input.archived }),
           updatedAt: at,
         };
+        yield* Effect.all(
+          [
+            ensureAuthorTextAllowed("title", next.title),
+            ensureAuthorTextAllowed("body", next.body),
+            ...(next.lastError === null
+              ? []
+              : [ensureAuthorTextAllowed("lastError", next.lastError)]),
+          ],
+          { discard: true },
+        );
         // The reactor matches cards by executor thread; without a linked
         // executor and model a card would sit in progress forever.
         if (
@@ -4303,6 +4329,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "A review request requires an explicit executionPosture: continue, pause-branch, or pause-all.",
           );
         }
+        yield* ensureAuthorTextAllowed("question", input.question);
         const at = yield* nowIso();
         const coordinatorThreadId = input.coordinatorThreadId;
         const binding = yield* store
@@ -4342,6 +4369,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           })
           .pipe(Effect.mapError(mapStoreError("insert architecture review")));
         const review = outcome.review;
+        yield* ensureAuthorTextAllowed("question", review.question);
         // Ordered intent first: architect aggregate carries the request,
         // coordinator aggregate carries only the typed no-wake reference.
         // Deterministic command ids also repair an exact retry after a crash
@@ -4416,6 +4444,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "Only the bound architect thread may answer its own reviews.",
           );
         }
+        yield* ensureAuthorTextAllowed("summary", input.summary);
         const fingerprint = hash({
           summary: input.summary,
           disposition: input.disposition,
@@ -4501,9 +4530,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "Only the coordinator thread itself (or a human on it) may cancel this review.",
           );
         }
+        yield* ensureAuthorTextAllowed("reason", input.reason);
         const transition = yield* store
           .cancelReview({
             reviewId: review.reviewId,
+            reason: input.reason,
             cancelIdempotencyKey: input.idempotencyKey,
             cancelPayloadFingerprint: hash({
               reason: input.reason,
@@ -4595,6 +4626,18 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "Only the bound architect or the coordinator may publish this review.",
           );
         }
+        const unsafeField =
+          rejectedAuthorTextField("question", review.question) ??
+          (review.answerSummary === null
+            ? null
+            : rejectedAuthorTextField("summary", review.answerSummary));
+        if (unsafeField !== null) {
+          return yield* refuse(
+            review.reviewId,
+            "author_text_rejected",
+            `The authored ${unsafeField} could not be confirmed secret-free. Remove sensitive values and try again.`,
+          );
+        }
         const binding = yield* store
           .getBindingById(review.bindingId)
           .pipe(Effect.mapError(mapStoreError("read architect binding")));
@@ -4629,6 +4672,13 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             review.reviewId,
             "review_state_conflict",
             "Only answered reviews can be published.",
+          );
+        }
+        if (transition._tag === "unsafe_text") {
+          return yield* refuse(
+            review.reviewId,
+            "author_text_rejected",
+            "The stored review contains sensitive text and cannot be published. Remove sensitive values and try again.",
           );
         }
         const stored =

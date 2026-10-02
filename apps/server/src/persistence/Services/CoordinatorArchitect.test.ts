@@ -214,6 +214,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
       // Publish-then-cancel is rejected: published is terminal.
       const lateCancel = yield* repository.cancelReview({
         reviewId: "review-1",
+        reason: "No longer needed.",
         cancelIdempotencyKey: "cancel-1",
         cancelPayloadFingerprint: "cancel-fp-1",
         cancelledAt: at,
@@ -312,6 +313,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
       yield* repository.insertReview(review);
       const cancelled = yield* repository.cancelReview({
         reviewId: "review-2",
+        reason: "No longer needed.",
         cancelIdempotencyKey: "cancel-1",
         cancelPayloadFingerprint: "cancel-fp-1",
         cancelledAt: at,
@@ -320,6 +322,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
       assert.deepEqual(cancelled, { _tag: "applied" });
       const replay = yield* repository.cancelReview({
         reviewId: "review-2",
+        reason: "No longer needed.",
         cancelIdempotencyKey: "cancel-1",
         cancelPayloadFingerprint: "cancel-fp-1",
         cancelledAt: at,
@@ -328,6 +331,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
       assert.deepEqual(replay, { _tag: "replay" });
       const cancelConflict = yield* repository.cancelReview({
         reviewId: "review-2",
+        reason: "No longer needed.",
         cancelIdempotencyKey: "cancel-1",
         cancelPayloadFingerprint: "cancel-fp-changed",
         cancelledAt: at,
@@ -343,6 +347,100 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
       assert.deepEqual(latePublish, { _tag: "state" });
       const stored = yield* repository.getReviewById("review-2");
       assert.strictEqual(stored?.status, "cancelled");
+    }),
+  );
+
+  it.effect("guards review text at the repository boundary and refuses unsafe legacy publish", () =>
+    Effect.gen(function* () {
+      const repository = yield* CoordinatorArchitectRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const secret = `ghp_${"A".repeat(32)}`;
+      const coordinatorThreadId = "coordinator-secret-review";
+      yield* repository.createOrGetBinding(
+        bindingInput({
+          bindingId: "binding-secret-review",
+          coordinatorThreadId,
+          architectThreadId: "arch:coordinator-secret-review",
+        }),
+      );
+
+      const rejectedQuestion = yield* Effect.flip(
+        repository.insertReview(
+          reviewInput({
+            reviewId: "review-storage-unsafe-question",
+            bindingId: "binding-secret-review",
+            coordinatorThreadId,
+            architectThreadId: "arch:coordinator-secret-review",
+            question: `Is this safe? ${secret}`,
+            requestIdempotencyKey: "request-storage-unsafe-question",
+          }),
+        ),
+      );
+      assert.notInclude(String(rejectedQuestion), secret);
+      assert.isNull(yield* repository.getReviewById("review-storage-unsafe-question"));
+
+      yield* repository.insertReview(
+        reviewInput({
+          reviewId: "review-storage-safe",
+          bindingId: "binding-secret-review",
+          coordinatorThreadId,
+          architectThreadId: "arch:coordinator-secret-review",
+          question: "Keep this question byte-for-byte.\r\nSecond line.",
+          requestIdempotencyKey: "request-storage-safe",
+        }),
+      );
+      const rejectedSummary = yield* Effect.flip(
+        repository.answerReview({
+          reviewId: "review-storage-safe",
+          disposition: "recommendation",
+          summary: `Ship it ${secret}`,
+          oclRefs: [],
+          answerIdempotencyKey: "answer-storage-unsafe",
+          answerPayloadFingerprint: "answer-storage-unsafe-fp",
+          answeredAt: at,
+        }),
+      );
+      assert.notInclude(String(rejectedSummary), secret);
+      assert.strictEqual((yield* repository.getReviewById("review-storage-safe"))?.status, "open");
+
+      const rejectedReason = yield* Effect.flip(
+        repository.cancelReview({
+          reviewId: "review-storage-safe",
+          reason: `Cancel because ${secret}`,
+          cancelIdempotencyKey: "cancel-storage-unsafe",
+          cancelPayloadFingerprint: "cancel-storage-unsafe-fp",
+          cancelledAt: at,
+          cancelledBy: "human",
+        }),
+      );
+      assert.notInclude(String(rejectedReason), secret);
+      assert.strictEqual((yield* repository.getReviewById("review-storage-safe"))?.status, "open");
+
+      yield* repository.answerReview({
+        reviewId: "review-storage-safe",
+        disposition: "recommendation",
+        summary: "Safe summary.\r\nKeep the exact bytes.",
+        oclRefs: [],
+        answerIdempotencyKey: "answer-storage-safe",
+        answerPayloadFingerprint: "answer-storage-safe-fp",
+        answeredAt: at,
+      });
+      yield* sql`
+        UPDATE architecture_review
+        SET question = ${`Legacy question ${secret}`}
+        WHERE review_id = 'review-storage-safe'
+      `;
+
+      const publish = yield* repository.publishReview({
+        reviewId: "review-storage-safe",
+        publishIdempotencyKey: "publish-storage-legacy",
+        publishedAt: at,
+      });
+      assert.deepEqual(publish, { _tag: "unsafe_text" });
+      const stored = yield* repository.getReviewById("review-storage-safe");
+      assert.strictEqual(stored?.status, "answered");
+      assert.isNull(stored?.publishDeliveredAt);
+      assert.strictEqual(stored?.answerSummary, "Safe summary.\r\nKeep the exact bytes.");
     }),
   );
 

@@ -28,6 +28,7 @@ const ORCHESTRATOR = ThreadId.make("orch-thread");
 const CHILD = ThreadId.make("child-thread");
 const ARCHITECT = ThreadId.make("arch:board-rpc-denied");
 const AT = "2026-09-20T00:00:00.000Z";
+const SECRET = `ghp_${"A".repeat(32)}`;
 
 describe("Phase 1 board RPC compatibility", () => {
   it("keeps the existing board orchestrator RPC names", () => {
@@ -230,21 +231,48 @@ describe("board RPC handlers", () => {
   it.effect("create stamps a human todo card and appends a history entry", () =>
     Effect.gen(function* () {
       const { handlers, state } = makeHarness();
+      const title = "New task\r\nwith an internal line";
+      const body = "Do it.\r\nPreserve the line endings.\n";
 
       const card = yield* handlers.create({
         orchestratorThreadId: ORCHESTRATOR,
-        title: "New task",
-        body: "Do it.",
+        title,
+        body,
         executorRole: "implementation",
       });
 
       assert.strictEqual(card.status, "todo");
       assert.strictEqual(card.createdBy, "human");
       assert.strictEqual(card.executorThreadId, null);
+      assert.strictEqual(card.title, title);
+      assert.strictEqual(card.body, body);
       assert.strictEqual(card.cardId, BoardCardId.make("generated-id"));
       assert.strictEqual(state.cards.length, 1);
       assert.strictEqual(state.events.length, 1);
       assert.strictEqual(state.events[0]?.cardId, card.cardId);
+    }),
+  );
+
+  it.effect("rejects unsafe card text before create writes", () =>
+    Effect.gen(function* () {
+      const { handlers, state } = makeHarness();
+
+      for (const input of [
+        { title: `Unsafe ${SECRET}`, body: "Safe body." },
+        { title: "Safe title", body: `Unsafe ${SECRET}` },
+      ]) {
+        const error = yield* Effect.flip(
+          handlers.create({
+            orchestratorThreadId: ORCHESTRATOR,
+            ...input,
+            executorRole: "implementation",
+          }),
+        );
+        assert.instanceOf(error, BoardError);
+        assert.notInclude(error.detail, SECRET);
+        assert.strictEqual(state.cards.length, 0);
+        assert.strictEqual(state.events.length, 0);
+      }
     }),
   );
 
@@ -305,6 +333,30 @@ describe("board RPC handlers", () => {
       assert.strictEqual(error.operation, "board.start");
       assert.strictEqual(state.cards[0]?.status, "review");
       assert.strictEqual(dispatched.length, 0);
+    }),
+  );
+
+  it.effect("does not start unsafe legacy cards or notify their orchestrator", () =>
+    Effect.gen(function* () {
+      for (const card of [
+        makeCard({ title: `Unsafe ${SECRET}` }),
+        makeCard({ body: `Unsafe ${SECRET}` }),
+        makeCard({ lastError: `Unsafe ${SECRET}` }),
+      ]) {
+        const { handlers, state, dispatched } = makeHarness({
+          cards: [card],
+          shells: [makeThread({ id: ORCHESTRATOR })],
+        });
+
+        const error = yield* Effect.flip(handlers.start({ cardId: card.cardId }));
+
+        assert.instanceOf(error, BoardError);
+        assert.strictEqual(error.operation, "board.start");
+        assert.notInclude(error.detail, SECRET);
+        assert.strictEqual(state.cards[0]?.status, "todo");
+        assert.strictEqual(state.events.length, 0);
+        assert.strictEqual(dispatched.length, 0);
+      }
     }),
   );
 

@@ -8,7 +8,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { BoardRepositoryLive } from "../Layers/Board.ts";
 import { SqlitePersistenceMemory } from "../Layers/Sqlite.ts";
-import { BoardRepository, buildBoardCardEvent } from "./Board.ts";
+import { BoardRepository, BoardRepositoryError, buildBoardCardEvent } from "./Board.ts";
 
 const repositoryLayer = it.layer(
   BoardRepositoryLive.pipe(Layer.provideMerge(SqlitePersistenceMemory)),
@@ -229,6 +229,74 @@ repositoryLayer("BoardRepository", (it) => {
       );
       assert.equal(events.length, 1);
       assert.equal(events[0]?.cardId, BoardCardId.make("card-3a"));
+    }),
+  );
+
+  it.effect("rejects unsafe author text at the storage boundary and preserves safe bytes", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const threadId = ThreadId.make("thread-secret-board-text");
+      const secret = `ghp_${"A".repeat(32)}`;
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      for (const unsafe of [
+        makeCard({
+          cardId: BoardCardId.make("unsafe-board-title"),
+          orchestratorThreadId: threadId,
+          title: `Unsafe title ${secret}`,
+        }),
+        makeCard({
+          cardId: BoardCardId.make("unsafe-board-body"),
+          orchestratorThreadId: threadId,
+          body: `Unsafe body ${secret}`,
+        }),
+      ]) {
+        const error = yield* Effect.flip(repository.createCard(unsafe));
+        assert.instanceOf(error, BoardRepositoryError);
+        assert.notInclude(error.message, secret);
+      }
+      assert.equal(
+        (yield* repository.listCards()).filter(
+          (candidate) => candidate.orchestratorThreadId === threadId,
+        ).length,
+        0,
+      );
+
+      const safe = makeCard({
+        cardId: BoardCardId.make("safe-board-text"),
+        orchestratorThreadId: threadId,
+        title: "Board text\r\nwith unchanged bytes",
+        body: "First line.\r\nSecond line.\n",
+      });
+      yield* repository.createCard(safe);
+      const stored = yield* repository.getCard(safe.cardId);
+      assert.isTrue(Option.isSome(stored));
+      if (Option.isSome(stored)) {
+        assert.equal(stored.value.title, safe.title);
+        assert.equal(stored.value.body, safe.body);
+      }
+
+      for (const unsafeUpdate of [
+        { ...safe, title: `Unsafe title ${secret}` },
+        { ...safe, body: `Unsafe body ${secret}` },
+        { ...safe, lastError: `Unsafe error ${secret}` },
+      ]) {
+        const error = yield* Effect.flip(repository.updateCard(unsafeUpdate));
+        assert.instanceOf(error, BoardRepositoryError);
+        assert.notInclude(error.message, secret);
+        const unchanged = yield* repository.getCard(safe.cardId);
+        assert.isTrue(Option.isSome(unchanged));
+        if (Option.isSome(unchanged)) {
+          assert.equal(unchanged.value.title, safe.title);
+          assert.equal(unchanged.value.body, safe.body);
+          assert.isNull(unchanged.value.lastError);
+        }
+      }
     }),
   );
 });

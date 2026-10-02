@@ -103,6 +103,7 @@ export interface ReviewPublishFailureInput {
 
 export interface ReviewCancelInput {
   readonly reviewId: string;
+  readonly reason: string;
   readonly cancelIdempotencyKey: string;
   readonly cancelPayloadFingerprint: string;
   readonly cancelledAt: string;
@@ -113,6 +114,7 @@ export type ReviewTransitionResult =
   | { readonly _tag: "applied" }
   | { readonly _tag: "replay" }
   | { readonly _tag: "conflict" }
+  | { readonly _tag: "unsafe_text" }
   | { readonly _tag: "state" };
 
 export interface CoordinatorArchitectRepositoryShape {
