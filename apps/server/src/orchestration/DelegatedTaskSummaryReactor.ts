@@ -29,6 +29,7 @@ import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { DelegatedTaskSummaryRepository } from "../persistence/Services/DelegatedTaskSummaries.ts";
 import { scrubDelegatedTaskText } from "../DelegatedTaskMemoryText.ts";
+import { projectDerivedText } from "../security/SecretTextPolicy.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -81,14 +82,17 @@ export function deterministicDelegatedSummary(
   events: string,
 ): string {
   const outcome = `Outcome: ${status}`;
-  const safeReport = scrubDelegatedTaskText(report);
-  const safeEvents = scrubDelegatedTaskText(events);
+  const safeReport = projectDerivedText("summary", scrubDelegatedTaskText(report));
+  const safeEvents = projectDerivedText("summary", scrubDelegatedTaskText(events));
   const reportPart =
     safeReport.trim().length === 0
       ? "No final assistant text was recorded."
       : compact(safeReport, 430);
   const eventsPart = safeEvents.length === 0 ? "" : ` Evidence: ${compact(safeEvents, 130)}`;
-  return compact(`${outcome}. Report: ${reportPart}.${eventsPart}`, MAX_SUMMARY_CHARS);
+  return projectDerivedText(
+    "summary",
+    compact(`${outcome}. Report: ${reportPart}.${eventsPart}`, MAX_SUMMARY_CHARS),
+  );
 }
 
 export interface DelegatedSummaryGenerationContext {
@@ -108,11 +112,21 @@ export function buildDelegatedSummaryGenerationInput(
   const taskContext = [
     "Summarize a completed delegated engineering task turn. Do not invent facts.",
     `Turn status: ${compact(context.status, 40)}.`,
-    `Previous summary: ${compact(scrubDelegatedTaskText(context.previousSummary ?? "(none)"), MAX_SUMMARY_CHARS)}`,
+    `Previous summary: ${compact(
+      projectDerivedText("summary", scrubDelegatedTaskText(context.previousSummary ?? "(none)")),
+      MAX_SUMMARY_CHARS,
+    )}`,
     "Return a short subject and 1-3 concise factual detail bullets covering changes, checks, and blockers where present.",
   ].join("\n");
-  const report = compact(scrubDelegatedTaskText(context.report), MAX_REPORT_CHARS);
-  const events = compact(scrubDelegatedTaskText(context.events), MAX_EVENT_CHARS);
+  const safeTaskContext = projectDerivedText("summary", taskContext);
+  const report = compact(
+    projectDerivedText("summary", scrubDelegatedTaskText(context.report)),
+    MAX_REPORT_CHARS,
+  );
+  const events = compact(
+    projectDerivedText("summary", scrubDelegatedTaskText(context.events)),
+    MAX_EVENT_CHARS,
+  );
   const stagedPatch = [
     `Child final report (${context.sourceTurnId}):`,
     report,
@@ -122,10 +136,13 @@ export function buildDelegatedSummaryGenerationInput(
     .join("\n\n")
     .slice(0, MAX_REPORT_CHARS + MAX_EVENT_CHARS + 256);
   return {
-    cwd: scrubDelegatedTaskText(context.cwd).slice(0, 1_024),
-    branch: context.branch === null ? null : scrubDelegatedTaskText(context.branch).slice(0, 256),
-    stagedSummary: taskContext,
-    stagedPatch,
+    cwd: projectDerivedText("summary", scrubDelegatedTaskText(context.cwd)).slice(0, 1_024),
+    branch:
+      context.branch === null
+        ? null
+        : projectDerivedText("summary", scrubDelegatedTaskText(context.branch)).slice(0, 256),
+    stagedSummary: safeTaskContext,
+    stagedPatch: projectDerivedText("summary", stagedPatch),
     modelSelection: context.modelSelection,
   };
 }
@@ -200,12 +217,19 @@ export const make = Effect.gen(function* () {
         const childInput = childInputOption.value;
         if (childInput.parentThreadId !== work.parentThreadId) return;
         const sourceReport = childInput.assistantText ?? terminal.resultExcerpt ?? "";
-        const report = compact(scrubDelegatedTaskText(sourceReport), MAX_REPORT_CHARS);
+        const report = compact(
+          projectDerivedText("summary", scrubDelegatedTaskText(sourceReport)),
+          MAX_REPORT_CHARS,
+        );
         const turnEvents = childInput.activities.map(
-          (activity) => `${activity.kind}: ${scrubDelegatedTaskText(activity.summary)}`,
+          (activity) =>
+            `${activity.kind}: ${projectDerivedText(
+              "summary",
+              scrubDelegatedTaskText(activity.summary),
+            )}`,
         );
         const eventContext = compact(
-          scrubDelegatedTaskText(turnEvents.join("\n")),
+          projectDerivedText("summary", scrubDelegatedTaskText(turnEvents.join("\n"))),
           MAX_EVENT_CHARS,
         );
         const previous = yield* summaries.getLatestBefore({
@@ -214,17 +238,26 @@ export const make = Effect.gen(function* () {
           completedAt: terminal.completedAt,
         });
         const fingerprint = stableFingerprint({
-          previousSummary: scrubDelegatedTaskText(previous?.text ?? ""),
+          previousSummary: projectDerivedText(
+            "summary",
+            scrubDelegatedTaskText(previous?.text ?? ""),
+          ),
           report,
           events: eventContext,
           status: terminal.status,
-          terminalError: scrubDelegatedTaskText(terminal.terminalError ?? ""),
+          terminalError: projectDerivedText(
+            "summary",
+            scrubDelegatedTaskText(terminal.terminalError ?? ""),
+          ),
         });
         const sourceTurnIds = [
           ...new Set([...(previous?.sourceTurnIds ?? []), sourceTurnId]),
         ].slice(-MAX_SOURCE_TURNS);
         const watermark = childInput.threadWatermark;
-        const fallback = deterministicDelegatedSummary(terminal.status, report, eventContext);
+        const fallback = projectDerivedText(
+          "summary",
+          deterministicDelegatedSummary(terminal.status, report, eventContext),
+        );
         if (existing === null) {
           yield* summaries.insertPending({
             childThreadId,
@@ -250,7 +283,7 @@ export const make = Effect.gen(function* () {
           yield* summaries.complete({
             childThreadId,
             sourceTurnId,
-            text: scrubDelegatedTaskText(previous.text),
+            text: projectDerivedText("summary", scrubDelegatedTaskText(previous.text)),
             source: previous.source,
             sourceTurnIds,
             watermark,
@@ -313,7 +346,10 @@ export const make = Effect.gen(function* () {
 
         const result = yield* Effect.result(textGeneration.generateCommitMessage(generationInput));
         if (Result.isSuccess(result)) {
-          const generatedText = formatDelegatedSummary(result.success);
+          const generatedText = projectDerivedText(
+            "summary",
+            formatDelegatedSummary(result.success),
+          );
           yield* summaries.complete({
             childThreadId,
             sourceTurnId,
@@ -328,7 +364,10 @@ export const make = Effect.gen(function* () {
         }
 
         const error =
-          compact(scrubDelegatedTaskText(result.failure.message), 500) || "Text generation failed.";
+          compact(
+            projectDerivedText("summary", scrubDelegatedTaskText(result.failure.message)),
+            500,
+          ) || "Text generation failed.";
         const failureTime = DateTime.formatIso(yield* DateTime.now);
         yield* summaries.fail({
           childThreadId,

@@ -1186,6 +1186,7 @@ describe("ProviderRuntimeIngestion", () => {
     );
     const anchorText =
       "A delegated child finished. Read the bounded preview above. If it is insufficient for your decision, use task_read with the child task ID to read the full transcript.";
+    const secret = "sk_live_0123456789ABCDEF";
     const now = "2026-01-01T00:00:00.000Z";
 
     await harness.dispatch({
@@ -1238,6 +1239,15 @@ describe("ProviderRuntimeIngestion", () => {
       runtimeMode: "approval-required",
       createdAt: now,
     });
+    await harness.dispatch({
+      type: "thread.message.assistant.delta",
+      commandId: CommandId.make("child-assistant-output"),
+      threadId: childThreadId,
+      messageId: asMessageId("child-assistant-output"),
+      delta: `Final result: finished. Credential: ${secret}`,
+      turnId: delegatedTurnId,
+      createdAt: now,
+    });
     await harness.emitAndDrain([
       {
         type: "turn.started",
@@ -1263,6 +1273,22 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread?.messages.filter((message) => message.role === "user")).toEqual([
       expect.objectContaining({ id: anchorMessageId, text: anchorText, turnId: null }),
     ]);
+    const firstSystemWake = thread?.messages.find((message) => message.role === "system");
+    expect(firstSystemWake?.text).toContain("Final result: finished.");
+    expect(firstSystemWake?.text).toContain("[REDACTED]");
+    expect(firstSystemWake?.text).not.toContain(secret);
+    const firstCompletion = thread?.activities.find(
+      (activity) => activity.kind === "delegation.completed",
+    );
+    expect(firstCompletion?.payload).toMatchObject({
+      status: "completed",
+      outputStatus: "available",
+      resultExcerpt: "Final result: finished. Credential: [REDACTED]",
+    });
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === childThreadId)?.latestTurn
+        ?.state,
+    ).toBe("completed");
     const pendingStart = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStart)).toBe(true);
     expect(Option.getOrThrow(pendingStart).messageId).toBe(anchorMessageId);
@@ -1279,7 +1305,15 @@ describe("ProviderRuntimeIngestion", () => {
       },
     ]);
     thread = (await harness.readModel()).threads.find((entry) => entry.id === parentThreadId);
+    expect(
+      thread?.activities.filter((activity) => activity.kind === "delegation.completed"),
+    ).toHaveLength(1);
     expect(thread?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(thread?.messages.filter((message) => message.role === "system")).toHaveLength(1);
+    expect(
+      (await harness.readModel()).threads.find((entry) => entry.id === childThreadId)?.latestTurn
+        ?.state,
+    ).toBe("completed");
     const pendingStartAfterReplay = await harness.readPendingTurnStart(parentThreadId);
     expect(Option.isSome(pendingStartAfterReplay)).toBe(true);
     expect(Option.getOrThrow(pendingStartAfterReplay).messageId).toBe(anchorMessageId);

@@ -488,6 +488,7 @@ interface HarnessOptions {
   readonly beforeDispatch?: (command: OrchestrationCommand) => Effect.Effect<void>;
   readonly patchParentShell?: (shell: OrchestrationThreadShell) => OrchestrationThreadShell;
   readonly board?: NonNullable<OrchestratorMcpDependencies["board"]>;
+  readonly summaryText?: string;
 }
 
 function gateConcurrentFollowUpReceipts() {
@@ -813,7 +814,18 @@ function makeHarness(options: HarnessOptions = {}): {
             hasPendingUserInput: false,
             hasPendingFollowUp,
             threadWatermark: child.activities.length,
-            summary: null,
+            summary:
+              options.summaryText === undefined || child.latestTurn === null
+                ? null
+                : {
+                    sourceTurnId: child.latestTurn.turnId,
+                    text: options.summaryText,
+                    source: "model" as const,
+                    sourceTurnIds: [child.latestTurn.turnId],
+                    watermark: child.activities.length,
+                    state: "ready" as const,
+                    error: null,
+                  },
           };
         });
         return { rows, hasMore: page.length > limit };
@@ -1939,6 +1951,7 @@ describe("OrchestratorMcpService", () => {
       const harness = makeHarness();
       const scope = makeScope();
       const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const secret = "sk_live_0123456789ABCDEF";
       const delegatedTurnId = bindDelegatedTurn(
         harness,
         delegated.taskId,
@@ -1963,7 +1976,7 @@ describe("OrchestratorMcpService", () => {
           {
             id: delegatedAssistantId,
             role: "assistant",
-            text: "Delegated result",
+            text: `Delegated result ${secret}`,
             turnId: delegatedTurnId,
             streaming: false,
             createdAt: now,
@@ -2047,7 +2060,7 @@ describe("OrchestratorMcpService", () => {
       expect(status.status).toBe("completed");
       expect(status.lineage.delegatedTurnId).toBe(delegatedTurnId);
       expect(status.result).toMatchObject({
-        text: "Delegated result",
+        text: "Delegated result [REDACTED]",
         assistantMessageId: delegatedAssistantId,
         checkpointRef: "checkpoint-one",
       });
@@ -2062,6 +2075,13 @@ describe("OrchestratorMcpService", () => {
           evidence: "provider-executed",
         },
       });
+
+      const replayed = yield* harness.service.delegateTask(scope, delegateInput());
+      expect(replayed.status).toBe("completed");
+      expect(replayed.result?.text).toBe("Delegated result [REDACTED]");
+      const waited = yield* harness.service.taskWait(scope, delegated.taskId, 1);
+      expect(waited.status).toBe("completed");
+      expect(waited.result?.text).toBe("Delegated result [REDACTED]");
       const dispatchCount = harness.dispatched.length;
       const cancelled = yield* harness.service.taskCancel(scope, delegated.taskId);
       expect(cancelled.status).toBe("completed");
@@ -3500,7 +3520,8 @@ describe("OrchestratorMcpService", () => {
 
   it.effect("scrubs credentials from delegated metadata, snippets, and search input", () =>
     Effect.gen(function* () {
-      const harness = makeHarness();
+      const transcriptSecret = "sk_live_0123456789ABCDEF";
+      const harness = makeHarness({ summaryText: `Task summary ${transcriptSecret}` });
       const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
       const taskId = ThreadId.make("memory-child-secret");
       const base = memoryChild(taskId, { role: `api_key=${secret}` });
@@ -3508,13 +3529,22 @@ describe("OrchestratorMcpService", () => {
         ...base,
         title: `Task token=${secret}`,
         worktreePath: `${workspaceRoot}/${secret}`,
+        messages: base.messages.map((message) => ({
+          ...message,
+          text: `Report is complete. Credential: ${transcriptSecret}`,
+        })),
         activities: base.activities.map((activity) => {
           if (activity.kind !== "delegation.created" || !Predicate.isObject(activity.payload)) {
             return activity;
           }
           return {
             ...activity,
-            payload: { ...activity.payload, role: `api_key=${secret}` },
+            summary: `Task completed with ${transcriptSecret}`,
+            payload: {
+              ...activity.payload,
+              role: `api_key=${secret}`,
+              resultExcerpt: `Provider output ${transcriptSecret}`,
+            },
           };
         }),
       } as OrchestrationThread;
@@ -3526,6 +3556,7 @@ describe("OrchestratorMcpService", () => {
       expect(entry.role).not.toContain(secret);
       expect(entry.worktreePath).not.toContain(secret);
       expect(entry.summary?.text).not.toContain(secret);
+      expect(entry.summary?.text).toBe("Task summary [REDACTED]");
       expect(entry.title).toContain("[REDACTED]");
 
       const searched = yield* harness.service.taskSearch(makeScope(), { query: secret });
@@ -3535,6 +3566,19 @@ describe("OrchestratorMcpService", () => {
       expect(searched.tasks[0]?.role).not.toContain(secret);
       expect(searched.tasks[0]?.worktreePath).not.toContain(secret);
       expect(searched.tasks[0]?.summary?.text).not.toContain(secret);
+
+      const transcript = yield* harness.service.taskRead(makeScope(), { taskId });
+      expect(transcript.messages[0]?.text).toBe("Report is complete. Credential: [REDACTED]");
+      const transcriptActivity = transcript.activities.find(
+        (activity) => activity.kind === "delegation.created",
+      );
+      expect(transcriptActivity).toMatchObject({
+        summary: "Task completed with [REDACTED]",
+        payload: {
+          role: "api_key=[REDACTED]",
+          resultExcerpt: "Provider output [REDACTED]",
+        },
+      });
     }),
   );
 });

@@ -167,6 +167,68 @@ repositoryLayer("DelegatedTaskSummaryRepository", (it) => {
     }),
   );
 
+  it.effect("redacts summaries on write and when reading legacy rows", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const secret = "sk_live_0123456789ABCDEF";
+      const redactedChildThreadId = ThreadId.make("summary-child-redacted");
+      const redactedTurnId = TurnId.make("summary-turn-redacted");
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, created_at, updated_at
+        ) VALUES (
+          ${redactedChildThreadId}, 'summary-project', 'Child', '{"instanceId":"codex","model":"gpt-5"}',
+          'full-access', ${firstAt}, ${firstAt}
+        )
+      `;
+      const repository = yield* DelegatedTaskSummaryRepository;
+
+      yield* repository.insertPending(
+        pendingRow({
+          childThreadId: redactedChildThreadId,
+          sourceTurnId: redactedTurnId,
+          sourceTurnIds: [redactedTurnId],
+          text: `Stored summary ${secret}`,
+        }),
+      );
+      let stored = yield* sql<{ readonly summary_text: string }>`
+        SELECT summary_text FROM projection_delegated_task_summaries
+        WHERE child_thread_id = ${redactedChildThreadId} AND source_turn_id = ${redactedTurnId}
+      `;
+      assert.notInclude(stored[0]?.summary_text ?? "", secret);
+      assert.include(stored[0]?.summary_text ?? "", "[REDACTED]");
+
+      yield* repository.complete({
+        childThreadId: redactedChildThreadId,
+        sourceTurnId: redactedTurnId,
+        text: `Generated summary ${secret}`,
+        source: "model",
+        sourceTurnIds: [redactedTurnId],
+        watermark: 12,
+        contentFingerprint: "fingerprint-1",
+        updatedAt: secondAt,
+      });
+      let projected = yield* repository.getByTurn({
+        childThreadId: redactedChildThreadId,
+        sourceTurnId: redactedTurnId,
+      });
+      assert.notInclude(projected?.text ?? "", secret);
+      assert.include(projected?.text ?? "", "[REDACTED]");
+
+      yield* sql`
+        UPDATE projection_delegated_task_summaries
+        SET summary_text = ${`Legacy summary ${secret}`}
+        WHERE child_thread_id = ${redactedChildThreadId} AND source_turn_id = ${redactedTurnId}
+      `;
+      projected = yield* repository.getByTurn({
+        childThreadId: redactedChildThreadId,
+        sourceTurnId: redactedTurnId,
+      });
+      assert.notInclude(projected?.text ?? "", secret);
+      assert.include(projected?.text ?? "", "[REDACTED]");
+    }),
+  );
+
   it.effect("never reclaims a paid generation after a crash before summary completion", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

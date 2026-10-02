@@ -14,6 +14,7 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import * as Struct from "effect/Struct";
 
 import { scrubDelegatedTaskText } from "../../DelegatedTaskMemoryText.ts";
+import { projectDerivedText } from "../../security/SecretTextPolicy.ts";
 import {
   DelegatedTaskSummaryRepository,
   DelegatedTaskSummaryRepositoryError,
@@ -83,6 +84,9 @@ const toRepositoryError =
   (operation: string) =>
   (cause: unknown): DelegatedTaskSummaryRepositoryError =>
     new DelegatedTaskSummaryRepositoryError({ operation, cause });
+
+const safeSummaryText = (text: string) =>
+  projectDerivedText("summary", scrubDelegatedTaskText(text));
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -208,8 +212,8 @@ const make = Effect.gen(function* () {
     effect.pipe(Effect.mapError(toRepositoryError(operation)));
   const mapRecord = (row: typeof DbSummaryRow.Type): DelegatedTaskSummaryRecord => ({
     ...row,
-    text: scrubDelegatedTaskText(row.text),
-    error: row.error === null ? null : scrubDelegatedTaskText(row.error),
+    text: safeSummaryText(row.text),
+    error: row.error === null ? null : safeSummaryText(row.error),
   });
   const getByTurn: DelegatedTaskSummaryRepositoryShape["getByTurn"] = (input) =>
     mapRead("getByTurn", selectByTurn(input)).pipe(
@@ -243,16 +247,15 @@ const make = Effect.gen(function* () {
         "insertPending",
         insertPending({
           ...row,
-          text: scrubDelegatedTaskText(row.text),
-          error: row.error === null ? null : scrubDelegatedTaskText(row.error),
+          text: safeSummaryText(row.text),
+          error: row.error === null ? null : safeSummaryText(row.error),
         }),
       ),
     claimGeneration: (input) =>
       mapRead("claimGeneration", claimGenerationRow(input)).pipe(Effect.map(Option.isSome)),
     complete: (input) =>
-      wrap("complete", updateComplete({ ...input, text: scrubDelegatedTaskText(input.text) })),
-    fail: (input) =>
-      wrap("fail", updateFailure({ ...input, error: scrubDelegatedTaskText(input.error) })),
+      wrap("complete", updateComplete({ ...input, text: safeSummaryText(input.text) })),
+    fail: (input) => wrap("fail", updateFailure({ ...input, error: safeSummaryText(input.error) })),
   } satisfies DelegatedTaskSummaryRepositoryShape;
 });
 

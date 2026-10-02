@@ -25,6 +25,7 @@ import {
   layer as delegatedTaskSummaryReactorLayer,
 } from "./DelegatedTaskSummaryReactor.ts";
 import { scrubDelegatedTaskText } from "../DelegatedTaskMemoryText.ts";
+import { projectDerivedText } from "../security/SecretTextPolicy.ts";
 import * as OrchestrationEngine from "./Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -36,13 +37,14 @@ import {
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 
 it("bounds delegated summary inputs and preserves the configured text generation selection", () => {
+  const cleanReport = "Final report preserves punctuation: caf\u00e9; checks passed.";
   const input = buildDelegatedSummaryGenerationInput({
     cwd: "/workspace/child",
     branch: "feature/delegated-summary",
     status: "completed",
     previousSummary: "previous summary ".repeat(100),
     sourceTurnId: TurnId.make("child-turn-1"),
-    report: "final report ".repeat(1_000),
+    report: cleanReport,
     events: "checkpoint event\n".repeat(500),
     modelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
   });
@@ -52,6 +54,7 @@ it("bounds delegated summary inputs and preserves the configured text generation
   assert.isAtMost(input.stagedPatch.length, 5_000 + 1_800 + 256);
   assert.include(input.stagedSummary, "Previous summary:");
   assert.include(input.stagedPatch, "Child final report (child-turn-1):");
+  assert.include(input.stagedPatch, cleanReport);
 });
 
 it("formats short structured output and a bounded deterministic fallback", () => {
@@ -72,24 +75,27 @@ it("formats short structured output and a bounded deterministic fallback", () =>
   assert.include(fallback, "Report:");
 });
 
-it("scrubs common dummy credentials before generation, fallback, and indexing text", () => {
-  const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+it("redacts secret text before generation, fallback, and indexing text", () => {
+  const secret = "sk_live_0123456789ABCDEF";
   const input = buildDelegatedSummaryGenerationInput({
     cwd: "/workspace/child",
     branch: "feature/scrub",
     status: "completed",
-    previousSummary: `token=${secret}`,
+    previousSummary: `previous summary ${secret}`,
     sourceTurnId: TurnId.make("child-turn-secret"),
-    report: `Authorization: Bearer ${secret}; api_key: "${secret}"`,
-    events: `remote https://user:${secret}@example.test/repo`,
+    report: `Final report ${secret}; Authorization: Bearer ${secret}`,
+    events: `remote output ${secret}`,
     modelSelection: DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
   });
   const fallback = deterministicDelegatedSummary(
     "failed",
-    `failed with token=${secret}`,
+    `failed with ${secret}`,
     `authorization: Bearer ${secret}`,
   );
-  const indexedText = scrubDelegatedTaskText(`title contains ${secret}`);
+  const indexedText = projectDerivedText(
+    "summary",
+    scrubDelegatedTaskText(`title contains ${secret}`),
+  );
 
   for (const value of [input.stagedSummary, input.stagedPatch, fallback, indexedText]) {
     assert.notInclude(value, secret);
@@ -124,7 +130,7 @@ it.effect(
         const turnA = TurnId.make("summary-pipeline-turn-a");
         const turnB = TurnId.make("summary-pipeline-turn-b");
         const turnC = TurnId.make("summary-pipeline-turn-crash-window");
-        const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+        const secret = "sk_live_0123456789ABCDEF";
         const parentEnvironmentId = "summary-pipeline-environment";
         const keyOf = (childThreadId: ThreadId, sourceTurnId: TurnId) =>
           `${childThreadId}\u0000${sourceTurnId}`;
@@ -136,8 +142,8 @@ it.effect(
             parentThreadId,
             branch: "feature/task-memory",
             worktreePath: `/workspace/${childThreadId}`,
-            assistantText: `Final report Authorization: Bearer ${secret}`,
-            activities: [{ kind: "tool.completed", summary: `api_key=${secret}` }],
+            assistantText: `Final report ${secret}`,
+            activities: [{ kind: "tool.completed", summary: `Tool returned ${secret}` }],
             threadWatermark: 42,
           });
         }
@@ -274,13 +280,13 @@ it.effect(
               yield* Queue.offer(generationRequests, input);
               if (input.cwd.endsWith(childA)) {
                 return {
-                  subject: `Implemented with token=${secret}`,
+                  subject: `Implemented with ${secret}`,
                   body: "- Focused validation passed.",
                 };
               }
               return yield* new TextGenerationError({
                 operation: "generateCommitMessage",
-                detail: `provider unavailable api_key=${secret}`,
+                detail: `provider unavailable ${secret}`,
               });
             }),
         });

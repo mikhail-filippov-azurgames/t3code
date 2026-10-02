@@ -336,3 +336,16 @@ export function applyDerivedTextPolicy(
   parts.push(input.slice(cursor));
   return { _tag: "Redacted", text: parts.join(""), redactedCount: spans.length };
 }
+
+/** Returns only redacted text if the derived-text check itself fails. */
+export function projectDerivedText(
+  purpose: DerivedTextPurpose,
+  input: string,
+  policy: typeof applyDerivedTextPolicy = applyDerivedTextPolicy,
+): string {
+  try {
+    return policy(purpose, input).text;
+  } catch {
+    return SECRET_REDACTION_LABEL;
+  }
+}

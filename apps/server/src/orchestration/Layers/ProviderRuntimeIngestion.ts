@@ -59,6 +59,7 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { canReplaceThreadTitle } from "../threadTitles.ts";
 import { BOARD_ORCHESTRATOR_TURN_TEXT } from "../boardWakePrompt.ts";
 import { scrubDelegatedTaskText } from "../../DelegatedTaskMemoryText.ts";
+import { projectDerivedText } from "../../security/SecretTextPolicy.ts";
 import {
   delegatedChildTurnKey,
   handledDelegationWakeMessageIds,
@@ -1183,7 +1184,7 @@ const make = Effect.gen(function* () {
       message: {
         messageId: directTurnMessageId,
         role: "user",
-        text: DELEGATION_WAKE_TURN_MESSAGE_TEXT,
+        text: projectDerivedText("wake", DELEGATION_WAKE_TURN_MESSAGE_TEXT),
         attachments: [],
       },
       runtimeMode: parentShell.value.runtimeMode,
@@ -1204,6 +1205,7 @@ const make = Effect.gen(function* () {
   }) {
     const safeAssistantText =
       input.assistantText === null ? "" : scrubDelegatedTaskText(input.assistantText);
+    const completionPreview = projectDerivedText("completion-preview", safeAssistantText);
     const reportedOutputStatus =
       input.status === "completed"
         ? (input.outputStatus ?? (safeAssistantText.length > 0 ? "available" : "unavailable"))
@@ -1217,12 +1219,15 @@ const make = Effect.gen(function* () {
     const terminalErrorExcerpt =
       input.terminalError === undefined
         ? undefined
-        : truncateDetail(scrubDelegatedTaskText(input.terminalError), 200);
+        : truncateDetail(
+            projectDerivedText("completion-preview", scrubDelegatedTaskText(input.terminalError)),
+            200,
+          );
     const resultExcerpt =
       input.status !== "completed"
         ? undefined
         : outputStatus === "available"
-          ? truncateDetail(safeAssistantText, 200)
+          ? truncateDetail(completionPreview, 200)
           : outputStatus === "empty"
             ? "Complete provider history confirms no assistant text was produced."
             : "Assistant output unavailable; the provider turn completed and was not replayed.";
@@ -1264,7 +1269,10 @@ const make = Effect.gen(function* () {
       threadId: input.parentThreadId,
       message: {
         messageId: wakeMessageId,
-        text: `Delegated child ${input.childThreadId} ${input.status}. Preview: ${preview}. ${taskReadHint}`,
+        text: projectDerivedText(
+          "wake",
+          `Delegated child ${input.childThreadId} ${input.status}. Preview: ${preview}. ${taskReadHint}`,
+        ),
       },
       createdAt: input.completedAt,
     });

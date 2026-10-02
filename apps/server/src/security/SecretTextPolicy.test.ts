@@ -4,6 +4,7 @@ import {
   applyAuthorTextPolicy,
   applyDerivedTextPolicy,
   detectSecrets,
+  projectDerivedText,
   SECRET_REDACTION_LABEL,
 } from "./SecretTextPolicy.ts";
 
@@ -59,9 +60,22 @@ describe("SecretTextPolicy", () => {
     const result = applyDerivedTextPolicy("wake", input);
 
     expect(result).toEqual({ _tag: "Unchanged", text: input });
+    expect(projectDerivedText("wake", input)).toBe(input);
     if (result._tag === "Unchanged") {
       expect(Buffer.from(result.text).equals(Buffer.from(input))).toBe(true);
     }
+  });
+
+  it("fails closed when the derived-text check throws", () => {
+    const secret = `output ${providerToken}`;
+    const brokenPolicy: typeof applyDerivedTextPolicy = () => {
+      throw new Error("injected policy failure");
+    };
+
+    const projected = projectDerivedText("read", secret, brokenPolicy);
+
+    expect(projected).toBe(SECRET_REDACTION_LABEL);
+    expect(projected).not.toContain(providerToken);
   });
 
   it("does not include a rejected secret in its result or logs", () => {

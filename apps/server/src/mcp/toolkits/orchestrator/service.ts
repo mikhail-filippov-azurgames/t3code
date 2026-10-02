@@ -146,7 +146,11 @@ import { McpSessionRegistry } from "../../McpSessionRegistry.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { McpInvocationScope } from "../../McpInvocationContext.ts";
-import { applyAuthorTextPolicy, type AuthorTextField } from "../../../security/SecretTextPolicy.ts";
+import {
+  applyAuthorTextPolicy,
+  projectDerivedText,
+  type AuthorTextField,
+} from "../../../security/SecretTextPolicy.ts";
 
 const DELEGATION_CREATED_ACTIVITY = "delegation.created";
 const DELEGATION_CANCEL_REQUESTED_ACTIVITY = "delegation.cancel-requested";
@@ -176,6 +180,18 @@ const TASK_ACTIVITY_KINDS = [
   "user-input.resolved",
   ...COORDINATOR_ARCHITECT_ACTIVITY_KINDS,
 ] as const;
+
+function projectReadTextValue<T>(value: T): T {
+  if (typeof value === "string") return projectDerivedText("read", value) as T;
+  if (Array.isArray(value)) return value.map(projectReadTextValue) as T;
+  if (Predicate.isObject(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, projectReadTextValue(nested)]),
+    ) as T;
+  }
+  return value;
+}
+
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isCoordinatorArchitectIdempotencyConflict = Schema.is(
   CoordinatorArchitectIdempotencyConflict,
@@ -981,7 +997,10 @@ function toTaskMemoryEntry(
     summary:
       summary === null
         ? {
-            text: scrubDelegatedTaskText(`${role || "Task"}: ${title}`).slice(0, 240),
+            text: projectDerivedText(
+              "summary",
+              scrubDelegatedTaskText(`${role || "Task"}: ${title}`),
+            ).slice(0, 240),
             source: "deterministic",
             sourceTurnIds: row.latestTurnId === null ? [] : [row.latestTurnId],
             watermark: 0,
@@ -990,7 +1009,7 @@ function toTaskMemoryEntry(
             error: null,
           }
         : {
-            text: scrubDelegatedTaskText(summary.text).slice(0, 600),
+            text: projectDerivedText("summary", scrubDelegatedTaskText(summary.text)).slice(0, 600),
             source: summary.source,
             sourceTurnIds: summary.sourceTurnIds.slice(-ORCHESTRATOR_MCP_TASK_SOURCE_TURN_IDS_MAX),
             watermark: summary.watermark,
@@ -1000,7 +1019,10 @@ function toTaskMemoryEntry(
               summary.watermark < row.threadWatermark ||
               row.hasPendingFollowUp,
             state: summary.state,
-            error: summary.error === null ? null : scrubDelegatedTaskText(summary.error),
+            error:
+              summary.error === null
+                ? null
+                : projectDerivedText("summary", scrubDelegatedTaskText(summary.error)),
           },
   };
 }
@@ -1782,7 +1804,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       const result =
         status === "completed"
           ? {
-              text: assistant?.text ?? "",
+              text: projectDerivedText("read", assistant?.text ?? ""),
               outputStatus: outputStatus ?? "unavailable",
               assistantMessageId: assistant?.id ?? null,
               checkpointRef: checkpoint?.checkpointRef ?? null,
@@ -1797,11 +1819,13 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
                 startFailure.payload.code === "provider_configuration_changed"
                   ? ("provider_configuration_changed" as const)
                   : ("orchestration_error" as const),
-              message:
+              message: projectDerivedText(
+                "read",
                 (Predicate.isObject(startFailure?.payload) &&
                 typeof startFailure.payload.detail === "string"
                   ? startFailure.payload.detail
                   : undefined) ?? "The delegated provider turn failed.",
+              ),
             }
           : null;
       const providerEvidence = findObservedProvider(thread, lineage);
@@ -3341,8 +3365,15 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         return {
           taskId: child.taskId,
           title: toTaskMemoryEntry(child).title,
-          messages: detail.thread.messages,
-          activities: detail.thread.activities,
+          messages: detail.thread.messages.map((message) => ({
+            ...message,
+            text: projectDerivedText("read", message.text),
+          })),
+          activities: detail.thread.activities.map((activity) => ({
+            ...activity,
+            summary: projectDerivedText("read", activity.summary),
+            payload: projectReadTextValue(activity.payload),
+          })),
           page,
         };
       }),
