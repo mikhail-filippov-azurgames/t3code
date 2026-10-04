@@ -50,6 +50,7 @@ import {
   ProjectionTurnRepository,
   type ProjectionTurn,
 } from "../persistence/Services/ProjectionTurns.ts";
+import { projectDerivedText } from "../security/SecretTextPolicy.ts";
 import { forkParked } from "../serverActivation.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
@@ -201,7 +202,7 @@ export const make = Effect.gen(function* () {
     yield* appendCardSystemMessage(
       next,
       input.at,
-      `Board card "${next.title}" (${next.cardId}): ${input.reason} ${input.outcome} (failure streak ${failureStreak})${needsHuman ? " - needs human" : ""}. ${input.note}`,
+      `Board card "${projectDerivedText("summary", next.title)}" (${next.cardId}): ${input.reason} ${input.outcome} (failure streak ${failureStreak})${needsHuman ? " - needs human" : ""}. ${input.note}`,
       input.key,
     );
   });
@@ -235,7 +236,7 @@ export const make = Effect.gen(function* () {
       yield* appendCardSystemMessage(
         next,
         at,
-        `Board card "${next.title}" (${next.cardId}): executor finished successfully; moved to review.`,
+        `Board card "${projectDerivedText("summary", next.title)}" (${next.cardId}): executor finished successfully; moved to review.`,
         `terminal:${terminal.delegatedTurnId}`,
       );
       return;

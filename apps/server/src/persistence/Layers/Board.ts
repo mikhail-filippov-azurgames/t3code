@@ -63,13 +63,25 @@ const toBoardRepositoryError =
   (cause: unknown): BoardRepositoryError =>
     new BoardRepositoryError({ operation, cause });
 
-const boardCardAuthorTextFailure = (card: BoardCard): BoardRepositoryError | null => {
-  const texts: ReadonlyArray<readonly [AuthorTextField, string]> = [
-    ["title", card.title],
-    ["body", card.body],
-    ...(card.lastError === null ? [] : [["lastError", card.lastError] as const]),
+const boardCardAuthorTextFailure = (
+  card: BoardCard,
+  previous?: Pick<BoardCard, "title" | "body" | "lastError">,
+): BoardRepositoryError | null => {
+  const texts: ReadonlyArray<readonly [AuthorTextField, string, boolean]> = [
+    ["title", card.title, previous === undefined || card.title !== previous.title],
+    ["body", card.body, previous === undefined || card.body !== previous.body],
+    ...(card.lastError === null
+      ? []
+      : [
+          [
+            "lastError",
+            card.lastError,
+            previous === undefined || card.lastError !== previous.lastError,
+          ] as const,
+        ]),
   ];
-  for (const [field, text] of texts) {
+  for (const [field, text, changed] of texts) {
+    if (!changed) continue;
     try {
       if (applyAuthorTextPolicy(field, text)._tag === "Accepted") continue;
     } catch {
@@ -338,11 +350,14 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.listCards:query")),
     );
 
-  const getCard: BoardRepositoryShape["getCard"] = (cardId) =>
+  const getCardById = (cardId: BoardCardId, operation: string) =>
     getCardRow({ cardId }).pipe(
       Effect.map(Option.map(toBoardCard)),
-      Effect.mapError(toBoardRepositoryError("BoardRepository.getCard:query")),
+      Effect.mapError(toBoardRepositoryError(operation)),
     );
+
+  const getCard: BoardRepositoryShape["getCard"] = (cardId) =>
+    getCardById(cardId, "BoardRepository.getCard:query");
 
   const createCard: BoardRepositoryShape["createCard"] = (card) => {
     const textFailure = boardCardAuthorTextFailure(card);
@@ -353,14 +368,17 @@ const makeBoardRepository = Effect.gen(function* () {
       : Effect.fail(textFailure);
   };
 
-  const updateCard: BoardRepositoryShape["updateCard"] = (card) => {
-    const textFailure = boardCardAuthorTextFailure(card);
-    return textFailure === null
-      ? updateCardRow(card).pipe(
-          Effect.mapError(toBoardRepositoryError("BoardRepository.updateCard:query")),
-        )
-      : Effect.fail(textFailure);
-  };
+  const updateCard: BoardRepositoryShape["updateCard"] = (card) =>
+    getCardById(card.cardId, "BoardRepository.updateCard:read").pipe(
+      Effect.flatMap((previous) => {
+        const textFailure = boardCardAuthorTextFailure(card, Option.getOrUndefined(previous));
+        return textFailure === null
+          ? updateCardRow(card).pipe(
+              Effect.mapError(toBoardRepositoryError("BoardRepository.updateCard:query")),
+            )
+          : Effect.fail(textFailure);
+      }),
+    );
 
   const deleteCard: BoardRepositoryShape["deleteCard"] = (cardId) =>
     deleteCardRow({ cardId }).pipe(

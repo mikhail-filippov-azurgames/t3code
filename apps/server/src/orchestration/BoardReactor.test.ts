@@ -33,6 +33,7 @@ import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
 const NOW = "2026-09-20T12:00:00.000Z";
+const secretToken = `ghp_${"A".repeat(32)}`;
 const ORCHESTRATOR_ID = ThreadId.make("orchestrator-1");
 const EXECUTOR_ID = ThreadId.make("executor-1");
 
@@ -268,8 +269,8 @@ const runScenario = (
   );
 
 describe("BoardReactor", () => {
-  it.effect("moves an in-progress card to review on executor success", () =>
-    runScenario({ cards: [makeCard()] }, (fixture) =>
+  it.effect("redacts an inherited unsafe title when an executor succeeds", () =>
+    runScenario({ cards: [makeCard({ title: `Unsafe ${secretToken}` })] }, (fixture) =>
       Effect.gen(function* () {
         yield* handle(fixture, terminalEvent({ status: "completed" }));
 
@@ -292,6 +293,8 @@ describe("BoardReactor", () => {
         if (command?.type === "thread.message.system.append") {
           assert.equal(command.threadId, ORCHESTRATOR_ID);
           assert.include(command.message.text, "moved to review");
+          assert.include(command.message.text, "[REDACTED]");
+          assert.notInclude(command.message.text, secretToken);
         }
       }),
     ),
@@ -401,41 +404,51 @@ describe("BoardReactor", () => {
     ),
   );
 
-  it.effect("recovers an in-progress card whose executor session was orphaned by a restart", () =>
-    runScenario(
-      {
-        cards: [makeCard()],
-        shells: [
-          makeShell({ id: ORCHESTRATOR_ID }),
-          makeShell({ id: EXECUTOR_ID, session: makeSession(EXECUTOR_ID, "error") }),
-        ],
-      },
-      (fixture) =>
-        Effect.gen(function* () {
-          // `start` runs the recovery sweep inline, before the body.
-          const updates = yield* Ref.get(fixture.updates);
-          assert.equal(updates.length, 1);
-          assert.equal(updates[0]?.status, "orchestrator");
-          assert.equal(updates[0]?.outcome, "cancelled");
-          assert.equal(updates[0]?.executorThreadId, null);
-          assert.equal(updates[0]?.failureStreak, 1);
-          assert.equal(updates[0]?.lastError, "executor session lost after restart");
+  it.effect(
+    "recovers an orphaned executor without writing an inherited unsafe title to the coordinator thread",
+    () =>
+      runScenario(
+        {
+          cards: [makeCard({ title: `Unsafe ${secretToken}` })],
+          shells: [
+            makeShell({ id: ORCHESTRATOR_ID }),
+            makeShell({ id: EXECUTOR_ID, session: makeSession(EXECUTOR_ID, "error") }),
+          ],
+        },
+        (fixture) =>
+          Effect.gen(function* () {
+            // `start` runs the recovery sweep inline, before the body.
+            const updates = yield* Ref.get(fixture.updates);
+            assert.equal(updates.length, 1);
+            assert.equal(updates[0]?.status, "orchestrator");
+            assert.equal(updates[0]?.outcome, "cancelled");
+            assert.equal(updates[0]?.executorThreadId, null);
+            assert.equal(updates[0]?.failureStreak, 1);
+            assert.equal(updates[0]?.lastError, "executor session lost after restart");
 
-          const appends = yield* Ref.get(fixture.appends);
-          assert.deepEqual(
-            appends.map((entry) => entry.body),
-            ["executor session lost after restart: cancelled"],
-          );
+            const appends = yield* Ref.get(fixture.appends);
+            assert.deepEqual(
+              appends.map((entry) => entry.body),
+              ["executor session lost after restart: cancelled"],
+            );
 
-          const commands = yield* Ref.get(fixture.commands);
-          const wake = commands.find((command) => command.type === "thread.turn.start");
-          assert.isDefined(wake);
-          if (wake?.type === "thread.turn.start") {
-            assert.equal(wake.threadId, ORCHESTRATOR_ID);
-            assert.equal(wake.message.messageId, "board:card-wake:card-1");
-          }
-        }),
-    ),
+            const commands = yield* Ref.get(fixture.commands);
+            const wake = commands.find((command) => command.type === "thread.turn.start");
+            assert.isDefined(wake);
+            if (wake?.type === "thread.turn.start") {
+              assert.equal(wake.threadId, ORCHESTRATOR_ID);
+              assert.equal(wake.message.messageId, "board:card-wake:card-1");
+            }
+            const systemMessage = commands.find(
+              (command) => command.type === "thread.message.system.append",
+            );
+            assert.isDefined(systemMessage);
+            if (systemMessage?.type === "thread.message.system.append") {
+              assert.include(systemMessage.message.text, "[REDACTED]");
+              assert.notInclude(systemMessage.message.text, secretToken);
+            }
+          }),
+      ),
   );
 
   it.effect("leaves a card with a live executor session untouched on startup", () =>

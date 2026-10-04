@@ -3247,7 +3247,7 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect("rejects unsafe board author text before writes and preserves safe text", () =>
+  it.effect("rejects unsafe starts and text writes but allows legacy metadata updates", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard([parentThreadId]);
       const harness = makeHarness({ board: board.repo });
@@ -3277,7 +3277,14 @@ describe("OrchestratorMcpService", () => {
       expect(card.body).toBe(safeBody);
 
       const unsafeLegacyCard = seedBoardCard(board, { title: `Unsafe ${secretToken}` });
-      const unsafeStart = yield* harness.service
+      const statusUpdatedLegacy = yield* harness.service.boardUpdateCard(scope, {
+        cardId: unsafeLegacyCard.cardId,
+        status: "review",
+      });
+      expect(statusUpdatedLegacy.status).toBe("review");
+      expect(statusUpdatedLegacy.title).toBe(unsafeLegacyCard.title);
+
+      const startError = yield* harness.service
         .boardUpdateCard(scope, {
           cardId: unsafeLegacyCard.cardId,
           status: "in_progress",
@@ -3288,10 +3295,17 @@ describe("OrchestratorMcpService", () => {
           executorThreadId: ThreadId.make("delegated-task:unsafe-board-card"),
         })
         .pipe(Effect.flip);
-      expect(unsafeStart.code).toBe("author_text_rejected");
-      expect(unsafeStart.message).not.toContain(secretToken);
-      expect(board.cards.get(unsafeLegacyCard.cardId)?.status).toBe("orchestrator");
-      expect(board.events.get(unsafeLegacyCard.cardId)).toHaveLength(0);
+      expect(startError.code).toBe("author_text_rejected");
+      expect(startError.message).not.toContain(secretToken);
+      expect(board.cards.get(unsafeLegacyCard.cardId)?.status).toBe("review");
+      expect(board.events.get(unsafeLegacyCard.cardId)).toHaveLength(1);
+
+      const archivedLegacy = yield* harness.service.boardUpdateCard(scope, {
+        cardId: unsafeLegacyCard.cardId,
+        archived: true,
+      });
+      expect(archivedLegacy.archived).toBe(true);
+      expect(archivedLegacy.title).toBe(unsafeLegacyCard.title);
 
       for (const update of [
         { title: `Unsafe ${secretToken}` },

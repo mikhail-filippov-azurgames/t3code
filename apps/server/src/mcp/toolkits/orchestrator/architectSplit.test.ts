@@ -46,6 +46,8 @@ import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
 import {
   publishWakeReviewIdFromMessageId,
   REVIEW_CANCELLED_ACTIVITY,
+  REVIEW_REQUESTED_ACTIVITY,
+  REVIEW_REQUESTED_REF_ACTIVITY,
   REVIEW_WAKE_DELIVERED_ACTIVITY,
   reviewWakeDeliveredMarkerId,
   reviewWakeReviewIdFromMessageId,
@@ -1712,6 +1714,96 @@ describe("phase 1 coordinator/architect service", () => {
           0,
         );
       }),
+  );
+
+  it.effect("rejects unsafe architect close reasons before state writes", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const scope = scopeFor(coordinatorId);
+      const created = yield* harness.service.architectCreateOrGet(scope, {
+        coordinatorThreadId: coordinatorId,
+        taskEffort: "medium",
+        idempotencyKey: "unsafe-close-reason-create",
+      });
+      const secret = `ghp_${"A".repeat(32)}`;
+      const dispatchCount = harness.dispatched.length;
+
+      for (const close of [
+        () =>
+          harness.service.architectDetach(scope, {
+            coordinatorThreadId: coordinatorId,
+            reason: `Unsafe detach reason ${secret}`,
+            idempotencyKey: "unsafe-detach-reason",
+          }),
+        () =>
+          harness.service.architectReplace(scope, {
+            coordinatorThreadId: coordinatorId,
+            taskEffort: "medium",
+            modelSelection: architectModelSelection,
+            routingEvidence: architectRoutingEvidence("medium"),
+            reason: `Unsafe replace reason ${secret}`,
+            idempotencyKey: "unsafe-replace-reason",
+          }),
+      ]) {
+        const error = yield* Effect.flip(close());
+        assert.strictEqual(error.code, "author_text_rejected");
+        assert.notInclude(error.message, secret);
+      }
+
+      assert.strictEqual(
+        (yield* harness.store.getActiveBindingByCoordinator(coordinatorId))?.bindingId,
+        created.binding.bindingId,
+      );
+      assert.strictEqual(harness.dispatched.length, dispatchCount);
+      assert.isFalse(harness.revoked.includes(created.architectThreadId));
+    }),
+  );
+
+  it.effect("rechecks the stored review question before appending activities", () =>
+    Effect.gen(function* () {
+      const backing = makeMemoryStore();
+      const secret = `ghp_${"A".repeat(32)}`;
+      const store: CoordinatorArchitectRepositoryShape = {
+        ...backing,
+        insertReview: (input) =>
+          Effect.map(backing.insertReview(input), (outcome) => {
+            const review = { ...outcome.review, question: `Unsafe stored question ${secret}` };
+            backing.reviews.set(review.reviewId, review);
+            return { ...outcome, review };
+          }),
+      };
+      const harness = makeHarness(store);
+      const scope = scopeFor(coordinatorId);
+      const created = yield* harness.service.architectCreateOrGet(scope, {
+        coordinatorThreadId: coordinatorId,
+        taskEffort: "medium",
+        idempotencyKey: "stored-unsafe-question-create",
+      });
+      const error = yield* Effect.flip(
+        harness.service.architectureReviewRequest(scope, {
+          coordinatorThreadId: coordinatorId,
+          reason: "hard-bug",
+          question: "Safe request before storage mutation.",
+          executionPosture: "continue",
+          idempotencyKey: "stored-unsafe-question-request",
+        }),
+      );
+
+      assert.strictEqual(error.code, "author_text_rejected");
+      assert.notInclude(error.message, secret);
+      const stored = [...backing.reviews.values()][0];
+      assert.strictEqual(stored?.question, `Unsafe stored question ${secret}`);
+      assert.isFalse(
+        harness.threads
+          .get(created.architectThreadId)
+          ?.activities.some((activity) => activity.kind === REVIEW_REQUESTED_ACTIVITY) ?? false,
+      );
+      assert.isFalse(
+        harness.threads
+          .get(coordinatorId)
+          ?.activities.some((activity) => activity.kind === REVIEW_REQUESTED_REF_ACTIVITY) ?? false,
+      );
+    }),
   );
 
   it.effect("wakes the architect once per request and never the coordinator on answers", () =>

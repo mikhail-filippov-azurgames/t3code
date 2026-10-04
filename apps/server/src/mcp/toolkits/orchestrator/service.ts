@@ -3781,13 +3781,20 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ...(input.archived === undefined ? {} : { archived: input.archived }),
           updatedAt: at,
         };
+        const startingExecution = card.status !== "in_progress" && next.status === "in_progress";
+        const lastErrorCheck =
+          next.lastError === null || (!startingExecution && next.lastError === card.lastError)
+            ? []
+            : [ensureAuthorTextAllowed("lastError", next.lastError)];
         yield* Effect.all(
           [
-            ensureAuthorTextAllowed("title", next.title),
-            ensureAuthorTextAllowed("body", next.body),
-            ...(next.lastError === null
-              ? []
-              : [ensureAuthorTextAllowed("lastError", next.lastError)]),
+            ...(startingExecution || next.title !== card.title
+              ? [ensureAuthorTextAllowed("title", next.title)]
+              : []),
+            ...(startingExecution || next.body !== card.body
+              ? [ensureAuthorTextAllowed("body", next.body)]
+              : []),
+            ...lastErrorCheck,
           ],
           { discard: true },
         );
@@ -3960,6 +3967,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           parent.thread,
           "replace the architect",
         );
+        yield* ensureAuthorTextAllowed("reason", input.reason);
         const at = yield* nowIso();
         const coordinatorThreadId = input.coordinatorThreadId;
         const newBindingId = deterministicId(
@@ -4247,6 +4255,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           parent.thread,
           "detach the architect",
         );
+        yield* ensureAuthorTextAllowed("reason", input.reason);
         const at = yield* nowIso();
         const coordinatorThreadId = input.coordinatorThreadId;
         const active = yield* store

@@ -645,13 +645,23 @@ const assertBoardCardStartable = (card: BoardCard): BoardError | null =>
 const assertBoardCardTextAllowed = (
   card: Pick<BoardCard, "title" | "body" | "lastError">,
   operation: string,
+  previous?: Pick<BoardCard, "title" | "body" | "lastError">,
 ): BoardError | null => {
-  const texts: ReadonlyArray<readonly [AuthorTextField, string]> = [
-    ["title", card.title],
-    ["body", card.body],
-    ...(card.lastError === null ? [] : [["lastError", card.lastError] as const]),
+  const texts: ReadonlyArray<readonly [AuthorTextField, string, boolean]> = [
+    ["title", card.title, previous === undefined || card.title !== previous.title],
+    ["body", card.body, previous === undefined || card.body !== previous.body],
+    ...(card.lastError === null
+      ? []
+      : [
+          [
+            "lastError",
+            card.lastError,
+            previous === undefined || card.lastError !== previous.lastError,
+          ] as const,
+        ]),
   ];
-  for (const [field, text] of texts) {
+  for (const [field, text, changed] of texts) {
+    if (!changed) continue;
     try {
       if (applyAuthorTextPolicy(field, text)._tag === "Accepted") continue;
     } catch {
@@ -1076,7 +1086,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         archived: input.archived ?? current.value.archived,
         updatedAt: at,
       };
-      const textError = assertBoardCardTextAllowed(next, "board.update");
+      const textError = assertBoardCardTextAllowed(next, "board.update", current.value);
       if (textError !== null) return yield* textError;
       yield* repository.updateCard(next).pipe(Effect.mapError(toBoardError("board.update")));
       if (next.archived !== current.value.archived) {

@@ -232,6 +232,32 @@ repositoryLayer("BoardRepository", (it) => {
     }),
   );
 
+  it.effect("labels updateCard read failures as update reads", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-update-card-read-failure");
+      const card = makeCard({
+        cardId: BoardCardId.make("update-card-read-failure"),
+        orchestratorThreadId: threadId,
+      });
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      yield* repository.createCard(card);
+
+      yield* Effect.gen(function* () {
+        yield* sql`UPDATE board_cards SET status = 'invalid' WHERE card_id = ${card.cardId}`;
+        const error = yield* Effect.flip(repository.updateCard(card));
+        assert.instanceOf(error, BoardRepositoryError);
+        assert.equal(error.operation, "BoardRepository.updateCard:read");
+      }).pipe(Effect.ensuring(repository.deleteCard(card.cardId)));
+    }),
+  );
+
   it.effect("rejects unsafe author text at the storage boundary and preserves safe bytes", () =>
     Effect.gen(function* () {
       const repository = yield* BoardRepository;
@@ -254,6 +280,11 @@ repositoryLayer("BoardRepository", (it) => {
           cardId: BoardCardId.make("unsafe-board-body"),
           orchestratorThreadId: threadId,
           body: `Unsafe body ${secret}`,
+        }),
+        makeCard({
+          cardId: BoardCardId.make("unsafe-board-last-error"),
+          orchestratorThreadId: threadId,
+          lastError: `Unsafe error ${secret}`,
         }),
       ]) {
         const error = yield* Effect.flip(repository.createCard(unsafe));
@@ -279,6 +310,49 @@ repositoryLayer("BoardRepository", (it) => {
       if (Option.isSome(stored)) {
         assert.equal(stored.value.title, safe.title);
         assert.equal(stored.value.body, safe.body);
+      }
+
+      const legacy = makeCard({
+        cardId: BoardCardId.make("legacy-unsafe-board-text"),
+        orchestratorThreadId: threadId,
+      });
+      yield* repository.createCard(legacy);
+      const sql = yield* SqlClient.SqlClient;
+      const legacyTitle = `Inherited title ${secret}`;
+      const legacyBody = `Inherited body ${secret}`;
+      const legacyError = `Inherited error ${secret}`;
+      yield* sql`
+        UPDATE board_cards
+        SET title = ${legacyTitle}, body = ${legacyBody}, last_error = ${legacyError}
+        WHERE card_id = ${legacy.cardId}
+      `;
+      const legacyOption = yield* repository.getCard(legacy.cardId);
+      assert.isTrue(Option.isSome(legacyOption));
+      if (Option.isSome(legacyOption)) {
+        yield* repository.updateCard({ ...legacyOption.value, status: "done" });
+      }
+      const statusUpdated = yield* repository.getCard(legacy.cardId);
+      assert.isTrue(Option.isSome(statusUpdated));
+      if (Option.isSome(statusUpdated)) {
+        assert.equal(statusUpdated.value.title, legacyTitle);
+        assert.equal(statusUpdated.value.body, legacyBody);
+        assert.equal(statusUpdated.value.lastError, legacyError);
+        assert.equal(statusUpdated.value.status, "done");
+      }
+
+      const changedUnsafeTitle = `Changed inherited title ${secret}`;
+      const rejectedChangedText = yield* Effect.flip(
+        repository.updateCard({
+          ...Option.getOrThrow(statusUpdated),
+          title: changedUnsafeTitle,
+        }),
+      );
+      assert.instanceOf(rejectedChangedText, BoardRepositoryError);
+      assert.notInclude(rejectedChangedText.message, secret);
+      const afterRejectedChange = yield* repository.getCard(legacy.cardId);
+      assert.isTrue(Option.isSome(afterRejectedChange));
+      if (Option.isSome(afterRejectedChange)) {
+        assert.equal(afterRejectedChange.value.title, legacyTitle);
       }
 
       for (const unsafeUpdate of [

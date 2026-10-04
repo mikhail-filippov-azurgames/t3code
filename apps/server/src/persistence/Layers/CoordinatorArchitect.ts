@@ -556,8 +556,13 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const closeBinding: CoordinatorArchitectRepositoryShape["closeBinding"] = (input) =>
-    withImmediateTransactionRetry(
+  const closeBinding: CoordinatorArchitectRepositoryShape["closeBinding"] = (input) => {
+    const textFailure =
+      input.detachReason === null
+        ? null
+        : authorTextFailure("closeBinding", "reason", input.detachReason);
+    if (textFailure !== null) return Effect.fail(textFailure);
+    return withImmediateTransactionRetry(
       Effect.gen(function* () {
         const found = yield* selectBindingById({ bindingId: input.bindingId });
         if (Option.isNone(found)) return null;
@@ -589,6 +594,7 @@ const make = Effect.gen(function* () {
         isIdempotencyConflict(cause) ? cause : toRepositoryError("closeBinding")(cause),
       ),
     );
+  };
 
   const linkReplacementWinner: CoordinatorArchitectRepositoryShape["linkReplacementWinner"] = (
     input: BindingReplacementWinnerInput,

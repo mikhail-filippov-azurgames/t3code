@@ -16,6 +16,7 @@ import { CoordinatorArchitectRepositoryLive } from "../Layers/CoordinatorArchite
 import {
   CoordinatorArchitectIdempotencyConflict,
   CoordinatorArchitectRepository,
+  CoordinatorArchitectRepositoryError,
   type BindingCreateInput,
   type ReviewInsertInput,
 } from "./CoordinatorArchitect.ts";
@@ -455,6 +456,22 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
           architectThreadId: "arch:coordinator-3",
         }),
       );
+      const secret = `ghp_${"A".repeat(32)}`;
+      const rejected = yield* Effect.flip(
+        repository.closeBinding({
+          bindingId: "binding-3",
+          status: "detached",
+          replacedByBindingId: null,
+          detachReason: `Unsafe detach reason ${secret}`,
+          idempotencyKey: "detach-unsafe",
+          closeRequestFingerprint: "close-fp-unsafe",
+        }),
+      );
+      assert.instanceOf(rejected, CoordinatorArchitectRepositoryError);
+      assert.strictEqual(rejected.operation, "closeBinding:author_text_rejected");
+      assert.notInclude(rejected.message, secret);
+      assert.strictEqual((yield* repository.getBindingById("binding-3"))?.status, "active");
+
       const closed = yield* repository.closeBinding({
         bindingId: "binding-3",
         status: "detached",

@@ -392,6 +392,28 @@ describe("board RPC handlers", () => {
     }),
   );
 
+  it.effect("board.update preserves legacy unsafe text when archiving", () =>
+    Effect.gen(function* () {
+      const card = makeCard({
+        title: `Legacy title ${SECRET}`,
+        body: `Legacy body ${SECRET}`,
+        lastError: `Legacy error ${SECRET}`,
+      });
+      const { handlers, state } = makeHarness({ cards: [card] });
+
+      const updated = yield* handlers.update({ cardId: card.cardId, archived: true });
+
+      assert.isTrue(updated.archived);
+      assert.strictEqual(updated.title, card.title);
+      assert.strictEqual(updated.body, card.body);
+      assert.strictEqual(updated.lastError, card.lastError);
+      assert.deepEqual(
+        state.events.map((event) => event.body),
+        ["archived by human"],
+      );
+    }),
+  );
+
   it.effect("delete is always refused for human clients", () =>
     Effect.gen(function* () {
       const card = makeCard();
