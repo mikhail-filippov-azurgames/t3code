@@ -92,7 +92,9 @@ function readDelegationCompleted(event: OrchestrationEvent): DelegationCompleted
 
 /** A short, single-line fact for `lastError`; never the full provider message. */
 function shortErrorNote(error: string | undefined, status: DelegationCompleted["status"]): string {
-  const raw = (error ?? `executor turn ${status}`).trim().replace(/\s+/g, " ");
+  const raw = projectDerivedText("summary", error ?? `executor turn ${status}`)
+    .trim()
+    .replace(/\s+/g, " ");
   return raw.length > MAX_LAST_ERROR_LENGTH ? `${raw.slice(0, MAX_LAST_ERROR_LENGTH - 3)}...` : raw;
 }
 
@@ -183,12 +185,13 @@ export const make = Effect.gen(function* () {
   }) {
     const failureStreak = input.card.failureStreak + 1;
     const needsHuman = failureStreak >= NEEDS_HUMAN_FAILURE_STREAK;
+    const note = projectDerivedText("summary", input.note);
     const next: BoardCard = {
       ...input.card,
       ...(input.status === undefined ? {} : { status: input.status }),
       ...(input.clearExecutorThreadId ? { executorThreadId: null } : {}),
       outcome: input.outcome,
-      lastError: input.note,
+      lastError: note,
       failureStreak,
       updatedAt: input.at,
     };
@@ -202,7 +205,7 @@ export const make = Effect.gen(function* () {
     yield* appendCardSystemMessage(
       next,
       input.at,
-      `Board card "${projectDerivedText("summary", next.title)}" (${next.cardId}): ${input.reason} ${input.outcome} (failure streak ${failureStreak})${needsHuman ? " - needs human" : ""}. ${input.note}`,
+      `Board card "${projectDerivedText("summary", next.title)}" (${next.cardId}): ${input.reason} ${input.outcome} (failure streak ${failureStreak})${needsHuman ? " - needs human" : ""}. ${note}`,
       input.key,
     );
   });
@@ -273,6 +276,7 @@ export const make = Effect.gen(function* () {
         outcome: "cancelled",
         note: "executor thread deleted",
         clearExecutorThreadId: true,
+        status: "orchestrator",
         key: "executor-thread-deleted",
         reason: "executor thread deleted while in progress",
       });

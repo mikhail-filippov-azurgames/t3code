@@ -28,6 +28,7 @@ import {
   ProjectionTurnRepository,
   type ProjectionTurn,
 } from "../persistence/Services/ProjectionTurns.ts";
+import { applyAuthorTextPolicy } from "../security/SecretTextPolicy.ts";
 import * as BoardReactor from "./BoardReactor.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
@@ -188,13 +189,18 @@ function makeHarness(
         ),
       listCards: () => Ref.get(cards).pipe(Effect.tap(() => Queue.offer(reads, undefined))),
       updateCard: (card) =>
-        Ref.update(updates, (all) => [...all, card]).pipe(
-          Effect.andThen(
-            Ref.update(cards, (all) =>
-              all.map((current) => (current.cardId === card.cardId ? card : current)),
-            ),
-          ),
-        ),
+        Effect.gen(function* () {
+          if (
+            card.lastError !== null &&
+            applyAuthorTextPolicy("lastError", card.lastError)._tag === "Rejected"
+          ) {
+            return yield* Effect.die(new Error("BoardRepository rejected lastError"));
+          }
+          yield* Ref.update(updates, (all) => [...all, card]);
+          yield* Ref.update(cards, (all) =>
+            all.map((current) => (current.cardId === card.cardId ? card : current)),
+          );
+        }),
       appendEvent: (event) => Ref.update(appends, (all) => [...all, event]),
     });
 
@@ -323,6 +329,85 @@ describe("BoardReactor", () => {
     ),
   );
 
+  it.effect("redacts secret provider failure text and notifies the orchestrator", () =>
+    runScenario({ cards: [makeCard()] }, (fixture) =>
+      Effect.gen(function* () {
+        const providerError = `provider failed with api token ${secretToken}`;
+        yield* handle(fixture, terminalEvent({ status: "failed", terminalError: providerError }));
+
+        const updates = yield* Ref.get(fixture.updates);
+        assert.equal(updates.length, 1);
+        assert.equal(updates[0]?.status, "in_progress");
+        assert.equal(updates[0]?.outcome, "failed");
+        assert.equal(updates[0]?.lastError, "provider failed with api token [REDACTED]");
+        assert.equal(
+          applyAuthorTextPolicy("lastError", updates[0]?.lastError ?? "")._tag,
+          "Accepted",
+        );
+        assert.notInclude(updates[0]?.lastError ?? "", secretToken);
+
+        const commands = yield* Ref.get(fixture.commands);
+        const command = commands[0];
+        assert.equal(commands.length, 1);
+        assert.equal(command?.type, "thread.message.system.append");
+        if (command?.type === "thread.message.system.append") {
+          assert.equal(command.threadId, ORCHESTRATOR_ID);
+          assert.include(command.message.text, "provider failed with api token [REDACTED]");
+          assert.notInclude(command.message.text, secretToken);
+        }
+      }),
+    ),
+  );
+
+  it.effect("redacts a secret token that crosses the lastError truncation boundary", () =>
+    runScenario({ cards: [makeCard()] }, (fixture) =>
+      Effect.gen(function* () {
+        const prefix = `${"x".repeat(189)} `;
+        const partialToken = secretToken.slice(0, 7);
+        const providerError = `${prefix}${secretToken}`;
+        yield* handle(fixture, terminalEvent({ status: "failed", terminalError: providerError }));
+
+        const updates = yield* Ref.get(fixture.updates);
+        const lastError = updates[0]?.lastError ?? "";
+        assert.equal(lastError, `${prefix}[REDACTED]`);
+        assert.equal(lastError.length, 200);
+        assert.equal(applyAuthorTextPolicy("lastError", lastError)._tag, "Accepted");
+        assert.notInclude(lastError, secretToken);
+        assert.notInclude(lastError, partialToken);
+
+        const commands = yield* Ref.get(fixture.commands);
+        const command = commands[0];
+        assert.equal(command?.type, "thread.message.system.append");
+        if (command?.type === "thread.message.system.append") {
+          assert.include(command.message.text, `${prefix}[REDACTED]`);
+          assert.notInclude(command.message.text, secretToken);
+          assert.notInclude(command.message.text, partialToken);
+        }
+      }),
+    ),
+  );
+
+  it.effect("truncates ordinary provider failure text to 200 characters", () =>
+    runScenario({ cards: [makeCard()] }, (fixture) =>
+      Effect.gen(function* () {
+        const providerError = `provider error ${"x".repeat(220)}`;
+        const expected = `${providerError.slice(0, 197)}...`;
+        yield* handle(fixture, terminalEvent({ status: "failed", terminalError: providerError }));
+
+        const updates = yield* Ref.get(fixture.updates);
+        assert.equal(updates[0]?.lastError, expected);
+        assert.equal(updates[0]?.lastError?.length, 200);
+
+        const commands = yield* Ref.get(fixture.commands);
+        const command = commands[0];
+        assert.equal(command?.type, "thread.message.system.append");
+        if (command?.type === "thread.message.system.append") {
+          assert.include(command.message.text, expected);
+        }
+      }),
+    ),
+  );
+
   it.effect("marks the card needs human on the third consecutive failure", () =>
     runScenario({ cards: [makeCard({ failureStreak: 2 })] }, (fixture) =>
       Effect.gen(function* () {
@@ -381,6 +466,7 @@ describe("BoardReactor", () => {
 
         const updates = yield* Ref.get(fixture.updates);
         assert.equal(updates.length, 1);
+        assert.equal(updates[0]?.status, "orchestrator");
         assert.equal(updates[0]?.executorThreadId, null);
         assert.equal(updates[0]?.outcome, "cancelled");
         assert.equal(updates[0]?.failureStreak, 1);
