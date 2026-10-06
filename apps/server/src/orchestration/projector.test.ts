@@ -460,6 +460,113 @@ describe("orchestration projector", () => {
       }),
   );
 
+  effectIt.effect(
+    "keeps the active turn latest when a superseded turn captures a late checkpoint",
+    () =>
+      Effect.gen(function* () {
+        const createdAt = "2026-02-23T08:00:00.000Z";
+        const newTurnStartedAt = "2026-02-23T08:00:30.000Z";
+        const lateCheckpointAt = "2026-02-23T08:01:00.000Z";
+        let model = yield* projectEvent(
+          createEmptyReadModel(createdAt),
+          makeEvent({
+            sequence: 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-checkpoint",
+            occurredAt: createdAt,
+            commandId: "cmd-create-late-checkpoint",
+            payload: {
+              threadId: "thread-late-checkpoint",
+              projectId: "project-1",
+              title: "Late checkpoint",
+              modelSelection: { provider: "codex", model: "test" },
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+              updatedAt: createdAt,
+            },
+          }),
+        );
+
+        model = yield* projectEvent(
+          model,
+          makeEvent({
+            sequence: 2,
+            type: "thread.session-set",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-checkpoint",
+            occurredAt: "2026-02-23T08:00:05.000Z",
+            commandId: "cmd-old-turn-started",
+            payload: {
+              threadId: "thread-late-checkpoint",
+              session: {
+                threadId: "thread-late-checkpoint",
+                status: "running",
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: "turn-old",
+                lastError: null,
+                updatedAt: "2026-02-23T08:00:05.000Z",
+              },
+            },
+          }),
+        );
+
+        model = yield* projectEvent(
+          model,
+          makeEvent({
+            sequence: 3,
+            type: "thread.session-set",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-checkpoint",
+            occurredAt: newTurnStartedAt,
+            commandId: "cmd-new-turn-started",
+            payload: {
+              threadId: "thread-late-checkpoint",
+              session: {
+                threadId: "thread-late-checkpoint",
+                status: "running",
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: "turn-new",
+                lastError: null,
+                updatedAt: newTurnStartedAt,
+              },
+            },
+          }),
+        );
+
+        model = yield* projectEvent(
+          model,
+          makeEvent({
+            sequence: 4,
+            type: "thread.turn-diff-completed",
+            aggregateKind: "thread",
+            aggregateId: "thread-late-checkpoint",
+            occurredAt: lateCheckpointAt,
+            commandId: "cmd-old-turn-checkpoint",
+            payload: {
+              threadId: "thread-late-checkpoint",
+              turnId: "turn-old",
+              checkpointTurnCount: 1,
+              checkpointRef: "refs/t3/checkpoints/thread-late-checkpoint/turn/1",
+              status: "ready",
+              files: [],
+              assistantMessageId: "assistant-old",
+              completedAt: lateCheckpointAt,
+            },
+          }),
+        );
+
+        const thread = model.threads.find((entry) => entry.id === "thread-late-checkpoint");
+        expect(thread?.session?.activeTurnId).toBe("turn-new");
+        expect(thread?.latestTurn?.turnId).toBe("turn-new");
+        expect(thread?.checkpoints.map((checkpoint) => checkpoint.turnId)).toEqual(["turn-old"]);
+      }),
+  );
+
   effectIt.effect.each([null, "ready", "interrupted", "stopped"] as const)(
     "replaces a missing checkpoint without inventing interruption for a %s session",
     (sessionStatus) =>

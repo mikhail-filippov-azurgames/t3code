@@ -2562,8 +2562,36 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
       // A steer: a new turn becomes active without the provider ever
       // completing the previous one.
       yield* appendRunningSessionSet("evt-ts3", newTurnId, "2026-01-01T00:00:30.000Z");
+      yield* eventStore.append({
+        type: "thread.turn-diff-completed",
+        eventId: EventId.make("evt-ts4"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: "2026-01-01T00:01:00.000Z",
+        commandId: CommandId.make("cmd-ts4"),
+        causationEventId: null,
+        correlationId: CorrelationId.make("cmd-ts4"),
+        metadata: {},
+        payload: {
+          threadId,
+          turnId: oldTurnId,
+          checkpointTurnCount: 1,
+          checkpointRef: "refs/t3/checkpoints/thread-turn-supersede/turn/1",
+          status: "ready",
+          files: [],
+          assistantMessageId: "assistant-superseded",
+          completedAt: "2026-01-01T00:01:00.000Z",
+        },
+      });
 
       yield* projectionPipeline.bootstrap;
+
+      const latestTurnRows = yield* sql<{ readonly latestTurnId: string | null }>`
+        SELECT latest_turn_id AS "latestTurnId"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      assert.deepEqual(latestTurnRows, [{ latestTurnId: newTurnId }]);
 
       const rows = yield* sql<{
         readonly turnId: string;
@@ -2576,7 +2604,7 @@ it.layer(BaseTestLayer)("OrchestrationProjectionPipeline", (it) => {
         ORDER BY requested_at
       `;
       assert.deepEqual(rows, [
-        { turnId: oldTurnId, state: "completed", completedAt: "2026-01-01T00:00:30.000Z" },
+        { turnId: oldTurnId, state: "completed", completedAt: "2026-01-01T00:01:00.000Z" },
         { turnId: newTurnId, state: "running", completedAt: null },
       ]);
     }),
