@@ -8,6 +8,7 @@ import {
   GitRunStackedActionResult,
   GitRunStackedActionInput,
   GitResolvePullRequestResult,
+  VcsCommitHistoryInput,
 } from "./git.ts";
 
 const decodeCreateWorktreeInput = Schema.decodeUnknownSync(VcsCreateWorktreeInput);
@@ -20,6 +21,7 @@ const decodePreparePullRequestThreadResult = Schema.decodeUnknownSync(
 const decodeRunStackedActionInput = Schema.decodeUnknownSync(GitRunStackedActionInput);
 const decodeRunStackedActionResult = Schema.decodeUnknownSync(GitRunStackedActionResult);
 const decodeResolvePullRequestResult = Schema.decodeUnknownSync(GitResolvePullRequestResult);
+const decodeCommitHistoryInput = Schema.decodeUnknownSync(VcsCommitHistoryInput);
 
 describe("VcsCreateWorktreeInput", () => {
   it("accepts omitted newRefName for existing-refName worktrees", () => {
@@ -165,5 +167,28 @@ describe("GitRunStackedActionResult", () => {
     if (parsed.toast.cta.kind === "run_action") {
       expect(parsed.toast.cta.action.kind).toBe("create_pr");
     }
+  });
+});
+
+describe("VcsCommitHistoryInput", () => {
+  const id = "0123456789abcdef0123456789abcdef01234567";
+
+  it("accepts a first page, a cursor and the page size ceiling", () => {
+    expect(decodeCommitHistoryInput({ cwd: "/repo" }).cursor).toBeUndefined();
+    expect(
+      decodeCommitHistoryInput({ cwd: "/repo", limit: 100, cursor: { id, offset: 100 } }),
+    ).toEqual({ cwd: "/repo", limit: 100, cursor: { id, offset: 100 } });
+  });
+
+  it("rejects oversized pages and cursors that are not a commit id and a position", () => {
+    expect(() => decodeCommitHistoryInput({ cwd: "/repo", limit: 101 })).toThrow();
+    expect(() => decodeCommitHistoryInput({ cwd: "/repo", limit: 0 })).toThrow();
+    expect(() =>
+      decodeCommitHistoryInput({ cwd: "/repo", cursor: { id: "HEAD", offset: 1 } }),
+    ).toThrow();
+    expect(() =>
+      decodeCommitHistoryInput({ cwd: "/repo", cursor: { id: `${id}\n--all`, offset: 1 } }),
+    ).toThrow();
+    expect(() => decodeCommitHistoryInput({ cwd: "/repo", cursor: { id, offset: 0 } })).toThrow();
   });
 });

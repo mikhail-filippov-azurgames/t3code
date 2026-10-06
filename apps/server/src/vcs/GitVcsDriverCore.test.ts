@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import { assert, it, describe } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -2151,6 +2152,205 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
 
         const status = yield* git(cwd, ["status", "--porcelain"]);
         assert.include(status, "?? selected1.txt");
+      }),
+    );
+  });
+
+  describe("commit history", () => {
+    const checkpointGlob = "--exclude=refs/t3/checkpoints/*";
+    const commit = (cwd: string, message: string) =>
+      git(cwd, ["commit", "--allow-empty", "-m", message]).pipe(
+        Effect.andThen(git(cwd, ["rev-parse", "HEAD"])),
+      );
+
+    // main: initial - c2 - c3 - merge(side), side: s1 - s2 (from initial), topic: t1 (from s1)
+    const makeBranchyRepo = Effect.gen(function* () {
+      const cwd = yield* makeTmpDir();
+      const { initialBranch } = yield* initRepoWithCommit(cwd);
+      yield* git(cwd, ["checkout", "-b", "side"]);
+      yield* commit(cwd, "s1");
+      yield* git(cwd, ["branch", "topic"]);
+      yield* commit(cwd, "s2");
+      yield* git(cwd, ["checkout", initialBranch]);
+      yield* commit(cwd, "c2");
+      yield* git(cwd, ["tag", "v1"]);
+      yield* commit(cwd, "c3");
+      yield* git(cwd, ["merge", "--no-ff", "-m", "merge side", "side"]);
+      yield* git(cwd, ["checkout", "topic"]);
+      yield* commit(cwd, "t1");
+      yield* git(cwd, ["checkout", initialBranch]);
+      return { cwd, initialBranch };
+    });
+
+    const expectedHistory = (cwd: string) =>
+      git(cwd, ["rev-list", "--topo-order", checkpointGlob, "--all"]).pipe(
+        Effect.map((out) => out.split("\n")),
+      );
+
+    const readAllPages = (cwd: string, limit: number) =>
+      Effect.gen(function* () {
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const pages = [];
+        let request: Parameters<typeof driver.listCommitHistory>[0] = { cwd, limit };
+        for (;;) {
+          const page = yield* driver.listCommitHistory(request);
+          pages.push(page);
+          if (page.nextCursor === null) return pages;
+          request = { cwd, limit, cursor: page.nextCursor };
+        }
+      });
+
+    it.effect("pages through every commit without gaps or repeats", () =>
+      Effect.gen(function* () {
+        const { cwd } = yield* makeBranchyRepo;
+        const expected = yield* expectedHistory(cwd);
+        assert.equal(expected.length, 7);
+
+        const pages = yield* readAllPages(cwd, 3);
+
+        assert.deepStrictEqual(
+          pages.map((page) => page.commits.length),
+          [3, 3, 1],
+        );
+        assert.deepStrictEqual(
+          pages.flatMap((page) => page.commits.map((entry) => entry.id)).toSorted(),
+          expected.toSorted(),
+        );
+        const ids = pages.flatMap((page) => page.commits.map((entry) => entry.id));
+        assert.equal(new Set(ids).size, ids.length);
+        assert.deepStrictEqual(
+          pages.map((page) => page.nextCursor?.offset ?? null),
+          [3, 6, null],
+        );
+        assert.equal(pages[0]?.nextCursor?.id, pages[0]?.commits.at(-1)?.id);
+        assert.isTrue(pages.every((page) => page.isRepo));
+      }),
+    );
+
+    it.effect("never lists a commit before a commit that has it as a parent", () =>
+      Effect.gen(function* () {
+        const { cwd } = yield* makeBranchyRepo;
+        const [page] = yield* readAllPages(cwd, 100);
+        const order = page?.commits.map((entry) => entry.id) ?? [];
+        for (const entry of page?.commits ?? []) {
+          for (const parent of entry.parents) {
+            assert.isAbove(order.indexOf(parent), order.indexOf(entry.id));
+          }
+        }
+      }),
+    );
+
+    it.effect("describes each commit with id, parents, author, time, refs and subject", () =>
+      Effect.gen(function* () {
+        const { cwd, initialBranch } = yield* makeBranchyRepo;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const { commits } = yield* driver.listCommitHistory({ cwd });
+        const byId = new Map(commits.map((entry) => [entry.id, entry]));
+
+        const mergeId = yield* git(cwd, ["rev-parse", "HEAD"]);
+        const merge = byId.get(mergeId);
+        assert.deepStrictEqual(merge?.parents, [
+          yield* git(cwd, ["rev-parse", "HEAD^1"]),
+          yield* git(cwd, ["rev-parse", "HEAD^2"]),
+        ]);
+        assert.equal(merge?.subject, "merge side");
+        assert.equal(merge?.authorName, "Test");
+        assert.equal(merge?.authorEmail, "test@test.com");
+        assert.equal(
+          merge?.committedAt,
+          DateTime.formatIso(
+            DateTime.makeUnsafe(Number(yield* git(cwd, ["log", "-1", "--format=%ct"])) * 1000),
+          ),
+        );
+        assert.deepStrictEqual(merge?.refs, [
+          { kind: "head", name: "HEAD" },
+          { kind: "branch", name: initialBranch },
+        ]);
+
+        const tagged = commits.find((entry) => entry.subject === "c2");
+        assert.deepStrictEqual(tagged?.refs, [{ kind: "tag", name: "v1" }]);
+        const root = commits.find((entry) => entry.subject === "initial commit");
+        assert.deepStrictEqual(root?.parents, []);
+        assert.deepStrictEqual(root?.refs, []);
+      }),
+    );
+
+    it.effect("keeps checkpoint refs and the commits only they reach out of the history", () =>
+      Effect.gen(function* () {
+        const { cwd } = yield* makeBranchyRepo;
+        const head = yield* git(cwd, ["rev-parse", "HEAD"]);
+        const tree = yield* git(cwd, ["rev-parse", "HEAD^{tree}"]);
+        const checkpointOnly = yield* git(cwd, [
+          "commit-tree",
+          tree,
+          "-p",
+          head,
+          "-m",
+          "t3 checkpoint",
+        ]);
+        yield* git(cwd, ["update-ref", "refs/t3/checkpoints/dGhyZWFk/turn/1", checkpointOnly]);
+        yield* git(cwd, ["update-ref", "refs/t3/checkpoints/dGhyZWFk/turn/2", head]);
+
+        const pages = yield* readAllPages(cwd, 2);
+        const commits = pages.flatMap((page) => page.commits);
+
+        assert.equal(commits.length, 7);
+        assert.isFalse(commits.some((entry) => entry.id === checkpointOnly));
+        assert.isFalse(commits.some((entry) => entry.subject === "t3 checkpoint"));
+        assert.isFalse(
+          commits.some((entry) => entry.refs.some((ref) => ref.name.includes("t3/checkpoints"))),
+        );
+        assert.isTrue(commits.some((entry) => entry.id === head));
+      }),
+    );
+
+    it.effect("continues after the last shown commit when refs moved under a stale offset", () =>
+      Effect.gen(function* () {
+        const { cwd } = yield* makeBranchyRepo;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const first = yield* driver.listCommitHistory({ cwd, limit: 3 });
+        const cursor = first.nextCursor;
+        assert.isNotNull(cursor);
+        if (cursor === null) return;
+
+        yield* git(cwd, ["checkout", "-b", "late", "topic"]);
+        yield* commit(cwd, "late 1");
+        yield* commit(cwd, "late 2");
+
+        const expected = yield* expectedHistory(cwd);
+        const second = yield* driver.listCommitHistory({ cwd, limit: 3, cursor });
+
+        const remaining = expected.slice(expected.indexOf(cursor.id) + 1);
+        assert.deepStrictEqual(
+          second.commits.map((entry) => entry.id),
+          remaining.slice(0, 3),
+        );
+        assert.equal(
+          second.nextCursor?.offset,
+          remaining.length > 3 ? expected.indexOf(cursor.id) + 1 + 3 : undefined,
+        );
+      }),
+    );
+
+    it.effect("fails when the cursor commit has left the history", () =>
+      Effect.gen(function* () {
+        const { cwd } = yield* makeBranchyRepo;
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const error = yield* driver
+          .listCommitHistory({ cwd, cursor: { id: "0".repeat(40), offset: 2 } })
+          .pipe(Effect.flip);
+        assert.instanceOf(error, GitCommandError);
+        assert.include(error.detail, "Restart from the first page");
+      }),
+    );
+
+    it.effect("returns an empty page for a repository without commits", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* driver.initRepo({ cwd });
+        const page = yield* driver.listCommitHistory({ cwd });
+        assert.deepStrictEqual(page, { commits: [], isRepo: true, nextCursor: null });
       }),
     );
   });

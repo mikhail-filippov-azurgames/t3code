@@ -22,6 +22,8 @@ import {
   type ReviewDiffPreviewResult,
   type ReviewDiffFileContentsInput,
   type ReviewDiffFileContentsResult,
+  type VcsCommitHistoryInput,
+  type VcsCommitHistoryResult,
   type VcsInitInput,
   type VcsListRefsInput,
   type VcsListRefsResult,
@@ -314,6 +316,10 @@ export class GitVcsDriver extends Context.Service<
     readonly listRefs: (
       input: VcsListRefsInput,
     ) => Effect.Effect<VcsListRefsResult, GitCommandError>;
+    /** One page of commits across all refs, minus T3's internal checkpoint refs. */
+    readonly listCommitHistory: (
+      input: VcsCommitHistoryInput,
+    ) => Effect.Effect<VcsCommitHistoryResult, GitCommandError>;
     readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,

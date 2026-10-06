@@ -70,6 +70,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("reads commit history under the same scope as the other read-only Git queries", () => {
+    expect(requiredScopeForRpcMethod(WS_METHODS.vcsListCommitHistory)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(requiredScopeForRpcMethod(WS_METHODS.vcsListCommitHistory)).toBe(
+      requiredScopeForRpcMethod(WS_METHODS.vcsListRefs),
+    );
+  });
+
   it("rejects unknown RPC method names", () => {
     for (const method of ["server.notRegistered", "toString", "constructor"]) {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(

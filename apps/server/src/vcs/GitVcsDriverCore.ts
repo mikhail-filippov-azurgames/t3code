@@ -21,11 +21,15 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import {
   GitCommandError,
+  VCS_COMMIT_HISTORY_DEFAULT_LIMIT,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewSource,
+  type VcsCommitHistoryEntry,
+  type VcsCommitHistoryRef,
   type VcsRef,
 } from "@t3tools/contracts";
+import { CHECKPOINT_REFS_PREFIX } from "../checkpointing/Utils.ts";
 import { dedupeRemoteBranchesWithLocalMatches, normalizeGitRemoteUrl } from "@t3tools/shared/git";
 import { compactTraceAttributes } from "@t3tools/shared/observability";
 import { decodeJsonResult } from "@t3tools/shared/schemaJson";
@@ -405,6 +409,78 @@ function parseDefaultBranchFromRemoteHeadRef(value: string, remoteName: string):
   }
   const refName = trimmed.slice(prefix.length).trim();
   return refName.length > 0 ? refName : null;
+}
+
+const COMMIT_HISTORY_PAGE_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+// One full-history `%H` listing, only read when a cursor's offset went stale.
+const COMMIT_HISTORY_LOCATE_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
+const COMMIT_HISTORY_LOCATE_TIMEOUT_MS = 120_000;
+const COMMIT_HISTORY_FIELD_SEPARATOR = "\x1f";
+// `--exclude` only applies to the next `--all`, so it has to stay in front of it.
+const COMMIT_HISTORY_REV_ARGS = [
+  "--topo-order",
+  `--exclude=${CHECKPOINT_REFS_PREFIX}/*`,
+  "--all",
+] as const;
+const COMMIT_HISTORY_LOG_ARGS = [
+  "log",
+  "--no-color",
+  "--no-show-signature",
+  "--encoding=UTF-8",
+  "--decorate=full",
+  `--decorate-refs-exclude=${CHECKPOINT_REFS_PREFIX}/*`,
+  "-z",
+  `--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ct%x1f%D%x1f%s`,
+  ...COMMIT_HISTORY_REV_ARGS,
+] as const;
+
+function classifyCommitHistoryRef(fullName: string): VcsCommitHistoryRef {
+  if (fullName.startsWith("refs/heads/")) {
+    return { kind: "branch", name: fullName.slice("refs/heads/".length) };
+  }
+  if (fullName.startsWith("refs/remotes/")) {
+    return { kind: "remote", name: fullName.slice("refs/remotes/".length) };
+  }
+  if (fullName.startsWith("refs/tags/")) {
+    return { kind: "tag", name: fullName.slice("refs/tags/".length) };
+  }
+  return { kind: "other", name: fullName };
+}
+
+// `%D` under `--decorate=full`: `HEAD -> refs/heads/main, tag: refs/tags/v1, refs/remotes/origin/main`.
+function parseCommitHistoryRefs(decoration: string): VcsCommitHistoryRef[] {
+  if (decoration.length === 0) return [];
+  const refs: VcsCommitHistoryRef[] = [];
+  for (const item of decoration.split(", ")) {
+    if (item === "HEAD") {
+      refs.push({ kind: "head", name: "HEAD" });
+    } else if (item.startsWith("HEAD -> ")) {
+      refs.push({ kind: "head", name: "HEAD" });
+      refs.push(classifyCommitHistoryRef(item.slice("HEAD -> ".length)));
+    } else if (item.startsWith("tag: ")) {
+      refs.push(classifyCommitHistoryRef(item.slice("tag: ".length)));
+    } else {
+      refs.push(classifyCommitHistoryRef(item));
+    }
+  }
+  return refs;
+}
+
+function parseCommitHistoryRecord(record: string): VcsCommitHistoryEntry | null {
+  const fields = record.split(COMMIT_HISTORY_FIELD_SEPARATOR);
+  if (fields.length < 7) return null;
+  const [id, parents, authorName, authorEmail, committedAtSeconds, decoration] = fields;
+  const committedAtMs = Number(committedAtSeconds) * 1000;
+  if (!id || !Number.isFinite(committedAtMs)) return null;
+  return {
+    id,
+    parents: parents ? parents.split(" ") : [],
+    authorName: authorName ?? "",
+    authorEmail: authorEmail ?? "",
+    committedAt: DateTime.formatIso(DateTime.makeUnsafe(committedAtMs)),
+    refs: parseCommitHistoryRefs(decoration ?? ""),
+    subject: fields.slice(6).join(COMMIT_HISTORY_FIELD_SEPARATOR),
+  };
 }
 
 function isMissingGitCwdError(error: GitCommandError): boolean {
@@ -3049,6 +3125,87 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const listCommitHistory: GitVcsDriver.GitVcsDriver["Service"]["listCommitHistory"] = Effect.fn(
+    "listCommitHistory",
+  )(function* (input) {
+    const limit = input.limit ?? VCS_COMMIT_HISTORY_DEFAULT_LIMIT;
+
+    const readCommits = Effect.fn("readCommits")(function* (skip: number, count: number) {
+      const args = [...COMMIT_HISTORY_LOG_ARGS, "--skip", String(skip), "-n", String(count)];
+      const result = yield* executeGit("GitVcsDriver.listCommitHistory.log", input.cwd, args, {
+        maxOutputBytes: COMMIT_HISTORY_PAGE_MAX_OUTPUT_BYTES,
+        fallbackErrorDetail: "git log failed",
+      });
+      // Records end with NUL, so whatever follows the last NUL is empty.
+      const records = result.stdout.split("\0").slice(0, -1);
+      const commits: VcsCommitHistoryEntry[] = [];
+      for (const record of records) {
+        const commit = parseCommitHistoryRecord(record);
+        if (commit === null) {
+          return yield* new GitCommandError({
+            ...gitCommandContext({
+              operation: "GitVcsDriver.listCommitHistory.log",
+              cwd: input.cwd,
+              args,
+            }),
+            detail: "git log returned a commit record that could not be parsed.",
+          });
+        }
+        commits.push(commit);
+      }
+      return commits;
+    });
+
+    const locateCommit = Effect.fn("locateCommit")(function* (id: string) {
+      const args = ["log", "--no-show-signature", "--format=%H", ...COMMIT_HISTORY_REV_ARGS];
+      const result = yield* executeGit("GitVcsDriver.listCommitHistory.locate", input.cwd, args, {
+        maxOutputBytes: COMMIT_HISTORY_LOCATE_MAX_OUTPUT_BYTES,
+        timeoutMs: COMMIT_HISTORY_LOCATE_TIMEOUT_MS,
+        fallbackErrorDetail: "git log failed",
+      });
+      // Every line is exactly one id, so a match can only sit on a line boundary.
+      const position = result.stdout.indexOf(id);
+      if (position < 0) {
+        return yield* new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.listCommitHistory.locate",
+            cwd: input.cwd,
+            args,
+          }),
+          detail: `Commit ${id} is no longer in the history. Restart from the first page.`,
+        });
+      }
+      return position / (id.length + 1);
+    });
+
+    let start = 0;
+    let following: ReadonlyArray<VcsCommitHistoryEntry>;
+    if (input.cursor === undefined) {
+      following = yield* readCommits(0, limit + 1);
+    } else {
+      const { id, offset } = input.cursor;
+      const guess = yield* readCommits(offset - 1, limit + 2);
+      if (guess[0]?.id === id) {
+        start = offset;
+        following = guess.slice(1);
+      } else {
+        start = (yield* locateCommit(id)) + 1;
+        following = yield* readCommits(start, limit + 1);
+      }
+    }
+
+    const commits = following.slice(0, limit);
+    const last = commits.at(-1);
+    return {
+      commits,
+      isRepo: true,
+      nextCursor:
+        following.length > limit && last !== undefined
+          ? { id: last.id, offset: start + commits.length }
+          : null,
+    };
+  });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
@@ -3614,6 +3771,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     getReviewDiffFileContents,
     readConfigValue,
     listRefs,
+    listCommitHistory,
     createWorktree: (input, options) =>
       withListRefsInvalidation(input.cwd, createWorktree(input, options)),
     fetchPullRequestBranch: (input) =>
