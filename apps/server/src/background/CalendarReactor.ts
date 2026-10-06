@@ -562,6 +562,7 @@ export const make = Effect.gen(function* () {
 
     yield* engine.dispatch({
       type: "thread.turn.start",
+      runOrigin: { _tag: "calendar-turn" },
       commandId: CommandId.make(`calendar:turn:${slotKey}`),
       threadId,
       message: {

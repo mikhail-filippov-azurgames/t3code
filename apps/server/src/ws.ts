@@ -866,6 +866,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         yield* deps
           .dispatch({
             type: "thread.turn.start",
+            runOrigin: { _tag: "orchestrator-brief" },
             commandId: CommandId.make(turnMessageId),
             threadId: input.threadId,
             message: {
@@ -963,6 +964,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         yield* deps
           .dispatch({
             type: "thread.turn.start",
+            runOrigin: { _tag: "orchestrator-brief" },
             commandId: CommandId.make(turnMessageId),
             threadId: input.threadId,
             message: {
@@ -1141,6 +1143,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
         yield* deps
           .dispatch({
             type: "thread.turn.start",
+            runOrigin: { _tag: "board-card-start" },
             commandId: CommandId.make(`board-start-turn:${card.cardId}`),
             threadId: card.orchestratorThreadId,
             message: {

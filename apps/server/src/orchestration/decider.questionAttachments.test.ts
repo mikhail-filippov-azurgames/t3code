@@ -83,6 +83,34 @@ const request = {
   },
 };
 it.layer(NodeServices.layer)("question attachment answers", (it) => {
+  it.effect("marks a message-mode async answer as a new turn", () =>
+    Effect.gen(function* () {
+      const result = yield* decideOrchestrationCommand({
+        readModel,
+        command: {
+          type: "thread.user-input.respond",
+          commandId: CommandId.make("answer-message"),
+          threadId: ThreadId.make("thread-1"),
+          requestId,
+          answers: { q: "Use this wording." },
+          createdAt: UPDATED_AT,
+        },
+        userInputActivity: {
+          ...request,
+          payload: { ...request.payload, responseMode: "message" },
+        },
+      });
+      const events = Array.isArray(result) ? result : [result];
+      const turnStart = events.find((event) => event.type === "thread.turn-start-requested");
+      expect(turnStart).toMatchObject({
+        payload: {
+          messageId: "async-answer:question-request",
+          runOrigin: { _tag: "async-question-answer-turn" },
+        },
+      });
+    }),
+  );
+
   it.effect("persists the original answer with its attachment and emits a provider response", () =>
     Effect.gen(function* () {
       const result = yield* decideOrchestrationCommand({

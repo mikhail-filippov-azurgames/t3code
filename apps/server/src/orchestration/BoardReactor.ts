@@ -300,6 +300,7 @@ export const make = Effect.gen(function* () {
     const wakeId = `board:card-wake:${card.cardId}`;
     yield* engine.dispatch({
       type: "thread.turn.start",
+      runOrigin: { _tag: "orphaned-worker-restoration" },
       commandId: CommandId.make(wakeId),
       threadId: card.orchestratorThreadId,
       message: {

@@ -64,6 +64,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ThreadId,
+  type AgentRunOrigin,
   type ArchitectureReviewRecord,
   type CoordinatorArchitectBinding,
   type CoordinatorArchitectRoutingEvidence,
@@ -2069,10 +2070,15 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       readonly request: OrchestratorMcpDelegateTaskInput;
       readonly lineage: DelegationCreatedPayload;
       readonly target: ResolvedTarget;
+      readonly runOrigin: Extract<
+        AgentRunOrigin,
+        { readonly _tag: "delegation-start" | "delegation-retry" }
+      >;
     }) {
       yield* dependencies
         .dispatch({
           type: "thread.turn.start",
+          runOrigin: input.runOrigin,
           commandId: CommandId.make(
             deterministicId(
               "mcp-delegation-turn-start",
@@ -2106,6 +2112,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       yield* dependencies
         .dispatch({
           type: "thread.turn.start",
+          runOrigin: { _tag: "delegation-continuation" },
           commandId: input.result.commandId,
           threadId: input.taskId,
           message: {
@@ -2475,10 +2482,15 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
     readonly runtimeMode: OrchestrationThreadShell["runtimeMode"];
     readonly interactionMode: OrchestrationThreadShell["interactionMode"];
     readonly createdAt: string;
+    readonly runOrigin: Extract<
+      AgentRunOrigin,
+      { readonly _tag: "architect-review-request-wake" | "coordinator-publication-wake" }
+    >;
   }) => {
     const dispatchTurn = (turnCommandId: string, messageId: string) =>
       dependencies.dispatch({
         type: "thread.turn.start",
+        runOrigin: input.runOrigin,
         commandId: CommandId.make(turnCommandId),
         threadId: input.threadId,
         message: {
@@ -2648,6 +2660,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       const shell = shellOption.value;
       yield* dispatchWakeTurn({
         threadId: binding.architectThreadId,
+        runOrigin: { _tag: "architect-review-request-wake" },
         turnCommandId: reviewWakeTurnCommandId(review.reviewId),
         messageId: reviewWakeMessageId(review.reviewId),
         fallbackTurnCommandId: `arch:review-wake-turn:${binding.architectThreadId}:${review.reviewId}`,
@@ -2697,6 +2710,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       // `sendTurn` is confirmed, so a failed send cannot leave a marker here.
       yield* dispatchWakeTurn({
         threadId: binding.coordinatorThreadId,
+        runOrigin: { _tag: "coordinator-publication-wake" },
         turnCommandId: publishWakeTurnCommandId(review.reviewId),
         messageId: publishWakeMessageId(review.reviewId),
         text: `Architecture review published [${disposition}]:\n${summary}\nStable references: ${reviewRefsJson(refs)}`,
@@ -2872,6 +2886,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
                 request: input,
                 lineage: existingLineage,
                 target,
+                runOrigin: { _tag: "delegation-retry" },
               });
             }
             const existing = yield* readOwnedTask(scope, taskId);
@@ -3005,6 +3020,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           request: input,
           lineage,
           target: currentTarget,
+          runOrigin: { _tag: "delegation-start" },
         });
         const mode = input.execution?.mode ?? "async";
         return mode === "wait"
@@ -3675,6 +3691,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
                 yield* dependencies
                   .dispatch({
                     type: "thread.turn.start",
+                    runOrigin: { _tag: "delegation-provider-switch-replay" },
                     commandId: CommandId.make(transitionId("mcp-provider-switch-start")),
                     threadId: input.taskId,
                     message: {

@@ -1769,6 +1769,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             },
             {
               type: "thread.turn.start",
+              runOrigin: { _tag: "async-question-answer-turn" },
               commandId: command.commandId,
               threadId: command.threadId,
               createdAt: command.createdAt,

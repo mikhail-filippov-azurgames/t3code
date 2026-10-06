@@ -1179,6 +1179,7 @@ const make = Effect.gen(function* () {
     }
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
+      runOrigin: { _tag: "delegation-parent-wake" },
       commandId: CommandId.make(String(directTurnMessageId)),
       threadId: input.parentThreadId,
       message: {
@@ -1478,6 +1479,7 @@ const make = Effect.gen(function* () {
         : undelivered.text;
     yield* orchestrationEngine.dispatch({
       type: "thread.turn.start",
+      runOrigin: { _tag: "delayed-notification-delivery" },
       commandId: CommandId.make(drainId),
       threadId,
       message: {
