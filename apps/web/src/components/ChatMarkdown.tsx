@@ -3990,10 +3990,11 @@ function ChatMarkdown({
       ...(typoraPreviewFeatures ? [remarkMath, remarkTyporaFilePreview] : []),
       ...extraRemarkPlugins,
       ...(incrementalMarkdownPlugin ? [incrementalMarkdownPlugin] : []),
-      ...(linkThreadIds ? [remarkLinkifyThreadIds] : []),
+      // Card links go first: a full card UUID is also a valid thread-id shape, and links are skipped by later plugins.
       ...(linkBoardCards
         ? [() => remarkLinkifyBoardCardMentions(componentState.boardCardMatches)]
         : []),
+      ...(linkThreadIds ? [remarkLinkifyThreadIds] : []),
     ],
     [
       componentState.boardCardMatches,

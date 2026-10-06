@@ -105,6 +105,7 @@ interface FakeBoardState {
   cards: BoardCard[];
   events: BoardCardEvent[];
   orchestrators: BoardOrchestrator[];
+  prefixQueries: string[];
 }
 
 function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
@@ -119,12 +120,14 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       return Effect.void;
     },
     listCards: () => Effect.succeed(state.cards),
-    findCardsByPrefix: (prefix) =>
-      Effect.succeed(
+    findCardsByPrefix: (prefix) => {
+      state.prefixQueries.push(prefix);
+      return Effect.succeed(
         state.cards
           .filter((card) => String(card.cardId).toLowerCase().startsWith(prefix))
           .slice(0, 2),
-      ),
+      );
+    },
     getCard: (cardId) =>
       Effect.succeed(Option.fromNullishOr(state.cards.find((card) => card.cardId === cardId))),
     createCard: (card) => {
@@ -176,6 +179,7 @@ function makeHarness(
     cards: [...(options.cards ?? [])],
     events: [...(options.events ?? [])],
     orchestrators: [],
+    prefixQueries: [],
   };
   const dispatched: OrchestrationCommand[] = [];
   let nextId = 0;
@@ -481,6 +485,40 @@ describe("board RPC handlers", () => {
       );
       assert.strictEqual(result.details.length, 1);
       assert.strictEqual(result.details[0]?.events.length, 4);
+    }),
+  );
+
+  it.effect("resolves a full UUID by exact match only and a prefix only when unique", () =>
+    Effect.gen(function* () {
+      const idA = BoardCardId.make("cb37d411-840c-4c70-8fe7-240b1ddc6a10");
+      const idB = BoardCardId.make("cb37d411-0000-4000-8000-000000000002");
+      const { handlers, state } = makeHarness({
+        cards: [makeCard({ cardId: idA }), makeCard({ cardId: idB })],
+      });
+
+      const exact = yield* handlers.resolve({
+        tokens: [BoardCardLookupToken.make(String(idA).toUpperCase())],
+        cardIds: [],
+      });
+      assert.deepEqual(
+        exact.matches.map((match) => match.card.cardId),
+        [idA],
+      );
+      assert.deepEqual(state.prefixQueries, []);
+
+      const absent = yield* handlers.resolve({
+        tokens: [BoardCardLookupToken.make("cb37d411-840c-4c70-8fe7-240b1ddc6a11")],
+        cardIds: [],
+      });
+      assert.deepEqual(absent.matches, []);
+      assert.deepEqual(state.prefixQueries, []);
+
+      const ambiguous = yield* handlers.resolve({
+        tokens: [BoardCardLookupToken.make("cb37d411")],
+        cardIds: [],
+      });
+      assert.deepEqual(ambiguous.matches, []);
+      assert.deepEqual(state.prefixQueries, ["cb37d411"]);
     }),
   );
 

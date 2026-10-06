@@ -461,6 +461,61 @@ describe("ChatMarkdown board-card mentions", () => {
     }
   });
 
+  it("renders a confirmed full card UUID as a card preview, not a chat link, quoted or bare", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.boardCardMatches = [
+      { ...boardCardMentionMatch, token: BoardCardLookupToken.make(cardId) },
+    ];
+    let renderer: ReactTestRenderer | undefined;
+    const text = [
+      `Inline \`${cardId}\`.`,
+      `Plain ${cardId}.`,
+      `Upper \`${cardId.toUpperCase()}\`.`,
+      `[${cardId}](https://example.com/${cardId})`,
+      "```",
+      cardId,
+      "```",
+    ].join("\n");
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={sourceRef} text={text} />);
+      });
+
+      const mentions = renderer!.root.findAllByProps({ "data-board-card-mention": cardId });
+      expect(mentions).toHaveLength(3);
+      expect(renderer!.root.findAll((node) => "data-thread-id-link" in node.props)).toHaveLength(0);
+      expect(renderer!.root.findAll((node) => node.type === "a")).toHaveLength(1);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("gives an unconfirmed full UUID no card preview", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.boardCardMatches = [boardCardMentionMatch];
+    let renderer: ReactTestRenderer | undefined;
+    const missingId = "cb37d411-840c-4c70-8fe7-240b1ddc6a10";
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            cwd={undefined}
+            threadRef={sourceRef}
+            text={`Inline \`${missingId}\` and ${missingId}.`}
+          />,
+        );
+      });
+
+      expect(
+        renderer!.root.findAll((node) => "data-board-card-mention" in node.props),
+      ).toHaveLength(0);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps unconfirmed IDs and non-ID inline code as code", async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     projectQueryState.boardCardMatches = [boardCardMentionMatch];

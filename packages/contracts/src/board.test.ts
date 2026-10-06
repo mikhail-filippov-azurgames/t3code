@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import {
   BoardCard,
   BoardCardEvent,
+  BoardCardLookupToken,
   BoardCardStatus,
   BoardCreateInput,
   BoardListInput,
@@ -30,6 +31,7 @@ const decodeStartInput = Schema.decodeUnknownEffect(BoardStartInput);
 const decodeAddInput = Schema.decodeUnknownEffect(BoardOrchestratorAddInput);
 const decodeListInput = Schema.decodeUnknownEffect(BoardListInput);
 const decodeListResult = Schema.decodeUnknownEffect(BoardListResult);
+const decodeBoardCardLookupToken = Schema.decodeUnknownEffect(BoardCardLookupToken);
 const decodeMcpCreateInput = Schema.decodeUnknownEffect(OrchestratorMcpBoardCreateCardInput);
 const decodeMcpUpdateInput = Schema.decodeUnknownEffect(OrchestratorMcpBoardUpdateCardInput);
 
@@ -51,6 +53,20 @@ const minimalCard = {
   createdAt: "2026-09-20T00:00:00.000Z",
   updatedAt: "2026-09-20T00:00:00.000Z",
 } as const;
+
+it.effect("decodes short and full board card lookup tokens", () =>
+  Effect.gen(function* () {
+    const short = yield* decodeBoardCardLookupToken("cb37d411");
+    const full = yield* decodeBoardCardLookupToken("cb37d411-840c-4c70-8fe7-240b1ddc6a10");
+    const uppercase = yield* decodeBoardCardLookupToken("CB37D411-840C-4C70-8FE7-240B1DDC6A10");
+    const invalid = yield* Effect.exit(decodeBoardCardLookupToken("cb37d411-840c-4c70"));
+
+    assert.strictEqual(String(short), "cb37d411");
+    assert.strictEqual(String(full), "cb37d411-840c-4c70-8fe7-240b1ddc6a10");
+    assert.strictEqual(String(uppercase), "CB37D411-840C-4C70-8FE7-240B1DDC6A10");
+    assert.isTrue(Exit.isFailure(invalid));
+  }),
+);
 
 it.effect("decodes a minimal board card", () =>
   Effect.gen(function* () {
