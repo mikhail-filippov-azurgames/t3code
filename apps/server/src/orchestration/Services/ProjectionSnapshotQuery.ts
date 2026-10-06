@@ -14,6 +14,8 @@ import type {
   MessageId,
   DelegationCompletedActivityPayload,
   OrchestrationCheckpointSummary,
+  OrchestrationDelegatedTaskSummaryHistoryCursor,
+  OrchestrationDelegatedTaskSummaryHistoryRecord,
   OrchestrationMessage,
   OrchestrationProject,
   OrchestrationProjectShell,
@@ -144,6 +146,20 @@ export interface ProjectionSnapshotQueryShape {
     readonly limit: number;
   }) => Effect.Effect<
     { readonly rows: ReadonlyArray<DelegatedTaskMemoryRow>; readonly hasMore: boolean },
+    ProjectionRepositoryError
+  >;
+
+  /** Keyset-paged summary records for the current parent lineage. */
+  readonly listDelegatedTaskSummaryHistory: (input: {
+    readonly parentEnvironmentId: string;
+    readonly parentThreadId: ThreadId;
+    readonly cursor?: OrchestrationDelegatedTaskSummaryHistoryCursor;
+    readonly limit: number;
+  }) => Effect.Effect<
+    {
+      readonly records: ReadonlyArray<OrchestrationDelegatedTaskSummaryHistoryRecord>;
+      readonly nextCursor: OrchestrationDelegatedTaskSummaryHistoryCursor | null;
+    },
     ProjectionRepositoryError
   >;
 

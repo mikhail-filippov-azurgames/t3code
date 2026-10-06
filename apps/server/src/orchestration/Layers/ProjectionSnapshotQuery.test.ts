@@ -3739,7 +3739,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
       const query = yield* ProjectionSnapshotQuery;
       const sql = yield* SqlClient.SqlClient;
       const timestamp = "2026-09-20T10:00:00.000Z";
+      const olderTimestamp = "2026-09-20T09:59:59.000Z";
       const longReport = "child final report ".repeat(400);
+      const longSummary = "complete summary ".repeat(100);
       yield* sql`
         INSERT INTO projection_projects (
           project_id, title, workspace_root, scripts_json, created_at, updated_at
@@ -3754,7 +3756,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
           ('memory-child-a', 'memory-project', 'First child', '{}', 'full-access', 'default',
             '/workspace/a', 'memory-turn-a', ${timestamp}, ${timestamp}, NULL, NULL, 0, 0),
           ('memory-child-b', 'memory-project', 'Archived child', '{}', 'full-access', 'default',
-            '/workspace/b', NULL, ${timestamp}, ${timestamp}, ${timestamp}, NULL, 0, 0),
+            '/workspace/b', 'memory-turn-c', ${timestamp}, ${timestamp}, ${timestamp}, NULL, 0, 0),
           ('memory-child-foreign', 'memory-project', 'Foreign child', '{}', 'full-access', 'default',
             '/workspace/foreign', NULL, ${timestamp}, ${timestamp}, NULL, NULL, 0, 0)
       `;
@@ -3788,6 +3790,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
         ), (
           'memory-child-b', 'memory-turn-c', NULL, NULL, 'error',
           ${timestamp}, ${timestamp}, ${timestamp}, '[]'
+        ), (
+          'memory-child-a', 'memory-turn-z', NULL, NULL, 'completed',
+          ${timestamp}, ${timestamp}, ${timestamp}, '[]'
         )
       `;
       yield* sql`
@@ -3815,9 +3820,86 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
           error, attempt_count, retry_after, updated_at
         ) VALUES (
           'memory-child-a', 'env-memory', 'parent-memory', 'memory-turn-a', ${timestamp},
-          'Outcome: done', 'model', '["memory-turn-a"]', 26, 'fingerprint', 'ready', NULL, 1, NULL, ${timestamp}
+          ${longSummary}, 'model', '["memory-turn-a"]', 26, 'fingerprint', 'ready', NULL, 1, NULL, ${timestamp}
         )
       `;
+      yield* sql`
+        INSERT INTO projection_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES
+          ('memory-child-a', 'env-memory', 'parent-memory', 'memory-turn-z', ${olderTimestamp},
+            'Older completed turn', 'deterministic', '["memory-turn-z"]', 26, 'fingerprint-z', 'error', NULL, 1, NULL, ${timestamp}),
+          ('memory-child-b', 'env-memory', 'parent-memory', 'memory-turn-c', ${timestamp},
+            'Watermark behind', 'model', '["memory-turn-c"]', 1, 'fingerprint-c', 'ready', NULL, 1, NULL, ${timestamp}),
+          ('memory-child-foreign', 'env-memory', 'parent-memory', 'foreign-turn', ${timestamp},
+            'Mismatched lineage', 'model', '["foreign-turn"]', 1, 'fingerprint-foreign', 'ready', NULL, 1, NULL, ${timestamp})
+      `;
+
+      const historyPageOne = yield* query.listDelegatedTaskSummaryHistory({
+        parentEnvironmentId: "env-memory",
+        parentThreadId: ThreadId.make("parent-memory"),
+        limit: 1,
+      });
+      assert.deepStrictEqual(
+        historyPageOne.records.map(({ childThreadId, sourceTurnId }) => [
+          childThreadId,
+          sourceTurnId,
+        ]),
+        [[ThreadId.make("memory-child-b"), TurnId.make("memory-turn-c")]],
+      );
+      assert.equal(historyPageOne.records[0]?.summaryState, "ready");
+      assert.equal(historyPageOne.records[0]?.currentTurnState, "error");
+      assert.equal(historyPageOne.records[0]?.stale, true);
+      assert.deepStrictEqual(historyPageOne.nextCursor, {
+        completedAt: timestamp,
+        childThreadId: ThreadId.make("memory-child-b"),
+        sourceTurnId: TurnId.make("memory-turn-c"),
+      });
+
+      const historyPageTwo = yield* query.listDelegatedTaskSummaryHistory({
+        parentEnvironmentId: "env-memory",
+        parentThreadId: ThreadId.make("parent-memory"),
+        cursor: historyPageOne.nextCursor ?? undefined,
+        limit: 1,
+      });
+      assert.equal(historyPageTwo.records[0]?.sourceTurnId, TurnId.make("memory-turn-a"));
+      assert.equal(historyPageTwo.records[0]?.summaryWatermark, 26);
+      assert.equal(historyPageTwo.records[0]?.currentWatermark, 26);
+      assert.equal(historyPageTwo.records[0]?.stale, false);
+      assert.equal(historyPageTwo.records[0]?.summaryText.length, longSummary.length);
+      assert.deepStrictEqual(historyPageTwo.nextCursor, {
+        completedAt: timestamp,
+        childThreadId: ThreadId.make("memory-child-a"),
+        sourceTurnId: TurnId.make("memory-turn-a"),
+      });
+
+      const historyPageThree = yield* query.listDelegatedTaskSummaryHistory({
+        parentEnvironmentId: "env-memory",
+        parentThreadId: ThreadId.make("parent-memory"),
+        cursor: historyPageTwo.nextCursor ?? undefined,
+        limit: 1,
+      });
+      assert.equal(historyPageThree.records[0]?.sourceTurnId, TurnId.make("memory-turn-z"));
+      assert.equal(historyPageThree.records[0]?.summaryState, "error");
+      assert.equal(historyPageThree.records[0]?.currentTurnState, "completed");
+      assert.equal(historyPageThree.records[0]?.stale, true);
+      assert.equal(historyPageThree.records[0]?.executorRole, "implementation");
+      assert.equal(historyPageThree.nextCursor, null);
+
+      const foreignScopePage = yield* query.listDelegatedTaskSummaryHistory({
+        parentEnvironmentId: "env-other",
+        parentThreadId: ThreadId.make("parent-other"),
+        limit: 10,
+      });
+      assert.deepStrictEqual(foreignScopePage.records, []);
+      yield* sql`DELETE FROM projection_delegated_task_summaries
+        WHERE source_turn_id IN ('memory-turn-z', 'memory-turn-c', 'foreign-turn')`;
+      yield* sql`DELETE FROM projection_turns
+        WHERE thread_id = 'memory-child-a' AND turn_id = 'memory-turn-z'`;
+      yield* sql`UPDATE projection_threads SET latest_turn_id = NULL
+        WHERE thread_id = 'memory-child-b'`;
 
       const firstPage = yield* query.listDelegatedTaskMemoryRows({
         parentEnvironmentId: "env-memory",

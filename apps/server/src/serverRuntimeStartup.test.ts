@@ -201,6 +201,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets returns existing project and threa
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshot: () => Effect.die("unused"),
         listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+        listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
         listDelegatedTaskSummaryRecoveryCandidates: () =>
           Effect.succeed({ rows: [], hasMore: false }),
         getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
@@ -339,6 +340,7 @@ it.effect.each([
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshot: () => Effect.die("unused"),
         listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+        listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
         listDelegatedTaskSummaryRecoveryCandidates: () =>
           Effect.succeed({ rows: [], hasMore: false }),
         getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
@@ -420,6 +422,7 @@ it.effect(
           getThreadDetailById: () => Effect.die("unused"),
           getThreadDetailSnapshot: () => Effect.die("unused"),
           listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+          listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
           listDelegatedTaskSummaryRecoveryCandidates: () =>
             Effect.succeed({ rows: [], hasMore: false }),
           getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
@@ -493,6 +496,7 @@ it.effect("resolveAutoBootstrapWelcomeTargets preserves typed UUID generation fa
         getThreadDetailById: () => Effect.die("unused"),
         getThreadDetailSnapshot: () => Effect.die("unused"),
         listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+        listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
         listDelegatedTaskSummaryRecoveryCandidates: () =>
           Effect.succeed({ rows: [], hasMore: false }),
         getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,

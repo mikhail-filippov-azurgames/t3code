@@ -460,6 +460,7 @@ describe("OrchestrationEngine", () => {
           getThreadDetailById: () => Effect.succeed(Option.none()),
           getThreadDetailSnapshot: () => Effect.succeed(Option.none()),
           listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+          listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
           listDelegatedTaskSummaryRecoveryCandidates: () =>
             Effect.succeed({ rows: [], hasMore: false }),
           getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,

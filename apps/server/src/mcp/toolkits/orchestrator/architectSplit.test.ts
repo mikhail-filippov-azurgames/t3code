@@ -791,6 +791,30 @@ function makeHarness(
         rows: memoryRows.filter((row) => row.parentThreadId === requestedParentThreadId),
         hasMore: false,
       }),
+    listDelegatedTaskSummaryHistory: ({ parentThreadId: requestedParentThreadId }) =>
+      Effect.succeed({
+        records: memoryRows
+          .filter((row) => row.parentThreadId === requestedParentThreadId)
+          .map((row) => {
+            const sourceTurnId =
+              row.summary?.sourceTurnId ?? row.latestTurnId ?? TurnId.make(`summary-${row.taskId}`);
+            const summaryWatermark = row.summary?.watermark ?? row.threadWatermark;
+            return {
+              childThreadId: row.taskId,
+              sourceTurnId,
+              completedAt: row.updatedAt,
+              summaryText: row.summary?.text ?? row.title,
+              summaryState: row.summary?.state ?? "ready",
+              summaryWatermark,
+              currentTurnId: row.latestTurnId,
+              currentTurnState: row.latestTurnState,
+              currentWatermark: row.threadWatermark,
+              executorRole: row.role,
+              stale: sourceTurnId !== row.latestTurnId || summaryWatermark !== row.threadWatermark,
+            };
+          }),
+        nextCursor: null,
+      }),
     getSettings: Effect.sync(() => ({
       ...DEFAULT_SERVER_SETTINGS,
       coordinatorArchitectSplit: settingsCell.flag,
@@ -2673,6 +2697,11 @@ describe("phase 1 coordinator/architect service", () => {
       const listed = yield* harness.service.taskList(archScope, {});
       assert.deepStrictEqual(
         listed.tasks.map((task) => task.taskId),
+        [childId],
+      );
+      const history = yield* harness.service.taskSummaryHistory(archScope, {});
+      assert.deepStrictEqual(
+        history.records.map((record) => record.childThreadId),
         [childId],
       );
       const read = yield* harness.service.taskStatus(archScope, childId);

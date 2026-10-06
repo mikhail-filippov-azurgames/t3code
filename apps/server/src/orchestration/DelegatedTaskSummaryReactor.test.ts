@@ -241,6 +241,7 @@ it.effect(
           getProjectShellById: () => Effect.succeedNone,
           getDelegatedTaskSummaryInput: ({ childThreadId }) =>
             Effect.succeed(Option.fromNullishOr(childSnapshots.get(childThreadId))),
+          listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
           listDelegatedTaskSummaryRecoveryCandidates: ({ afterChildThreadId }) =>
             Effect.succeed(
               afterChildThreadId === undefined
@@ -392,6 +393,7 @@ it.effect("retries delegated summary recovery after a transient query failure", 
         subscribeDomainEvents: Effect.succeed(Stream.empty),
       });
       const snapshots = Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+        listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
         listDelegatedTaskSummaryRecoveryCandidates: () =>
           Effect.gen(function* () {
             const attempt = yield* Ref.modify(attempts, (count) => [count, count + 1] as const);

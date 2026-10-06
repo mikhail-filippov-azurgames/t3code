@@ -29,6 +29,7 @@ import {
   OrchestratorMcpTaskMemoryEntry,
   OrchestratorMcpTaskReadInput,
   OrchestratorMcpTaskSearchInput,
+  OrchestratorMcpTaskSummaryHistoryInput,
   TaskPageLimit,
   TaskTranscriptTurnLimit,
 } from "./orchestratorMcp.ts";
@@ -115,13 +116,14 @@ const sendToTaskResult = {
 
 describe("orchestrator MCP contracts", () => {
   it("freezes the accepted orchestrator MCP tool surface", () => {
-    expect(ORCHESTRATOR_MCP_PROTOCOL_VERSION).toBe(7);
+    expect(ORCHESTRATOR_MCP_PROTOCOL_VERSION).toBe(8);
     expect(Object.values(ORCHESTRATOR_MCP_TOOL_NAMES)).toEqual([
       "orchestrator_capabilities",
       "delegate_task",
       "send_to_task",
       "task_list",
       "task_search",
+      "task_summary_history",
       "task_read",
       "task_status",
       "task_wait",
@@ -234,6 +236,21 @@ describe("orchestrator MCP contracts", () => {
       decodeRead({ taskId: "child-1", turnLimit: 20, beforeCursor: "x".repeat(2048) }),
     ).toMatchObject({ turnLimit: 20 });
     expect(() => decodeRead({ taskId: "child-1", beforeCursor: "x".repeat(2049) })).toThrow();
+  });
+
+  it("decodes a summary-history cursor without accepting unbounded pages", () => {
+    const decode = Schema.decodeUnknownSync(OrchestratorMcpTaskSummaryHistoryInput);
+    expect(
+      decode({
+        limit: 100,
+        cursor: {
+          completedAt: "2026-09-20T10:00:00.000Z",
+          childThreadId: "child-1",
+          sourceTurnId: "turn-1",
+        },
+      }),
+    ).toMatchObject({ limit: 100 });
+    expect(() => decode({ limit: 101 })).toThrow();
   });
 
   it("decodes a complete revision-matched OCL handoff", () => {
@@ -421,7 +438,7 @@ describe("orchestrator MCP contracts", () => {
 
   it("decodes fail-closed capability summaries and wait limits", () => {
     const decoded = decodeCapabilities({
-      protocolVersion: 7,
+      protocolVersion: 8,
       parent: {
         environmentId: "environment-1",
         threadId: "parent-thread-1",

@@ -3,6 +3,7 @@ import {
   AuthOrchestrationReadScope,
   AuthRelayReadScope,
   AuthRelayWriteScope,
+  ORCHESTRATION_WS_METHODS,
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
@@ -28,6 +29,12 @@ describe("RPC authorization scopes", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.subscribeBackgroundPolicy)).toBe(
       AuthOrchestrationReadScope,
     );
+  });
+
+  it("keeps delegated summary history read-only", () => {
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory),
+    ).toBe(AuthOrchestrationReadScope);
   });
 
   it("allows relay status reads without granting relay installation access", () => {

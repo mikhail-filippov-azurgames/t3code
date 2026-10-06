@@ -61,6 +61,8 @@ import {
   OrchestratorMcpTaskReadResult,
   OrchestratorMcpTaskSearchInput,
   OrchestratorMcpTaskSearchResult,
+  OrchestratorMcpTaskSummaryHistoryInput,
+  OrchestratorMcpTaskSummaryHistoryResult,
   ProjectId,
   ProviderDriverKind,
   ThreadId,
@@ -320,6 +322,7 @@ export interface OrchestratorMcpDependencies {
   readonly getArchivedShellSnapshot?: ProjectionSnapshotQuery.ProjectionSnapshotQueryShape["getArchivedShellSnapshot"];
   readonly getThreadDetailSnapshotIncludingArchived?: ProjectionSnapshotQuery.ProjectionSnapshotQueryShape["getThreadDetailSnapshotIncludingArchived"];
   readonly listDelegatedTaskMemoryRows?: ProjectionSnapshotQuery.ProjectionSnapshotQueryShape["listDelegatedTaskMemoryRows"];
+  readonly listDelegatedTaskSummaryHistory?: ProjectionSnapshotQuery.ProjectionSnapshotQueryShape["listDelegatedTaskSummaryHistory"];
   readonly listTurnsByThreadId: ProjectionTurns.ProjectionTurnRepositoryShape["listByThreadId"];
   readonly getProviders: ProviderRegistry.ProviderRegistryShape["getProviders"];
   readonly getSettings: Effect.Effect<ServerSettingsValue, OrchestratorMcpFailure>;
@@ -361,6 +364,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskSearchInput,
   ) => Effect.Effect<OrchestratorMcpTaskSearchResult, OrchestratorMcpFailure>;
+  readonly taskSummaryHistory: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpTaskSummaryHistoryInput,
+  ) => Effect.Effect<OrchestratorMcpTaskSummaryHistoryResult, OrchestratorMcpFailure>;
   readonly taskRead: (
     scope: McpInvocationScope,
     input: OrchestratorMcpTaskReadInput,
@@ -1037,6 +1044,16 @@ function toTaskMemoryEntry(
   };
 }
 
+function toTaskSummaryHistoryRecord(
+  row: ProjectionSnapshotQuery.DelegatedTaskSummaryHistoryRecord,
+): OrchestratorMcpTaskSummaryHistoryResult["records"][number] {
+  return {
+    ...row,
+    summaryText: projectDerivedText("summary", scrubDelegatedTaskText(row.summaryText)),
+    executorRole: scrubDelegatedTaskText(row.executorRole).slice(0, 100),
+  };
+}
+
 function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcpServiceShape {
   const loadThreadShell = (threadId: ThreadId) =>
     dependencies
@@ -1095,6 +1112,28 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ...input,
         })
         .pipe(Effect.mapError(orchestrationFailure("read delegated task memory")));
+    });
+
+  const loadTaskSummaryHistoryPage = (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpTaskSummaryHistoryInput,
+  ) =>
+    Effect.gen(function* () {
+      yield* requireCapability(scope);
+      if (dependencies.listDelegatedTaskSummaryHistory === undefined) {
+        return yield* failure(
+          "orchestration_error",
+          "Delegated task summary history is unavailable.",
+        );
+      }
+      return yield* dependencies
+        .listDelegatedTaskSummaryHistory({
+          parentEnvironmentId: scope.environmentId,
+          parentThreadId: scope.threadId,
+          ...input,
+          limit: input.limit ?? 50,
+        })
+        .pipe(Effect.mapError(orchestrationFailure("read delegated task summary history")));
     });
 
   // Every parent_not_active refusal carries a stable [reason=...] token.
@@ -3356,6 +3395,15 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           nextCursor,
         };
       }),
+    taskSummaryHistory: (scope, input) =>
+      Effect.gen(function* () {
+        const readScope = yield* resolveReadScope(scope);
+        const page = yield* loadTaskSummaryHistoryPage(readScope, input);
+        return {
+          records: page.records.map(toTaskSummaryHistoryRecord),
+          nextCursor: page.nextCursor,
+        };
+      }),
     taskRead: (scope, input) =>
       Effect.gen(function* () {
         const readScope = yield* resolveReadScope(scope);
@@ -5100,6 +5148,7 @@ const make = Effect.gen(function* () {
     getArchivedShellSnapshot: snapshots.getArchivedShellSnapshot,
     getThreadDetailSnapshotIncludingArchived: snapshots.getThreadDetailSnapshotIncludingArchived,
     listDelegatedTaskMemoryRows: snapshots.listDelegatedTaskMemoryRows,
+    listDelegatedTaskSummaryHistory: snapshots.listDelegatedTaskSummaryHistory,
     listTurnsByThreadId: turns.listByThreadId,
     getProviders: providers.getProviders,
     getSettings: settings.getSettings.pipe(

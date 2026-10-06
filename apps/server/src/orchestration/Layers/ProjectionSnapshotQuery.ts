@@ -16,6 +16,9 @@ import {
   OrchestrationThread,
   OrchestrationThreadDetailSnapshot,
   OrchestrationThreadDetailWindow,
+  ORCHESTRATION_DELEGATED_TASK_SUMMARY_PAGE_MAX,
+  OrchestrationDelegatedTaskSummaryHistoryCursor,
+  type OrchestrationDelegatedTaskSummaryHistoryRecord,
   ProjectScript,
   ProjectIconOverride,
   TurnId,
@@ -230,6 +233,14 @@ const DelegatedTaskMemoryRequest = Schema.Struct({
   taskId: Schema.NullOr(ThreadId),
   limit: NonNegativeInt,
 });
+const DelegatedTaskSummaryHistoryRequest = Schema.Struct({
+  parentEnvironmentId: Schema.String,
+  parentThreadId: ThreadId,
+  cursorCompletedAt: Schema.NullOr(IsoDateTime),
+  cursorChildThreadId: Schema.NullOr(ThreadId),
+  cursorSourceTurnId: Schema.NullOr(TurnId),
+  limit: NonNegativeInt,
+});
 const DelegatedSummaryRecoveryRequest = Schema.Struct({
   afterChildThreadId: Schema.NullOr(ThreadId),
   afterSourceTurnId: Schema.NullOr(TurnId),
@@ -270,6 +281,18 @@ const DelegatedTaskMemoryDbRowSchema = Schema.Struct({
     summarySourceTurnIds: Schema.NullOr(Schema.fromJsonString(Schema.Array(TurnId))),
   }),
 );
+const DelegatedTaskSummaryHistoryDbRowSchema = Schema.Struct({
+  childThreadId: ThreadId,
+  sourceTurnId: TurnId,
+  completedAt: IsoDateTime,
+  summaryText: Schema.String,
+  summaryState: Schema.Literals(["pending", "ready", "error"]),
+  summaryWatermark: NonNegativeInt,
+  currentTurnId: Schema.NullOr(TurnId),
+  currentTurnState: Schema.NullOr(ProjectionTurnState),
+  currentWatermark: NonNegativeInt,
+  executorRole: Schema.String,
+});
 const DelegatedSummaryThreadRequest = Schema.Struct({
   childThreadId: ThreadId,
 });
@@ -1540,6 +1563,85 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         )
       ) followups ON followups.thread_id = candidates.task_id
       ORDER BY candidates.task_id ASC
+    `,
+  });
+
+  const listDelegatedTaskSummaryHistoryQuery = SqlSchema.findAll({
+    Request: DelegatedTaskSummaryHistoryRequest,
+    Result: DelegatedTaskSummaryHistoryDbRowSchema,
+    execute: ({
+      parentEnvironmentId,
+      parentThreadId,
+      cursorCompletedAt,
+      cursorChildThreadId,
+      cursorSourceTurnId,
+      limit,
+    }) => sql`
+      WITH candidates AS (
+        SELECT
+          summaries.child_thread_id AS "childThreadId",
+          summaries.source_turn_id AS "sourceTurnId",
+          summaries.completed_at AS "completedAt",
+          summaries.summary_text AS "summaryText",
+          summaries.state AS "summaryState",
+          summaries.watermark AS "summaryWatermark",
+          substr(COALESCE(json_extract(lineage.payload_json, '$.role'), 'unknown'), 1, 100) AS "executorRole"
+        FROM projection_delegated_task_summaries summaries
+        JOIN projection_threads threads ON threads.thread_id = summaries.child_thread_id
+        JOIN projection_thread_activities lineage
+          ON lineage.thread_id = summaries.child_thread_id
+          AND lineage.kind = 'delegation.created'
+          AND lineage.activity_id = (
+            SELECT latest.activity_id
+            FROM projection_thread_activities latest
+            WHERE latest.thread_id = summaries.child_thread_id
+              AND latest.kind = 'delegation.created'
+            ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
+            LIMIT 1
+          )
+        WHERE summaries.parent_environment_id = ${parentEnvironmentId}
+          AND summaries.parent_thread_id = ${parentThreadId}
+          AND threads.deleted_at IS NULL
+          AND json_extract(lineage.payload_json, '$.parentEnvironmentId') = ${parentEnvironmentId}
+          AND json_extract(lineage.payload_json, '$.parentThreadId') = ${parentThreadId}
+          AND json_extract(lineage.payload_json, '$.childThreadId') = summaries.child_thread_id
+          AND (
+            ${cursorCompletedAt} IS NULL
+            OR summaries.completed_at < ${cursorCompletedAt}
+            OR (
+              summaries.completed_at = ${cursorCompletedAt}
+              AND summaries.child_thread_id < ${cursorChildThreadId}
+            )
+            OR (
+              summaries.completed_at = ${cursorCompletedAt}
+              AND summaries.child_thread_id = ${cursorChildThreadId}
+              AND summaries.source_turn_id < ${cursorSourceTurnId}
+            )
+          )
+        ORDER BY summaries.completed_at DESC, summaries.child_thread_id DESC, summaries.source_turn_id DESC
+        LIMIT ${Math.min(101, limit + 1)}
+      )
+      SELECT
+        candidates."childThreadId",
+        candidates."sourceTurnId",
+        candidates."completedAt",
+        candidates."summaryText",
+        candidates."summaryState",
+        candidates."summaryWatermark",
+        threads.latest_turn_id AS "currentTurnId",
+        turns.state AS "currentTurnState",
+        COALESCE((
+          SELECT MAX(activity.sequence)
+          FROM projection_thread_activities activity
+          WHERE activity.thread_id = candidates."childThreadId"
+        ), 0) AS "currentWatermark",
+        candidates."executorRole"
+      FROM candidates
+      JOIN projection_threads threads ON threads.thread_id = candidates."childThreadId"
+      LEFT JOIN projection_turns turns
+        ON turns.thread_id = candidates."childThreadId"
+        AND turns.turn_id = threads.latest_turn_id
+      ORDER BY candidates."completedAt" DESC, candidates."childThreadId" DESC, candidates."sourceTurnId" DESC
     `,
   });
 
@@ -4447,6 +4549,51 @@ pending_approval_requests AS (
     );
   };
 
+  const listDelegatedTaskSummaryHistory: ProjectionSnapshotQueryShape["listDelegatedTaskSummaryHistory"] =
+    (input) => {
+      const limit = Math.max(
+        1,
+        Math.min(ORCHESTRATION_DELEGATED_TASK_SUMMARY_PAGE_MAX, Math.floor(input.limit)),
+      );
+      return listDelegatedTaskSummaryHistoryQuery({
+        parentEnvironmentId: input.parentEnvironmentId,
+        parentThreadId: input.parentThreadId,
+        cursorCompletedAt: input.cursor?.completedAt ?? null,
+        cursorChildThreadId: input.cursor?.childThreadId ?? null,
+        cursorSourceTurnId: input.cursor?.sourceTurnId ?? null,
+        limit,
+      }).pipe(
+        Effect.map((rows) => {
+          const pageRows = rows.slice(0, limit);
+          const records: ReadonlyArray<OrchestrationDelegatedTaskSummaryHistoryRecord> =
+            pageRows.map((row) => ({
+              ...row,
+              stale:
+                row.sourceTurnId !== row.currentTurnId ||
+                row.summaryWatermark !== row.currentWatermark,
+            }));
+          const last = records.at(-1);
+          return {
+            records,
+            nextCursor:
+              rows.length > limit && last !== undefined
+                ? {
+                    completedAt: last.completedAt,
+                    childThreadId: last.childThreadId,
+                    sourceTurnId: last.sourceTurnId,
+                  }
+                : null,
+          };
+        }),
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.listDelegatedTaskSummaryHistory:query",
+            "ProjectionSnapshotQuery.listDelegatedTaskSummaryHistory:decodeRows",
+          ),
+        ),
+      );
+    };
+
   const listDelegatedTaskSummaryRecoveryCandidates: ProjectionSnapshotQueryShape["listDelegatedTaskSummaryRecoveryCandidates"] =
     (input) => {
       const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)));
@@ -4570,6 +4717,7 @@ pending_approval_requests AS (
     getThreadDetailSnapshot,
     getThreadDetailSnapshotIncludingArchived,
     listDelegatedTaskMemoryRows,
+    listDelegatedTaskSummaryHistory,
     listDelegatedTaskSummaryRecoveryCandidates,
     getDelegatedTaskSummaryInput,
   } satisfies ProjectionSnapshotQueryShape;

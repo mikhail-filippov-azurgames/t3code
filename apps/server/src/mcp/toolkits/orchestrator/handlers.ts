@@ -25,6 +25,10 @@ const make = Effect.gen(function* () {
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.taskSearch(scope, input),
       ),
+    task_summary_history: (input) =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.taskSummaryHistory(scope, input),
+      ),
     task_read: (input) =>
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.taskRead(scope, input),

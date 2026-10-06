@@ -43,6 +43,8 @@ import {
   OrchestratorMcpTaskReadResult,
   OrchestratorMcpTaskSearchInput,
   OrchestratorMcpTaskSearchResult,
+  OrchestratorMcpTaskSummaryHistoryInput,
+  OrchestratorMcpTaskSummaryHistoryResult,
   OrchestratorMcpTaskStatusInput,
   OrchestratorMcpTaskStatusResult,
   OrchestratorMcpTaskWaitInput,
@@ -121,6 +123,20 @@ export const TaskSearchTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.taskSearch, 
   dependencies,
 })
   .annotate(Tool.Title, "Search delegated tasks")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const TaskSummaryHistoryTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.taskSummaryHistory, {
+  description:
+    "List every persisted delegated-task summary by completed turn, including current turn state, summary state, executor role, watermarks, and staleness. Results use a cursor and are scoped to this parent; do not reconstruct summary history from task_list or task_search.",
+  parameters: OrchestratorMcpTaskSummaryHistoryInput,
+  success: OrchestratorMcpTaskSummaryHistoryResult,
+  failure: OrchestratorMcpFailure,
+  dependencies,
+})
+  .annotate(Tool.Title, "Read delegated task summary history")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -405,6 +421,7 @@ export const OrchestratorMcpToolkit = Toolkit.make(
   SendToTaskTool,
   TaskListTool,
   TaskSearchTool,
+  TaskSummaryHistoryTool,
   TaskReadTool,
   TaskStatusTool,
   TaskWaitTool,

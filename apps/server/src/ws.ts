@@ -2798,6 +2798,42 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory,
+            Effect.gen(function* () {
+              const binding =
+                coordinatorArchitect === undefined
+                  ? null
+                  : yield* coordinatorArchitect.getAnyBindingByArchitect(input.parentThreadId).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new OrchestrationGetSnapshotError({
+                            message: "Failed to resolve the Architect history scope",
+                            cause,
+                          }),
+                      ),
+                    );
+              const parentEnvironmentId = yield* serverEnvironment.getEnvironmentId;
+              return yield* projectionSnapshotQuery
+                .listDelegatedTaskSummaryHistory({
+                  parentEnvironmentId,
+                  parentThreadId: binding?.coordinatorThreadId ?? input.parentThreadId,
+                  ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+                  limit: input.limit ?? 50,
+                })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to load delegated task summary history",
+                        cause,
+                      }),
+                  ),
+                );
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.subscribeShell]: (input) =>
           observeRpcStreamEffect(
             ORCHESTRATION_WS_METHODS.subscribeShell,

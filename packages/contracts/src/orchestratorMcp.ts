@@ -25,6 +25,8 @@ import { ProviderOptionDescriptor, ProviderOptionSelection } from "./model.ts";
 import {
   ModelSelection,
   OrchestrationMessage,
+  OrchestrationDelegatedTaskSummaryHistoryCursor,
+  OrchestrationDelegatedTaskSummaryHistoryRecord,
   OrchestrationThreadActivity,
   OrchestrationThreadDetailPage,
   ProviderInteractionMode,
@@ -32,7 +34,7 @@ import {
 } from "./orchestration.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
-export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 7 as const;
+export const ORCHESTRATOR_MCP_PROTOCOL_VERSION = 8 as const;
 export const ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS = 10 * 60 * 1_000;
 export const ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS = 30 * 60 * 1_000;
 export const ORCHESTRATOR_MCP_TOOL_NAMES = {
@@ -41,6 +43,7 @@ export const ORCHESTRATOR_MCP_TOOL_NAMES = {
   sendToTask: "send_to_task",
   taskList: "task_list",
   taskSearch: "task_search",
+  taskSummaryHistory: "task_summary_history",
   taskRead: "task_read",
   taskStatus: "task_status",
   taskWait: "task_wait",
@@ -225,6 +228,23 @@ export const OrchestratorMcpTaskSearchInput = Schema.Struct({
   afterTaskId: Schema.optional(ThreadId),
 });
 export type OrchestratorMcpTaskSearchInput = typeof OrchestratorMcpTaskSearchInput.Type;
+
+export const OrchestratorMcpTaskSummaryHistoryInput = Schema.Struct({
+  limit: Schema.optional(TaskPageLimit),
+  cursor: Schema.optional(OrchestrationDelegatedTaskSummaryHistoryCursor),
+});
+export type OrchestratorMcpTaskSummaryHistoryInput =
+  typeof OrchestratorMcpTaskSummaryHistoryInput.Type;
+
+export const OrchestratorMcpTaskSummaryHistoryResult = Schema.Struct({
+  records: boundedArray(
+    OrchestrationDelegatedTaskSummaryHistoryRecord,
+    ORCHESTRATOR_MCP_TASK_PAGE_MAX,
+  ),
+  nextCursor: Schema.NullOr(OrchestrationDelegatedTaskSummaryHistoryCursor),
+});
+export type OrchestratorMcpTaskSummaryHistoryResult =
+  typeof OrchestratorMcpTaskSummaryHistoryResult.Type;
 
 export const OrchestratorMcpTaskReadInput = Schema.Struct({
   taskId: ThreadId,

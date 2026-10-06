@@ -55,6 +55,7 @@ const makeProjectionSnapshotQueryLayer = (project: OrchestrationProject) =>
     getThreadDetailById: () => Effect.die("unused"),
     getThreadDetailSnapshot: () => Effect.die("unused"),
     listActivitiesByKindIncludingArchived: () => Effect.succeed([]),
+    listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
     listDelegatedTaskSummaryRecoveryCandidates: () => Effect.succeed({ rows: [], hasMore: false }),
     getThreadDetailByIdIncludingArchived: () => Effect.succeedNone,
     getThreadDetailSnapshotIncludingArchived: () => Effect.succeedNone,

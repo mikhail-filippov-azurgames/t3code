@@ -38,11 +38,59 @@ export const ORCHESTRATION_WS_METHODS = {
   getTurnDiff: "orchestration.getTurnDiff",
   getFullThreadDiff: "orchestration.getFullThreadDiff",
   searchThreads: "orchestration.searchThreads",
+  listDelegatedTaskSummaryHistory: "orchestration.listDelegatedTaskSummaryHistory",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getCoordinatorArchitectSidebar: "orchestration.getCoordinatorArchitectSidebar",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;
+
+export const ORCHESTRATION_DELEGATED_TASK_SUMMARY_PAGE_MAX = 100 as const;
+
+export const OrchestrationDelegatedTaskSummaryHistoryCursor = Schema.Struct({
+  completedAt: IsoDateTime,
+  childThreadId: ThreadId,
+  sourceTurnId: TurnId,
+});
+export type OrchestrationDelegatedTaskSummaryHistoryCursor =
+  typeof OrchestrationDelegatedTaskSummaryHistoryCursor.Type;
+
+export const OrchestrationDelegatedTaskSummaryHistoryRecord = Schema.Struct({
+  childThreadId: ThreadId,
+  sourceTurnId: TurnId,
+  completedAt: IsoDateTime,
+  summaryText: Schema.String,
+  summaryState: Schema.Literals(["pending", "ready", "error"]),
+  summaryWatermark: NonNegativeInt,
+  currentTurnId: Schema.NullOr(TurnId),
+  currentTurnState: Schema.NullOr(
+    Schema.Literals(["pending", "running", "interrupted", "completed", "error"]),
+  ),
+  currentWatermark: NonNegativeInt,
+  executorRole: Schema.String,
+  stale: Schema.Boolean,
+});
+export type OrchestrationDelegatedTaskSummaryHistoryRecord =
+  typeof OrchestrationDelegatedTaskSummaryHistoryRecord.Type;
+
+export const OrchestrationDelegatedTaskSummaryHistoryPage = Schema.Struct({
+  records: Schema.Array(OrchestrationDelegatedTaskSummaryHistoryRecord).check(
+    Schema.isMaxLength(ORCHESTRATION_DELEGATED_TASK_SUMMARY_PAGE_MAX),
+  ),
+  nextCursor: Schema.NullOr(OrchestrationDelegatedTaskSummaryHistoryCursor),
+});
+export type OrchestrationDelegatedTaskSummaryHistoryPage =
+  typeof OrchestrationDelegatedTaskSummaryHistoryPage.Type;
+
+export const OrchestrationListDelegatedTaskSummaryHistoryInput = Schema.Struct({
+  parentThreadId: ThreadId,
+  cursor: Schema.optional(OrchestrationDelegatedTaskSummaryHistoryCursor),
+  limit: Schema.optional(
+    PositiveInt.check(Schema.isLessThanOrEqualTo(ORCHESTRATION_DELEGATED_TASK_SUMMARY_PAGE_MAX)),
+  ),
+});
+export type OrchestrationListDelegatedTaskSummaryHistoryInput =
+  typeof OrchestrationListDelegatedTaskSummaryHistoryInput.Type;
 
 export const ProviderApprovalPolicy = Schema.Literals([
   "untrusted",
@@ -2384,6 +2432,10 @@ export const OrchestrationRpcSchemas = {
   searchThreads: {
     input: OrchestrationSearchThreadsInput,
     output: OrchestrationSearchThreadsResult,
+  },
+  listDelegatedTaskSummaryHistory: {
+    input: OrchestrationListDelegatedTaskSummaryHistoryInput,
+    output: OrchestrationDelegatedTaskSummaryHistoryPage,
   },
   getArchivedShellSnapshot: {
     input: Schema.Struct({}),

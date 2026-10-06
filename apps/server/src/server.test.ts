@@ -8398,6 +8398,25 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
                   },
                 ],
               }),
+            listDelegatedTaskSummaryHistory: () =>
+              Effect.succeed({
+                records: [
+                  {
+                    childThreadId: ThreadId.make("summary-child"),
+                    sourceTurnId: TurnId.make("summary-turn"),
+                    completedAt: now,
+                    summaryText: "Completed the delegated turn.",
+                    summaryState: "ready",
+                    summaryWatermark: 3,
+                    currentTurnId: TurnId.make("summary-turn"),
+                    currentTurnState: "completed",
+                    currentWatermark: 3,
+                    executorRole: "implementation",
+                    stale: false,
+                  },
+                ],
+                nextCursor: null,
+              }),
           },
           orchestrationEngine: {
             dispatch: () => Effect.succeed({ sequence: 7 }),
@@ -8470,6 +8489,30 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
           source: "assistant",
           snippet: "Search reached the final response.",
           messageCreatedAt: now,
+        },
+      ]);
+
+      const historyResult = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          client[ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory]({
+            parentThreadId: ThreadId.make("thread-1"),
+            limit: 1,
+          }),
+        ),
+      );
+      assert.deepEqual(historyResult.records, [
+        {
+          childThreadId: ThreadId.make("summary-child"),
+          sourceTurnId: TurnId.make("summary-turn"),
+          completedAt: now,
+          summaryText: "Completed the delegated turn.",
+          summaryState: "ready",
+          summaryWatermark: 3,
+          currentTurnId: TurnId.make("summary-turn"),
+          currentTurnState: "completed",
+          currentWatermark: 3,
+          executorRole: "implementation",
+          stale: false,
         },
       ]);
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),

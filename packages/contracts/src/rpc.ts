@@ -1384,6 +1384,15 @@ const WsOrchestrationSearchThreadsRpc = Rpc.make(ORCHESTRATION_WS_METHODS.search
   error: Schema.Union([OrchestrationSearchThreadsError, EnvironmentAuthorizationError]),
 });
 
+const WsOrchestrationListDelegatedTaskSummaryHistoryRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory,
+  {
+    payload: OrchestrationRpcSchemas.listDelegatedTaskSummaryHistory.input,
+    success: OrchestrationRpcSchemas.listDelegatedTaskSummaryHistory.output,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationGetArchivedShellSnapshotRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,
   {
@@ -1739,6 +1748,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationGetTurnDiffRpc,
   WsOrchestrationGetFullThreadDiffRpc,
   WsOrchestrationSearchThreadsRpc,
+  WsOrchestrationListDelegatedTaskSummaryHistoryRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationGetCoordinatorArchitectSidebarRpc,
   WsOrchestrationSubscribeShellRpc,
