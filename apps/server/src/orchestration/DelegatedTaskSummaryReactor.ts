@@ -76,12 +76,15 @@ function compactLines(text: string, max: number): string {
   return normalized.length <= max ? normalized : `${normalized.slice(0, max - 3).trimEnd()}...`;
 }
 
+/** Leads every fallback text so neither agents nor people mistake it for a model summary. */
+export const DELEGATED_SUMMARY_NOT_GENERATED_PREFIX = "Summary not generated (raw excerpt).";
+
 export function deterministicDelegatedSummary(
   status: string,
   report: string,
   events: string,
 ): string {
-  const outcome = `Outcome: ${status}`;
+  const outcome = `${DELEGATED_SUMMARY_NOT_GENERATED_PREFIX} Status: ${status}`;
   const safeReport = projectDerivedText("summary", scrubDelegatedTaskText(report));
   const safeEvents = projectDerivedText("summary", scrubDelegatedTaskText(events));
   const reportPart =
@@ -350,24 +353,27 @@ export const make = Effect.gen(function* () {
             "summary",
             formatDelegatedSummary(result.success),
           );
-          yield* summaries.complete({
-            childThreadId,
-            sourceTurnId,
-            text: generatedText.length > 0 ? generatedText : fallback,
-            source: generatedText.length > 0 ? "model" : "deterministic",
-            sourceTurnIds,
-            watermark,
-            contentFingerprint: fingerprint,
-            updatedAt: DateTime.formatIso(yield* DateTime.now),
-          });
-          return;
+          if (generatedText.length > 0) {
+            yield* summaries.complete({
+              childThreadId,
+              sourceTurnId,
+              text: generatedText,
+              source: "model",
+              sourceTurnIds,
+              watermark,
+              contentFingerprint: fingerprint,
+              updatedAt: DateTime.formatIso(yield* DateTime.now),
+            });
+            return;
+          }
         }
 
-        const error =
-          compact(
-            projectDerivedText("summary", scrubDelegatedTaskText(result.failure.message)),
-            500,
-          ) || "Text generation failed.";
+        const error = Result.isSuccess(result)
+          ? "Text generation returned an empty summary; deterministic summary retained."
+          : compact(
+              projectDerivedText("summary", scrubDelegatedTaskText(result.failure.message)),
+              500,
+            ) || "Text generation failed.";
         const failureTime = DateTime.formatIso(yield* DateTime.now);
         yield* summaries.fail({
           childThreadId,

@@ -19,6 +19,7 @@ import * as TestClock from "effect/testing/TestClock";
 
 import {
   buildDelegatedSummaryGenerationInput,
+  DELEGATED_SUMMARY_NOT_GENERATED_PREFIX,
   deterministicDelegatedSummary,
   formatDelegatedSummary,
   DelegatedTaskSummaryReactor,
@@ -71,7 +72,8 @@ it("formats short structured output and a bounded deterministic fallback", () =>
   assert.isAtMost(generated.length, 600);
   assert.match(generated, /^Outcome: .+\nDetails:\n- /);
   assert.isAtMost(fallback.length, 600);
-  assert.include(fallback, "Outcome: failed");
+  assert.isTrue(fallback.startsWith(`${DELEGATED_SUMMARY_NOT_GENERATED_PREFIX} Status: failed`));
+  assert.notMatch(fallback, /^Outcome:/);
   assert.include(fallback, "Report:");
 });
 
@@ -121,6 +123,7 @@ it.effect(
         const childA = ThreadId.make("summary-pipeline-a");
         const childB = ThreadId.make("summary-pipeline-b");
         const childC = ThreadId.make("summary-pipeline-crash-recovery");
+        const childD = ThreadId.make("summary-pipeline-empty-generation");
         const parentThreadId = ThreadId.make("summary-pipeline-parent");
         const projectId = ProjectId.make("summary-pipeline-project");
         const projectTextGenerationSelection = {
@@ -130,12 +133,13 @@ it.effect(
         const turnA = TurnId.make("summary-pipeline-turn-a");
         const turnB = TurnId.make("summary-pipeline-turn-b");
         const turnC = TurnId.make("summary-pipeline-turn-crash-window");
+        const turnD = TurnId.make("summary-pipeline-turn-empty-generation");
         const secret = "sk_live_0123456789ABCDEF";
         const parentEnvironmentId = "summary-pipeline-environment";
         const keyOf = (childThreadId: ThreadId, sourceTurnId: TurnId) =>
           `${childThreadId}\u0000${sourceTurnId}`;
 
-        for (const childThreadId of [childA, childB, childC]) {
+        for (const childThreadId of [childA, childB, childC, childD]) {
           childSnapshots.set(childThreadId, {
             projectId,
             parentEnvironmentId,
@@ -267,6 +271,16 @@ it.effect(
                         resultExcerpt: null,
                         terminalError: null,
                       },
+                      {
+                        parentThreadId,
+                        childThreadId: childD,
+                        sourceTurnId: turnD,
+                        status: "completed" as const,
+                        outputStatus: "available" as const,
+                        completedAt: "2026-09-20T10:00:00.000Z" as const,
+                        resultExcerpt: null,
+                        terminalError: null,
+                      },
                     ],
                     hasMore: false,
                   }
@@ -285,6 +299,7 @@ it.effect(
                   body: "- Focused validation passed.",
                 };
               }
+              if (input.cwd.endsWith(childD)) return { subject: " ", body: "" };
               return yield* new TextGenerationError({
                 operation: "generateCommitMessage",
                 detail: `provider unavailable ${secret}`,
@@ -346,20 +361,23 @@ it.effect(
           const firstEvent = eventFor(childB, turnB, "b");
           yield* Queue.offer(eventQueue, firstEvent);
           yield* Queue.offer(eventQueue, firstEvent);
-          const firstInput = yield* Queue.take(generationRequests);
-          const secondInput = yield* Queue.take(generationRequests);
+          const inputs = [
+            yield* Queue.take(generationRequests),
+            yield* Queue.take(generationRequests),
+            yield* Queue.take(generationRequests),
+          ];
           yield* reactor.drain;
 
-          assert.equal(generatorCalls, 2);
+          assert.equal(generatorCalls, 3);
           assert.deepEqual(
-            [firstInput.cwd, secondInput.cwd].toSorted(),
-            [`/workspace/${childA}`, `/workspace/${childB}`].toSorted(),
+            inputs.map((input) => input.cwd).toSorted(),
+            [childA, childB, childD].map((child) => `/workspace/${child}`).toSorted(),
           );
-          const generatedInput = firstInput.cwd.endsWith(childA) ? firstInput : secondInput;
-          const failedInput = firstInput.cwd.endsWith(childB) ? firstInput : secondInput;
-          assert.deepEqual(generatedInput.modelSelection, projectTextGenerationSelection);
-          assert.notInclude(generatedInput.stagedPatch, secret);
-          assert.notInclude(failedInput.stagedPatch, secret);
+          const generatedInput = inputs.find((input) => input.cwd.endsWith(childA));
+          const failedInput = inputs.find((input) => input.cwd.endsWith(childB));
+          assert.deepEqual(generatedInput?.modelSelection, projectTextGenerationSelection);
+          assert.notInclude(generatedInput?.stagedPatch ?? "", secret);
+          assert.notInclude(failedInput?.stagedPatch ?? "", secret);
           const rows = yield* Ref.get(records);
           const generated = rows.get(keyOf(childA, turnA));
           const fallback = rows.get(keyOf(childB, turnB));
@@ -371,12 +389,19 @@ it.effect(
           assert.deepEqual(generated?.sourceTurnIds, [turnA]);
           assert.equal(fallback?.state, "error");
           assert.equal(fallback?.source, "deterministic");
+          assert.isTrue(fallback?.text.startsWith(DELEGATED_SUMMARY_NOT_GENERATED_PREFIX));
+          assert.include(fallback?.error ?? "", "provider unavailable");
           assert.notInclude(fallback?.text ?? "", secret);
           assert.notInclude(fallback?.error ?? "", secret);
           const uncertain = rows.get(keyOf(childC, turnC));
           assert.equal(uncertain?.state, "error");
           assert.equal(uncertain?.attemptCount, 1);
           assert.equal(uncertain?.source, "deterministic");
+          const empty = rows.get(keyOf(childD, turnD));
+          assert.equal(empty?.state, "error");
+          assert.equal(empty?.source, "deterministic");
+          assert.isTrue(empty?.text.startsWith(DELEGATED_SUMMARY_NOT_GENERATED_PREFIX));
+          assert.include(empty?.error ?? "", "empty summary");
         }).pipe(Effect.provide(layer));
       }),
     ),

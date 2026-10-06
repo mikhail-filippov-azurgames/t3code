@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { it } from "@effect/vitest";
+import { describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -22,6 +22,10 @@ const DEFAULT_TEST_MODEL_SELECTION = createModelSelection(
   "gpt-5.4-mini",
 );
 
+// The helper outlives the test timeout, so waiting for its EOF fails the test instead of passing slowly.
+const ORPHAN_HOLDS_STDIO_MS = 30_000;
+const ORPHAN_TEST_TIMEOUT_MS = 10_000;
+
 const CodexTextGenerationTestLayer = ServerConfig.ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-codex-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
@@ -38,6 +42,7 @@ interface FakeCodexInput {
   forbidArg?: string;
   stdinMustContain?: string;
   stdinMustNotContain?: string;
+  orphanHoldsStdioMs?: number;
 }
 
 // The stub walks argv the way the shell script it replaced did: `--image`,
@@ -54,6 +59,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
     forbidArg: input.forbidArg ?? null,
     stdinMustContain: input.stdinMustContain ?? null,
     stdinMustNotContain: input.stdinMustNotContain ?? null,
+    orphanHoldsStdioMs: input.orphanHoldsStdioMs ?? null,
     stderr: input.stderr ?? null,
     output: input.output,
     exitCode: input.exitCode ?? 0,
@@ -65,6 +71,7 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
       name: "codex",
       source: [
         'import * as NodeFS from "node:fs";',
+        'import * as NodeChildProcess from "node:child_process";',
         `const check = ${check};`,
         "const args = process.argv.slice(2);",
         'const originalArgs = ` ${args.join(" ")} `;',
@@ -123,6 +130,13 @@ function makeFakeCodexBinary(dir: string, input: FakeCodexInput) {
         "}",
         'if (check.stderr !== null) process.stderr.write(check.stderr + "\\n");',
         'if (outputPath !== null) NodeFS.writeFileSync(outputPath, check.output + "\\n");',
+        "if (check.orphanHoldsStdioMs !== null) {",
+        "  NodeChildProcess.spawn(",
+        "    process.execPath,",
+        "    ['-e', 'setTimeout(() => {}, ' + check.orphanHoldsStdioMs + ')'],",
+        "    { stdio: 'inherit', detached: true },",
+        "  ).unref();",
+        "}",
         "process.exitCode = check.exitCode;",
         "",
       ].join("\n"),
@@ -663,5 +677,66 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGeneration", (it) => {
           }
         }),
     ),
+  );
+});
+
+// Mirrors Codex's plugin marketplace `git clone` outliving `codex exec` with our pipes; the stub
+// detaches it so libuv's kill-on-close job does not end it. Live clock: the drain window is a real sleep.
+describe("CodexTextGeneration with a helper holding codex stdio", () => {
+  it.live(
+    "returns the generated output when a helper outlives codex holding its stdio",
+    () =>
+      withFakeCodexEnv(
+        {
+          output: JSON.stringify({ subject: "Fix summary hang", body: "- Drain after exit." }),
+          orphanHoldsStdioMs: ORPHAN_HOLDS_STDIO_MS,
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const generated = yield* textGeneration.generateCommitMessage({
+              cwd: process.cwd(),
+              branch: "feature/codex-orphan",
+              stagedSummary: "M README.md",
+              stagedPatch: "diff --git a/README.md b/README.md",
+              modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+            });
+
+            expect(generated.subject).toBe("Fix summary hang");
+          }),
+      ).pipe(Effect.provide(CodexTextGenerationTestLayer)),
+    ORPHAN_TEST_TIMEOUT_MS,
+  );
+
+  it.live(
+    "reports the codex failure instead of a timeout when a helper holds its stdio",
+    () =>
+      withFakeCodexEnv(
+        {
+          output: "",
+          exitCode: 1,
+          stderr: "ERROR: You've hit your usage limit.",
+          orphanHoldsStdioMs: ORPHAN_HOLDS_STDIO_MS,
+        },
+        (textGeneration) =>
+          Effect.gen(function* () {
+            const result = yield* textGeneration
+              .generateCommitMessage({
+                cwd: process.cwd(),
+                branch: "feature/codex-orphan",
+                stagedSummary: "M README.md",
+                stagedPatch: "diff --git a/README.md b/README.md",
+                modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+              })
+              .pipe(Effect.result);
+
+            expect(Result.isFailure(result)).toBe(true);
+            if (Result.isFailure(result)) {
+              expect(result.failure.message).toContain(
+                "Codex CLI command failed: ERROR: You've hit your usage limit.",
+              );
+            }
+          }),
+      ).pipe(Effect.provide(CodexTextGenerationTestLayer)),
+    ORPHAN_TEST_TIMEOUT_MS,
   );
 });
