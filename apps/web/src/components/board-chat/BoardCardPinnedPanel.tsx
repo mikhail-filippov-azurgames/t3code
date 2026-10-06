@@ -143,7 +143,9 @@ export function BoardCardPinnedPanel({
   useLayoutEffect(() => {
     historyStateRef.current = currentHistoryState;
   }, [currentHistoryState]);
-  const hasPanelContent = pins.length > 0 || currentHistoryState.entries.length > 0;
+  // A failed history load must stay visible; hiding it would look like "no history".
+  const hasPanelContent =
+    pins.length > 0 || currentHistoryState.entries.length > 0 || currentHistoryState.error;
   const open = hasPanelContent && !collapsed;
   useLayoutEffect(() => {
     onOpenChange?.(open);
@@ -447,7 +449,10 @@ export function BoardCardPinnedPanel({
               </Button>
             </div>
           ) : currentHistoryState.entries.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Выжимок пока нет</p>
+            <p className="text-xs text-muted-foreground">
+              Выжимок пока нет: ни одна делегированная задача этого чата ещё не завершила ход. Это
+              не ошибка.
+            </p>
           ) : (
             <>
               <ol className="space-y-3">

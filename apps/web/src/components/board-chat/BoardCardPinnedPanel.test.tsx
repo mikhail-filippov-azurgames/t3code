@@ -509,4 +509,41 @@ describe("BoardCardPinnedPanel", () => {
       act(() => renderer.unmount());
     }
   });
+
+  it("keeps the panel and the History tab visible without pins when the history fails to load", async () => {
+    mocks.pins = [];
+    const onOpenChange = vi.fn();
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => {
+      throw new Error("offline");
+    });
+    const renderer = await mountPanel({ onOpenChange, loadHistory });
+    try {
+      const historyTab = renderer.root.find(
+        (node) => node.props.role === "tab" && textContent(node) === "История",
+      );
+      expect(historyTab.props["aria-selected"]).toBe(true);
+      expect(textContent(renderer.root)).toContain("Не удалось загрузить историю выжимок.");
+      expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("states that an empty history is not an error", async () => {
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      const historyTab = renderer.root.find(
+        (node) => node.props.role === "tab" && textContent(node) === "История",
+      );
+      act(() => historyTab.props.onClick());
+      expect(textContent(renderer.root)).toContain("Это не ошибка.");
+      expect(renderer.root.findAllByProps({ role: "alert" })).toHaveLength(0);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
 });
