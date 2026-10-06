@@ -59,6 +59,50 @@ function turnStartCommand(input: {
 }
 
 describe("normalizeDispatchCommand attachments", () => {
+  it.effect(
+    "replaces a client-supplied system run origin with the server-assigned client origin",
+    () =>
+      Effect.gen(function* () {
+        const commandWithSystemOrigin = {
+          ...turnStartCommand({ attachments: [] }),
+          runOrigin: { _tag: "server-restart-continuation" },
+        } as unknown as ClientOrchestrationCommand;
+
+        const normalized = yield* normalizeDispatchCommand(commandWithSystemOrigin);
+        if (normalized.type !== "thread.turn.start") {
+          throw new Error("Expected a thread.turn.start command.");
+        }
+        expect(normalized.runOrigin).toEqual({ _tag: "client-turn" });
+      }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps an HTTP bootstrap placeholder marked as a client turn", () =>
+    Effect.gen(function* () {
+      const clientCommand = yield* Schema.decodeUnknownEffect(ClientOrchestrationCommand)({
+        ...turnStartCommand({ attachments: [] }),
+        bootstrap: {
+          createThread: {
+            projectId: "project-1",
+            title: "New thread",
+            modelSelection: { instanceId: "codex", model: "gpt-5" },
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            createdAt: "2026-08-01T00:00:00.000Z",
+          },
+        },
+        runOrigin: { _tag: "session-restoration" },
+      });
+
+      const normalized = yield* normalizeDispatchCommand(clientCommand);
+      if (normalized.type !== "thread.turn.start") {
+        throw new Error("Expected a thread.turn.start command.");
+      }
+      expect(normalized.runOrigin).toEqual({ _tag: "client-turn" });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects duplicate client ids before persisting attachments", () =>
     Effect.gen(function* () {
       const error = yield* normalizeDispatchCommand(

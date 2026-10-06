@@ -332,6 +332,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
           };
     return {
       ...canonicalCommand,
+      runOrigin: { _tag: "client-turn" },
       message: {
         ...canonicalCommand.message,
         attachments: normalizedAttachments,

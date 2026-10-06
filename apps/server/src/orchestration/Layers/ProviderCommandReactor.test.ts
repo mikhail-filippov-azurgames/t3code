@@ -1766,6 +1766,7 @@ describe("ProviderCommandReactor", () => {
               text,
               attachments: [],
             },
+            runOrigin: { _tag: "client-turn" },
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             runtimeMode: "approval-required",
             createdAt,
@@ -1887,6 +1888,27 @@ describe("ProviderCommandReactor", () => {
           return;
         }
         yield* Deferred.await(queuedSent);
+        const events = yield* Stream.runCollect(harness.engine.readEvents(0));
+        const queuedMessageId = asMessageId("user-message-during-compact-recovery");
+        const originalQueuedStart = Array.from(events).find(
+          (event) =>
+            event.type === "thread.turn-start-requested" &&
+            event.commandId === CommandId.make("cmd-during-compact-recovery"),
+        );
+        const restoredQueuedStart = Array.from(events).find(
+          (event) =>
+            event.type === "thread.turn-start-requested" &&
+            event.payload.messageId === queuedMessageId &&
+            event.commandId?.startsWith("server:after-compaction:") === true,
+        );
+        expect(originalQueuedStart?.payload).toMatchObject({
+          messageId: queuedMessageId,
+          runOrigin: { _tag: "client-turn" },
+        });
+        expect(restoredQueuedStart?.payload).toMatchObject({
+          messageId: queuedMessageId,
+          runOrigin: { _tag: "queued-turn-restoration" },
+        });
         expect(harness.sendTurn.mock.calls.slice(1).map(([request]) => request)).toEqual([
           expect.objectContaining({ input: "first queued", interactionMode: "plan" }),
           expect.objectContaining({ input: "second queued", interactionMode: "default" }),

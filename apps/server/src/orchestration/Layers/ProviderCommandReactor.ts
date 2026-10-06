@@ -951,6 +951,7 @@ const make = Effect.gen(function* () {
           type: "thread.turn.start",
           commandId,
           ...request,
+          runOrigin: { _tag: "queued-turn-restoration" },
           message: {
             messageId,
             role: "user",

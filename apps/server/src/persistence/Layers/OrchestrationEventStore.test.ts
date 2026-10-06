@@ -20,6 +20,7 @@ import { OrchestrationEventStore } from "../Services/OrchestrationEventStore.ts"
 import { OrchestrationEventStoreLive } from "./OrchestrationEventStore.ts";
 import { SqlitePersistenceMemory } from "./Sqlite.ts";
 const isPersistenceDecodeError = Schema.is(PersistenceDecodeError);
+const encodeUnknownJsonString = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 function messageEvent(threadId: ThreadId, id: string): Omit<OrchestrationEvent, "sequence"> {
   const now = "2026-01-01T00:00:00.000Z";
@@ -104,6 +105,100 @@ layer("OrchestrationEventStore", (it) => {
       assert.equal(replayed[0]?.type, "project.created");
       assert.equal(replayed[0]?.metadata.adapterKey, "codex");
       assert.deepEqual(replayed[0]?.metadata.origin, { surface: "cli" });
+    }),
+  );
+
+  it.effect("persists turn origins and replays legacy turn requests as unknown", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-01-01T00:00:00.000Z";
+      const threadId = ThreadId.make("thread-origin-roundtrip");
+      const commandId = CommandId.make("cmd-origin-roundtrip");
+      const appended = yield* eventStore.append({
+        type: "thread.turn-start-requested",
+        eventId: EventId.make("evt-origin-roundtrip"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: now,
+        commandId,
+        causationEventId: null,
+        correlationId: commandId,
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.make("msg-origin-roundtrip"),
+          runOrigin: { _tag: "calendar-turn" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: now,
+        },
+      });
+
+      const legacyCommandId = CommandId.make("cmd-origin-legacy");
+      const legacyEventId = EventId.make("evt-origin-legacy");
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id,
+          aggregate_kind,
+          stream_id,
+          stream_version,
+          event_type,
+          occurred_at,
+          command_id,
+          causation_event_id,
+          correlation_id,
+          actor_kind,
+          payload_json,
+          metadata_json
+        )
+        VALUES (
+          ${legacyEventId},
+          ${"thread"},
+          ${threadId},
+          ${1},
+          ${"thread.turn-start-requested"},
+          ${now},
+          ${legacyCommandId},
+          ${null},
+          ${legacyCommandId},
+          ${"client"},
+          ${encodeUnknownJsonString({
+            threadId,
+            messageId: MessageId.make("msg-origin-legacy"),
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdAt: now,
+          })},
+          ${"{}"}
+        )
+      `;
+
+      const replayed = yield* Stream.runCollect(eventStore.readFromSequence(0, 10)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      );
+      const turnStarts = replayed.filter(
+        (event) =>
+          event.type === "thread.turn-start-requested" &&
+          (event.eventId === appended.eventId || event.eventId === legacyEventId),
+      );
+      assert.equal(turnStarts.length, 2);
+      const current = turnStarts[0]!;
+      const legacy = turnStarts[1]!;
+      assert.equal(current.type, "thread.turn-start-requested");
+      assert.equal(legacy.type, "thread.turn-start-requested");
+      if (
+        current.type !== "thread.turn-start-requested" ||
+        legacy.type !== "thread.turn-start-requested"
+      ) {
+        throw new Error("Expected turn start events.");
+      }
+      assert.deepEqual(current.payload.runOrigin, { _tag: "calendar-turn" });
+      assert.equal(current.eventId, appended.eventId);
+      assert.equal(current.commandId, commandId);
+      assert.deepEqual(legacy.payload.runOrigin, { _tag: "unknown" });
+      assert.equal(legacy.eventId, legacyEventId);
+      assert.equal(legacy.commandId, legacyCommandId);
     }),
   );
 

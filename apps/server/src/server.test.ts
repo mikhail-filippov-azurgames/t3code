@@ -123,6 +123,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as RemoteOpenTargets from "./environment/RemoteOpenTargets.ts";
 import * as OrchestrationEngine from "./orchestration/Services/OrchestrationEngine.ts";
+import { decideOrchestrationCommand } from "./orchestration/decider.ts";
 import {
   OrchestrationListenerCallbackError,
   OrchestrationThreadSettleBlockedError,
@@ -10682,11 +10683,80 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("dispatches an HTTP bootstrap placeholder as a client turn", () =>
+    Effect.gen(function* () {
+      const dispatchedCommands: Array<OrchestrationCommand> = [];
+      yield* buildAppUnderTest({
+        layers: {
+          orchestrationEngine: {
+            dispatch: (command) =>
+              Effect.sync(() => {
+                dispatchedCommands.push(command);
+                return { sequence: dispatchedCommands.length };
+              }),
+          },
+        },
+      });
+
+      const bearerToken = yield* getAuthenticatedBearerSessionToken();
+      const response = yield* fetchEffect(yield* getHttpServerUrl("/api/orchestration/dispatch"), {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${bearerToken}`,
+          "content-type": "application/json",
+        },
+        body: jsonRequestBody({
+          type: "thread.turn.start",
+          commandId: "cmd-http-bootstrap-placeholder",
+          threadId: "thread-existing-http",
+          message: {
+            messageId: "msg-http-bootstrap-placeholder",
+            role: "user",
+            text: "continue this thread",
+            attachments: [],
+          },
+          modelSelection: defaultModelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          bootstrap: {
+            createThread: {
+              projectId: defaultProjectId,
+              title: "Placeholder only",
+              modelSelection: defaultModelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+          },
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      });
+      const result = yield* responseJsonEffect<{ readonly sequence: number }>(response);
+
+      assert.equal(response.status, 200);
+      assert.equal(result.sequence, 1);
+      assert.deepEqual(
+        dispatchedCommands.map((command) => command.type),
+        ["thread.turn.start"],
+      );
+      const dispatchedCommand = dispatchedCommands[0];
+      assertTrue(dispatchedCommand?.type === "thread.turn.start");
+      if (dispatchedCommand?.type === "thread.turn.start") {
+        assert.deepEqual(dispatchedCommand.runOrigin, { _tag: "client-turn" });
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect(
     "bootstraps first-send worktree turns on the server before dispatching turn start",
     () =>
       Effect.gen(function* () {
         const dispatchedCommands: Array<OrchestrationCommand> = [];
+        let turnStartRequestedEvent:
+          | Extract<OrchestrationEvent, { type: "thread.turn-start-requested" }>
+          | undefined;
         const bootstrapGitOperations: string[] = [];
         const refreshStatus = vi.fn((_: string) =>
           Effect.succeed({
@@ -10783,11 +10853,36 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
               refreshStatus,
             },
             orchestrationEngine: {
-              dispatch: (command) =>
-                Effect.sync(() => {
-                  dispatchedCommands.push(command);
-                  return { sequence: dispatchedCommands.length };
-                }),
+              dispatch: (command) => {
+                dispatchedCommands.push(command);
+                if (command.type !== "thread.turn.start") {
+                  return Effect.succeed({ sequence: dispatchedCommands.length });
+                }
+                const readModel = makeDefaultOrchestrationReadModel();
+                return decideOrchestrationCommand({
+                  command,
+                  readModel: {
+                    ...readModel,
+                    threads: readModel.threads.map((thread) => ({
+                      ...thread,
+                      id: command.threadId,
+                    })),
+                  },
+                }).pipe(
+                  Effect.map((planned) => {
+                    const events = Array.isArray(planned) ? planned : [planned];
+                    turnStartRequestedEvent = events.find(
+                      (
+                        event,
+                      ): event is Extract<
+                        OrchestrationEvent,
+                        { type: "thread.turn-start-requested" }
+                      > => event.type === "thread.turn-start-requested",
+                    );
+                    return { sequence: dispatchedCommands.length };
+                  }),
+                );
+              },
               readEvents: () => Stream.empty,
             },
             projectSetupScriptRunner: {
@@ -10938,9 +11033,13 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
         }
         const finalCommand = dispatchedCommands[7];
         assertTrue(finalCommand?.type === "thread.turn.start");
-        if (finalCommand?.type === "thread.turn.start") {
-          assert.equal(finalCommand.bootstrap, undefined);
-        }
+        if (finalCommand?.type !== "thread.turn.start") return;
+        assert.equal(finalCommand.bootstrap, undefined);
+        assert.deepEqual(finalCommand.runOrigin, { _tag: "thread-create-first-turn" });
+        assert.isDefined(turnStartRequestedEvent);
+        assert.deepEqual(turnStartRequestedEvent?.payload.runOrigin, {
+          _tag: "thread-create-first-turn",
+        });
       }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 

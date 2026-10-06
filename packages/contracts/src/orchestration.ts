@@ -1275,6 +1275,32 @@ const ThreadTurnStartBootstrap = Schema.Struct({
 
 export type ThreadTurnStartBootstrap = typeof ThreadTurnStartBootstrap.Type;
 
+export const AgentRunOrigin = Schema.Union([
+  Schema.TaggedStruct("client-turn", {}),
+  Schema.TaggedStruct("thread-create-first-turn", {}),
+  Schema.TaggedStruct("delegation-start", {}),
+  Schema.TaggedStruct("delegation-continuation", {}),
+  Schema.TaggedStruct("delegation-retry", {}),
+  Schema.TaggedStruct("delegation-provider-switch-replay", {}),
+  Schema.TaggedStruct("architect-review-request-wake", {}),
+  Schema.TaggedStruct("coordinator-publication-wake", {}),
+  Schema.TaggedStruct("board-card-start", {}),
+  Schema.TaggedStruct("orchestrator-brief", {}),
+  Schema.TaggedStruct("orphaned-worker-restoration", {}),
+  Schema.TaggedStruct("delayed-notification-delivery", {}),
+  Schema.TaggedStruct("delegation-parent-wake", {}),
+  Schema.TaggedStruct("calendar-turn", {}),
+  Schema.TaggedStruct("async-question-answer-turn", {}),
+  Schema.TaggedStruct("compaction-replay", {}),
+  Schema.TaggedStruct("queued-turn-restoration", {}),
+  Schema.TaggedStruct("server-restart-continuation", {}),
+  Schema.TaggedStruct("compaction-fallback", {}),
+  Schema.TaggedStruct("session-restoration", {}),
+  Schema.TaggedStruct("unknown", {}),
+]);
+export type AgentRunOrigin = typeof AgentRunOrigin.Type;
+export const UnknownAgentRunOrigin = { _tag: "unknown" } as const;
+
 export const ThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
@@ -1298,6 +1324,8 @@ export const ThreadTurnStartCommand = Schema.Struct({
   // Internal delegated starts carry the accepted provider configuration to
   // the reactor. Client turn-start commands cannot set this field.
   delegationConfigFingerprint: Schema.optional(TrimmedNonEmptyString),
+  // The server assigns this field; client turn-start commands omit it.
+  runOrigin: Schema.optional(AgentRunOrigin),
   createdAt: IsoDateTime,
 });
 
@@ -1875,6 +1903,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
 export const ThreadTurnStartRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   messageId: MessageId,
+  runOrigin: AgentRunOrigin.pipe(Schema.withDecodingDefault(Effect.succeed(UnknownAgentRunOrigin))),
   modelSelection: Schema.optional(ModelSelection),
   titleSeed: Schema.optional(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_RUNTIME_MODE))),

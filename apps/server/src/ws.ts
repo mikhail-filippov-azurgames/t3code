@@ -2339,7 +2339,12 @@ const makeWsRpcLayer = (
             // started. Drop the cancel handle and make the handoff atomic.
             yield* track(worktreeSetupTracker.markUncancellable(threadId));
             const started = yield* Effect.uninterruptible(
-              dispatchFromClient(finalTurnStartCommand),
+              dispatchFromClient({
+                ...finalTurnStartCommand,
+                runOrigin: createdThread
+                  ? { _tag: "thread-create-first-turn" }
+                  : { _tag: "client-turn" },
+              }),
             );
             yield* track(worktreeSetupTracker.stageStatus(threadId, "agent", "done"));
             // An async setup script outlives the handoff: the snapshot stays

@@ -5,6 +5,7 @@ import {
   SCRIPT_RUN_COMMAND_PATTERN,
   MessageId,
   ThreadLinkedPullRequest,
+  UnknownAgentRunOrigin,
   UserInputRequestedPayload,
   isImportedAgentSessionMessageId,
   type OrchestrationCommand,
@@ -1462,6 +1463,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           messageId: command.message.messageId,
+          runOrigin: command.runOrigin ?? UnknownAgentRunOrigin,
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
             : {}),

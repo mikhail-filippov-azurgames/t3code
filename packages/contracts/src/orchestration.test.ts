@@ -5,6 +5,7 @@ import * as Schema from "effect/Schema";
 import { CommandId, ProjectId, ThreadId } from "./baseSchemas.ts";
 
 import {
+  AgentRunOrigin,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   DelegationCompletedActivityPayload,
@@ -72,6 +73,39 @@ const decodeDispatchCommandError = Schema.decodeUnknownEffect(OrchestrationDispa
 const decodeSnapShotAccessibility = Schema.decodeUnknownEffect(SnapShotAccessibility);
 const decodeDelegationCompletedActivityPayload = Schema.decodeUnknownEffect(
   DelegationCompletedActivityPayload,
+);
+const decodeAgentRunOrigin = Schema.decodeUnknownEffect(AgentRunOrigin);
+
+it.effect("decodes every typed agent run origin", () =>
+  Effect.gen(function* () {
+    const tags = [
+      "client-turn",
+      "thread-create-first-turn",
+      "delegation-start",
+      "delegation-continuation",
+      "delegation-retry",
+      "delegation-provider-switch-replay",
+      "architect-review-request-wake",
+      "coordinator-publication-wake",
+      "board-card-start",
+      "orchestrator-brief",
+      "orphaned-worker-restoration",
+      "delayed-notification-delivery",
+      "delegation-parent-wake",
+      "calendar-turn",
+      "async-question-answer-turn",
+      "compaction-replay",
+      "queued-turn-restoration",
+      "server-restart-continuation",
+      "compaction-fallback",
+      "session-restoration",
+      "unknown",
+    ] as const;
+
+    for (const _tag of tags) {
+      assert.deepStrictEqual(yield* decodeAgentRunOrigin({ _tag }), { _tag });
+    }
+  }),
 );
 
 it.effect("decodes delegation completion activity payloads", () =>
@@ -283,6 +317,36 @@ it.effect("decodes thread.turn.start defaults for provider and runtime mode", ()
     assert.strictEqual(parsed.modelSelection, undefined);
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
     assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
+  }),
+);
+
+it.effect("keeps agent run origin on the internal turn command only", () =>
+  Effect.gen(function* () {
+    const input = {
+      type: "thread.turn.start",
+      commandId: "cmd-turn-origin",
+      threadId: "thread-1",
+      message: {
+        messageId: "msg-turn-origin",
+        role: "user",
+        text: "hello",
+        attachments: [],
+      },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      runOrigin: { _tag: "session-restoration" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    const clientCommand = yield* decodeClientOrchestrationCommand(input);
+    assert.strictEqual(clientCommand.type, "thread.turn.start");
+    assert.strictEqual(Object.hasOwn(clientCommand, "runOrigin"), false);
+
+    const internalCommand = yield* decodeOrchestrationCommand(input);
+    assert.strictEqual(internalCommand.type, "thread.turn.start");
+    if (internalCommand.type === "thread.turn.start") {
+      assert.deepStrictEqual(internalCommand.runOrigin, { _tag: "session-restoration" });
+    }
   }),
 );
 
@@ -1282,6 +1346,7 @@ it.effect(
       assert.strictEqual(parsed.interactionMode, DEFAULT_PROVIDER_INTERACTION_MODE);
       assert.strictEqual(parsed.sourceProposedPlan, undefined);
       assert.strictEqual(parsed.followUpBehavior, undefined);
+      assert.deepStrictEqual(parsed.runOrigin, { _tag: "unknown" });
     }),
 );
 

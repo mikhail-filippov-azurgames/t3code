@@ -79,6 +79,7 @@ const turnStartCommand = {
   commandId: CommandId.make("command-turn-start"),
   threadId,
   message: { messageId, role: "user" as const, text: "Build it", attachments: [] },
+  runOrigin: { _tag: "client-turn" as const },
   runtimeMode: "full-access" as const,
   interactionMode: "default" as const,
   createdAt,
@@ -123,7 +124,10 @@ it.layer(NodeServices.layer)("thread.message.user.append", (it) => {
       });
       const events = Array.isArray(planned) ? planned : [planned];
       expect(events.map((event) => event.type)).toEqual(["thread.turn-start-requested"]);
-      expect(events[0]?.payload).toMatchObject({ messageId });
+      expect(events[0]?.payload).toMatchObject({
+        messageId,
+        runOrigin: { _tag: "client-turn" },
+      });
 
       // Without the append the turn start still carries the message itself.
       const direct = yield* decideOrchestrationCommand({ command: turnStartCommand, readModel });
@@ -132,6 +136,26 @@ it.layer(NodeServices.layer)("thread.message.user.append", (it) => {
         "thread.message-sent",
         "thread.turn-start-requested",
       ]);
+    }),
+  );
+
+  it.effect("records an unknown origin for a turn command without one", () =>
+    Effect.gen(function* () {
+      const readModel = yield* readModelWithThread;
+      const { runOrigin: _runOrigin, ...legacyTurnStartCommand } = turnStartCommand;
+
+      const planned = yield* decideOrchestrationCommand({
+        command: legacyTurnStartCommand,
+        readModel,
+      });
+      const events = Array.isArray(planned) ? planned : [planned];
+      const turnStartRequestedEvent = events.find(
+        (event) => event.type === "thread.turn-start-requested",
+      );
+
+      expect(turnStartRequestedEvent?.payload).toMatchObject({
+        runOrigin: { _tag: "unknown" },
+      });
     }),
   );
 });
