@@ -15,6 +15,7 @@ import * as ThreadPullRequestReactor from "../ThreadPullRequestReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { CalendarReactor } from "../../background/CalendarReactor.ts";
 import * as BoardReactor from "../BoardReactor.ts";
+import * as CoordinatorBoardNudgeReactor from "../CoordinatorBoardNudgeReactor.ts";
 import * as DelegatedTaskSummaryReactor from "../DelegatedTaskSummaryReactor.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
@@ -28,6 +29,8 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const agentAwarenessRelay = yield* AgentAwarenessRelay.AgentAwarenessRelay;
   const calendarReactor = yield* CalendarReactor;
   const boardReactor = yield* BoardReactor.BoardReactor;
+  const coordinatorBoardNudgeReactor =
+    yield* CoordinatorBoardNudgeReactor.CoordinatorBoardNudgeReactor;
   const delegatedTaskSummaryReactor =
     yield* DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor;
 
@@ -42,6 +45,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* agentAwarenessRelay.start();
     yield* calendarReactor.start();
     yield* boardReactor.start();
+    yield* coordinatorBoardNudgeReactor.start();
     yield* delegatedTaskSummaryReactor.start();
   });
 

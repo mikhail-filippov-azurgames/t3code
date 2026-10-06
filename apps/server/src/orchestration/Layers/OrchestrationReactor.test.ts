@@ -17,6 +17,7 @@ import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import * as AgentAwarenessRelay from "../../relay/AgentAwarenessRelay.ts";
 import { CalendarReactor } from "../../background/CalendarReactor.ts";
 import * as BoardReactor from "../BoardReactor.ts";
+import * as CoordinatorBoardNudgeReactor from "../CoordinatorBoardNudgeReactor.ts";
 import * as DelegatedTaskSummaryReactor from "../DelegatedTaskSummaryReactor.ts";
 
 describe("OrchestrationReactor", () => {
@@ -122,6 +123,14 @@ describe("OrchestrationReactor", () => {
           }),
         ),
         Layer.provideMerge(
+          Layer.succeed(CoordinatorBoardNudgeReactor.CoordinatorBoardNudgeReactor, {
+            start: () => {
+              started.push("coordinator-board-nudge-reactor");
+              return Effect.void;
+            },
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor, {
             start: () => {
               started.push("delegated-task-summary-reactor");
@@ -147,6 +156,7 @@ describe("OrchestrationReactor", () => {
       "pull-request-sync-reactor",
       "agent-awareness-relay",
       "board-reactor",
+      "coordinator-board-nudge-reactor",
       "delegated-task-summary-reactor",
     ]);
 

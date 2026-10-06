@@ -88,6 +88,7 @@ it.effect("decodes every typed agent run origin", () =>
       "architect-review-request-wake",
       "coordinator-publication-wake",
       "board-card-start",
+      "board-idle-nudge",
       "orchestrator-brief",
       "orphaned-worker-restoration",
       "delayed-notification-delivery",

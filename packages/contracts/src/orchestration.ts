@@ -1285,6 +1285,7 @@ export const AgentRunOrigin = Schema.Union([
   Schema.TaggedStruct("architect-review-request-wake", {}),
   Schema.TaggedStruct("coordinator-publication-wake", {}),
   Schema.TaggedStruct("board-card-start", {}),
+  Schema.TaggedStruct("board-idle-nudge", {}),
   Schema.TaggedStruct("orchestrator-brief", {}),
   Schema.TaggedStruct("orphaned-worker-restoration", {}),
   Schema.TaggedStruct("delayed-notification-delivery", {}),

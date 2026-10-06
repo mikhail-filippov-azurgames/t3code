@@ -15,6 +15,7 @@ const EXPECTED_TURN_START_ORIGINS: Readonly<Record<string, readonly string[]>> =
     "input.runOrigin",
   ],
   "orchestration/BoardReactor.ts": ["orphaned-worker-restoration"],
+  "orchestration/CoordinatorBoardNudgeReactor.ts": ["board-idle-nudge"],
   "orchestration/Layers/ProviderCommandReactor.ts": ["queued-turn-restoration"],
   "orchestration/Layers/ProviderRuntimeIngestion.ts": [
     "delegation-parent-wake",
