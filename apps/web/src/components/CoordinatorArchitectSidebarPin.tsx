@@ -132,28 +132,6 @@ export function CoordinatorArchitectSidebarPin({
     onNavigate(coordinatorRef);
   };
 
-  const detach = () => {
-    const reason = window.prompt("Reason for detaching this Architect:");
-    if (!reason?.trim()) return;
-    if (
-      !window.confirm(
-        "Detach this Architect? The binding remains as a detached audit record; its credential is revoked after the durable change. This does not purge the thread or binding.",
-      )
-    ) {
-      return;
-    }
-    useComposerDraftStore.getState().setPrompt(
-      coordinatorRef,
-      buildCoordinatorArchitectSidebarPrompt({
-        action: "detach",
-        architectThreadId: binding.architectThreadId,
-        taskEffort: binding.architectTaskEffort,
-        questionOrReason: reason.trim(),
-      }),
-    );
-    onNavigate(coordinatorRef);
-  };
-
   const leftInset = (depth + 1) * 16;
   return (
     <SidebarMenuSubItem
@@ -244,9 +222,6 @@ export function CoordinatorArchitectSidebarPin({
           onClick={() => void replace()}
         >
           Replace
-        </button>
-        <button type="button" className="rounded px-1 hover:bg-sidebar-accent" onClick={detach}>
-          Detach
         </button>
       </div>
     </SidebarMenuSubItem>

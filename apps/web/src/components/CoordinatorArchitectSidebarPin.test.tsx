@@ -133,9 +133,8 @@ describe("CoordinatorArchitectSidebarPin", () => {
     expect(text).toContain("codex · gpt-6-luna");
     expect(text).not.toContain("Cancelled");
     expect(text).not.toContain("Ask");
-    expect(text).toContain("Open");
-    expect(text).toContain("Replace");
-    expect(text).toContain("Detach");
+    const actionButtonLabels = row.findAllByType("button").map(visibleText).slice(-2);
+    expect(actionButtonLabels).toEqual(["Open", "Replace"]);
 
     for (const [label, count] of [
       ["Open 2", "2"],
@@ -188,7 +187,7 @@ describe("CoordinatorArchitectSidebarPin", () => {
     expect(working.findByType("svg")).toBeDefined();
   });
 
-  it("hides terminal bindings and their replace/detach actions", async () => {
+  it("hides terminal bindings and their actions", async () => {
     mocks.snapshot.binding.status = "detached";
     const view = await render();
 
