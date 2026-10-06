@@ -154,16 +154,19 @@ beforeAll(async () => {
     contains: () => false,
   };
 
-  vi.stubGlobal("localStorage", {
+  const localStorage = {
     getItem: () => null,
     setItem: () => {},
     removeItem: () => {},
     clear: () => {},
-  });
+  };
+  vi.stubGlobal("localStorage", localStorage);
   vi.stubGlobal("window", {
     matchMedia,
     addEventListener: () => {},
     removeEventListener: () => {},
+    localStorage,
+    Element: class Element {},
     requestAnimationFrame: (callback: FrameRequestCallback) => {
       callback(0);
       return 0;
@@ -171,6 +174,12 @@ beforeAll(async () => {
     cancelAnimationFrame: () => {},
     desktopBridge: undefined,
   });
+  vi.stubGlobal("Element", class Element {});
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    callback(0);
+    return 0;
+  });
+  vi.stubGlobal("cancelAnimationFrame", () => {});
   vi.stubGlobal("document", {
     documentElement: {
       classList,
@@ -309,6 +318,75 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('aria-label="Previous turn"');
     expect(markup).toContain('aria-label="Next turn"');
+  });
+
+  it("hides the minimap with the board card panel and restores message navigation when closed", () => {
+    const hadActEnvironment = Object.prototype.hasOwnProperty.call(
+      globalThis,
+      "IS_REACT_ACT_ENVIRONMENT",
+    );
+    const previousActEnvironment = (
+      globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    ).IS_REACT_ACT_ENVIRONMENT;
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const first = buildUserTimelineEntry("First turn");
+    const secondBase = buildUserTimelineEntry("Second turn");
+    const second = {
+      ...secondBase,
+      id: "entry-2",
+      message: {
+        ...secondBase.message,
+        id: MessageId.make("message-2"),
+      },
+    };
+    const onManualNavigation = vi.fn();
+    const scrollToIndex = vi.fn();
+    const props = {
+      ...buildProps(),
+      timelineEntries: [first, second],
+      onManualNavigation,
+    };
+    props.listRef.current = { scrollToIndex } as unknown as LegendListRef;
+
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      act(() => {
+        renderer = create(<MessagesTimeline {...props} />);
+      });
+      expect(renderer!.root.findAllByProps({ "data-testid": "timeline-minimap" })).toHaveLength(1);
+
+      act(() => {
+        renderer!.update(<MessagesTimeline {...props} minimapHidden />);
+      });
+      expect(renderer!.root.findAllByProps({ "data-testid": "timeline-minimap" })).toHaveLength(0);
+
+      act(() => {
+        renderer!.update(<MessagesTimeline {...props} minimapHidden={false} />);
+      });
+      const minimap = renderer!.root.findByProps({ "data-testid": "timeline-minimap" });
+      const jumpButton = renderer!.root.find(
+        (node) =>
+          node.type === "button" && node.props["aria-label"]?.startsWith("Jump to message:"),
+      );
+      expect(minimap).toBeDefined();
+
+      act(() => jumpButton.props.onFocus());
+      const focusedJumpButton = renderer!.root.find(
+        (node) =>
+          node.type === "button" && node.props["aria-label"]?.startsWith("Jump to message:"),
+      );
+      act(() => focusedJumpButton.props.onKeyDown({ key: "Enter", preventDefault: vi.fn() }));
+
+      expect(onManualNavigation).toHaveBeenCalledOnce();
+      expect(scrollToIndex).toHaveBeenCalledWith({ index: 0, animated: true, viewOffset: 24 });
+    } finally {
+      act(() => renderer?.unmount());
+      if (hadActEnvironment) {
+        vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", previousActEnvironment);
+      } else {
+        Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+      }
+    }
   });
 
   // Expanding history uses this suite's existing test renderer, deprecated in

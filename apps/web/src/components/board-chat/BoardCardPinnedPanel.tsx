@@ -18,7 +18,7 @@ import {
   SendIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import {
@@ -27,6 +27,7 @@ import {
   boardStatusLabel,
   isCardStartable,
 } from "../board/board.logic";
+import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
 import { boardEnvironment } from "../../state/board";
 import { readThreadShell } from "../../state/entities";
@@ -42,6 +43,8 @@ import {
 interface BoardCardPinnedPanelProps {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
+  /** Reports whether the full panel (not the collapsed pill) is on screen. */
+  readonly onOpenChange?: (open: boolean) => void;
 }
 
 function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] {
@@ -52,7 +55,11 @@ function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] 
   return chunks;
 }
 
-export function BoardCardPinnedPanel({ environmentId, threadId }: BoardCardPinnedPanelProps) {
+export function BoardCardPinnedPanel({
+  environmentId,
+  threadId,
+  onOpenChange,
+}: BoardCardPinnedPanelProps) {
   const navigate = useNavigate();
   const key = boardCardPinsKey(environmentId, threadId);
   const [pins, setPins] = useState(() => readBoardCardPins(environmentId, threadId));
@@ -61,6 +68,7 @@ export function BoardCardPinnedPanel({ environmentId, threadId }: BoardCardPinne
   const [loading, setLoading] = useState(false);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const loadSequence = useRef(0);
   const resolveCards = useAtomQueryRunner(boardEnvironment.resolve, {
@@ -78,8 +86,23 @@ export function BoardCardPinnedPanel({ environmentId, threadId }: BoardCardPinne
     setDetails(new Map());
     setLoadError(false);
     setCollapsed(false);
+    setCollapsedCardIds(new Set());
     setActionError(null);
   }, [environmentId, threadId]);
+
+  const open = pins.length > 0 && !collapsed;
+  useLayoutEffect(() => {
+    onOpenChange?.(open);
+    return () => onOpenChange?.(false);
+  }, [open, onOpenChange]);
+
+  const toggleCardCollapsed = useCallback((cardId: string) => {
+    setCollapsedCardIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(cardId)) next.add(cardId);
+      return next;
+    });
+  }, []);
 
   useEffect(
     () =>
@@ -261,6 +284,8 @@ export function BoardCardPinnedPanel({ environmentId, threadId }: BoardCardPinne
               loading={loading}
               loadError={loadError}
               busy={busyCardId === cardId}
+              collapsed={collapsedCardIds.has(cardId)}
+              onToggleCollapsed={() => toggleCardCollapsed(cardId)}
               actionError={actionError}
               onRetry={() => void refresh()}
               onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
@@ -282,6 +307,8 @@ function PinnedCard(props: {
   readonly loading: boolean;
   readonly loadError: boolean;
   readonly busy: boolean;
+  readonly collapsed: boolean;
+  readonly onToggleCollapsed: () => void;
   readonly actionError: string | null;
   readonly onRetry: () => void;
   readonly onRemove: () => void;
@@ -298,12 +325,22 @@ function PinnedCard(props: {
       className="rounded-lg border border-border bg-card p-3"
       data-board-card-id={props.cardId}
     >
-      <div className="mb-2 flex items-start gap-2">
+      <div className={cn("flex gap-2", props.collapsed ? "items-center" : "mb-2 items-start")}>
         <div className="min-w-0 flex-1">
-          <h3 className="break-words text-sm font-semibold leading-snug">
-            {card?.title ?? props.cardId}
+          <h3 className="text-sm font-semibold leading-snug">
+            <button
+              type="button"
+              className={cn(
+                "w-full min-w-0 cursor-pointer rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                props.collapsed ? "truncate" : "break-words",
+              )}
+              aria-expanded={!props.collapsed}
+              onClick={props.onToggleCollapsed}
+            >
+              {card?.title ?? props.cardId}
+            </button>
           </h3>
-          {card ? (
+          {card && !props.collapsed ? (
             <p className="mt-1 text-xs text-muted-foreground">
               {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)}
             </p>
@@ -320,138 +357,145 @@ function PinnedCard(props: {
         </Button>
       </div>
 
-      {props.loading && !props.detail ? (
-        <p className="text-xs text-muted-foreground">Загрузка карточки…</p>
-      ) : null}
-      {props.loadError ? (
-        <div role="alert" className="space-y-2 rounded-md bg-destructive/10 p-2 text-xs">
-          <p>Не удалось загрузить карточку. Проверьте соединение и повторите запрос.</p>
-          <Button type="button" size="sm" variant="outline" onClick={props.onRetry}>
-            Повторить
-          </Button>
-        </div>
-      ) : null}
-      {!props.loading && !props.loadError && !props.detail ? (
-        <p role="status" className="text-xs text-muted-foreground">
-          Карточка недоступна: она могла быть удалена.
-        </p>
-      ) : null}
-
-      {card && props.detail ? (
+      {props.collapsed ? null : (
         <>
-          <p className="mb-2 text-xs text-muted-foreground">
-            Оркестратор: {orchestratorThreadTitle ?? card.orchestratorThreadId}
-          </p>
-          {card.body ? (
-            <p className="mb-3 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
-              {card.body}
+          {props.loading && !props.detail ? (
+            <p className="text-xs text-muted-foreground">Загрузка карточки…</p>
+          ) : null}
+          {props.loadError ? (
+            <div role="alert" className="space-y-2 rounded-md bg-destructive/10 p-2 text-xs">
+              <p>Не удалось загрузить карточку. Проверьте соединение и повторите запрос.</p>
+              <Button type="button" size="sm" variant="outline" onClick={props.onRetry}>
+                Повторить
+              </Button>
+            </div>
+          ) : null}
+          {!props.loading && !props.loadError && !props.detail ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              Карточка недоступна: она могла быть удалена.
             </p>
           ) : null}
-          <div className="mb-3 flex flex-wrap gap-1.5">
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={() => props.onOpenThread(card.orchestratorThreadId)}
-            >
-              <MessageCircleIcon className="size-3.5" aria-hidden="true" />
-              Чат оркестратора
-            </Button>
-            {card.executorThreadId ? (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => props.onOpenThread(card.executorThreadId!)}
+
+          {card && props.detail ? (
+            <>
+              <p className="mb-2 text-xs text-muted-foreground">
+                Оркестратор: {orchestratorThreadTitle ?? card.orchestratorThreadId}
+              </p>
+              {card.body ? (
+                <p className="mb-3 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
+                  {card.body}
+                </p>
+              ) : null}
+              <div className="mb-3 flex flex-wrap gap-1.5">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => props.onOpenThread(card.orchestratorThreadId)}
+                >
+                  <MessageCircleIcon className="size-3.5" aria-hidden="true" />
+                  Чат оркестратора
+                </Button>
+                {card.executorThreadId ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => props.onOpenThread(card.executorThreadId!)}
+                  >
+                    <MessageCircleIcon className="size-3.5" aria-hidden="true" />
+                    Чат исполнителя
+                  </Button>
+                ) : null}
+                {isCardStartable(card) ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={props.busy}
+                    onClick={() => props.onStart(card)}
+                  >
+                    <PlayIcon className="size-3.5" aria-hidden="true" />
+                    Запустить
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={props.busy}
+                  onClick={() => props.onToggleArchive(card)}
+                >
+                  {card.archived ? (
+                    <ArchiveRestoreIcon className="size-3.5" aria-hidden="true" />
+                  ) : (
+                    <ArchiveIcon className="size-3.5" aria-hidden="true" />
+                  )}
+                  {card.archived ? "Разархивировать" : "Архивировать"}
+                </Button>
+              </div>
+              <form
+                className="mb-3 space-y-1.5"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const text = requestText.trim();
+                  if (text) void props.onRequest(card, text);
+                }}
               >
-                <MessageCircleIcon className="size-3.5" aria-hidden="true" />
-                Чат исполнителя
-              </Button>
-            ) : null}
-            {isCardStartable(card) ? (
-              <Button
-                type="button"
-                size="sm"
-                disabled={props.busy}
-                onClick={() => props.onStart(card)}
-              >
-                <PlayIcon className="size-3.5" aria-hidden="true" />
-                Запустить
-              </Button>
-            ) : null}
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={props.busy}
-              onClick={() => props.onToggleArchive(card)}
-            >
-              {card.archived ? (
-                <ArchiveRestoreIcon className="size-3.5" aria-hidden="true" />
-              ) : (
-                <ArchiveIcon className="size-3.5" aria-hidden="true" />
-              )}
-              {card.archived ? "Разархивировать" : "Архивировать"}
-            </Button>
-          </div>
-          <form
-            className="mb-3 space-y-1.5"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const text = requestText.trim();
-              if (text) void props.onRequest(card, text);
-            }}
-          >
-            <label className="block text-xs font-medium" htmlFor={`board-request-${props.cardId}`}>
-              Просьба оркестратору
-            </label>
-            <textarea
-              id={`board-request-${props.cardId}`}
-              className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              value={requestText}
-              onChange={(event) => setRequestText(event.currentTarget.value)}
-              placeholder="Напишите, что нужно проверить или уточнить"
-            />
-            <Button
-              type="submit"
-              size="sm"
-              variant="outline"
-              disabled={props.busy || !requestText.trim()}
-            >
-              <SendIcon className="size-3.5" aria-hidden="true" />
-              Отправить
-            </Button>
-          </form>
-          {props.actionError ? (
-            <p role="status" className="mb-3 text-xs text-muted-foreground">
-              {props.actionError}
-            </p>
+                <label
+                  className="block text-xs font-medium"
+                  htmlFor={`board-request-${props.cardId}`}
+                >
+                  Просьба оркестратору
+                </label>
+                <textarea
+                  id={`board-request-${props.cardId}`}
+                  className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={requestText}
+                  onChange={(event) => setRequestText(event.currentTarget.value)}
+                  placeholder="Напишите, что нужно проверить или уточнить"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  disabled={props.busy || !requestText.trim()}
+                >
+                  <SendIcon className="size-3.5" aria-hidden="true" />
+                  Отправить
+                </Button>
+              </form>
+              {props.actionError ? (
+                <p role="status" className="mb-3 text-xs text-muted-foreground">
+                  {props.actionError}
+                </p>
+              ) : null}
+              <div className="border-t border-border pt-2">
+                <h4 className="mb-1 text-xs font-semibold">История</h4>
+                {events?.length ? (
+                  <ol className="space-y-2">
+                    {events.map((entry) => (
+                      <li key={entry.entryId} className="border-l-2 border-border pl-2 text-xs">
+                        <p className="font-medium">
+                          {boardStatusLabel(entry.status)} ·{" "}
+                          {boardExecutorRoleLabel(entry.executorRole)}
+                        </p>
+                        {entry.body ? (
+                          <p className="break-words text-muted-foreground">{entry.body}</p>
+                        ) : null}
+                        <time className="text-[10px] text-muted-foreground" dateTime={entry.at}>
+                          {new Date(entry.at).toLocaleString()}
+                        </time>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-xs text-muted-foreground">История пуста.</p>
+                )}
+              </div>
+            </>
           ) : null}
-          <div className="border-t border-border pt-2">
-            <h4 className="mb-1 text-xs font-semibold">История</h4>
-            {events?.length ? (
-              <ol className="space-y-2">
-                {events.map((entry) => (
-                  <li key={entry.entryId} className="border-l-2 border-border pl-2 text-xs">
-                    <p className="font-medium">
-                      {boardStatusLabel(entry.status)} ·{" "}
-                      {boardExecutorRoleLabel(entry.executorRole)}
-                    </p>
-                    {entry.body ? (
-                      <p className="break-words text-muted-foreground">{entry.body}</p>
-                    ) : null}
-                    <time className="text-[10px] text-muted-foreground" dateTime={entry.at}>
-                      {new Date(entry.at).toLocaleString()}
-                    </time>
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p className="text-xs text-muted-foreground">История пуста.</p>
-            )}
-          </div>
         </>
-      ) : null}
+      )}
     </article>
   );
 }

@@ -1779,6 +1779,7 @@ export default function ChatView(props: ChatViewProps) {
   // Whether the timeline's rows extend past the viewport above the composer.
   // The composer only rests when there is reading space to give back.
   const [timelineOverflows, setTimelineOverflows] = useState(false);
+  const [boardCardPanelOpen, setBoardCardPanelOpen] = useState(false);
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -9608,6 +9609,7 @@ export default function ChatView(props: ChatViewProps) {
                 onManualNavigation={cancelTimelineLiveFollowForUserNavigation}
                 hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
                 topFadeEnabled={!hasTimelineTopBanner}
+                minimapHidden={boardCardPanelOpen}
                 loadEarlier={paintOnlyDisplayedTimeline ? null : loadEarlierTurns}
                 queuedMessages={paintOnlyDisplayedTimeline ? EMPTY_QUEUED_MESSAGES : queuedMessages}
                 onSteerQueuedMessage={onSteerQueuedMessage}
@@ -9617,6 +9619,7 @@ export default function ChatView(props: ChatViewProps) {
                 <BoardCardPinnedPanel
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
+                  onOpenChange={setBoardCardPanelOpen}
                 />
               ) : null}
 
