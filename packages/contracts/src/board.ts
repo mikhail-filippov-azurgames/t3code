@@ -3,7 +3,7 @@
  *
  * A board orchestrator is an ordinary non-child thread a human has marked.
  * Cards belong to exactly one orchestrator (cascade delete with the thread),
- * move through five statuses, and carry a role plus a nullable executor model
+ * move through six statuses, and carry a role plus a nullable executor model
  * selection. Progress history is an append-only stream written by the server
  * without an LLM call.
  *
@@ -150,7 +150,7 @@ export type BoardCreateInput = typeof BoardCreateInput.Type;
 export const BoardCreateResult = BoardCard;
 export type BoardCreateResult = typeof BoardCreateResult.Type;
 
-/** Start moves `todo → orchestrator` and wakes the orchestrator thread. */
+/** Start moves `todo` or `backlog` → `orchestrator` and wakes the orchestrator thread. */
 export const BoardStartInput = Schema.Struct({
   cardId: BoardCardId,
 });

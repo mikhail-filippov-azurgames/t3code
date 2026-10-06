@@ -466,7 +466,7 @@ export const OrchestratorMcpBoardCreateCardInput = Schema.Struct({
   body: Schema.String,
   executorRole: OrchestratorMcpTaskRole,
   assignee: Schema.optional(Schema.NullOr(ModelSelection)),
-  status: Schema.optional(Schema.Literals(["todo", "orchestrator"])),
+  status: Schema.optional(Schema.Literals(["backlog", "todo", "orchestrator"])),
 });
 export type OrchestratorMcpBoardCreateCardInput = typeof OrchestratorMcpBoardCreateCardInput.Type;
 

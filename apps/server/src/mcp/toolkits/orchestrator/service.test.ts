@@ -3375,6 +3375,45 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("creates a card straight into the backlog with a matching history entry", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+
+      const card = yield* harness.service.boardCreateCard(makeScope(), {
+        title: "Someday: cache warmup",
+        body: "Deferred on purpose.",
+        executorRole: "implementation",
+        status: "backlog",
+      });
+
+      expect(card).toMatchObject({ status: "backlog", createdBy: "orchestrator", archived: false });
+      expect(board.cards.get(BoardCardId.make(card.cardId))).toMatchObject({ status: "backlog" });
+      const events = board.events.get(BoardCardId.make(card.cardId)) ?? [];
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ status: "backlog", source: "system" });
+    }),
+  );
+
+  it.effect("moves an existing card into the backlog and records the status change", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const card = seedBoardCard(board);
+
+      const deferred = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: card.cardId,
+        status: "backlog",
+      });
+
+      expect(deferred.status).toBe("backlog");
+      expect(board.cards.get(card.cardId)).toMatchObject({ status: "backlog" });
+      const events = board.events.get(card.cardId) ?? [];
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ status: "backlog", body: "status -> backlog" });
+    }),
+  );
+
   it.effect("rejects creation from a thread that is not a registered Coordinator", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard();

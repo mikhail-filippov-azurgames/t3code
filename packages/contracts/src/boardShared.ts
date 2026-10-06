@@ -21,7 +21,12 @@ export type BoardCardId = typeof BoardCardId.Type;
 export const BoardCardEventId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardEventId"));
 export type BoardCardEventId = typeof BoardCardEventId.Type;
 
+/**
+ * Decoding is strict on purpose: a server that predates a status cannot read rows or wire payloads
+ * carrying it, so rolling back across a new status means first moving those cards to a known one.
+ */
 export const BoardCardStatus = Schema.Literals([
+  "backlog",
   "todo",
   "orchestrator",
   "in_progress",

@@ -198,7 +198,7 @@ export const SwitchProviderTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.switchPr
 
 export const BoardCreateCardTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardCreateCard, {
   description:
-    "Create a kanban card owned by this Coordinator thread. The stored createdBy value remains orchestrator. The status value orchestrator is the Coordinator-owned plan-first state (alongside todo) and is the default. The card is created and a system progress-history entry is appended without an LLM call. There is no idempotency key: a repeated call creates another card.",
+    "Create a kanban card owned by this Coordinator thread. The stored createdBy value remains orchestrator. The status value orchestrator is the Coordinator-owned plan-first state (alongside todo) and is the default. The status value backlog marks a card the human deliberately deferred; use it only when the human asks. The card is created and a system progress-history entry is appended without an LLM call. There is no idempotency key: a repeated call creates another card.",
   parameters: OrchestratorMcpBoardCreateCardInput,
   success: OrchestratorMcpBoardCreateCardResult,
   failure: OrchestratorMcpFailure,

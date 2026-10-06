@@ -646,11 +646,11 @@ const assertBoardCardStartable = (card: BoardCard): BoardError | null => {
       detail: `Archived board card ${card.cardId} cannot be started.`,
     });
   }
-  return card.status === "todo"
+  return card.status === "todo" || card.status === "backlog"
     ? null
     : new BoardError({
         operation: "board.start",
-        detail: `Board card ${card.cardId} is '${card.status}'; only 'todo' cards can start.`,
+        detail: `Board card ${card.cardId} is '${card.status}'; only 'todo' or 'backlog' cards can start.`,
       });
 };
 

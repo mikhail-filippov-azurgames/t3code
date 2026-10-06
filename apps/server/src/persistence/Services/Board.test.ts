@@ -292,6 +292,63 @@ repositoryLayer("BoardRepository", (it) => {
     }),
   );
 
+  it.effect(
+    "stores and rereads a backlog card, and one unreadable status fails the whole list",
+    () =>
+      Effect.gen(function* () {
+        const repository = yield* BoardRepository;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.make("thread-backlog-card");
+        yield* seedThread(threadId);
+        yield* repository.addOrchestrator({
+          threadId,
+          createdBy: "human",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+        const backlog = makeCard({
+          cardId: BoardCardId.make("backlog-card"),
+          orchestratorThreadId: threadId,
+          status: "backlog",
+        });
+        const other = makeCard({
+          cardId: BoardCardId.make("backlog-other-card"),
+          orchestratorThreadId: threadId,
+        });
+        yield* repository.createCard(backlog);
+        yield* repository.createCard(other);
+        yield* repository.appendEvent(
+          buildBoardCardEvent(backlog, { at: "2026-01-01T00:00:01.000Z" }),
+        );
+
+        yield* Effect.gen(function* () {
+          const stored = yield* repository.getCard(backlog.cardId);
+          assert.equal(Option.getOrThrow(stored).status, "backlog");
+          const listed = yield* repository.listCards();
+          assert.includeMembers(
+            listed
+              .filter((card) => card.orchestratorThreadId === threadId)
+              .map((card) => card.status),
+            ["backlog", "todo"],
+          );
+          const events = yield* repository.listEventsForCard({ cardId: backlog.cardId });
+          assert.equal(events[0]?.status, "backlog");
+
+          // What a server that predates the status sees: the list read fails as a whole.
+          yield* sql`UPDATE board_cards SET status = 'unknown_status' WHERE card_id = ${backlog.cardId}`;
+          const error = yield* Effect.flip(repository.listCards());
+          assert.instanceOf(error, BoardRepositoryError);
+          assert.equal(error.operation, "BoardRepository.listCards:query");
+        }).pipe(
+          Effect.ensuring(
+            Effect.all([
+              repository.deleteCard(backlog.cardId),
+              repository.deleteCard(other.cardId),
+            ]).pipe(Effect.orDie),
+          ),
+        );
+      }),
+  );
+
   it.effect("labels updateCard read failures as update reads", () =>
     Effect.gen(function* () {
       const repository = yield* BoardRepository;

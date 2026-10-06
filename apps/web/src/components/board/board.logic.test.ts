@@ -1,10 +1,10 @@
 import {
   BoardCardId,
   BoardCardEventId,
+  BoardCardStatus,
   ThreadId,
   type BoardCard,
   type BoardCardEvent,
-  type BoardCardStatus,
   type BoardExecutorRole,
 } from "@t3tools/contracts";
 import { describe, it } from "vite-plus/test";
@@ -28,13 +28,22 @@ describe("Phase 1 board status compatibility", () => {
   it("keeps the orchestrator status value while presenting it as Coordinator", () => {
     assert.deepEqual(
       BOARD_COLUMNS.map(({ status }) => status),
-      ["todo", "orchestrator", "in_progress", "review", "done"],
+      ["backlog", "todo", "orchestrator", "in_progress", "review", "done"],
     );
     assert.strictEqual(
       BOARD_COLUMNS.find(({ status }) => status === "orchestrator")?.label,
       "Coordinator",
     );
     assert.strictEqual(boardStatusLabel("orchestrator"), "Coordinator");
+    assert.strictEqual(boardStatusLabel("backlog"), "Backlog");
+  });
+
+  it("has a column and a label for every status the contract defines", () => {
+    const columns = BOARD_COLUMNS.map(({ status }) => status);
+    for (const status of BoardCardStatus.literals) {
+      assert.include(columns, status);
+      assert.isString(boardStatusLabel(status));
+    }
   });
 });
 
@@ -135,6 +144,20 @@ describe("groupBoardCardsByStatus", () => {
     );
     assert.deepEqual(grouped.get("done"), []);
   });
+
+  it("never drops a card: every status lands in a column", () => {
+    const cards = BoardCardStatus.literals.map((status) => makeCard({ id: status, status }));
+    const grouped = groupBoardCardsByStatus(cards);
+    const placed = [...grouped.values()].flat().map((card) => card.cardId as string);
+    assert.sameMembers(
+      placed,
+      cards.map((card) => card.cardId as string),
+    );
+    assert.deepEqual(
+      grouped.get("backlog")?.map((card) => card.cardId as string),
+      ["backlog"],
+    );
+  });
 });
 
 describe("card human permissions", () => {
@@ -144,12 +167,18 @@ describe("card human permissions", () => {
     assert.isFalse(isCardHumanEditable(makeCard({ id: "c", status: "in_progress" })));
     assert.isFalse(isCardHumanEditable(makeCard({ id: "d", status: "review" })));
     assert.isFalse(isCardHumanEditable(makeCard({ id: "e", status: "done" })));
+    assert.isFalse(isCardHumanEditable(makeCard({ id: "f", status: "backlog" })));
   });
 
   it("does not let an archived card be started", () => {
     assert.isTrue(isCardStartable(makeCard({ id: "a", status: "todo" })));
     assert.isFalse(isCardStartable(makeCard({ id: "b", status: "todo", archived: true })));
     assert.isFalse(isCardStartable(makeCard({ id: "c", status: "review" })));
+  });
+
+  it("lets the human pull a deferred card into work, but not an archived one", () => {
+    assert.isTrue(isCardStartable(makeCard({ id: "a", status: "backlog" })));
+    assert.isFalse(isCardStartable(makeCard({ id: "b", status: "backlog", archived: true })));
   });
 });
 

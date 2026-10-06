@@ -6,6 +6,7 @@ import * as Schema from "effect/Schema";
 import {
   BoardCard,
   BoardCardEvent,
+  BoardCardStatus,
   BoardCreateInput,
   BoardListInput,
   BoardListResult,
@@ -14,6 +15,10 @@ import {
   BoardStartInput,
   BoardUpdateInput,
 } from "./board.ts";
+import {
+  OrchestratorMcpBoardCreateCardInput,
+  OrchestratorMcpBoardUpdateCardInput,
+} from "./orchestratorMcp.ts";
 import { BoardRpcs, WS_METHODS } from "./rpc.ts";
 
 const decodeCard = Schema.decodeUnknownEffect(BoardCard);
@@ -25,6 +30,8 @@ const decodeStartInput = Schema.decodeUnknownEffect(BoardStartInput);
 const decodeAddInput = Schema.decodeUnknownEffect(BoardOrchestratorAddInput);
 const decodeListInput = Schema.decodeUnknownEffect(BoardListInput);
 const decodeListResult = Schema.decodeUnknownEffect(BoardListResult);
+const decodeMcpCreateInput = Schema.decodeUnknownEffect(OrchestratorMcpBoardCreateCardInput);
+const decodeMcpUpdateInput = Schema.decodeUnknownEffect(OrchestratorMcpBoardUpdateCardInput);
 
 const minimalCard = {
   cardId: "card-1",
@@ -172,6 +179,76 @@ it.effect("decodes board RPC inputs", () =>
   }),
 );
 
+describe("backlog status", () => {
+  it.effect("decodes a backlog card, its history entry, and a coordinator update to backlog", () =>
+    Effect.gen(function* () {
+      const card = yield* decodeCard({ ...minimalCard, status: "backlog" });
+      assert.strictEqual(card.status, "backlog");
+
+      const event = yield* decodeEvent({
+        entryId: "entry-1",
+        cardId: "card-1",
+        at: "2026-09-20T00:00:00.000Z",
+        status: "backlog",
+        executorRole: "general",
+        model: null,
+        effort: null,
+        source: "system",
+      });
+      assert.strictEqual(event.status, "backlog");
+
+      const update = yield* decodeUpdateInput({ cardId: "card-1", status: "backlog" });
+      assert.strictEqual(update.status, "backlog");
+    }),
+  );
+
+  it("is one of the six card statuses in lifecycle order", () => {
+    assert.deepStrictEqual(BoardCardStatus.literals, [
+      "backlog",
+      "todo",
+      "orchestrator",
+      "in_progress",
+      "review",
+      "done",
+    ]);
+  });
+
+  it.effect(
+    "keeps the whole list strict: one card with a status the reader does not know fails the list",
+    () =>
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(
+          decodeListResult({
+            cards: [minimalCard, { ...minimalCard, cardId: "card-2", status: "someday" }],
+            events: [],
+          }),
+        );
+        assert.isTrue(Exit.isFailure(exit));
+      }),
+  );
+
+  it.effect("lets the coordinator create a card as backlog, todo, or orchestrator only", () =>
+    Effect.gen(function* () {
+      const base = { title: "Defer me", body: "", executorRole: "general" } as const;
+      for (const status of ["backlog", "todo", "orchestrator"] as const) {
+        const parsed = yield* decodeMcpCreateInput({ ...base, status });
+        assert.strictEqual(parsed.status, status);
+      }
+      for (const status of ["in_progress", "review", "done"]) {
+        const exit = yield* Effect.exit(decodeMcpCreateInput({ ...base, status }));
+        assert.isTrue(Exit.isFailure(exit));
+      }
+    }),
+  );
+
+  it.effect("lets the coordinator move an existing card to backlog", () =>
+    Effect.gen(function* () {
+      const parsed = yield* decodeMcpUpdateInput({ cardId: "card-1", status: "backlog" });
+      assert.strictEqual(parsed.status, "backlog");
+    }),
+  );
+});
+
 describe("board card validation", () => {
   it.effect("rejects an unknown status", () =>
     Effect.gen(function* () {
@@ -229,6 +306,7 @@ describe("board RPC wiring", () => {
         WS_METHODS.boardOrchestratorRemove,
         WS_METHODS.boardOrchestratorResendBrief,
         WS_METHODS.boardOrchestratorsList,
+        WS_METHODS.boardResolve,
         WS_METHODS.boardStart,
         WS_METHODS.boardUpdate,
       ].sort(),

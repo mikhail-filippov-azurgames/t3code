@@ -30,6 +30,7 @@ interface BoardCardPinnedSheetProps {
 }
 
 const BOARD_STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
+  backlog: "Беклог",
   todo: "К выполнению",
   orchestrator: "Оркестратор",
   in_progress: "В работе",
@@ -353,7 +354,7 @@ function BoardCardPinnedItem(props: {
                 onPress={() => props.onOpenThread(card.executorThreadId!)}
               />
             ) : null}
-            {card.status === "todo" && !card.archived ? (
+            {(card.status === "todo" || card.status === "backlog") && !card.archived ? (
               <BoardCardButton
                 label="Запустить"
                 disabled={props.busy}

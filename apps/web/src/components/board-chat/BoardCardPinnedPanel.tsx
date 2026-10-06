@@ -21,7 +21,12 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
-import { boardFailureText, boardExecutorRoleLabel, boardStatusLabel } from "../board/board.logic";
+import {
+  boardFailureText,
+  boardExecutorRoleLabel,
+  boardStatusLabel,
+  isCardStartable,
+} from "../board/board.logic";
 import { Button } from "../ui/button";
 import { boardEnvironment } from "../../state/board";
 import { readThreadShell } from "../../state/entities";
@@ -363,7 +368,7 @@ function PinnedCard(props: {
                 Чат исполнителя
               </Button>
             ) : null}
-            {card.status === "todo" && !card.archived ? (
+            {isCardStartable(card) ? (
               <Button
                 type="button"
                 size="sm"

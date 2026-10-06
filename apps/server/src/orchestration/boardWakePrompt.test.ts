@@ -19,6 +19,18 @@ describe("Coordinator board brief", () => {
     }
   });
 
+  it("keeps the status chain and explains backlog as a human-requested deferral", () => {
+    for (const statement of [
+      "todo -> orchestrator -> in_progress -> review -> done",
+      "backlog sits outside that chain",
+      "deliberately deferred",
+      "only when the human asks",
+      "do not start, delegate, or move a backlog card on your own",
+    ]) {
+      assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, statement);
+    }
+  });
+
   it("requires the exact Architect skill and one active binding before board work", () => {
     for (const requirement of [
       "Before taking any substantive board action",

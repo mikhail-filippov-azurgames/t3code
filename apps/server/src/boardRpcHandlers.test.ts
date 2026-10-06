@@ -339,7 +339,68 @@ describe("board RPC handlers", () => {
     }),
   );
 
-  it.effect("start rejects a card that is not todo", () =>
+  it.effect(
+    "start pulls a backlog card into orchestrator, notifies, and wakes the orchestrator",
+    () =>
+      Effect.gen(function* () {
+        const card = makeCard({ status: "backlog" });
+        const { handlers, state, dispatched } = makeHarness({
+          cards: [card],
+          shells: [makeThread({ id: ORCHESTRATOR })],
+        });
+
+        const started = yield* handlers.start({ cardId: card.cardId });
+
+        assert.strictEqual(started.status, "orchestrator");
+        assert.strictEqual(state.cards[0]?.status, "orchestrator");
+        assert.strictEqual(state.events.length, 1);
+        assert.isDefined(
+          dispatched.find((command) => messageIdOf(command) === `board-start:${card.cardId}`),
+        );
+        assert.isDefined(
+          dispatched.find(
+            (command) =>
+              command.type === "thread.turn.start" &&
+              command.message.messageId === `board-start-turn:${card.cardId}`,
+          ),
+        );
+      }),
+  );
+
+  it.effect("start rejects an archived backlog card", () =>
+    Effect.gen(function* () {
+      const card = makeCard({ status: "backlog", archived: true });
+      const { handlers, state, dispatched } = makeHarness({ cards: [card] });
+
+      const error = yield* Effect.flip(handlers.start({ cardId: card.cardId }));
+
+      assert.instanceOf(error, BoardError);
+      assert.include(error.detail, "Archived board card");
+      assert.strictEqual(state.cards[0]?.status, "backlog");
+      assert.strictEqual(dispatched.length, 0);
+    }),
+  );
+
+  it.effect("human update still cannot change status, including into or out of backlog", () =>
+    Effect.gen(function* () {
+      for (const [from, to] of [
+        ["todo", "backlog"],
+        ["backlog", "todo"],
+      ] as const) {
+        const card = makeCard({ status: from });
+        const { handlers, state } = makeHarness({ cards: [card] });
+
+        const error = yield* Effect.flip(handlers.update({ cardId: card.cardId, status: to }));
+
+        assert.instanceOf(error, BoardError);
+        assert.include(error.detail, "may only change 'archived'");
+        assert.strictEqual(state.cards[0]?.status, from);
+        assert.strictEqual(state.events.length, 0);
+      }
+    }),
+  );
+
+  it.effect("start rejects a card that is not todo or backlog", () =>
     Effect.gen(function* () {
       const card = makeCard({ status: "review" });
       const { handlers, state, dispatched } = makeHarness({ cards: [card] });

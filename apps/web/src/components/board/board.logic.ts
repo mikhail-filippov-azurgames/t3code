@@ -22,6 +22,7 @@ export const BOARD_COLUMNS: ReadonlyArray<{
   readonly status: BoardCardStatus;
   readonly label: string;
 }> = [
+  { status: "backlog", label: "Backlog" },
   { status: "todo", label: "To do" },
   { status: "orchestrator", label: "Coordinator" },
   { status: "in_progress", label: "In progress" },
@@ -32,6 +33,7 @@ export const BOARD_COLUMNS: ReadonlyArray<{
 export const BOARD_EXECUTOR_ROLES: ReadonlyArray<BoardExecutorRole> = EXECUTOR_ROLES;
 
 const STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
+  backlog: "Backlog",
   todo: "To do",
   orchestrator: "Coordinator",
   in_progress: "In progress",
@@ -142,8 +144,9 @@ export function isCardHumanEditable(card: BoardCard): boolean {
   return card.status === "todo";
 }
 
+/** The human starts a ready (`todo`) card or pulls a deferred (`backlog`) one into work. */
 export function isCardStartable(card: BoardCard): boolean {
-  return card.status === "todo" && !card.archived;
+  return (card.status === "todo" || card.status === "backlog") && !card.archived;
 }
 
 /** Progress entries from a `board.list` payload, or none before the first read. */
