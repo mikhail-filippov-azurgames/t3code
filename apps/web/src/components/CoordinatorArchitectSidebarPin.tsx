@@ -1,9 +1,16 @@
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import {
+  CircleCheckIcon,
+  CircleDashedIcon,
+  MessageCircleQuestionIcon,
+  SendIcon,
+} from "lucide-react";
 import { useEffect, useRef } from "react";
 
 import { useComposerDraftStore } from "../composerDraftStore";
-import { useThreadDetail } from "../state/entities";
+import { derivePhase } from "../session-logic";
+import { useThreadDetail, useThreadShell } from "../state/entities";
 import {
   coordinatorArchitectEnvironment,
   reportActiveArchitectChild,
@@ -13,6 +20,7 @@ import { requestSwitchProviderTarget } from "./SwitchProviderDialog";
 import { resolveCoordinatorArchitectReviewAttention } from "./Sidebar.logic";
 import { buildCoordinatorArchitectSidebarPrompt } from "./threadActionMenu.logic";
 import { SidebarMenuSubItem } from "./ui/sidebar";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const ARCHITECT_BOUND_ACTIVITY = "architect.bound";
 
@@ -55,29 +63,26 @@ export function CoordinatorArchitectSidebarPin({
   }, [activityVersion, enabled, query.refresh]);
 
   const binding = query.data?.binding ?? null;
+  const architectRef =
+    binding !== null && binding.status === "active"
+      ? scopeThreadRef(environmentId, binding.architectThreadId)
+      : null;
+  const architectSession = useThreadShell(architectRef)?.session ?? null;
+  const architectIsWorking =
+    architectSession?.status === "starting" || derivePhase(architectSession) === "running";
   // Only an active binding nests its Architect row; the cleared report covers
   // terminal bindings and unmounting rows.
-  const activeArchitectKey =
-    binding !== null && binding.status === "active"
-      ? scopedThreadKey(scopeThreadRef(environmentId, binding.architectThreadId))
-      : null;
+  const activeArchitectKey = architectRef === null ? null : scopedThreadKey(architectRef);
   useEffect(() => {
     reportActiveArchitectChild({ coordinatorKey, architectKey: activeArchitectKey });
     return () => reportActiveArchitectChild({ coordinatorKey, architectKey: null });
   }, [coordinatorKey, activeArchitectKey]);
 
-  if (binding === null || binding.status !== "active") return null;
+  if (binding === null || binding.status !== "active" || architectRef === null) return null;
 
+  const activeArchitectRef = architectRef;
   const selected = binding.routingEvidence?.consideredCandidates.at(-1) ?? null;
   const attention = resolveCoordinatorArchitectReviewAttention(query.data?.reviews ?? []);
-  const attentionLabel = attention
-    .map(({ status, count }) => {
-      const label =
-        status === "open" ? "Open" : status === "answered" ? "Ready to publish" : "Published";
-      return `${label} ${count}`;
-    })
-    .join(" · ");
-  const architectRef = scopeThreadRef(environmentId, binding.architectThreadId);
   const currentCandidate = selected
     ? { instanceId: selected.providerInstanceId, model: selected.model }
     : null;
@@ -161,7 +166,7 @@ export function CoordinatorArchitectSidebarPin({
         <button
           type="button"
           className="min-w-0 flex-1 truncate text-left font-medium hover:underline"
-          onClick={() => onNavigate(architectRef)}
+          onClick={() => onNavigate(activeArchitectRef)}
           aria-label={`Open Architect ${selected?.alias ?? ""} ${selected?.model ?? ""}`.trim()}
         >
           <span className="mr-1.5">Architect</span>
@@ -170,19 +175,66 @@ export function CoordinatorArchitectSidebarPin({
           </span>
         </button>
         <span className="shrink-0 text-sidebar-muted-foreground">Active</span>
-        {attentionLabel ? (
+        <span
+          className="inline-flex shrink-0 text-sky-600 dark:text-sky-300/80"
+          role="status"
+          data-testid={`coordinator-architect-working-${coordinatorThreadId}`}
+        >
+          <span className="sr-only">{architectIsWorking ? "Architect is working" : ""}</span>
+          {architectIsWorking ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={<span className="inline-flex animate-status-pulse" aria-hidden="true" />}
+              >
+                <CircleDashedIcon aria-hidden="true" className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipPopup>Architect is working</TooltipPopup>
+            </Tooltip>
+          ) : null}
+        </span>
+        {attention.length > 0 ? (
           <span
-            className="shrink-0 text-amber-700 dark:text-amber-300"
+            className="inline-flex shrink-0 items-center gap-1 text-amber-700 dark:text-amber-300"
             role="status"
             data-testid={`coordinator-architect-attention-${coordinatorThreadId}`}
           >
-            {attentionLabel}
+            {attention.map(({ status, count }) => {
+              const Icon =
+                status === "open"
+                  ? MessageCircleQuestionIcon
+                  : status === "answered"
+                    ? CircleCheckIcon
+                    : SendIcon;
+              const label =
+                status === "open"
+                  ? `Open ${count}`
+                  : status === "answered"
+                    ? `Ready to publish ${count}`
+                    : `Published ${count}`;
+              return (
+                <Tooltip key={status}>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        className="inline-flex items-center gap-0.5"
+                        role="img"
+                        aria-label={label}
+                      />
+                    }
+                  >
+                    <Icon aria-hidden="true" className="size-3" />
+                    <span aria-hidden="true">{count}</span>
+                  </TooltipTrigger>
+                  <TooltipPopup>{label}</TooltipPopup>
+                </Tooltip>
+              );
+            })}
           </span>
         ) : null}
         <button
           type="button"
           className="rounded px-1 hover:bg-sidebar-accent"
-          onClick={() => onNavigate(architectRef)}
+          onClick={() => onNavigate(activeArchitectRef)}
         >
           Open
         </button>
