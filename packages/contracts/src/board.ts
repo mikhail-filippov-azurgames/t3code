@@ -99,6 +99,44 @@ export const BoardListResult = Schema.Struct({
 });
 export type BoardListResult = typeof BoardListResult.Type;
 
+/** An eight-character board-card prefix or a full UUID. */
+export const BoardCardLookupToken = Schema.String.check(
+  Schema.isPattern(
+    /^(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  ),
+).pipe(Schema.brand("BoardCardLookupToken"));
+export type BoardCardLookupToken = typeof BoardCardLookupToken.Type;
+
+export const BoardCardResolveInput = Schema.Struct({
+  tokens: Schema.Array(BoardCardLookupToken).check(Schema.isMaxLength(100)),
+  /** Full card IDs whose complete history is open in a pinned panel. */
+  cardIds: Schema.Array(BoardCardId).check(Schema.isMaxLength(20)),
+});
+export type BoardCardResolveInput = typeof BoardCardResolveInput.Type;
+
+export const BoardCardLookupMatch = Schema.Struct({
+  token: BoardCardLookupToken,
+  card: BoardCard,
+  orchestratorThreadTitle: Schema.NullOr(TrimmedNonEmptyString),
+  recentEvents: Schema.Array(BoardCardEvent),
+});
+export type BoardCardLookupMatch = typeof BoardCardLookupMatch.Type;
+
+export const BoardCardLookupDetail = Schema.Struct({
+  card: BoardCard,
+  orchestratorThreadTitle: Schema.NullOr(TrimmedNonEmptyString),
+  events: Schema.Array(BoardCardEvent),
+});
+export type BoardCardLookupDetail = typeof BoardCardLookupDetail.Type;
+
+export const BoardCardResolveResult = Schema.Struct({
+  /** Missing and ambiguous tokens are intentionally omitted. */
+  matches: Schema.Array(BoardCardLookupMatch),
+  /** Missing exact IDs are omitted so clients can mark their pinned cards unavailable. */
+  details: Schema.Array(BoardCardLookupDetail),
+});
+export type BoardCardResolveResult = typeof BoardCardResolveResult.Type;
+
 /** Human card creation lands in `todo`; the server stamps `createdBy: human`. */
 export const BoardCreateInput = Schema.Struct({
   orchestratorThreadId: ThreadId,

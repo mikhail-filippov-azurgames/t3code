@@ -1,7 +1,10 @@
 import * as Haptics from "expo-haptics";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { KeyboardAwareLegendList } from "@legendapp/list/keyboard";
 import { useViewabilityAmount, type LegendListRef } from "@legendapp/list/react-native";
 import type {
+  BoardCardLookupToken,
+  BoardCardLookupMatch,
   ChatAttachment,
   ChatFileAttachment,
   ChatImageAttachment,
@@ -88,6 +91,14 @@ import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { useFontFamily } from "../../lib/useFontFamily";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import {
+  EMPTY_BOARD_CARD_LOOKUP_MATCHES,
+  EMPTY_BOARD_CARD_LOOKUP_TOKENS,
+  clearBoardCardMentionCache,
+  extractBoardCardLookupTokens,
+  resolveBoardCardMentions,
+} from "@t3tools/client-runtime/board-card-mentions";
+import { AsyncResult } from "effect/unstable/reactivity";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
@@ -174,6 +185,15 @@ import {
   useRefreshAssetUrl,
 } from "../../state/assets";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
+import { boardEnvironment } from "../../state/board";
+import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import type { Preferences } from "../../persistence/mobile-preferences";
+import {
+  mobileBoardCardPinsKey,
+  readMobileBoardCardPins,
+  updateMobileBoardCardPins,
+} from "./boardCardPins";
+import { BoardCardPinnedSheet } from "./BoardCardPinnedSheet";
 import { usePreparedConnection } from "../../state/session";
 import { useThreadSelection } from "../../state/use-thread-selection";
 import { composerDocumentAttachmentRecord } from "../../lib/composerContext";
@@ -200,6 +220,7 @@ const WIDE_MARKDOWN_BLOCK_OPTIONS = {
   includeBlockquotes: Platform.OS === "ios",
   includeOrderedLists: Platform.OS === "android",
 } as const;
+const EMPTY_MOBILE_PREFERENCES: Preferences = {};
 
 const MESSAGE_TIME_FORMATTER = new Intl.DateTimeFormat(undefined, {
   hour: "numeric",
@@ -764,18 +785,133 @@ function ArtifactTemplateCard(props: {
 /** Tap opens a link; long-press on a native file chip shows its menu. Built once per feed. */
 interface MarkdownLinkHandlers {
   readonly onLinkPress: (href: string) => void;
+  readonly readBoardCardMatches: (
+    tokens: ReadonlyArray<BoardCardLookupToken>,
+  ) => Promise<ReadonlyArray<BoardCardLookupMatch>>;
+  readonly boardCardLookupRevision: number;
   readonly fileContextMenu: (href: string) => MarkdownFileContextMenu | undefined;
   readonly onFileContextMenuAction: (href: string, actionId: string) => void;
 }
 
+type MessageMarkdownLinkHandlers = Pick<
+  MarkdownLinkHandlers,
+  "onLinkPress" | "fileContextMenu" | "onFileContextMenuAction"
+> & {
+  readonly boardCardMatches: ReadonlyMap<string, BoardCardLookupMatch>;
+};
+
+function sameBoardCardMatches(
+  left: ReadonlyMap<string, BoardCardLookupMatch>,
+  right: ReadonlyMap<string, BoardCardLookupMatch>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const [token, match] of left) {
+    if (right.get(token) !== match) return false;
+  }
+  return true;
+}
+
+function useMessageMarkdownLinkHandlers(props: {
+  readonly messageId: string;
+  readonly environmentId: EnvironmentId;
+  readonly markdown: string;
+  readonly isStreaming: boolean;
+  readonly linkHandlers: MarkdownLinkHandlers;
+}): MessageMarkdownLinkHandlers {
+  const lookupTokens = useMemo(
+    () =>
+      props.isStreaming
+        ? EMPTY_BOARD_CARD_LOOKUP_TOKENS
+        : extractBoardCardLookupTokens(props.markdown),
+    [props.isStreaming, props.markdown],
+  );
+  const [matchState, setMatchState] = useState<{
+    readonly messageId: string;
+    readonly matches: ReadonlyMap<string, BoardCardLookupMatch>;
+  }>(() => ({ messageId: props.messageId, matches: EMPTY_BOARD_CARD_LOOKUP_MATCHES }));
+  const boardCardMatches =
+    matchState.messageId === props.messageId ? matchState.matches : EMPTY_BOARD_CARD_LOOKUP_MATCHES;
+
+  useEffect(() => {
+    let current = true;
+    if (props.isStreaming) {
+      return () => {
+        current = false;
+      };
+    }
+    if (lookupTokens.length === 0) {
+      setMatchState((previous) =>
+        previous.messageId === props.messageId && previous.matches.size === 0
+          ? previous
+          : { messageId: props.messageId, matches: EMPTY_BOARD_CARD_LOOKUP_MATCHES },
+      );
+      return () => {
+        current = false;
+      };
+    }
+
+    void resolveBoardCardMentions(
+      String(props.environmentId),
+      lookupTokens,
+      props.linkHandlers.readBoardCardMatches,
+    ).then(
+      (resolved) => {
+        if (!current) return;
+        const confirmed = new Map<string, BoardCardLookupMatch>();
+        for (const [token, match] of resolved) {
+          if (match) confirmed.set(token, match);
+        }
+        setMatchState((previous) =>
+          previous.messageId === props.messageId &&
+          sameBoardCardMatches(previous.matches, confirmed)
+            ? previous
+            : { messageId: props.messageId, matches: confirmed },
+        );
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [
+    lookupTokens,
+    props.linkHandlers.boardCardLookupRevision,
+    props.environmentId,
+    props.isStreaming,
+    props.linkHandlers.readBoardCardMatches,
+    props.messageId,
+  ]);
+
+  return useMemo(
+    () => ({
+      onLinkPress: props.linkHandlers.onLinkPress,
+      boardCardMatches,
+      fileContextMenu: props.linkHandlers.fileContextMenu,
+      onFileContextMenuAction: props.linkHandlers.onFileContextMenuAction,
+    }),
+    [boardCardMatches, props.linkHandlers],
+  );
+}
+
 const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly markdown: string;
+  readonly sourceMarkdown: string;
+  readonly messageId: string;
+  readonly environmentId: EnvironmentId;
+  readonly isStreaming: boolean;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
   readonly onUseArtifactTemplate?: ((template: CodexArtifactTemplate) => void) | undefined;
   readonly renderImage: MarkdownImageRenderer;
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
 }) {
+  const messageLinkHandlers = useMessageMarkdownLinkHandlers({
+    messageId: props.messageId,
+    environmentId: props.environmentId,
+    markdown: props.sourceMarkdown,
+    isStreaming: props.isStreaming,
+    linkHandlers: props.linkHandlers,
+  });
   const segments = useMemo(
     () => splitCodexArtifactTemplateMarkdown(props.markdown),
     [props.markdown],
@@ -800,7 +936,7 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
         markdown={markdown}
         skills={props.skills}
         textStyle={props.markdownStyles.nativeTextStyle}
-        {...props.linkHandlers}
+        {...messageLinkHandlers}
         renderImage={props.renderImage}
       />
     ) : (
@@ -1579,6 +1715,7 @@ function renderFeedEntry(
               >
                 <UserMessageContent
                   text={renderedText}
+                  messageId={message.id}
                   environmentId={props.environmentId}
                   context={message.context}
                   markdownStyles={styles}
@@ -1650,6 +1787,10 @@ function renderFeedEntry(
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent
               markdown={renderedText}
+              sourceMarkdown={message.text}
+              messageId={message.id}
+              environmentId={props.environmentId}
+              isStreaming={message.streaming === true}
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
               onUseArtifactTemplate={props.onUseArtifactTemplate}
@@ -1723,6 +1864,7 @@ function renderFeedEntry(
 
 type UserMessageContentProps = {
   readonly text: string;
+  readonly messageId: string;
   readonly environmentId: EnvironmentId;
   readonly context?: OrchestrationMessageContext;
   readonly markdownStyles: MarkdownStyleSet;
@@ -1732,46 +1874,59 @@ type UserMessageContentProps = {
   readonly renderImage: MarkdownImageRenderer;
 };
 
-function UserMessageContent(props: UserMessageContentProps) {
+const UserMessageContent = memo(function UserMessageContent(props: UserMessageContentProps) {
   const [selected, setSelected] = useState<{ contextId: string; label: string } | null>(null);
   const navigation = useNavigation();
   const { selectedThread } = useThreadSelection();
+  const boardCardMessageLinkHandlers = useMessageMarkdownLinkHandlers({
+    messageId: props.messageId,
+    environmentId: props.environmentId,
+    markdown: props.text,
+    isStreaming: false,
+    linkHandlers: props.linkHandlers,
+  });
   const text = replaceComposerContextReferences(props.text, (ref) => {
     const available = props.context?.records.some((record) => record.contextId === ref.contextId);
     return `[${ref.label}${available ? "" : " (unavailable)"}](t3-context://v1/${ref.kind}/${ref.contextId})`;
   });
-  const onLinkPress = (href: string) => {
-    const reference = parseComposerContextHref(href);
-    if (!reference) return props.linkHandlers.onLinkPress?.(href);
-    const record = props.context?.records.find(
-      (record) => record.contextId === reference.contextId,
-    );
-    if (record?.kind === "mention" && "path" in record) {
-      props.linkHandlers.onLinkPress?.(record.path);
-      return;
-    }
-    // Documents open in the file screen; pictures, video and PDF keep their native viewers.
-    const document = composerDocumentAttachmentRecord(record);
-    if (document) {
-      navigation.navigate("ThreadAttachment", {
-        environmentId: String(props.environmentId),
-        ...(selectedThread ? { threadId: String(selectedThread.id) } : {}),
-        attachmentId: document.attachmentId,
-        name: document.name,
-        mimeType: document.mimeType,
-        sizeBytes: String(document.sizeBytes),
+  const onLinkPress = useCallback(
+    (href: string) => {
+      const reference = parseComposerContextHref(href);
+      if (!reference) return boardCardMessageLinkHandlers.onLinkPress(href);
+      const record = props.context?.records.find(
+        (record) => record.contextId === reference.contextId,
+      );
+      if (record?.kind === "mention" && "path" in record) {
+        boardCardMessageLinkHandlers.onLinkPress(record.path);
+        return;
+      }
+      // Documents open in the file screen; pictures, video and PDF keep their native viewers.
+      const document = composerDocumentAttachmentRecord(record);
+      if (document) {
+        navigation.navigate("ThreadAttachment", {
+          environmentId: String(props.environmentId),
+          ...(selectedThread ? { threadId: String(selectedThread.id) } : {}),
+          attachmentId: document.attachmentId,
+          name: document.name,
+          mimeType: document.mimeType,
+          sizeBytes: String(document.sizeBytes),
+        });
+        return;
+      }
+      setSelected({
+        contextId: reference.contextId,
+        label: record?.label ?? "Context unavailable",
       });
-      return;
-    }
-    setSelected({ contextId: reference.contextId, label: record?.label ?? "Context unavailable" });
-  };
+    },
+    [boardCardMessageLinkHandlers, navigation, props.context, props.environmentId, selectedThread],
+  );
+  const messageLinkHandlers = useMemo(
+    () => ({ ...boardCardMessageLinkHandlers, onLinkPress }),
+    [boardCardMessageLinkHandlers, onLinkPress],
+  );
   return (
     <>
-      <LegacyUserMessageContent
-        {...props}
-        text={text}
-        linkHandlers={{ ...props.linkHandlers, onLinkPress }}
-      />
+      <LegacyUserMessageContent {...props} text={text} linkHandlers={messageLinkHandlers} />
       {selected ? (
         <ComposerContextSheet
           label={selected.label}
@@ -1783,9 +1938,13 @@ function UserMessageContent(props: UserMessageContentProps) {
       ) : null}
     </>
   );
-}
+});
 
-function LegacyUserMessageContent(props: UserMessageContentProps) {
+function LegacyUserMessageContent(
+  props: Omit<UserMessageContentProps, "linkHandlers"> & {
+    readonly linkHandlers: MessageMarkdownLinkHandlers;
+  },
+) {
   const text = props.text;
   const segments = parseReviewCommentMessageSegments(text);
   const hasReviewComment = segments.some((segment) => segment.kind === "review-comment");
@@ -1901,6 +2060,92 @@ function ThreadFeedPlaceholder(props: {
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
   const { themeAppearance } = useAppearancePreferences();
+  const preferencesResult = useAtomValue(mobilePreferencesAtom);
+  const updateMobilePreferences = useAtomSet(updateMobilePreferencesAtom);
+  const preferences = AsyncResult.isSuccess(preferencesResult)
+    ? preferencesResult.value
+    : EMPTY_MOBILE_PREFERENCES;
+  const boardCardPinsKey = mobileBoardCardPinsKey(props.environmentId, props.threadId);
+  const pinnedBoardCardIdsKey = readMobileBoardCardPins(preferences, boardCardPinsKey).join(
+    "\u0000",
+  );
+  const pinnedBoardCardIds = useMemo(
+    () => (pinnedBoardCardIdsKey.length === 0 ? [] : pinnedBoardCardIdsKey.split("\u0000")),
+    [pinnedBoardCardIdsKey],
+  );
+  const [boardCardPanelState, setBoardCardPanelState] = useState(() => ({
+    key: boardCardPinsKey,
+    open: false,
+  }));
+  const boardCardPanelOpen =
+    boardCardPanelState.key === boardCardPinsKey && boardCardPanelState.open;
+  const setBoardCardPanelOpen = useCallback(
+    (open: boolean) => setBoardCardPanelState({ key: boardCardPinsKey, open }),
+    [boardCardPinsKey],
+  );
+  useLayoutEffect(() => {
+    setBoardCardPanelState((current) =>
+      current.key === boardCardPinsKey && !current.open
+        ? current
+        : { key: boardCardPinsKey, open: false },
+    );
+  }, [boardCardPinsKey]);
+  const latestBoardCardPinsRef = useRef(preferences.boardCardPins ?? {});
+  const boardCardPinsSnapshotRef = useRef(preferences.boardCardPins);
+  useLayoutEffect(() => {
+    if (boardCardPinsSnapshotRef.current === preferences.boardCardPins) return;
+    boardCardPinsSnapshotRef.current = preferences.boardCardPins;
+    latestBoardCardPinsRef.current = preferences.boardCardPins ?? {};
+  }, [preferences.boardCardPins]);
+  const resolveBoardCardsQuery = useAtomQueryRunner(boardEnvironment.resolve, {
+    reportFailure: false,
+    refresh: true,
+  });
+  const [boardCardLookupRevision, setBoardCardLookupRevision] = useState(0);
+  const readBoardCardMatches = useCallback(
+    async (tokens: ReadonlyArray<BoardCardLookupToken>) => {
+      const result = await resolveBoardCardsQuery({
+        environmentId: props.environmentId,
+        input: { tokens, cardIds: [] },
+      });
+      if (!AsyncResult.isSuccess(result)) throw result.cause;
+      return result.value.matches;
+    },
+    [props.environmentId, resolveBoardCardsQuery],
+  );
+  const updatePinnedBoardCardIds = useCallback(
+    (change: (current: ReadonlyArray<string>) => ReadonlyArray<string>) => {
+      const currentPreferences = { boardCardPins: latestBoardCardPinsRef.current };
+      const nextPins = change(readMobileBoardCardPins(currentPreferences, boardCardPinsKey));
+      const nextBoardCardPins =
+        updateMobileBoardCardPins(currentPreferences, boardCardPinsKey, nextPins) ?? {};
+      latestBoardCardPinsRef.current = nextBoardCardPins;
+      boardCardPinsSnapshotRef.current = nextBoardCardPins;
+      void updateMobilePreferences({ boardCardPins: nextBoardCardPins });
+      return nextPins;
+    },
+    [boardCardPinsKey, updateMobilePreferences],
+  );
+  const openBoardCard = useCallback(
+    (cardId: string) => {
+      updatePinnedBoardCardIds((current) => [...new Set([...current, cardId])]);
+      setBoardCardPanelOpen(true);
+    },
+    [setBoardCardPanelOpen, updatePinnedBoardCardIds],
+  );
+  const removeBoardCardPin = useCallback(
+    (cardId: string) => {
+      const nextPins = updatePinnedBoardCardIds((current) =>
+        current.filter((value) => value !== cardId),
+      );
+      if (nextPins.length === 0) setBoardCardPanelOpen(false);
+    },
+    [setBoardCardPanelOpen, updatePinnedBoardCardIds],
+  );
+  const handleBoardCardUpdated = useCallback(() => {
+    clearBoardCardMentionCache(String(props.environmentId));
+    setBoardCardLookupRevision((revision) => revision + 1);
+  }, [props.environmentId]);
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
@@ -2019,6 +2264,15 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const userBubbleColor = theme["--color-user-bubble"];
   const onMarkdownLinkPress = useCallback(
     (href: string) => {
+      const boardCardId =
+        /^#t3-board-card-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(
+          href,
+        )?.[1];
+      if (boardCardId) {
+        void Haptics.selectionAsync();
+        openBoardCard(boardCardId);
+        return;
+      }
       const presentation = resolveMarkdownLinkPresentation(href);
       if (presentation.kind === "file") {
         const relativePath = resolveWorkspaceRelativeFilePath(
@@ -2107,11 +2361,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         void tryOpenExternalUrl(presentation.href, "markdown-link");
       }
     },
-    [props.environmentId, props.threadId, props.workspaceRoot, navigation],
+    [openBoardCard, props.environmentId, props.threadId, props.workspaceRoot, navigation],
   );
   const markdownLinkHandlers = useMemo<MarkdownLinkHandlers>(
     () => ({
       onLinkPress: onMarkdownLinkPress,
+      readBoardCardMatches,
+      boardCardLookupRevision,
       fileContextMenu: (href) => {
         const target = resolveFileChipTarget(href, props.workspaceRoot);
         return target ? fileChipMenu(target) : undefined;
@@ -2135,7 +2391,13 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         }
       },
     }),
-    [onMarkdownLinkPress, props.workspaceRoot, shareFileChip],
+    [
+      boardCardLookupRevision,
+      onMarkdownLinkPress,
+      props.workspaceRoot,
+      readBoardCardMatches,
+      shareFileChip,
+    ],
   );
   const renderMarkdownImage = useCallback<MarkdownImageRenderer>(
     (image) => {
@@ -2908,6 +3170,32 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         ) : null}
         <VideoPreviewModal source={expandedVideo} onRequestClose={() => setExpandedVideo(null)} />
         <FilePreviewModal source={expandedFile} onRequestClose={() => setExpandedFile(null)} />
+        {pinnedBoardCardIds.length > 0 ? (
+          <>
+            <BoardCardPinnedSheet
+              environmentId={props.environmentId}
+              threadId={props.threadId}
+              cardIds={pinnedBoardCardIds}
+              visible={boardCardPanelOpen}
+              onClose={() => setBoardCardPanelOpen(false)}
+              onRemove={removeBoardCardPin}
+              onUpdated={handleBoardCardUpdated}
+            />
+            {!boardCardPanelOpen ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={"Открыть закреплённые карточки: " + pinnedBoardCardIds.length}
+                className="absolute right-4 rounded-full border border-border bg-card px-4 py-3 shadow-lg active:opacity-65"
+                style={{ bottom: Math.max(insets.bottom, 12) + 12 }}
+                onPress={() => setBoardCardPanelOpen(true)}
+              >
+                <Text className="font-t3-bold text-sm text-foreground">
+                  Карточки · {pinnedBoardCardIds.length}
+                </Text>
+              </Pressable>
+            ) : null}
+          </>
+        ) : null}
       </View>
     </PresentationSource>
   );

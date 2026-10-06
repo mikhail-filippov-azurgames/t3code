@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import type {
   AssetResource,
+  BoardCardLookupMatch,
   EnvironmentId,
   OpenContextResolveDocResult,
   ScopedThreadRef,
@@ -36,6 +37,14 @@ import type {
 } from "@t3tools/contracts";
 import { ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import {
+  boardCardMentionTextSegments,
+  EMPTY_BOARD_CARD_LOOKUP_MATCHES,
+  EMPTY_BOARD_CARD_LOOKUP_TOKENS,
+  extractBoardCardLookupTokens,
+  resolveBoardCardMentions,
+  subscribeBoardCardMentionCacheInvalidation,
+} from "@t3tools/client-runtime/board-card-mentions";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
 import {
   isAtomCommandInterrupted,
@@ -127,6 +136,9 @@ import { OpenContextDocChip } from "./chat/OpenContextDocChip";
 import { hasSpecificPierreIconForFileName, syntheticFileNameForLanguageId } from "../pierre-icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
+import { boardEnvironment } from "../state/board";
+import { addBoardCardPin } from "./board-chat/boardCardPins";
+import { boardExecutorRoleLabel, boardStatusLabel } from "./board/board.logic";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible";
 import { ScrollArea } from "./ui/scroll-area";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -884,6 +896,46 @@ function remarkLinkifyThreadIds() {
           child.type === "link" ||
           child.type === "linkReference" ||
           child.type === "code" ||
+          child.type === "html" ||
+          child.type === "image" ||
+          child.type === "imageReference"
+        ) {
+          return [child];
+        }
+        visit(child);
+        return [child];
+      });
+    };
+
+    visit(tree);
+  };
+}
+
+function boardCardMentionHref(cardId: string): string {
+  return `#t3-board-card-${cardId}`;
+}
+
+function remarkLinkifyBoardCardMentions(matches: ReadonlyMap<string, BoardCardLookupMatch>) {
+  return (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      if (!node.children) return;
+      node.children = node.children.flatMap((child) => {
+        if (child.type === "text" && typeof child.value === "string") {
+          return boardCardMentionTextSegments(child.value, matches).map((segment) =>
+            segment.match
+              ? {
+                  type: "link",
+                  url: boardCardMentionHref(String(segment.match.card.cardId)),
+                  children: [{ type: "text", value: segment.text }],
+                }
+              : { type: "text", value: segment.text },
+          );
+        }
+        if (
+          child.type === "link" ||
+          child.type === "linkReference" ||
+          child.type === "code" ||
+          child.type === "inlineCode" ||
           child.type === "html" ||
           child.type === "image" ||
           child.type === "imageReference"
@@ -2575,11 +2627,71 @@ function useChatMarkdownState({
   const resolveOpenContextDocQuery = useAtomQueryRunner(openContextEnvironment.resolveDoc, {
     reportFailure: false,
   });
+  const resolveBoardCardsQuery = useAtomQueryRunner(boardEnvironment.resolve, {
+    reportFailure: false,
+    refresh: true,
+  });
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
   const pullRequestLinking = usePullRequestLinking(threadRef?.environmentId);
   const environmentId = threadRef?.environmentId ?? explicitEnvironmentId ?? null;
+  const lookupThreadId = threadRef?.threadId ?? null;
+  const boardCardLookupText = isStreaming || !lookupThreadId || !environmentId ? null : text;
+  const boardCardLookupTokens = useMemo(
+    () =>
+      boardCardLookupText === null
+        ? EMPTY_BOARD_CARD_LOOKUP_TOKENS
+        : extractBoardCardLookupTokens(boardCardLookupText),
+    [boardCardLookupText],
+  );
+  const [boardCardLookupRevision, setBoardCardLookupRevision] = useState(0);
+  useEffect(() => {
+    if (!environmentId) return;
+    return subscribeBoardCardMentionCacheInvalidation(String(environmentId), () => {
+      setBoardCardLookupRevision((revision) => revision + 1);
+    });
+  }, [environmentId]);
+  const [boardCardMatches, setBoardCardMatches] = useState<
+    ReadonlyMap<string, BoardCardLookupMatch>
+  >(EMPTY_BOARD_CARD_LOOKUP_MATCHES);
+  useEffect(() => {
+    let current = true;
+    if (!environmentId || !lookupThreadId || boardCardLookupTokens.length === 0) {
+      setBoardCardMatches(EMPTY_BOARD_CARD_LOOKUP_MATCHES);
+      return () => {
+        current = false;
+      };
+    }
+
+    void resolveBoardCardMentions(String(environmentId), boardCardLookupTokens, async (tokens) => {
+      const result = await resolveBoardCardsQuery({
+        environmentId,
+        input: { tokens, cardIds: [] },
+      });
+      if (!AsyncResult.isSuccess(result)) throw result.cause;
+      return result.value.matches;
+    }).then(
+      (resolved) => {
+        if (!current) return;
+        const confirmed = new Map<string, BoardCardLookupMatch>();
+        for (const [token, match] of resolved) {
+          if (match) confirmed.set(token, match);
+        }
+        setBoardCardMatches(confirmed);
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [
+    boardCardLookupRevision,
+    boardCardLookupTokens,
+    environmentId,
+    lookupThreadId,
+    resolveBoardCardsQuery,
+  ]);
   const remoteOpen = useRemoteOpenResolution(environmentId);
   const canUseShellActions = canUseMarkdownFileShellActions(
     environmentId,
@@ -2726,6 +2838,13 @@ function useChatMarkdownState({
   }, []);
   const openChangeRequestLink = useOpenChangeRequestLink(threadRef, pullRequestPanelRef);
   const openDeferredMarkdownLink = useOpenLink(threadRef);
+  const openBoardCard = useCallback(
+    (cardId: string) => {
+      if (environmentId === null || threadRef === undefined) return;
+      addBoardCardPin(environmentId, threadRef.threadId, cardId);
+    },
+    [environmentId, threadRef],
+  );
   // Subscribed rather than read at click time: the anchor has to decide
   // synchronously whether to intercept its `_blank`, and a subscription is what
   // makes a persisted "app" apply once settings hydrate after launch.
@@ -3049,6 +3168,7 @@ function useChatMarkdownState({
   const componentState = useMemo(
     () => ({
       cwd,
+      boardCardMatches,
       diffThemeName,
       environmentId,
       expandMedia,
@@ -3060,6 +3180,7 @@ function useChatMarkdownState({
       isStreaming,
       linkTargetPreference,
       markdownFileLinkMetaByHref,
+      openBoardCard,
       onTaskListChange,
       onUseArtifactTemplate,
       openChangeRequestLink,
@@ -3080,6 +3201,7 @@ function useChatMarkdownState({
     }),
     [
       cwd,
+      boardCardMatches,
       diffThemeName,
       environmentId,
       expandMedia,
@@ -3091,6 +3213,7 @@ function useChatMarkdownState({
       isStreaming,
       linkTargetPreference,
       markdownFileLinkMetaByHref,
+      openBoardCard,
       onTaskListChange,
       onUseArtifactTemplate,
       openChangeRequestLink,
@@ -3203,6 +3326,53 @@ function MarkdownThreadIdLink({
   );
 }
 
+function BoardCardMentionButton(props: {
+  readonly match: BoardCardLookupMatch;
+  readonly onPin: (cardId: string) => void;
+}) {
+  const { card, orchestratorThreadTitle, recentEvents } = props.match;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className="inline cursor-pointer rounded-sm font-mono text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80 focus-visible:outline-2 focus-visible:outline-ring"
+            aria-label={"Preview board card " + card.title}
+            data-board-card-mention={String(card.cardId)}
+            data-markdown-copy={String(props.match.token)}
+            onClick={() => props.onPin(String(card.cardId))}
+          />
+        }
+      >
+        {String(props.match.token)}
+      </TooltipTrigger>
+      <TooltipPopup side="top" className="max-w-sm whitespace-normal">
+        <div className="space-y-1.5">
+          <p className="font-semibold">{card.title}</p>
+          <p>
+            {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)} ·{" "}
+            {orchestratorThreadTitle ?? String(card.orchestratorThreadId)}
+          </p>
+          {recentEvents.length > 0 ? (
+            <ol className="space-y-1 border-t border-border pt-1.5">
+              {recentEvents.map((event) => (
+                <li key={event.entryId}>
+                  <span className="font-medium">{boardStatusLabel(event.status)}</span>
+                  {event.body ? " · " + event.body : ""}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>История пока пуста.</p>
+          )}
+          <p className="text-muted-foreground">Нажмите, чтобы закрепить карточку.</p>
+        </div>
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
 // Keep component types stable when streaming changes the message state.
 const CHAT_MARKDOWN_COMPONENTS = {
   h1: markdownHeadingRenderer(1),
@@ -3294,6 +3464,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
   a: function MarkdownAnchor({ node, href, children, title: _title, ...props }) {
     const {
       cwd,
+      boardCardMatches,
       environmentId,
       imageBaseDir,
       markdownFileLinkMetaByHref,
@@ -3311,8 +3482,15 @@ const CHAT_MARKDOWN_COMPONENTS = {
       fileLinkChip,
       renderContextReference,
       openFileInPanel,
+      openBoardCard,
       resolveOpenContextDocForLink,
     } = use(ChatMarkdownRendererContext);
+    const boardCardMatch = href?.startsWith("#t3-board-card-")
+      ? boardCardMatches.get((plainHastText(node) ?? "").trim().toLowerCase())
+      : undefined;
+    if (boardCardMatch && threadRef !== undefined) {
+      return <BoardCardMentionButton match={boardCardMatch} onPin={openBoardCard} />;
+    }
     const threadId = href ? parseThreadIdHref(href) : null;
     if (threadId !== null && threadRef !== undefined) {
       return (
@@ -3794,16 +3972,32 @@ function ChatMarkdown({
     props.isStreaming === true &&
     extraRemarkPlugins.length === 0 &&
     /(?:^|\n) {0,3}(?:`{3}|~{3})/.test(text);
+  const incrementalMarkdownPlugin = useMemo(
+    () => (incrementalParsing ? createIncrementalMarkdownPlugin() : null),
+    [incrementalParsing],
+  );
   const linkThreadIds = props.threadRef !== undefined;
+  const linkBoardCards = props.threadRef !== undefined && componentState.environmentId !== null;
   const remarkPlugins = useMemo(
     () => [
       ...(lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS),
       ...(typoraPreviewFeatures ? [remarkMath, remarkTyporaFilePreview] : []),
       ...extraRemarkPlugins,
-      ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
+      ...(incrementalMarkdownPlugin ? [incrementalMarkdownPlugin] : []),
       ...(linkThreadIds ? [remarkLinkifyThreadIds] : []),
+      ...(linkBoardCards
+        ? [() => remarkLinkifyBoardCardMentions(componentState.boardCardMatches)]
+        : []),
     ],
-    [extraRemarkPlugins, incrementalParsing, lineBreaks, linkThreadIds, typoraPreviewFeatures],
+    [
+      componentState.boardCardMatches,
+      extraRemarkPlugins,
+      incrementalMarkdownPlugin,
+      lineBreaks,
+      linkBoardCards,
+      linkThreadIds,
+      typoraPreviewFeatures,
+    ],
   );
   const rehypePlugins = typoraPreviewFeatures
     ? parseRawHtml

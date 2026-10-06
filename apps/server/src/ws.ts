@@ -80,6 +80,8 @@ import {
   type BoardCreateResult,
   type BoardDeleteInput,
   type BoardDeleteResult,
+  type BoardCardResolveInput,
+  type BoardCardResolveResult,
   type BoardListInput,
   type BoardListResult,
   type BoardOrchestrator,
@@ -592,6 +594,9 @@ export interface BoardRpcHandlers {
   readonly resendBrief: (
     input: BoardOrchestratorResendBriefInput,
   ) => Effect.Effect<BoardOrchestratorResendBriefResult, BoardError>;
+  readonly resolve: (
+    input: BoardCardResolveInput,
+  ) => Effect.Effect<BoardCardResolveResult, BoardError>;
   readonly list: (input: BoardListInput) => Effect.Effect<BoardListResult, BoardError>;
   readonly create: (input: BoardCreateInput) => Effect.Effect<BoardCreateResult, BoardError>;
   readonly start: (input: BoardStartInput) => Effect.Effect<BoardStartResult, BoardError>;
@@ -634,13 +639,20 @@ const assertHumanBoardUpdateAllowed = (input: BoardUpdateInput): BoardError | nu
       });
 };
 
-const assertBoardCardStartable = (card: BoardCard): BoardError | null =>
-  card.status === "todo"
+const assertBoardCardStartable = (card: BoardCard): BoardError | null => {
+  if (card.archived) {
+    return new BoardError({
+      operation: "board.start",
+      detail: `Archived board card ${card.cardId} cannot be started.`,
+    });
+  }
+  return card.status === "todo"
     ? null
     : new BoardError({
         operation: "board.start",
         detail: `Board card ${card.cardId} is '${card.status}'; only 'todo' cards can start.`,
       });
+};
 
 const assertBoardCardTextAllowed = (
   card: Pick<BoardCard, "title" | "body" | "lastError">,
@@ -968,6 +980,87 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
       return {};
     });
 
+  const resolve: BoardRpcHandlers["resolve"] = (input) =>
+    Effect.gen(function* () {
+      const tokens = [...new Set(input.tokens)];
+      const resolved = yield* Effect.forEach(
+        tokens,
+        (token) =>
+          Effect.gen(function* () {
+            const tokenText = String(token);
+            let card: BoardCard | undefined;
+            if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tokenText)) {
+              card = Option.getOrUndefined(
+                yield* repository
+                  .getCard(BoardCardId.make(tokenText.toLowerCase()))
+                  .pipe(Effect.mapError(toBoardError("board.resolve"))),
+              );
+            } else {
+              const prefixMatches = yield* repository
+                .findCardsByPrefix(tokenText.toLowerCase())
+                .pipe(Effect.mapError(toBoardError("board.resolve")));
+              card = prefixMatches.length === 1 ? prefixMatches[0] : undefined;
+            }
+            if (card === undefined) return undefined;
+            return { token, card };
+          }),
+        { concurrency: 8 },
+      );
+
+      const matches = yield* Effect.forEach(
+        resolved.filter((entry) => entry !== undefined),
+        ({ token, card }) =>
+          Effect.gen(function* () {
+            const [ownerThread, events] = yield* Effect.all(
+              [
+                deps.getThreadShell(card.orchestratorThreadId),
+                repository.listEventsForCard({ cardId: card.cardId, limit: 3 }),
+              ],
+              { concurrency: 2 },
+            ).pipe(Effect.mapError(toBoardError("board.resolve")));
+            return {
+              token,
+              card,
+              orchestratorThreadTitle: Option.match(ownerThread, {
+                onNone: () => null,
+                onSome: (thread) => thread.title,
+              }),
+              recentEvents: [...events].reverse(),
+            };
+          }),
+        { concurrency: 8 },
+      );
+
+      const details = yield* Effect.forEach(
+        [...new Set(input.cardIds)],
+        (cardId) =>
+          Effect.gen(function* () {
+            const card = yield* repository
+              .getCard(cardId)
+              .pipe(Effect.mapError(toBoardError("board.resolve")));
+            if (Option.isNone(card)) return undefined;
+            const [ownerThread, events] = yield* Effect.all(
+              [
+                deps.getThreadShell(card.value.orchestratorThreadId),
+                repository.listEventsForCard({ cardId: card.value.cardId }),
+              ],
+              { concurrency: 2 },
+            ).pipe(Effect.mapError(toBoardError("board.resolve")));
+            return {
+              card: card.value,
+              orchestratorThreadTitle: Option.match(ownerThread, {
+                onNone: () => null,
+                onSome: (thread) => thread.title,
+              }),
+              events,
+            };
+          }),
+        { concurrency: 8 },
+      );
+
+      return { matches, details: details.filter((entry) => entry !== undefined) };
+    });
+
   const list: BoardRpcHandlers["list"] = (_input) =>
     Effect.gen(function* () {
       const [cards, events] = yield* Effect.all([repository.listCards(), repository.listEvents()], {
@@ -1116,6 +1209,7 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
     orchestratorAdd,
     orchestratorRemove,
     resendBrief,
+    resolve,
     list,
     create,
     start,
@@ -3837,6 +3931,10 @@ const makeWsRpcLayer = (
           ),
         [WS_METHODS.boardList]: (input) =>
           observeRpcEffect(WS_METHODS.boardList, boardHandlers.list(input), {
+            "rpc.aggregate": "board",
+          }),
+        [WS_METHODS.boardResolve]: (input) =>
+          observeRpcEffect(WS_METHODS.boardResolve, boardHandlers.resolve(input), {
             "rpc.aggregate": "board",
           }),
         [WS_METHODS.boardCreate]: (input) =>

@@ -107,6 +107,10 @@
       "types": "./src/state/board.ts",
       "default": "./src/state/board.ts"
     },
+    "./board-card-mentions": {
+      "types": "./src/boardCardMentions.ts",
+      "default": "./src/boardCardMentions.ts"
+    },
     "./state/calendar": {
       "types": "./src/state/calendar.ts",
       "default": "./src/state/calendar.ts"

@@ -4,6 +4,7 @@ import {
   BoardCardId,
   BoardOrchestrator,
   ModelSelection,
+  NonNegativeInt,
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -25,6 +26,13 @@ import {
 
 const GetOrchestratorInput = Schema.Struct({ threadId: ThreadId });
 const GetCardInput = Schema.Struct({ cardId: BoardCardId });
+const FindCardsByPrefixInput = Schema.Struct({
+  prefix: Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/)),
+});
+const ListCardEventsInput = Schema.Struct({
+  cardId: BoardCardId,
+  limit: Schema.optional(NonNegativeInt),
+});
 
 const BoardCardDbRow = BoardCard.mapFields(
   Struct.assign({
@@ -263,6 +271,35 @@ const makeBoardRepository = Effect.gen(function* () {
       `,
   });
 
+  const findCardsByPrefixRows = SqlSchema.findAll({
+    Request: FindCardsByPrefixInput,
+    Result: BoardCardDbRow,
+    execute: ({ prefix }) =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          title,
+          body,
+          status,
+          created_by AS "createdBy",
+          assignee_json AS "assignee",
+          executor_role AS "executorRole",
+          executor_thread_id AS "executorThreadId",
+          outcome,
+          last_error AS "lastError",
+          failure_streak AS "failureStreak",
+          order_index AS "order",
+          archived,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM board_cards
+        WHERE card_id GLOB ${`${prefix}*`}
+        ORDER BY card_id ASC
+        LIMIT 2
+      `,
+  });
+
   const deleteCardRow = SqlSchema.void({
     Request: GetCardInput,
     execute: ({ cardId }) =>
@@ -321,6 +358,30 @@ const makeBoardRepository = Effect.gen(function* () {
       `,
   });
 
+  const listCardEventRows = SqlSchema.findAll({
+    Request: ListCardEventsInput,
+    Result: BoardCardEventDbRow,
+    execute: ({ cardId, limit }) =>
+      sql`
+        SELECT
+          entry_id AS "entryId",
+          card_id AS "cardId",
+          at,
+          status,
+          executor_role AS "executorRole",
+          model,
+          effort,
+          body,
+          source
+        FROM board_card_events
+        WHERE card_id = ${cardId}
+        ORDER BY
+          at ${limit === undefined ? sql`ASC` : sql`DESC`},
+          entry_id ${limit === undefined ? sql`ASC` : sql`DESC`}
+        ${limit === undefined ? sql`` : sql`LIMIT ${limit}`}
+      `,
+  });
+
   const listOrchestrators: BoardRepositoryShape["listOrchestrators"] = () =>
     listOrchestratorRows().pipe(
       Effect.mapError(toBoardRepositoryError("BoardRepository.listOrchestrators:query")),
@@ -348,6 +409,12 @@ const makeBoardRepository = Effect.gen(function* () {
     listCardRows().pipe(
       Effect.map((rows) => rows.map(toBoardCard)),
       Effect.mapError(toBoardRepositoryError("BoardRepository.listCards:query")),
+    );
+
+  const findCardsByPrefix: BoardRepositoryShape["findCardsByPrefix"] = (prefix) =>
+    findCardsByPrefixRows({ prefix }).pipe(
+      Effect.map((rows) => rows.map(toBoardCard)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.findCardsByPrefix:query")),
     );
 
   const getCardById = (cardId: BoardCardId, operation: string) =>
@@ -391,6 +458,12 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.listEvents:query")),
     );
 
+  const listEventsForCard: BoardRepositoryShape["listEventsForCard"] = (input) =>
+    listCardEventRows(input).pipe(
+      Effect.map((rows) => rows.map(toBoardCardEvent)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.listEventsForCard:query")),
+    );
+
   const appendEvent: BoardRepositoryShape["appendEvent"] = (event) =>
     insertEventRow(event).pipe(
       Effect.mapError(toBoardRepositoryError("BoardRepository.appendEvent:query")),
@@ -401,11 +474,13 @@ const makeBoardRepository = Effect.gen(function* () {
     addOrchestrator,
     removeOrchestrator,
     listCards,
+    findCardsByPrefix,
     getCard,
     createCard,
     updateCard,
     deleteCard,
     listEvents,
+    listEventsForCard,
     appendEvent,
   } satisfies BoardRepositoryShape;
 });

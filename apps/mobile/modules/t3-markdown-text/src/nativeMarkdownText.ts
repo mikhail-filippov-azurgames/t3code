@@ -1,4 +1,6 @@
 import type { MarkdownNode } from "react-native-nitro-markdown/headless";
+import type { BoardCardLookupMatch } from "@t3tools/contracts";
+import { boardCardMentionTextSegments } from "@t3tools/client-runtime/board-card-mentions";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -194,6 +196,43 @@ const EMPTY_CONTEXT: RunContext = {
   strikethrough: false,
   code: false,
 };
+
+const BOARD_CARD_EXCLUDED_NODES = new Set([
+  "link",
+  "image",
+  "code_inline",
+  "code_block",
+  "html_inline",
+  "html_block",
+]);
+
+/** Adds tap targets only to server-confirmed tokens in plain markdown text nodes. */
+export function linkifyNativeBoardCardMentions(
+  document: MarkdownNode,
+  matches: ReadonlyMap<string, BoardCardLookupMatch>,
+): MarkdownNode {
+  if (matches.size === 0) return document;
+  const visit = (node: MarkdownNode): MarkdownNode => {
+    if (BOARD_CARD_EXCLUDED_NODES.has(node.type) || !node.children) return node;
+    const children = node.children.flatMap((child): ReadonlyArray<MarkdownNode> => {
+      if (BOARD_CARD_EXCLUDED_NODES.has(child.type)) return [child];
+      if (child.type === "text" && typeof child.content === "string") {
+        return boardCardMentionTextSegments(child.content, matches).map((segment) =>
+          segment.match
+            ? {
+                type: "link",
+                href: "#t3-board-card-" + String(segment.match.card.cardId),
+                children: [{ type: "text", content: segment.text }],
+              }
+            : { type: "text", content: segment.text },
+        );
+      }
+      return [visit(child)];
+    });
+    return { ...node, children };
+  };
+  return visit(document);
+}
 
 const INLINE_HTML_TAG_PATTERN = /<\/?(?:kbd|mark|sub|sup|u)(?:\s[^>]*)?>/gi;
 
@@ -463,6 +502,9 @@ function appendNode(
     case "strikethrough":
       return appendChildren(runs, node, { ...context, strikethrough: true });
     case "link": {
+      if (node.href?.startsWith("#t3-board-card-")) {
+        return appendChildren(runs, node, { ...context, href: node.href });
+      }
       const reference = parseComposerContextHref(node.href ?? "");
       if (reference) {
         // Build the link in isolation: adjacent links with the same href and

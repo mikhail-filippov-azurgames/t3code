@@ -6,6 +6,7 @@ import {
   nativeMarkdownChunkSpacing,
   nativeMarkdownDocumentChunks,
   nativeMarkdownDocumentRuns,
+  linkifyNativeBoardCardMentions,
   nativeMarkdownWithPreservedSoftBreaks,
 } from "./nativeMarkdownText";
 import { MarkdownImageRendererContext, NativeMarkdownBlock } from "./NativeMarkdownBlock";
@@ -21,6 +22,7 @@ import type {
 } from "./SelectableMarkdownText.types";
 
 const EMPTY_SKILLS: ReadonlyArray<SelectableMarkdownSkill> = [];
+const EMPTY_BOARD_CARD_MATCHES = new Map();
 
 export type {
   MarkdownCodeHighlighter,
@@ -46,6 +48,7 @@ export function SelectableMarkdownText({
   onLinkPress,
   fileContextMenu,
   onFileContextMenuAction,
+  boardCardMatches = EMPTY_BOARD_CARD_MATCHES,
   renderImage,
   marginTop = 0,
   marginBottom = 0,
@@ -56,9 +59,10 @@ export function SelectableMarkdownText({
       html: true,
       math: false,
     });
-    const document = preserveSoftBreaks
+    const documentWithSoftBreaks = preserveSoftBreaks
       ? nativeMarkdownWithPreservedSoftBreaks(parsedDocument)
       : parsedDocument;
+    const document = linkifyNativeBoardCardMentions(documentWithSoftBreaks, boardCardMatches);
     return nativeMarkdownDocumentChunks(document).map((chunk) =>
       chunk.kind === "selectable"
         ? {
@@ -67,7 +71,7 @@ export function SelectableMarkdownText({
           }
         : chunk,
     );
-  }, [markdown, preserveSoftBreaks, skills]);
+  }, [boardCardMatches, markdown, preserveSoftBreaks, skills]);
 
   const fileContextMenuHandlers = useMemo<MarkdownFileContextMenuHandlers | null>(
     () =>

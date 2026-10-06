@@ -359,6 +359,7 @@ import { DraftHeroHeadline } from "./chat/DraftHeroHeadline";
 import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
+import { BoardCardPinnedPanel } from "./board-chat/BoardCardPinnedPanel";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
@@ -9612,6 +9613,12 @@ export default function ChatView(props: ChatViewProps) {
                 onSteerQueuedMessage={onSteerQueuedMessage}
                 onRemoveQueuedMessage={onRemoveQueuedMessage}
               />
+              {isServerThread ? (
+                <BoardCardPinnedPanel
+                  environmentId={activeThread.environmentId}
+                  threadId={activeThread.id}
+                />
+              ) : null}
 
               {/* scroll to end pill — shown when user has scrolled away from the live edge */}
               {showScrollToBottom && (

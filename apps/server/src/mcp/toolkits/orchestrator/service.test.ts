@@ -1013,6 +1013,12 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
         orchestrators.delete(threadId);
       }),
     listCards: () => Effect.succeed([...cards.values()]),
+    findCardsByPrefix: (prefix) =>
+      Effect.succeed(
+        [...cards.values()]
+          .filter((card) => String(card.cardId).toLowerCase().startsWith(prefix))
+          .slice(0, 2),
+      ),
     getCard: (cardId) => {
       const card = cards.get(cardId);
       return Effect.succeed(card === undefined ? Option.none() : Option.some(card));
@@ -1032,6 +1038,14 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
         events.delete(cardId);
       }),
     listEvents: () => Effect.succeed([...events.values()].flat()),
+    listEventsForCard: ({ cardId, limit }) => {
+      const cardEvents = (events.get(cardId) ?? []).toSorted((left, right) =>
+        limit === undefined
+          ? left.at.localeCompare(right.at) || left.entryId.localeCompare(right.entryId)
+          : right.at.localeCompare(left.at) || right.entryId.localeCompare(left.entryId),
+      );
+      return Effect.succeed(limit === undefined ? cardEvents : cardEvents.slice(0, limit));
+    },
     appendEvent: (event) =>
       Effect.sync(() => {
         events.set(event.cardId, [...(events.get(event.cardId) ?? []), event]);

@@ -1,3 +1,5 @@
+import type { BoardCardLookupMatch } from "@t3tools/contracts";
+
 export interface NativeMarkdownTextStyle {
   readonly color: string;
   readonly strongColor: string;
@@ -82,6 +84,7 @@ export interface SelectableMarkdownTextProps {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill>;
   readonly preserveSoftBreaks?: boolean;
   readonly onLinkPress?: (href: string) => void;
+  readonly boardCardMatches?: ReadonlyMap<string, BoardCardLookupMatch>;
   readonly fileContextMenu?: (href: string) => MarkdownFileContextMenu | undefined;
   readonly onFileContextMenuAction?: (href: string, actionId: string) => void;
   readonly renderImage?: MarkdownImageRenderer;

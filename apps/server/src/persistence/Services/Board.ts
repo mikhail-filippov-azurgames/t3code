@@ -9,6 +9,7 @@ import {
   BoardCreatedBy,
   BoardOrchestrator,
   IsoDateTime,
+  NonNegativeInt,
   ThreadId,
 } from "@t3tools/contracts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
@@ -60,6 +61,10 @@ export interface BoardRepositoryShape {
   /** Cascade-deletes the orchestrator's cards and their progress history. */
   readonly removeOrchestrator: (threadId: ThreadId) => Effect.Effect<void, BoardRepositoryError>;
   readonly listCards: () => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
+  /** Returns at most two rows, enough to distinguish a unique prefix from an ambiguous one. */
+  readonly findCardsByPrefix: (
+    prefix: string,
+  ) => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
   readonly getCard: (
     cardId: BoardCardId,
   ) => Effect.Effect<Option.Option<BoardCard>, BoardRepositoryError>;
@@ -67,6 +72,11 @@ export interface BoardRepositoryShape {
   readonly updateCard: (card: BoardCard) => Effect.Effect<void, BoardRepositoryError>;
   readonly deleteCard: (cardId: BoardCardId) => Effect.Effect<void, BoardRepositoryError>;
   readonly listEvents: () => Effect.Effect<ReadonlyArray<BoardCardEvent>, BoardRepositoryError>;
+  /** Reads history for one card; a limit returns the newest entries first. */
+  readonly listEventsForCard: (input: {
+    readonly cardId: BoardCardId;
+    readonly limit?: typeof NonNegativeInt.Type;
+  }) => Effect.Effect<ReadonlyArray<BoardCardEvent>, BoardRepositoryError>;
   readonly appendEvent: (event: BoardCardEvent) => Effect.Effect<void, BoardRepositoryError>;
 }
 

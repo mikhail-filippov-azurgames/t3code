@@ -7,14 +7,13 @@
  *
  * @module components/board/useBoardBackend
  */
-import { createBoardEnvironmentAtoms } from "@t3tools/client-runtime/state/board";
 import { useMemo } from "react";
 
-import { connectionAtomRuntime } from "../../connection/runtime";
+import { boardEnvironment } from "../../state/board";
 import { usePrimaryEnvironmentId } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
 
-export const boardEnvironment = createBoardEnvironmentAtoms(connectionAtomRuntime);
+export { boardEnvironment };
 
 /** Thread ids marked as orchestrators on the primary environment. */
 export function useBoardOrchestratorThreadKeys(): ReadonlySet<string> {

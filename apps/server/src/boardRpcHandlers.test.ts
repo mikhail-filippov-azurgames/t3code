@@ -1,6 +1,7 @@
 import {
   BoardCardEventId,
   BoardCardId,
+  BoardCardLookupToken,
   BoardError,
   ProviderInstanceId,
   ProjectId,
@@ -118,6 +119,12 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       return Effect.void;
     },
     listCards: () => Effect.succeed(state.cards),
+    findCardsByPrefix: (prefix) =>
+      Effect.succeed(
+        state.cards
+          .filter((card) => String(card.cardId).toLowerCase().startsWith(prefix))
+          .slice(0, 2),
+      ),
     getCard: (cardId) =>
       Effect.succeed(Option.fromNullishOr(state.cards.find((card) => card.cardId === cardId))),
     createCard: (card) => {
@@ -133,6 +140,16 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       return Effect.void;
     },
     listEvents: () => Effect.succeed(state.events),
+    listEventsForCard: ({ cardId, limit }) => {
+      const events = state.events
+        .filter((event) => event.cardId === cardId)
+        .toSorted((left, right) =>
+          limit === undefined
+            ? left.at.localeCompare(right.at) || left.entryId.localeCompare(right.entryId)
+            : right.at.localeCompare(left.at) || right.entryId.localeCompare(left.entryId),
+        );
+      return Effect.succeed(limit === undefined ? events : events.slice(0, limit));
+    },
     appendEvent: (event) => {
       state.events.push(event);
       return Effect.void;
@@ -333,6 +350,76 @@ describe("board RPC handlers", () => {
       assert.strictEqual(error.operation, "board.start");
       assert.strictEqual(state.cards[0]?.status, "review");
       assert.strictEqual(dispatched.length, 0);
+    }),
+  );
+
+  it.effect("start rejects an archived todo card", () =>
+    Effect.gen(function* () {
+      const card = makeCard({ archived: true });
+      const { handlers, state, dispatched } = makeHarness({ cards: [card] });
+
+      const error = yield* Effect.flip(handlers.start({ cardId: card.cardId }));
+
+      assert.instanceOf(error, BoardError);
+      assert.strictEqual(error.operation, "board.start");
+      assert.include(error.detail, "Archived board card");
+      assert.strictEqual(state.cards[0]?.status, "todo");
+      assert.isTrue(state.cards[0]?.archived);
+      assert.strictEqual(state.events.length, 0);
+      assert.strictEqual(dispatched.length, 0);
+    }),
+  );
+
+  it.effect("resolves only unique prefixes and exact UUIDs, and returns card-scoped history", () =>
+    Effect.gen(function* () {
+      const uniqueId = BoardCardId.make("b71111aa-0000-4000-8000-000000000001");
+      const ambiguousId1 = BoardCardId.make("c0ffee42-0000-4000-8000-000000000001");
+      const ambiguousId2 = BoardCardId.make("c0ffee42-0000-4000-8000-000000000002");
+      const unique = makeCard({ cardId: uniqueId });
+      const cards = [
+        unique,
+        makeCard({ cardId: ambiguousId1, title: "Ambiguous one" }),
+        makeCard({ cardId: ambiguousId2, title: "Ambiguous two" }),
+      ];
+      const history = Array.from({ length: 4 }, (_, index): BoardCardEvent => ({
+        entryId: BoardCardEventId.make(`unique-entry-${index}`),
+        cardId: uniqueId,
+        at: `2026-09-20T00:00:0${index}.000Z`,
+        status: "todo",
+        executorRole: "general",
+        model: null,
+        effort: null,
+        source: "system",
+      }));
+      const { handlers } = makeHarness({
+        cards,
+        events: history,
+        shells: [makeThread({ id: ORCHESTRATOR, title: "Owning chat" })],
+      });
+
+      const result = yield* handlers.resolve({
+        tokens: [
+          BoardCardLookupToken.make("b71111aa"),
+          BoardCardLookupToken.make("c0ffee42"),
+          BoardCardLookupToken.make("ffffffff"),
+          BoardCardLookupToken.make(String(uniqueId)),
+        ],
+        cardIds: [uniqueId, BoardCardId.make("ffffffff-0000-4000-8000-000000000000")],
+      });
+
+      assert.deepEqual(
+        result.matches.map((match) => match.token),
+        ["b71111aa", String(uniqueId)],
+      );
+      assert.strictEqual(result.matches[0]?.card.cardId, uniqueId);
+      assert.strictEqual(result.matches[0]?.orchestratorThreadTitle, "Owning chat");
+      assert.strictEqual(result.matches[0]?.recentEvents.length, 3);
+      assert.deepEqual(
+        result.matches[0]?.recentEvents.map((event) => event.entryId),
+        ["unique-entry-1", "unique-entry-2", "unique-entry-3"],
+      );
+      assert.strictEqual(result.details.length, 1);
+      assert.strictEqual(result.details[0]?.events.length, 4);
     }),
   );
 

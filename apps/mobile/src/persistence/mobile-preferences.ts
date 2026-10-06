@@ -48,6 +48,8 @@ export interface Preferences {
   /** Fresh keys reset both shelves to collapsed when users update. */
   readonly threadListSettledShelfExpanded?: boolean;
   readonly threadListSnoozedShelfExpanded?: boolean;
+  /** Device-local board pins, keyed by environment and chat; values are full card UUIDs only. */
+  readonly boardCardPins?: Readonly<Record<string, ReadonlyArray<string>>>;
 }
 
 export class MobilePreferencesLoadError extends Schema.TaggedError<MobilePreferencesLoadError>()(
@@ -109,6 +111,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     planModeEnabled?: boolean;
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
+    boardCardPins?: Readonly<Record<string, ReadonlyArray<string>>>;
   } = {};
 
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
@@ -187,6 +190,27 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.threadListSnoozedShelfExpanded === "boolean") {
     preferences.threadListSnoozedShelfExpanded = parsed.threadListSnoozedShelfExpanded;
+  }
+  if (
+    typeof parsed.boardCardPins === "object" &&
+    parsed.boardCardPins !== null &&
+    !Array.isArray(parsed.boardCardPins)
+  ) {
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    preferences.boardCardPins = Object.fromEntries(
+      Object.entries(parsed.boardCardPins)
+        .filter((entry): entry is [string, ReadonlyArray<string>] => Array.isArray(entry[1]))
+        .map(([key, values]) => [
+          key,
+          [
+            ...new Set(
+              values.filter(
+                (value): value is string => typeof value === "string" && uuidPattern.test(value),
+              ),
+            ),
+          ].slice(0, 20),
+        ]),
+    );
   }
   return preferences;
 }

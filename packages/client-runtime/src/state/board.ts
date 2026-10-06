@@ -69,6 +69,11 @@ export function createBoardEnvironmentAtoms<R, E>(
     tag: WS_METHODS.boardList,
     staleTimeMs: 15_000,
   });
+  const resolve = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:resolve",
+    tag: WS_METHODS.boardResolve,
+    staleTimeMs: 15_000,
+  });
 
   // Registry changes also cascade cards, so both reads refresh together.
   const refreshAll = (
@@ -94,6 +99,7 @@ export function createBoardEnvironmentAtoms<R, E>(
   return {
     orchestratorsList,
     list,
+    resolve,
     orchestratorAdd: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:board:orchestrator-add",
       tag: WS_METHODS.boardOrchestratorAdd,

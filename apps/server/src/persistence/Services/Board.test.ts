@@ -51,6 +51,66 @@ function makeCard(overrides: Partial<BoardCard> = {}): BoardCard {
 }
 
 repositoryLayer("BoardRepository", (it) => {
+  it.effect("finds at most two cards by prefix and scopes history to one card", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const threadId = ThreadId.make("thread-board-prefix-search");
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+
+      const unique = makeCard({
+        cardId: BoardCardId.make("1a2b3c4d-0000-4000-8000-000000000001"),
+        orchestratorThreadId: threadId,
+      });
+      const ambiguous = [
+        makeCard({
+          cardId: BoardCardId.make("5a6b7c8d-0000-4000-8000-000000000001"),
+          orchestratorThreadId: threadId,
+        }),
+        makeCard({
+          cardId: BoardCardId.make("5a6b7c8d-0000-4000-8000-000000000002"),
+          orchestratorThreadId: threadId,
+        }),
+        makeCard({
+          cardId: BoardCardId.make("5a6b7c8d-0000-4000-8000-000000000003"),
+          orchestratorThreadId: threadId,
+        }),
+      ];
+      yield* repository.createCard(unique);
+      yield* Effect.forEach(ambiguous, (card) => repository.createCard(card));
+
+      assert.deepEqual(
+        (yield* repository.findCardsByPrefix("1a2b3c4d")).map((card) => card.cardId),
+        [unique.cardId],
+      );
+      assert.equal((yield* repository.findCardsByPrefix("5a6b7c8d")).length, 2);
+      assert.deepEqual(yield* repository.findCardsByPrefix("ffffffff"), []);
+
+      for (let index = 1; index <= 4; index += 1) {
+        yield* repository.appendEvent(
+          buildBoardCardEvent(unique, {
+            at: `2026-01-01T00:00:0${index}.000Z`,
+            body: `event-${index}`,
+          }),
+        );
+      }
+      const recent = yield* repository.listEventsForCard({ cardId: unique.cardId, limit: 3 });
+      assert.deepEqual(
+        recent.map((event) => event.body),
+        ["event-4", "event-3", "event-2"],
+      );
+      const history = yield* repository.listEventsForCard({ cardId: unique.cardId });
+      assert.deepEqual(
+        history.map((event) => event.body),
+        ["event-1", "event-2", "event-3", "event-4"],
+      );
+    }),
+  );
+
   it.effect("round-trips cards and ModelSelection and cascades events on deleteCard", () =>
     Effect.gen(function* () {
       const repository = yield* BoardRepository;
