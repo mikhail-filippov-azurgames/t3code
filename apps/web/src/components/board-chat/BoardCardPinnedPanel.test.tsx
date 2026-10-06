@@ -3,12 +3,16 @@ import {
   BoardCardId,
   EnvironmentId,
   ThreadId,
+  TurnId,
   type BoardCard,
   type BoardCardLookupDetail,
 } from "@t3tools/contracts";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import type { CoordinatorSummaryHistoryEntry } from "./BoardCardPinnedPanel";
+import type {
+  CoordinatorSummaryHistoryEntry,
+  CoordinatorSummaryHistoryLoader,
+} from "./coordinatorSummaryHistory";
 
 const mocks = vi.hoisted(() => ({
   cardId: "d4dcdf1c-e971-4c17-8823-60c0a0715722",
@@ -98,9 +102,7 @@ function textContent(node: ReactTestInstance): string {
 async function mountPanel(
   options: {
     readonly onOpenChange?: (open: boolean) => void;
-    readonly loadHistory?: (
-      threadId: ThreadId,
-    ) => Promise<ReadonlyArray<CoordinatorSummaryHistoryEntry>>;
+    readonly loadHistory?: CoordinatorSummaryHistoryLoader;
   } = {},
 ): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
@@ -116,6 +118,53 @@ async function mountPanel(
     await Promise.resolve();
   });
   return renderer;
+}
+
+function historyEntry(id: string, overrides: Partial<CoordinatorSummaryHistoryEntry> = {}) {
+  return {
+    id,
+    summaryText: `Выжимка ${id}`,
+    child: `Ребёнок ${id}`,
+    turn: id,
+    completedAt: createdAt,
+    currentStatus: "завершено",
+    summaryStatus: "готова",
+    executorRole: "implementation",
+    stale: false,
+    ...overrides,
+  } satisfies CoordinatorSummaryHistoryEntry;
+}
+
+function cursorAfter(id: string) {
+  return {
+    completedAt: createdAt,
+    childThreadId: ThreadId.make(id),
+    sourceTurnId: TurnId.make(id),
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+async function scrollHistoryNearBottom(renderer: ReactTestRenderer, nearBottom = true) {
+  const list = renderer.root.find(
+    (node) => node.type === "div" && typeof node.props.onScroll === "function",
+  );
+  await act(async () => {
+    list.props.onScroll({
+      currentTarget: { scrollHeight: 2000, scrollTop: nearBottom ? 1650 : 0, clientHeight: 300 },
+    });
+    await Promise.resolve();
+  });
+}
+
+function historyRows(renderer: ReactTestRenderer) {
+  return renderer.root.findAllByType("li").map((row) => textContent(row));
 }
 
 describe("BoardCardPinnedPanel", () => {
@@ -216,9 +265,9 @@ describe("BoardCardPinnedPanel", () => {
       executorRole: "implementation",
       stale: true,
     };
-    const loadHistory = vi.fn(async (requestedThreadId: ThreadId) => {
-      expect(requestedThreadId).toBe(threadId);
-      return [entry];
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async (input) => {
+      expect(input).toEqual({ threadId });
+      return { entries: [entry], nextCursor: null };
     });
     const renderer = await mountPanel({ loadHistory });
     try {
@@ -291,6 +340,171 @@ describe("BoardCardPinnedPanel", () => {
     try {
       expect(renderer.root.findAllByProps({ "data-board-card-panel": "true" })).toHaveLength(0);
       expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("loads the next page by cursor when the list is scrolled near its end", async () => {
+    mocks.pins = [];
+    const secondPage = deferred<{
+      entries: CoordinatorSummaryHistoryEntry[];
+      nextCursor: null;
+    }>();
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async ({ cursor }) =>
+      cursor === undefined
+        ? { entries: [historyEntry("a"), historyEntry("b")], nextCursor: cursorAfter("b") }
+        : secondPage.promise,
+    );
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      expect(historyRows(renderer)).toHaveLength(2);
+
+      await scrollHistoryNearBottom(renderer, false);
+      expect(loadHistory).toHaveBeenCalledOnce();
+
+      await scrollHistoryNearBottom(renderer);
+      await scrollHistoryNearBottom(renderer);
+      expect(loadHistory).toHaveBeenCalledTimes(2);
+      expect(loadHistory).toHaveBeenLastCalledWith({ threadId, cursor: cursorAfter("b") });
+      expect(textContent(renderer.root)).toContain("Загрузка выжимок…");
+
+      await act(async () => {
+        secondPage.resolve({ entries: [historyEntry("c")], nextCursor: null });
+        await Promise.resolve();
+      });
+      expect(historyRows(renderer)).toHaveLength(3);
+      expect(historyRows(renderer)[2]).toContain("Ребёнок c");
+
+      await scrollHistoryNearBottom(renderer);
+      expect(loadHistory).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("keeps loaded rows when a later page fails and retries the same cursor", async () => {
+    mocks.pins = [];
+    let failNext = true;
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async ({ cursor }) => {
+      if (cursor === undefined) {
+        return { entries: [historyEntry("a")], nextCursor: cursorAfter("a") };
+      }
+      if (failNext) throw new Error("offline");
+      return { entries: [historyEntry("b")], nextCursor: null };
+    });
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      await scrollHistoryNearBottom(renderer);
+      expect(historyRows(renderer)).toHaveLength(1);
+      expect(textContent(renderer.root)).toContain("Не удалось загрузить следующие выжимки.");
+
+      await scrollHistoryNearBottom(renderer);
+      expect(loadHistory).toHaveBeenCalledTimes(2);
+
+      failNext = false;
+      const retry = renderer.root.find(
+        (node) => node.type === "button" && textContent(node) === "Повторить",
+      );
+      await act(async () => {
+        retry.props.onClick();
+        await Promise.resolve();
+      });
+      expect(loadHistory).toHaveBeenCalledTimes(3);
+      expect(loadHistory).toHaveBeenLastCalledWith({ threadId, cursor: cursorAfter("a") });
+      expect(historyRows(renderer)).toHaveLength(2);
+      expect(textContent(renderer.root)).not.toContain("Не удалось загрузить следующие выжимки.");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("drops a pending next page when the history is refreshed", async () => {
+    mocks.pins = [];
+    const stalePage = deferred<{ entries: CoordinatorSummaryHistoryEntry[]; nextCursor: null }>();
+    let firstLoads = 0;
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async ({ cursor }) => {
+      if (cursor !== undefined) return stalePage.promise;
+      firstLoads += 1;
+      return { entries: [historyEntry(`fresh-${firstLoads}`)], nextCursor: cursorAfter("x") };
+    });
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      await scrollHistoryNearBottom(renderer);
+      const refresh = renderer.root.findByProps({ "aria-label": "Обновить историю" });
+      await act(async () => {
+        refresh.props.onClick();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        stalePage.resolve({ entries: [historyEntry("late")], nextCursor: null });
+        await Promise.resolve();
+      });
+      expect(historyRows(renderer)).toHaveLength(1);
+      expect(historyRows(renderer)[0]).toContain("Ребёнок fresh-2");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("marks only stale records as stale", async () => {
+    mocks.pins = [];
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [historyEntry("fresh"), historyEntry("old", { stale: true })],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      const [fresh, old] = renderer.root.findAllByType("li");
+      expect(textContent(fresh!)).not.toContain("Устарела");
+      expect(textContent(old!)).toContain("Устарела");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("does not open the panel for an empty history and shows the empty state beside cards", async () => {
+    mocks.pins = [];
+    const onOpenChange = vi.fn();
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ onOpenChange, loadHistory });
+    try {
+      expect(loadHistory).toHaveBeenCalledOnce();
+      expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(0);
+      expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    } finally {
+      act(() => renderer.unmount());
+    }
+
+    mocks.pins = [mocks.cardId];
+    const withCards = await mountPanel({ loadHistory });
+    try {
+      const historyTab = withCards.root.find(
+        (node) => node.props.role === "tab" && textContent(node) === "История",
+      );
+      expect(historyTab.props["aria-selected"]).toBe(false);
+      act(() => historyTab.props.onClick());
+      expect(textContent(withCards.root)).toContain("Выжимок пока нет");
+    } finally {
+      act(() => withCards.unmount());
+    }
+  });
+
+  it("reports a failed first page inside the history tab without touching cards", async () => {
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => {
+      throw new Error("offline");
+    });
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      expect(renderer.root.findAllByProps({ "data-board-card-id": mocks.cardId })).toHaveLength(1);
+      const historyTab = renderer.root.find(
+        (node) => node.props.role === "tab" && textContent(node) === "История",
+      );
+      act(() => historyTab.props.onClick());
+      expect(textContent(renderer.root)).toContain("Не удалось загрузить историю выжимок.");
     } finally {
       act(() => renderer.unmount());
     }

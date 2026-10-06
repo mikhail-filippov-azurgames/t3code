@@ -5,6 +5,7 @@ import {
   type BoardCard,
   type BoardCardLookupDetail,
   type EnvironmentId,
+  type OrchestrationDelegatedTaskSummaryHistoryCursor,
   type ThreadId,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
@@ -41,6 +42,10 @@ import {
   removeBoardCardPin,
   subscribeBoardCardPins,
 } from "./boardCardPins";
+import type {
+  CoordinatorSummaryHistoryEntry,
+  CoordinatorSummaryHistoryLoader,
+} from "./coordinatorSummaryHistory";
 
 interface BoardCardPinnedPanelProps {
   readonly environmentId: EnvironmentId;
@@ -50,30 +55,31 @@ interface BoardCardPinnedPanelProps {
   readonly loadHistory?: CoordinatorSummaryHistoryLoader;
 }
 
-export interface CoordinatorSummaryHistoryEntry {
-  readonly id: string;
-  readonly summaryText: string;
-  readonly child: string;
-  readonly turn: string;
-  readonly completedAt: string;
-  readonly currentStatus: string;
-  readonly summaryStatus: string;
-  readonly executorRole: string;
-  readonly stale: boolean;
-}
-
-export type CoordinatorSummaryHistoryLoader = (
-  threadId: ThreadId,
-) => Promise<ReadonlyArray<CoordinatorSummaryHistoryEntry>>;
-
 type ChatPanelTab = "cards" | "history";
 
 type SummaryHistoryLoadState = {
   readonly threadId: ThreadId;
   readonly entries: ReadonlyArray<CoordinatorSummaryHistoryEntry>;
+  readonly nextCursor: OrchestrationDelegatedTaskSummaryHistoryCursor | null;
   readonly loading: boolean;
   readonly error: boolean;
+  readonly loadingMore: boolean;
+  readonly loadMoreError: boolean;
 };
+
+const HISTORY_LOAD_MORE_THRESHOLD_PX = 240;
+
+function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
+  return {
+    threadId,
+    entries: [],
+    nextCursor: null,
+    loading: false,
+    error: false,
+    loadingMore: false,
+    loadMoreError: false,
+  };
+}
 
 const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history"]);
 
@@ -101,12 +107,9 @@ export function BoardCardPinnedPanel({
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
-  const [historyState, setHistoryState] = useState<SummaryHistoryLoadState>(() => ({
-    threadId,
-    entries: [],
-    loading: false,
-    error: false,
-  }));
+  const [historyState, setHistoryState] = useState<SummaryHistoryLoadState>(() =>
+    emptyHistoryState(threadId),
+  );
   const [activeTab, setActiveTab] = useLocalStorage<ChatPanelTab, ChatPanelTab>(
     `t3code:chat-side-panel-tab:${environmentId}:${threadId}`,
     pins.length > 0 ? "cards" : "history",
@@ -114,6 +117,8 @@ export function BoardCardPinnedPanel({
   );
   const loadSequence = useRef(0);
   const historyLoadSequence = useRef(0);
+  const historyLoadingMore = useRef(false);
+  const historyStateRef = useRef<SummaryHistoryLoadState>(historyState);
   const resolveCards = useAtomQueryRunner(boardEnvironment.resolve, {
     reportFailure: false,
     refresh: true,
@@ -134,9 +139,10 @@ export function BoardCardPinnedPanel({
   }, [environmentId, threadId]);
 
   const currentHistoryState =
-    historyState.threadId === threadId
-      ? historyState
-      : { threadId, entries: [], loading: false, error: false };
+    historyState.threadId === threadId ? historyState : emptyHistoryState(threadId);
+  useLayoutEffect(() => {
+    historyStateRef.current = currentHistoryState;
+  }, [currentHistoryState]);
   const hasPanelContent = pins.length > 0 || currentHistoryState.entries.length > 0;
   const open = hasPanelContent && !collapsed;
   useLayoutEffect(() => {
@@ -204,22 +210,58 @@ export function BoardCardPinnedPanel({
   const refreshHistory = useCallback(async () => {
     if (!loadHistory) return;
     const sequence = ++historyLoadSequence.current;
-    setHistoryState({ threadId, entries: [], loading: true, error: false });
+    historyLoadingMore.current = false;
+    setHistoryState((current) => ({
+      ...(current.threadId === threadId ? current : emptyHistoryState(threadId)),
+      loading: true,
+      error: false,
+      loadingMore: false,
+      loadMoreError: false,
+    }));
     try {
-      const entries = await loadHistory(threadId);
+      const page = await loadHistory({ threadId });
       if (sequence === historyLoadSequence.current) {
-        setHistoryState({ threadId, entries, loading: false, error: false });
+        setHistoryState({
+          ...emptyHistoryState(threadId),
+          entries: page.entries,
+          nextCursor: page.nextCursor,
+        });
       }
     } catch {
       if (sequence === historyLoadSequence.current) {
-        setHistoryState({ threadId, entries: [], loading: false, error: true });
+        setHistoryState({ ...emptyHistoryState(threadId), error: true });
       }
+    }
+  }, [loadHistory, threadId]);
+
+  const loadMoreHistory = useCallback(async () => {
+    const { nextCursor, loading } = historyStateRef.current;
+    if (!loadHistory || !nextCursor || loading || historyLoadingMore.current) return;
+    const sequence = historyLoadSequence.current;
+    historyLoadingMore.current = true;
+    setHistoryState((current) => ({ ...current, loadingMore: true, loadMoreError: false }));
+    try {
+      const page = await loadHistory({ threadId, cursor: nextCursor });
+      if (sequence === historyLoadSequence.current) {
+        setHistoryState((current) => ({
+          ...current,
+          entries: [...current.entries, ...page.entries],
+          nextCursor: page.nextCursor,
+          loadingMore: false,
+        }));
+      }
+    } catch {
+      if (sequence === historyLoadSequence.current) {
+        setHistoryState((current) => ({ ...current, loadingMore: false, loadMoreError: true }));
+      }
+    } finally {
+      if (sequence === historyLoadSequence.current) historyLoadingMore.current = false;
     }
   }, [loadHistory, threadId]);
 
   useEffect(() => {
     if (!loadHistory) {
-      setHistoryState({ threadId, entries: [], loading: false, error: false });
+      setHistoryState(emptyHistoryState(threadId));
       return;
     }
     void refreshHistory();
@@ -375,8 +417,20 @@ export function BoardCardPinnedPanel({
           ) : null}
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {currentHistoryState.loading ? (
+        <div
+          className="min-h-0 flex-1 overflow-y-auto p-3"
+          onScroll={(event) => {
+            const list = event.currentTarget;
+            if (
+              !currentHistoryState.loadMoreError &&
+              list.scrollHeight - list.scrollTop - list.clientHeight <
+                HISTORY_LOAD_MORE_THRESHOLD_PX
+            ) {
+              void loadMoreHistory();
+            }
+          }}
+        >
+          {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
             <p role="status" className="text-xs text-muted-foreground">
               Загрузка выжимок…
             </p>
@@ -395,45 +449,65 @@ export function BoardCardPinnedPanel({
           ) : currentHistoryState.entries.length === 0 ? (
             <p className="text-xs text-muted-foreground">Выжимок пока нет</p>
           ) : (
-            <ol className="space-y-3">
-              {currentHistoryState.entries.map((entry) => (
-                <li key={entry.id} className="rounded-lg border border-border bg-card p-3">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <span className="font-medium">
-                      {entry.child} · ход {entry.turn}
-                    </span>
-                    {entry.stale ? (
-                      <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
-                        Устарела
+            <>
+              <ol className="space-y-3">
+                {currentHistoryState.entries.map((entry) => (
+                  <li key={entry.id} className="rounded-lg border border-border bg-card p-3">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <span className="min-w-0 break-words font-medium">
+                        {entry.child} · ход {entry.turn}
                       </span>
-                    ) : null}
-                  </div>
-                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-                    {entry.summaryText}
-                  </p>
-                  <dl className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <div className="flex gap-1">
-                      <dt>Текущее состояние:</dt>
-                      <dd className="text-foreground">{entry.currentStatus}</dd>
+                      {entry.stale ? (
+                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                          Устарела
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="flex gap-1">
-                      <dt>Состояние выжимки:</dt>
-                      <dd className="text-foreground">{entry.summaryStatus}</dd>
-                    </div>
-                    <div className="flex gap-1">
-                      <dt>Роль исполнителя:</dt>
-                      <dd className="text-foreground">{entry.executorRole}</dd>
-                    </div>
-                  </dl>
-                  <time
-                    className="mt-2 block text-[10px] text-muted-foreground"
-                    dateTime={entry.completedAt}
+                    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+                      {entry.summaryText}
+                    </p>
+                    <dl className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <div className="flex gap-1">
+                        <dt>Текущее состояние:</dt>
+                        <dd className="text-foreground">{entry.currentStatus}</dd>
+                      </div>
+                      <div className="flex gap-1">
+                        <dt>Состояние выжимки:</dt>
+                        <dd className="text-foreground">{entry.summaryStatus}</dd>
+                      </div>
+                      <div className="flex gap-1">
+                        <dt>Роль исполнителя:</dt>
+                        <dd className="text-foreground">{entry.executorRole}</dd>
+                      </div>
+                    </dl>
+                    <time
+                      className="mt-2 block text-[10px] text-muted-foreground"
+                      dateTime={entry.completedAt}
+                    >
+                      Завершено {new Date(entry.completedAt).toLocaleString()}
+                    </time>
+                  </li>
+                ))}
+              </ol>
+              {currentHistoryState.loadingMore ? (
+                <p role="status" className="mt-3 text-xs text-muted-foreground">
+                  Загрузка выжимок…
+                </p>
+              ) : null}
+              {currentHistoryState.loadMoreError ? (
+                <div role="alert" className="mt-3 space-y-2 text-xs">
+                  <p>Не удалось загрузить следующие выжимки.</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void loadMoreHistory()}
                   >
-                    Завершено {new Date(entry.completedAt).toLocaleString()}
-                  </time>
-                </li>
-              ))}
-            </ol>
+                    Повторить
+                  </Button>
+                </div>
+              ) : null}
+            </>
           )}
         </div>
       )}

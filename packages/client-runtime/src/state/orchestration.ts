@@ -29,6 +29,11 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       staleTimeMs: 30_000,
       idleTtlMs: 60_000,
     }),
+    delegatedTaskSummaryHistory: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:orchestration:delegated-task-summary-history",
+      tag: ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory,
+      idleTtlMs: 30_000,
+    }),
     archivedShellSnapshot: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:orchestration:archived-shell-snapshot",
       tag: ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot,

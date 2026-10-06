@@ -360,6 +360,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { BoardCardPinnedPanel } from "./board-chat/BoardCardPinnedPanel";
+import { useCoordinatorSummaryHistoryLoader } from "./board-chat/useCoordinatorSummaryHistoryLoader";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
 import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
@@ -1780,6 +1781,9 @@ export default function ChatView(props: ChatViewProps) {
   // The composer only rests when there is reading space to give back.
   const [timelineOverflows, setTimelineOverflows] = useState(false);
   const [chatSidePanelOpen, setChatSidePanelOpen] = useState(false);
+  const loadCoordinatorSummaryHistory = useCoordinatorSummaryHistoryLoader(
+    routeThreadRef.environmentId,
+  );
   const attachmentPreviewHandoffByMessageIdRef = useRef<Record<string, string[]>>({});
   const attachmentPreviewPromotionInFlightByMessageIdRef = useRef<Record<string, true>>({});
   const sendInFlightRef = useRef(false);
@@ -9620,6 +9624,7 @@ export default function ChatView(props: ChatViewProps) {
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
                   onOpenChange={setChatSidePanelOpen}
+                  loadHistory={loadCoordinatorSummaryHistory}
                 />
               ) : null}
 
