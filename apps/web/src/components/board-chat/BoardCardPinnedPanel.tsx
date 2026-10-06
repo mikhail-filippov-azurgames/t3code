@@ -18,7 +18,8 @@ import {
   SendIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import * as Schema from "effect/Schema";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import {
@@ -33,6 +34,7 @@ import { boardEnvironment } from "../../state/board";
 import { readThreadShell } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
+import { useLocalStorage } from "~/hooks/useLocalStorage";
 import {
   boardCardPinsKey,
   readBoardCardPins,
@@ -45,7 +47,35 @@ interface BoardCardPinnedPanelProps {
   readonly threadId: ThreadId;
   /** Reports whether the full panel (not the collapsed pill) is on screen. */
   readonly onOpenChange?: (open: boolean) => void;
+  readonly loadHistory?: CoordinatorSummaryHistoryLoader;
 }
+
+export interface CoordinatorSummaryHistoryEntry {
+  readonly id: string;
+  readonly summaryText: string;
+  readonly child: string;
+  readonly turn: string;
+  readonly completedAt: string;
+  readonly currentStatus: string;
+  readonly summaryStatus: string;
+  readonly executorRole: string;
+  readonly stale: boolean;
+}
+
+export type CoordinatorSummaryHistoryLoader = (
+  threadId: ThreadId,
+) => Promise<ReadonlyArray<CoordinatorSummaryHistoryEntry>>;
+
+type ChatPanelTab = "cards" | "history";
+
+type SummaryHistoryLoadState = {
+  readonly threadId: ThreadId;
+  readonly entries: ReadonlyArray<CoordinatorSummaryHistoryEntry>;
+  readonly loading: boolean;
+  readonly error: boolean;
+};
+
+const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history"]);
 
 function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] {
   const chunks: string[][] = [];
@@ -59,6 +89,7 @@ export function BoardCardPinnedPanel({
   environmentId,
   threadId,
   onOpenChange,
+  loadHistory,
 }: BoardCardPinnedPanelProps) {
   const navigate = useNavigate();
   const key = boardCardPinsKey(environmentId, threadId);
@@ -70,7 +101,19 @@ export function BoardCardPinnedPanel({
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [historyState, setHistoryState] = useState<SummaryHistoryLoadState>(() => ({
+    threadId,
+    entries: [],
+    loading: false,
+    error: false,
+  }));
+  const [activeTab, setActiveTab] = useLocalStorage<ChatPanelTab, ChatPanelTab>(
+    `t3code:chat-side-panel-tab:${environmentId}:${threadId}`,
+    pins.length > 0 ? "cards" : "history",
+    CHAT_PANEL_TAB_SCHEMA,
+  );
   const loadSequence = useRef(0);
+  const historyLoadSequence = useRef(0);
   const resolveCards = useAtomQueryRunner(boardEnvironment.resolve, {
     reportFailure: false,
     refresh: true,
@@ -90,7 +133,12 @@ export function BoardCardPinnedPanel({
     setActionError(null);
   }, [environmentId, threadId]);
 
-  const open = pins.length > 0 && !collapsed;
+  const currentHistoryState =
+    historyState.threadId === threadId
+      ? historyState
+      : { threadId, entries: [], loading: false, error: false };
+  const hasPanelContent = pins.length > 0 || currentHistoryState.entries.length > 0;
+  const open = hasPanelContent && !collapsed;
   useLayoutEffect(() => {
     onOpenChange?.(open);
     return () => onOpenChange?.(false);
@@ -152,6 +200,33 @@ export function BoardCardPinnedPanel({
   }, [loadDetails, pins]);
 
   const refresh = useCallback(() => loadDetails(pins), [loadDetails, pins]);
+
+  const refreshHistory = useCallback(async () => {
+    if (!loadHistory) return;
+    const sequence = ++historyLoadSequence.current;
+    setHistoryState({ threadId, entries: [], loading: true, error: false });
+    try {
+      const entries = await loadHistory(threadId);
+      if (sequence === historyLoadSequence.current) {
+        setHistoryState({ threadId, entries, loading: false, error: false });
+      }
+    } catch {
+      if (sequence === historyLoadSequence.current) {
+        setHistoryState({ threadId, entries: [], loading: false, error: true });
+      }
+    }
+  }, [loadHistory, threadId]);
+
+  useEffect(() => {
+    if (!loadHistory) {
+      setHistoryState({ threadId, entries: [], loading: false, error: false });
+      return;
+    }
+    void refreshHistory();
+    return () => {
+      historyLoadSequence.current += 1;
+    };
+  }, [loadHistory, refreshHistory, threadId]);
 
   const openThread = useCallback(
     (targetThreadId: ThreadId) => {
@@ -228,74 +303,220 @@ export function BoardCardPinnedPanel({
     [environmentId, requestOrchestrator],
   );
 
-  if (pins.length === 0) return null;
+  const refreshActiveTab = activeTab === "cards" ? refresh : refreshHistory;
+  const refreshingActiveTab = activeTab === "cards" ? loading : currentHistoryState.loading;
+  const canRefreshActiveTab = activeTab === "cards" || loadHistory !== undefined;
+  const collapsedLabel =
+    activeTab === "cards"
+      ? `Карточки · ${pins.length}`
+      : `История · ${currentHistoryState.entries.length}`;
+  const collapseButtonLabel =
+    activeTab === "cards" ? "Свернуть закреплённые карточки" : "Свернуть панель истории";
+  const expandButtonLabel =
+    activeTab === "cards"
+      ? `Развернуть закреплённые карточки: ${pins.length}`
+      : `Развернуть панель истории: ${currentHistoryState.entries.length}`;
+
+  if (!hasPanelContent) return null;
+
   if (collapsed) {
     return (
       <Button
         type="button"
         variant="outline"
         className="absolute left-2 top-2 z-30 shadow-lg"
-        aria-label={`Развернуть закреплённые карточки: ${pins.length}`}
+        aria-label={expandButtonLabel}
         onClick={() => setCollapsed(false)}
       >
-        Карточки · {pins.length}
+        {collapsedLabel}
       </Button>
     );
   }
 
   return (
+    <ChatSidePanelShell
+      activeTab={activeTab}
+      onSelectTab={setActiveTab}
+      onCollapse={() => setCollapsed(true)}
+      collapseButtonLabel={collapseButtonLabel}
+      refreshButtonLabel={
+        activeTab === "cards" ? "Повторить загрузку карточек" : "Обновить историю"
+      }
+      onRefresh={refreshActiveTab}
+      refreshing={refreshingActiveTab}
+      showRefresh={canRefreshActiveTab}
+    >
+      {activeTab === "cards" ? (
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+          {pins.map((cardId) => {
+            const detail = details.get(cardId);
+            return (
+              <PinnedCard
+                key={cardId}
+                cardId={cardId}
+                detail={detail}
+                loading={loading}
+                loadError={loadError}
+                busy={busyCardId === cardId}
+                collapsed={collapsedCardIds.has(cardId)}
+                onToggleCollapsed={() => toggleCardCollapsed(cardId)}
+                actionError={actionError}
+                onRetry={() => void refresh()}
+                onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
+                onOpenThread={openThread}
+                onStart={start}
+                onToggleArchive={toggleArchive}
+                onRequest={request}
+              />
+            );
+          })}
+          {pins.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Закреплённых карточек пока нет.</p>
+          ) : null}
+        </div>
+      ) : (
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          {currentHistoryState.loading ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              Загрузка выжимок…
+            </p>
+          ) : currentHistoryState.error ? (
+            <div role="alert" className="space-y-2 text-xs">
+              <p>Не удалось загрузить историю выжимок.</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void refreshHistory()}
+              >
+                Повторить
+              </Button>
+            </div>
+          ) : currentHistoryState.entries.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Выжимок пока нет</p>
+          ) : (
+            <ol className="space-y-3">
+              {currentHistoryState.entries.map((entry) => (
+                <li key={entry.id} className="rounded-lg border border-border bg-card p-3">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="font-medium">
+                      {entry.child} · ход {entry.turn}
+                    </span>
+                    {entry.stale ? (
+                      <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+                        Устарела
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+                    {entry.summaryText}
+                  </p>
+                  <dl className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <div className="flex gap-1">
+                      <dt>Текущее состояние:</dt>
+                      <dd className="text-foreground">{entry.currentStatus}</dd>
+                    </div>
+                    <div className="flex gap-1">
+                      <dt>Состояние выжимки:</dt>
+                      <dd className="text-foreground">{entry.summaryStatus}</dd>
+                    </div>
+                    <div className="flex gap-1">
+                      <dt>Роль исполнителя:</dt>
+                      <dd className="text-foreground">{entry.executorRole}</dd>
+                    </div>
+                  </dl>
+                  <time
+                    className="mt-2 block text-[10px] text-muted-foreground"
+                    dateTime={entry.completedAt}
+                  >
+                    Завершено {new Date(entry.completedAt).toLocaleString()}
+                  </time>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+      )}
+    </ChatSidePanelShell>
+  );
+}
+
+function ChatSidePanelShell(props: {
+  readonly activeTab: ChatPanelTab;
+  readonly onSelectTab: (tab: ChatPanelTab) => void;
+  readonly onCollapse: () => void;
+  readonly collapseButtonLabel: string;
+  readonly refreshButtonLabel: string;
+  readonly onRefresh: () => void | Promise<void>;
+  readonly refreshing: boolean;
+  readonly showRefresh: boolean;
+  readonly children: ReactNode;
+}) {
+  return (
     <aside
-      aria-label="Закреплённые карточки доски"
+      aria-label="Панель чата"
       className="absolute inset-y-2 left-2 z-30 flex w-[min(22rem,calc(100%-1rem))] flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
       data-board-card-panel="true"
+      data-chat-side-panel="true"
     >
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h2 className="text-sm font-semibold">Карточки доски</h2>
-        <div className="flex items-center gap-1">
+      <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
+        <div role="tablist" aria-label="Разделы панели чата" className="flex min-w-0 flex-1 gap-1">
+          {(
+            [
+              ["cards", "Карточки"],
+              ["history", "История"],
+            ] as const
+          ).map(([tab, label]) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={props.activeTab === tab}
+              aria-controls="chat-side-panel-content"
+              id={`chat-side-panel-tab-${tab}`}
+              className={cn(
+                "min-w-0 rounded-md px-3 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                props.activeTab === tab
+                  ? "bg-secondary font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
+              )}
+              onClick={() => props.onSelectTab(tab)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          {props.showRefresh ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label={props.refreshButtonLabel}
+              disabled={props.refreshing}
+              onClick={() => void props.onRefresh()}
+            >
+              <RotateCwIcon className="size-4" aria-hidden="true" />
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label="Свернуть закреплённые карточки"
-            onClick={() => setCollapsed(true)}
+            aria-label={props.collapseButtonLabel}
+            onClick={props.onCollapse}
           >
             <ChevronDownIcon className="size-4" aria-hidden="true" />
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Повторить загрузку карточек"
-            disabled={loading}
-            onClick={() => void refresh()}
-          >
-            <RotateCwIcon className="size-4" aria-hidden="true" />
-          </Button>
         </div>
       </div>
-      <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-        {pins.map((cardId) => {
-          const detail = details.get(cardId);
-          return (
-            <PinnedCard
-              key={cardId}
-              cardId={cardId}
-              detail={detail}
-              loading={loading}
-              loadError={loadError}
-              busy={busyCardId === cardId}
-              collapsed={collapsedCardIds.has(cardId)}
-              onToggleCollapsed={() => toggleCardCollapsed(cardId)}
-              actionError={actionError}
-              onRetry={() => void refresh()}
-              onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
-              onOpenThread={openThread}
-              onStart={start}
-              onToggleArchive={toggleArchive}
-              onRequest={request}
-            />
-          );
-        })}
+      <div
+        id="chat-side-panel-content"
+        role="tabpanel"
+        aria-labelledby={`chat-side-panel-tab-${props.activeTab}`}
+        className="flex min-h-0 flex-1 flex-col"
+      >
+        {props.children}
       </div>
     </aside>
   );
