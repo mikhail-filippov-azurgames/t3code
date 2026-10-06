@@ -10,7 +10,6 @@ const BOARD_CARD_TOKEN_PATTERN =
   /(^|[^a-z0-9_-])((?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}))(?=$|[^a-z0-9_-])/giu;
 const EXCLUDED_MARKDOWN_NODES = new Set([
   "code",
-  "inlineCode",
   "link",
   "linkReference",
   "image",
@@ -50,6 +49,13 @@ const tokenMatchesInText = (
   return matches;
 };
 
+/** Returns a token only when the trimmed inline-code value is one card candidate. */
+export function boardCardMentionTokenFromInlineCode(text: string): string | null {
+  const candidate = text.trim();
+  const [match] = tokenMatchesInText(candidate);
+  return match?.start === 0 && match.end === candidate.length ? match.token.toLowerCase() : null;
+}
+
 /** Splits plain markdown text while linking only tokens with unique server matches. */
 export function boardCardMentionTextSegments(
   text: string,
@@ -77,7 +83,7 @@ export function boardCardMentionTextSegments(
   return segments;
 }
 
-/** Reads only prose nodes, leaving fenced code, inline code, and formatted links untouched. */
+/** Reads prose and inline-code spans that contain one card token. */
 export function extractBoardCardLookupTokens(
   markdown: string,
 ): ReadonlyArray<BoardCardLookupTokenType> {
@@ -85,6 +91,13 @@ export function extractBoardCardLookupTokens(
 
   const found = new Set<string>();
   const visit = (node: MarkdownNode) => {
+    if (node.type === "inlineCode") {
+      if (typeof node.value === "string") {
+        const token = boardCardMentionTokenFromInlineCode(node.value);
+        if (token) found.add(token);
+      }
+      return;
+    }
     if (EXCLUDED_MARKDOWN_NODES.has(node.type)) return;
     if (node.type === "text" && typeof node.value === "string") {
       for (const { token } of tokenMatchesInText(node.value)) found.add(token.toLowerCase());

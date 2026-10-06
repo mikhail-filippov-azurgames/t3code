@@ -1,16 +1,105 @@
 import { describe, expect, it } from "vite-plus/test";
 import type { MarkdownNode } from "react-native-nitro-markdown/headless";
+import {
+  BoardCardId,
+  BoardCardLookupToken,
+  type BoardCard,
+  type BoardCardLookupMatch,
+} from "@t3tools/contracts";
 
 import {
   nativeMarkdownChunkSpacing,
   nativeMarkdownDocumentChunks,
   nativeMarkdownDocumentRuns,
+  linkifyNativeBoardCardMentions,
   nativeMarkdownListItemBlocks,
   nativeMarkdownTextRuns,
   nativeMarkdownWithPreservedSoftBreaks,
   nativeMarkdownContextCopyRanges,
   contextChipPresentation,
 } from "@t3tools/mobile-markdown-text/markdown";
+
+const boardCard: BoardCard = {
+  cardId: BoardCardId.make("b71111aa-0000-4000-8000-000000000001"),
+  orchestratorThreadId: "owner-thread" as BoardCard["orchestratorThreadId"],
+  title: "Fix the board",
+  body: "",
+  status: "todo",
+  createdBy: "human",
+  assignee: null,
+  executorRole: "implementation",
+  executorThreadId: null,
+  outcome: null,
+  lastError: null,
+  failureStreak: 0,
+  order: 0,
+  archived: false,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+const boardCardMatch: BoardCardLookupMatch = {
+  token: BoardCardLookupToken.make("b71111aa"),
+  card: boardCard,
+  orchestratorThreadTitle: "Owner chat",
+  recentEvents: [],
+};
+
+describe("linkifyNativeBoardCardMentions", () => {
+  it("linkifies confirmed inline-code IDs while keeping other code and links intact", () => {
+    const token = String(boardCardMatch.token);
+    const mentionHref = "#t3-board-card-" + String(boardCard.cardId);
+    const externalLink: MarkdownNode = {
+      type: "link",
+      href: "https://example.com",
+      children: [{ type: "text", content: token }],
+    };
+    const codeBlock: MarkdownNode = { type: "code_block", content: token };
+    const document: MarkdownNode = {
+      type: "document",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "text", content: "Plain " + token + ". Inline " },
+            { type: "code_inline", content: token },
+            { type: "text", content: "; unresolved " },
+            { type: "code_inline", content: "11111111" },
+            { type: "text", content: "; ordinary " },
+            { type: "code_inline", content: "some code" },
+            { type: "text", content: "; link " },
+            externalLink,
+          ],
+        },
+        codeBlock,
+      ],
+    };
+
+    const linked = linkifyNativeBoardCardMentions(document, new Map([[token, boardCardMatch]]));
+    const paragraph = linked.children?.[0];
+    const cardLinks = paragraph?.children?.filter(
+      (child) => child.type === "link" && child.href === mentionHref,
+    );
+
+    expect(cardLinks?.map((link) => link.children?.[0]?.content)).toEqual([token, token]);
+    expect(
+      paragraph?.children
+        ?.filter((child) => child.type === "code_inline")
+        .map((child) => child.content),
+    ).toEqual(["11111111", "some code"]);
+    expect(
+      paragraph?.children?.find(
+        (child) => child.type === "link" && child.href === externalLink.href,
+      ),
+    ).toBe(externalLink);
+    expect(linked.children?.[1]).toBe(codeBlock);
+
+    const mentionRuns = nativeMarkdownDocumentRuns(linked).filter(
+      (run) => run.href === mentionHref,
+    );
+    expect(mentionRuns.map((run) => run.text)).toEqual([token, token]);
+    expect(mentionRuns.every((run) => run.code !== true)).toBe(true);
+  });
+});
 
 describe("nativeMarkdownTextRuns", () => {
   it("distinguishes video and pull-request context from generic file and review chips", () => {

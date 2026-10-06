@@ -1,5 +1,13 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  BoardCardId,
+  BoardCardLookupToken,
+  EnvironmentId,
+  ThreadId,
+  type BoardCard,
+  type BoardCardLookupMatch,
+} from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { clearBoardCardMentionCache } from "@t3tools/client-runtime/board-card-mentions";
 import * as NodeFS from "node:fs";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -18,7 +26,21 @@ const markdownStyles = NodeFS.readFileSync(new URL("../index.css", import.meta.u
 const projectQueryState = vi.hoisted(() => ({
   entries: [] as ReadonlyArray<{ readonly path: string; readonly kind: "file" | "directory" }>,
   failure: false,
+  boardCardMatches: [] as ReadonlyArray<unknown>,
 }));
+const mockAtomQueryRunner = vi.hoisted(() =>
+  vi.fn(async (target?: { readonly input?: { readonly tokens?: unknown } }) => {
+    if (Array.isArray(target?.input?.tokens)) {
+      return { _tag: "Success" as const, value: { matches: projectQueryState.boardCardMatches } };
+    }
+    return projectQueryState.failure
+      ? { _tag: "Failure" as const, cause: undefined }
+      : {
+          _tag: "Success" as const,
+          value: { entries: projectQueryState.entries, truncated: false },
+        };
+  }),
+);
 const rightPanelState = vi.hoisted(() => ({ openFile: vi.fn() }));
 const threadLinkState = vi.hoisted(() => ({
   availableThreadRefs: new Set<string>(),
@@ -56,12 +78,7 @@ vi.mock("./ui/tooltip", async () => {
   };
 });
 vi.mock("../state/use-atom-query-runner", () => ({
-  useAtomQueryRunner: () =>
-    vi.fn(async () =>
-      projectQueryState.failure
-        ? { _tag: "Failure", cause: undefined }
-        : { _tag: "Success", value: { entries: projectQueryState.entries, truncated: false } },
-    ),
+  useAtomQueryRunner: () => mockAtomQueryRunner,
 }));
 vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
 vi.mock("../state/session", async (importOriginal) => ({
@@ -114,11 +131,38 @@ function codeButton(renderer: ReactTestRenderer, label: string) {
 beforeEach(() => {
   projectQueryState.entries = [];
   projectQueryState.failure = false;
+  projectQueryState.boardCardMatches = [];
+  clearBoardCardMentionCache("env-1");
   threadLinkState.availableThreadRefs.clear();
   threadLinkState.navigate.mockClear();
   rightPanelState.openFile.mockClear();
   clearWorkspaceMatchCache();
 });
+
+const boardCardMentionCard: BoardCard = {
+  cardId: BoardCardId.make("b71111aa-0000-4000-8000-000000000001"),
+  orchestratorThreadId: "owner-thread" as BoardCard["orchestratorThreadId"],
+  title: "Fix the board",
+  body: "",
+  status: "todo",
+  createdBy: "human",
+  assignee: null,
+  executorRole: "implementation",
+  executorThreadId: null,
+  outcome: null,
+  lastError: null,
+  failureStreak: 0,
+  order: 0,
+  archived: false,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  updatedAt: "2026-01-01T00:00:00.000Z",
+};
+const boardCardMentionMatch: BoardCardLookupMatch = {
+  token: BoardCardLookupToken.make("b71111aa"),
+  card: boardCardMentionCard,
+  orchestratorThreadTitle: "Owner chat",
+  recentEvents: [],
+};
 
 describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {
@@ -373,6 +417,67 @@ describe("ChatMarkdown thread ID references", () => {
       expect(threadLinkState.navigate).not.toHaveBeenCalled();
       expect(renderer!.root.findByProps({ role: "status" }).children).toEqual([
         "Multiple chats found",
+      ]);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("ChatMarkdown board-card mentions", () => {
+  const sourceRef = scopeThreadRef(EnvironmentId.make("env-1"), ThreadId.make("source-thread"));
+  const cardId = String(boardCardMentionCard.cardId);
+
+  it("renders prose and confirmed inline-code IDs as card previews only", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.boardCardMatches = [boardCardMentionMatch];
+    let renderer: ReactTestRenderer | undefined;
+    const token = String(boardCardMentionMatch.token);
+    const text = [
+      `Plain ${token}.`,
+      `Inline \`${token}\`.`,
+      `[${token}](https://example.com/${token})`,
+      "```",
+      token,
+      "```",
+    ].join("\n");
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={sourceRef} text={text} />);
+      });
+
+      const mentions = renderer!.root.findAllByProps({ "data-board-card-mention": cardId });
+      expect(mentions).toHaveLength(2);
+      expect(mentions.map((mention) => mention.props["data-markdown-copy"])).toEqual([
+        token,
+        token,
+      ]);
+      expect(mentions.every((mention) => typeof mention.props.onClick === "function")).toBe(true);
+      expect(renderer!.root.findAll((node) => node.type === "a")).toHaveLength(1);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps unconfirmed IDs and non-ID inline code as code", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.boardCardMatches = [boardCardMentionMatch];
+    let renderer: ReactTestRenderer | undefined;
+    const text =
+      "Resolved `b71111aa`, unresolved `11111111`, ambiguous `c0ffee42`, and ordinary `some code`.";
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd={undefined} threadRef={sourceRef} text={text} />);
+      });
+
+      expect(renderer!.root.findAllByProps({ "data-board-card-mention": cardId })).toHaveLength(1);
+      const codeNodes = renderer!.root.findAll((node) => node.type === "code");
+      expect(codeNodes.map((node) => node.children.join(""))).toEqual([
+        "11111111",
+        "c0ffee42",
+        "some code",
       ]);
     } finally {
       await act(async () => renderer?.unmount());

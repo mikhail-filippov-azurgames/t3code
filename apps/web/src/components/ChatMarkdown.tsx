@@ -38,6 +38,7 @@ import type {
 import { ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
+  boardCardMentionTokenFromInlineCode,
   boardCardMentionTextSegments,
   EMPTY_BOARD_CARD_LOOKUP_MATCHES,
   EMPTY_BOARD_CARD_LOOKUP_TOKENS,
@@ -917,25 +918,30 @@ function boardCardMentionHref(cardId: string): string {
 
 function remarkLinkifyBoardCardMentions(matches: ReadonlyMap<string, BoardCardLookupMatch>) {
   return (tree: MarkdownAstNode) => {
+    const mentionNodes = (value: string) =>
+      boardCardMentionTextSegments(value, matches).map((segment) =>
+        segment.match
+          ? {
+              type: "link",
+              url: boardCardMentionHref(String(segment.match.card.cardId)),
+              children: [{ type: "text", value: segment.text }],
+            }
+          : { type: "text", value: segment.text },
+      );
     const visit = (node: MarkdownAstNode) => {
       if (!node.children) return;
       node.children = node.children.flatMap((child) => {
         if (child.type === "text" && typeof child.value === "string") {
-          return boardCardMentionTextSegments(child.value, matches).map((segment) =>
-            segment.match
-              ? {
-                  type: "link",
-                  url: boardCardMentionHref(String(segment.match.card.cardId)),
-                  children: [{ type: "text", value: segment.text }],
-                }
-              : { type: "text", value: segment.text },
-          );
+          return mentionNodes(child.value);
+        }
+        if (child.type === "inlineCode" && typeof child.value === "string") {
+          const token = boardCardMentionTokenFromInlineCode(child.value);
+          return token && matches.has(token) ? mentionNodes(child.value) : [child];
         }
         if (
           child.type === "link" ||
           child.type === "linkReference" ||
           child.type === "code" ||
-          child.type === "inlineCode" ||
           child.type === "html" ||
           child.type === "image" ||
           child.type === "imageReference"

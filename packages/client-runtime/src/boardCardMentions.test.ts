@@ -8,6 +8,7 @@ import { assert, describe, it } from "@effect/vitest";
 
 import {
   boardCardMentionTextSegments,
+  boardCardMentionTokenFromInlineCode,
   clearBoardCardMentionCache,
   extractBoardCardLookupTokens,
   resolveBoardCardMentions,
@@ -42,27 +43,56 @@ const uniqueMatch: BoardCardLookupMatch = {
 describe("board card mentions", () => {
   it("reuses one empty token list for messages without prose tokens", () => {
     assert.strictEqual(
-      extractBoardCardLookupTokens("No card token."),
-      extractBoardCardLookupTokens("No card token."),
-    );
-    assert.strictEqual(
-      extractBoardCardLookupTokens("`11111111`"),
-      extractBoardCardLookupTokens("`22222222`"),
+      extractBoardCardLookupTokens("No card token and `variableName`."),
+      extractBoardCardLookupTokens("No card token and `anotherVariable`."),
     );
   });
 
-  it("finds separate prose tokens and excludes code and formatted links", () => {
+  it("finds prose and exact inline-code tokens while excluding other code and links", () => {
     const markdown = [
       "Mention cc1f5be8 and b71111aa.",
-      "Inline `11111111` stays code.",
+      "Inline `  C0FFEE42  ` is a candidate.",
+      "Inline `prefix 22222222` stays code.",
+      "Inline `550e8400-e29b-41d4-a716-446655440000` is a full candidate.",
       "```ts",
-      "22222222",
+      "33333333",
       "```",
-      "[33333333](https://example.com/33333333)",
+      "[44444444](https://example.com/44444444)",
       "prefix44444444suffix",
     ].join("\n");
 
-    assert.deepEqual(extractBoardCardLookupTokens(markdown).map(String), ["cc1f5be8", "b71111aa"]);
+    assert.deepEqual(extractBoardCardLookupTokens(markdown).map(String), [
+      "cc1f5be8",
+      "b71111aa",
+      "c0ffee42",
+      "550e8400-e29b-41d4-a716-446655440000",
+    ]);
+  });
+
+  it("accepts inline code only when it is exactly one card candidate", () => {
+    assert.equal(boardCardMentionTokenFromInlineCode("b71111aa"), "b71111aa");
+    assert.equal(boardCardMentionTokenFromInlineCode("  B71111AA\n"), "b71111aa");
+    assert.equal(
+      boardCardMentionTokenFromInlineCode("550e8400-e29b-41d4-a716-446655440000"),
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+    for (const text of [
+      "",
+      "variableName",
+      "some code",
+      "b71111aa extra",
+      "b71111aa c0ffee42",
+      "b71111aa-extra",
+      "b71111aab",
+    ]) {
+      assert.isNull(boardCardMentionTokenFromInlineCode(text), text);
+    }
+  });
+
+  it("does not link an inline-code candidate the server left out as ambiguous", () => {
+    const segments = boardCardMentionTextSegments("c0ffee42", new Map([["b71111aa", uniqueMatch]]));
+
+    assert.deepEqual(segments, [{ text: "c0ffee42", match: null }]);
   });
 
   it("links only server-confirmed unique prefixes", () => {

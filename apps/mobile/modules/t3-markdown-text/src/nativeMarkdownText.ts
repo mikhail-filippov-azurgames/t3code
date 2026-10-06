@@ -1,6 +1,9 @@
 import type { MarkdownNode } from "react-native-nitro-markdown/headless";
 import type { BoardCardLookupMatch } from "@t3tools/contracts";
-import { boardCardMentionTextSegments } from "@t3tools/client-runtime/board-card-mentions";
+import {
+  boardCardMentionTextSegments,
+  boardCardMentionTokenFromInlineCode,
+} from "@t3tools/client-runtime/board-card-mentions";
 import { collectComposerInlineTokens } from "@t3tools/shared/composerInlineTokens";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -212,20 +215,26 @@ export function linkifyNativeBoardCardMentions(
   matches: ReadonlyMap<string, BoardCardLookupMatch>,
 ): MarkdownNode {
   if (matches.size === 0) return document;
+  const mentionNodes = (content: string): ReadonlyArray<MarkdownNode> =>
+    boardCardMentionTextSegments(content, matches).map((segment) =>
+      segment.match
+        ? {
+            type: "link",
+            href: "#t3-board-card-" + String(segment.match.card.cardId),
+            children: [{ type: "text", content: segment.text }],
+          }
+        : { type: "text", content: segment.text },
+    );
   const visit = (node: MarkdownNode): MarkdownNode => {
     if (BOARD_CARD_EXCLUDED_NODES.has(node.type) || !node.children) return node;
     const children = node.children.flatMap((child): ReadonlyArray<MarkdownNode> => {
+      if (child.type === "code_inline" && typeof child.content === "string") {
+        const token = boardCardMentionTokenFromInlineCode(child.content);
+        return token && matches.has(token) ? mentionNodes(child.content) : [child];
+      }
       if (BOARD_CARD_EXCLUDED_NODES.has(child.type)) return [child];
       if (child.type === "text" && typeof child.content === "string") {
-        return boardCardMentionTextSegments(child.content, matches).map((segment) =>
-          segment.match
-            ? {
-                type: "link",
-                href: "#t3-board-card-" + String(segment.match.card.cardId),
-                children: [{ type: "text", content: segment.text }],
-              }
-            : { type: "text", content: segment.text },
-        );
+        return mentionNodes(child.content);
       }
       return [visit(child)];
     });
