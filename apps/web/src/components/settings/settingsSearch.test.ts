@@ -214,6 +214,21 @@ describe("searchSettings", () => {
     ]);
   });
 
+  it("finds the coordinator board nudge settings and routes the fields to the toggle", () => {
+    expect(searchSettings("board nudge").map((item) => item.id)).toEqual([
+      "coordinator-board-nudge",
+      "coordinator-board-nudge-interval",
+      "coordinator-board-nudge-threshold",
+    ]);
+    expect(getSettingsSearchTargetScope("coordinator-board-nudge-interval")).toMatchObject({
+      scope: "environment-defaults",
+    });
+    expect(searchSettings("board nudge interval")[0]).toMatchObject({
+      to: "/settings/general",
+      targetId: "coordinator-board-nudge",
+    });
+  });
+
   it("keeps catalog result ids unique", () => {
     const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);

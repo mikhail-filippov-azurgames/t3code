@@ -605,6 +605,60 @@ describe("ServerSettings thread settlement", () => {
   });
 });
 
+describe("ServerSettings coordinator board nudge", () => {
+  it("is off by default and nudges only a childless coordinator", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.coordinatorBoardNudgeIntervalMinutes).toBeNull();
+    expect(settings.coordinatorBoardNudgeActiveChildThreshold).toBe(1);
+    expect(DEFAULT_SERVER_SETTINGS.coordinatorBoardNudgeIntervalMinutes).toBeNull();
+    expect(DEFAULT_SERVER_SETTINGS.coordinatorBoardNudgeActiveChildThreshold).toBe(1);
+  });
+
+  it("reads and round-trips an enabled configuration", () => {
+    const input = {
+      coordinatorBoardNudgeIntervalMinutes: 15,
+      coordinatorBoardNudgeActiveChildThreshold: 3,
+    };
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+    expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+
+  it("turns off with null in a patch and as a stored value", () => {
+    expect(
+      decodeServerSettings({ coordinatorBoardNudgeIntervalMinutes: null })
+        .coordinatorBoardNudgeIntervalMinutes,
+    ).toBeNull();
+    expect(decodeServerSettingsPatch({ coordinatorBoardNudgeIntervalMinutes: null })).toEqual({
+      coordinatorBoardNudgeIntervalMinutes: null,
+    });
+  });
+
+  it.each([-1, 0, 4, 5.5, 1441])("rejects an interval outside 5..1440 minutes: %s", (value) => {
+    expect(() => decodeServerSettings({ coordinatorBoardNudgeIntervalMinutes: value })).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({ coordinatorBoardNudgeIntervalMinutes: value }),
+    ).toThrow();
+  });
+
+  it.each([5, 1440])("accepts the interval bound %s", (value) => {
+    expect(decodeServerSettingsPatch({ coordinatorBoardNudgeIntervalMinutes: value })).toEqual({
+      coordinatorBoardNudgeIntervalMinutes: value,
+    });
+  });
+
+  it.each([-1, 0, 1.5, 21, null])(
+    "rejects an active-child threshold outside 1..20: %s",
+    (value) => {
+      expect(() =>
+        decodeServerSettings({ coordinatorBoardNudgeActiveChildThreshold: value }),
+      ).toThrow();
+      expect(() =>
+        decodeServerSettingsPatch({ coordinatorBoardNudgeActiveChildThreshold: value }),
+      ).toThrow();
+    },
+  );
+});
+
 describe("ClientSettings pull request merge methods", () => {
   it("defaults to no project overrides and accepts supported methods", () => {
     expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});

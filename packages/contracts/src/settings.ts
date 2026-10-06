@@ -85,6 +85,26 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 );
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
+export const MIN_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES = 5;
+export const MAX_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES = 1440;
+export const CoordinatorBoardNudgeIntervalMinutes = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES,
+    maximum: MAX_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES,
+  }),
+);
+export type CoordinatorBoardNudgeIntervalMinutes = typeof CoordinatorBoardNudgeIntervalMinutes.Type;
+export const MIN_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD = 1;
+export const MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD = 20;
+export const CoordinatorBoardNudgeActiveChildThreshold = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
+    maximum: MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
+  }),
+);
+export type CoordinatorBoardNudgeActiveChildThreshold =
+  typeof CoordinatorBoardNudgeActiveChildThreshold.Type;
+const DEFAULT_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD: CoordinatorBoardNudgeActiveChildThreshold = 1;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -1336,6 +1356,25 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS)),
   ),
   sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
+   * Minutes between checks that nudge an under-loaded coordinator toward
+   * eligible board cards. `null` is off (the default): nothing is checked and
+   * no coordinator is messaged until a person opts in. Environment-wide, not a
+   * project override, because a coordinator spans projects.
+   */
+  coordinatorBoardNudgeIntervalMinutes: Schema.NullOr(CoordinatorBoardNudgeIntervalMinutes).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  /**
+   * A coordinator counts as idle, and is nudged, while it has fewer active
+   * child tasks than this. 1 nudges only a coordinator with no children.
+   * Read only while `coordinatorBoardNudgeIntervalMinutes` is non-null.
+   */
+  coordinatorBoardNudgeActiveChildThreshold: CoordinatorBoardNudgeActiveChildThreshold.pipe(
+    Schema.withDecodingDefault(
+      Effect.succeed(DEFAULT_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD),
+    ),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -1666,6 +1705,12 @@ export const ServerSettingsPatch = Schema.Struct({
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
+  coordinatorBoardNudgeIntervalMinutes: Schema.optionalKey(
+    Schema.NullOr(CoordinatorBoardNudgeIntervalMinutes),
+  ),
+  coordinatorBoardNudgeActiveChildThreshold: Schema.optionalKey(
+    CoordinatorBoardNudgeActiveChildThreshold,
+  ),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),
