@@ -59,7 +59,10 @@ import {
 } from "../../components/desktopUpdate.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
-import { useSkipOrchestratorUnmarkConfirmation } from "../board/boardPreferences";
+import {
+  useExpandCoordinatorHistoryByDefault,
+  useSkipOrchestratorUnmarkConfirmation,
+} from "../board/boardPreferences";
 import {
   resolveEnvironmentIdentificationPillLabel,
   useEnvironmentStageLabel,
@@ -2110,6 +2113,8 @@ export function GeneralSettingsPanel() {
   const updateSettings = useUpdateScopedSettings();
   const [skipOrchestratorUnmarkConfirm, setSkipOrchestratorUnmarkConfirm] =
     useSkipOrchestratorUnmarkConfirmation();
+  const [expandCoordinatorHistory, setExpandCoordinatorHistory] =
+    useExpandCoordinatorHistoryByDefault();
   const navigate = useNavigate();
   const { scope, environment, connectedEnvironments } = useSettingsScope();
   // The representative environment supplies the provider list for pickers;
@@ -3018,6 +3023,18 @@ export function GeneralSettingsPanel() {
               checked={skipOrchestratorUnmarkConfirm}
               onCheckedChange={(checked) => setSkipOrchestratorUnmarkConfirm(Boolean(checked))}
               aria-label="Skip Coordinator removal confirmation"
+            />
+          }
+        />
+
+        <SettingsRow
+          title="Expand Coordinator history entries"
+          description="Each entry in the chat side panel's History tab can be expanded or collapsed. Turn this on to show entries expanded by default; off, they start collapsed. Saved on this device."
+          control={
+            <Switch
+              checked={expandCoordinatorHistory}
+              onCheckedChange={(checked) => setExpandCoordinatorHistory(Boolean(checked))}
+              aria-label="Expand Coordinator history entries by default"
             />
           }
         />

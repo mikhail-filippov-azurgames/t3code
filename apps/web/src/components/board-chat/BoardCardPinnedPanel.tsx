@@ -13,7 +13,9 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
   MessageCircleIcon,
+  PanelLeftOpenIcon,
   PlayIcon,
   RotateCwIcon,
   SendIcon,
@@ -36,6 +38,7 @@ import { readThreadShell } from "../../state/entities";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { useExpandCoordinatorHistoryByDefault } from "../board/boardPreferences";
 import {
   boardCardPinsKey,
   readBoardCardPins,
@@ -107,6 +110,11 @@ export function BoardCardPinnedPanel({
   const [collapsed, setCollapsed] = useState(false);
   const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
+  const [expandHistoryByDefault] = useExpandCoordinatorHistoryByDefault();
+  // Only entries the user toggled by hand; the rest follow the default, so changing it applies to them.
+  const [historyEntryOverrides, setHistoryEntryOverrides] = useState<ReadonlyMap<string, boolean>>(
+    new Map(),
+  );
   const [historyState, setHistoryState] = useState<SummaryHistoryLoadState>(() =>
     emptyHistoryState(threadId),
   );
@@ -135,6 +143,7 @@ export function BoardCardPinnedPanel({
     setLoadError(false);
     setCollapsed(false);
     setCollapsedCardIds(new Set());
+    setHistoryEntryOverrides(new Map());
     setActionError(null);
   }, [environmentId, threadId]);
 
@@ -158,6 +167,10 @@ export function BoardCardPinnedPanel({
       if (!next.delete(cardId)) next.add(cardId);
       return next;
     });
+  }, []);
+
+  const toggleHistoryEntry = useCallback((entryId: string, expanded: boolean) => {
+    setHistoryEntryOverrides((current) => new Map(current).set(entryId, !expanded));
   }, []);
 
   useEffect(
@@ -350,16 +363,6 @@ export function BoardCardPinnedPanel({
   const refreshActiveTab = activeTab === "cards" ? refresh : refreshHistory;
   const refreshingActiveTab = activeTab === "cards" ? loading : currentHistoryState.loading;
   const canRefreshActiveTab = activeTab === "cards" || loadHistory !== undefined;
-  const collapsedLabel =
-    activeTab === "cards"
-      ? `Карточки · ${pins.length}`
-      : `История · ${currentHistoryState.entries.length}`;
-  const collapseButtonLabel =
-    activeTab === "cards" ? "Свернуть закреплённые карточки" : "Свернуть панель истории";
-  const expandButtonLabel =
-    activeTab === "cards"
-      ? `Развернуть закреплённые карточки: ${pins.length}`
-      : `Развернуть панель истории: ${currentHistoryState.entries.length}`;
 
   if (!hasPanelContent) return null;
 
@@ -369,10 +372,11 @@ export function BoardCardPinnedPanel({
         type="button"
         variant="outline"
         className="absolute left-2 top-2 z-30 shadow-lg"
-        aria-label={expandButtonLabel}
+        aria-label="Развернуть панель чата"
         onClick={() => setCollapsed(false)}
       >
-        {collapsedLabel}
+        <PanelLeftOpenIcon className="size-4" aria-hidden="true" />
+        Панель чата
       </Button>
     );
   }
@@ -382,7 +386,7 @@ export function BoardCardPinnedPanel({
       activeTab={activeTab}
       onSelectTab={setActiveTab}
       onCollapse={() => setCollapsed(true)}
-      collapseButtonLabel={collapseButtonLabel}
+      collapseButtonLabel="Свернуть панель чата"
       refreshButtonLabel={
         activeTab === "cards" ? "Повторить загрузку карточек" : "Обновить историю"
       }
@@ -457,41 +461,12 @@ export function BoardCardPinnedPanel({
             <>
               <ol className="space-y-3">
                 {currentHistoryState.entries.map((entry) => (
-                  <li key={entry.id} className="rounded-lg border border-border bg-card p-3">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <span className="min-w-0 break-words font-medium">
-                        {entry.child} · ход {entry.turn}
-                      </span>
-                      {entry.stale ? (
-                        <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
-                          Устарела
-                        </span>
-                      ) : null}
-                    </div>
-                    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-                      {entry.summaryText}
-                    </p>
-                    <dl className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <div className="flex gap-1">
-                        <dt>Текущее состояние:</dt>
-                        <dd className="text-foreground">{entry.currentStatus}</dd>
-                      </div>
-                      <div className="flex gap-1">
-                        <dt>Состояние выжимки:</dt>
-                        <dd className="text-foreground">{entry.summaryStatus}</dd>
-                      </div>
-                      <div className="flex gap-1">
-                        <dt>Роль исполнителя:</dt>
-                        <dd className="text-foreground">{entry.executorRole}</dd>
-                      </div>
-                    </dl>
-                    <time
-                      className="mt-2 block text-[10px] text-muted-foreground"
-                      dateTime={entry.completedAt}
-                    >
-                      Завершено {new Date(entry.completedAt).toLocaleString()}
-                    </time>
-                  </li>
+                  <HistoryEntry
+                    key={entry.id}
+                    entry={entry}
+                    expanded={historyEntryOverrides.get(entry.id) ?? expandHistoryByDefault}
+                    onToggle={toggleHistoryEntry}
+                  />
                 ))}
               </ol>
               {currentHistoryState.loadingMore ? (
@@ -517,6 +492,63 @@ export function BoardCardPinnedPanel({
         </div>
       )}
     </ChatSidePanelShell>
+  );
+}
+
+/** Collapsed keeps what identifies the digest and warns about it (title, stale, time); the rest opens on demand. */
+function HistoryEntry(props: {
+  readonly entry: CoordinatorSummaryHistoryEntry;
+  readonly expanded: boolean;
+  readonly onToggle: (entryId: string, expanded: boolean) => void;
+}) {
+  const { entry, expanded } = props;
+  const ChevronIcon = expanded ? ChevronDownIcon : ChevronRightIcon;
+
+  return (
+    <li className="rounded-lg border border-border bg-card p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 cursor-pointer items-center gap-1 rounded-sm text-left font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-expanded={expanded}
+          onClick={() => props.onToggle(entry.id, expanded)}
+        >
+          <ChevronIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className={cn("min-w-0", expanded ? "break-words" : "truncate")}>
+            {entry.child} · ход {entry.turn}
+          </span>
+        </button>
+        {entry.stale ? (
+          <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
+            Устарела
+          </span>
+        ) : null}
+      </div>
+      <time className="mt-1 block text-[10px] text-muted-foreground" dateTime={entry.completedAt}>
+        Завершено {new Date(entry.completedAt).toLocaleString()}
+      </time>
+      {expanded ? (
+        <>
+          <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed">
+            {entry.summaryText}
+          </p>
+          <dl className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <div className="flex gap-1">
+              <dt>Текущее состояние:</dt>
+              <dd className="text-foreground">{entry.currentStatus}</dd>
+            </div>
+            <div className="flex gap-1">
+              <dt>Состояние выжимки:</dt>
+              <dd className="text-foreground">{entry.summaryStatus}</dd>
+            </div>
+            <div className="flex gap-1">
+              <dt>Роль исполнителя:</dt>
+              <dd className="text-foreground">{entry.executorRole}</dd>
+            </div>
+          </dl>
+        </>
+      ) : null}
+    </li>
   );
 }
 

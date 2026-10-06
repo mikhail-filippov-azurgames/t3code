@@ -7,6 +7,7 @@ import {
   type BoardCard,
   type BoardCardLookupDetail,
 } from "@t3tools/contracts";
+import { useEffect } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import type {
@@ -50,12 +51,14 @@ vi.mock("./boardCardPins", () => ({
   subscribeBoardCardPins: () => () => {},
 }));
 
+import { useExpandCoordinatorHistoryByDefault } from "../board/boardPreferences";
 import { BoardCardPinnedPanel } from "./BoardCardPinnedPanel";
 
 const environmentId = EnvironmentId.make("environment-local");
 const threadId = ThreadId.make("thread-1");
 const cardId = BoardCardId.make(mocks.cardId);
 const activeTabStorageKey = `t3code:chat-side-panel-tab:${environmentId}:${threadId}`;
+const expandHistoryStorageKey = "t3code:board:expand-coordinator-history-by-default";
 const createdAt = "2026-10-06T00:00:00.000Z";
 const card: BoardCard = {
   cardId,
@@ -167,6 +170,12 @@ function historyRows(renderer: ReactTestRenderer) {
   return renderer.root.findAllByType("li").map((row) => textContent(row));
 }
 
+function historyToggles(renderer: ReactTestRenderer) {
+  return renderer.root.findAll(
+    (node) => node.type === "button" && typeof node.props["aria-expanded"] === "boolean",
+  );
+}
+
 describe("BoardCardPinnedPanel", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -269,6 +278,7 @@ describe("BoardCardPinnedPanel", () => {
       expect(input).toEqual({ threadId });
       return { entries: [entry], nextCursor: null };
     });
+    window.localStorage.setItem(expandHistoryStorageKey, "true");
     const renderer = await mountPanel({ loadHistory });
     try {
       const summary = renderer.root.find(
@@ -309,6 +319,147 @@ describe("BoardCardPinnedPanel", () => {
     }
   });
 
+  it("names the collapsed panel neutrally whichever tab is active", async () => {
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [historyEntry("a")],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      for (const tabLabel of ["Карточки", "История"]) {
+        const tab = renderer.root.find(
+          (node) => node.props.role === "tab" && textContent(node) === tabLabel,
+        );
+        act(() => tab.props.onClick());
+        act(() =>
+          renderer.root.findByProps({ "aria-label": "Свернуть панель чата" }).props.onClick(),
+        );
+
+        expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(0);
+        const expandButton = renderer.root.findByType("button");
+        expect(textContent(expandButton)).toBe("Панель чата");
+        expect(expandButton.props["aria-label"]).toBe("Развернуть панель чата");
+        expect(textContent(renderer.root)).not.toMatch(/Карточки|История|\d/);
+
+        act(() => expandButton.props.onClick());
+        expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(1);
+        expect(
+          renderer.root.find((node) => node.props.role === "tab" && textContent(node) === tabLabel)
+            .props["aria-selected"],
+        ).toBe(true);
+      }
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("starts history entries collapsed and toggles each one independently", async () => {
+    mocks.pins = [];
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [historyEntry("a", { stale: true }), historyEntry("b")],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      const [rowA, rowB] = renderer.root.findAllByType("li");
+      expect(historyToggles(renderer).map((toggle) => toggle.props["aria-expanded"])).toEqual([
+        false,
+        false,
+      ]);
+      expect(textContent(rowA!)).toContain("Ребёнок a · ход a");
+      expect(textContent(rowA!)).toContain("Устарела");
+      expect(rowA!.findByType("time").props.dateTime).toBe(createdAt);
+      expect(textContent(renderer.root)).not.toContain("Выжимка a");
+      expect(textContent(renderer.root)).not.toContain("Текущее состояние");
+
+      act(() => historyToggles(renderer)[0]!.props.onClick());
+      expect(historyToggles(renderer).map((toggle) => toggle.props["aria-expanded"])).toEqual([
+        true,
+        false,
+      ]);
+      expect(textContent(rowA!)).toContain("Выжимка a");
+      expect(textContent(rowA!)).toContain("Текущее состояние:завершено");
+      expect(textContent(rowB!)).not.toContain("Выжимка b");
+
+      act(() => historyToggles(renderer)[0]!.props.onClick());
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(false);
+      expect(textContent(renderer.root)).not.toContain("Выжимка a");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("expands entries by default when the setting is on and still lets each be collapsed", async () => {
+    mocks.pins = [];
+    window.localStorage.setItem(expandHistoryStorageKey, "true");
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [historyEntry("a"), historyEntry("b")],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      expect(textContent(renderer.root)).toContain("Выжимка a");
+      expect(textContent(renderer.root)).toContain("Выжимка b");
+
+      act(() => historyToggles(renderer)[0]!.props.onClick());
+      expect(textContent(renderer.root)).not.toContain("Выжимка a");
+      expect(textContent(renderer.root)).toContain("Выжимка b");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("saves the default and applies it live to entries the user has not toggled", async () => {
+    mocks.pins = [];
+    const setting: { set: (value: boolean) => void } = { set: () => {} };
+    const setExpandByDefault = (value: boolean) => setting.set(value);
+    function SettingHarness() {
+      const [, setValue] = useExpandCoordinatorHistoryByDefault();
+      useEffect(() => {
+        setting.set = setValue;
+      }, [setValue]);
+      return null;
+    }
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [historyEntry("a"), historyEntry("b")],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ loadHistory });
+    let harness!: ReactTestRenderer;
+    act(() => {
+      harness = create(<SettingHarness />);
+    });
+    try {
+      expect(window.localStorage.getItem(expandHistoryStorageKey)).toBeNull();
+      act(() => historyToggles(renderer)[1]!.props.onClick());
+      expect(textContent(renderer.root)).toContain("Выжимка b");
+
+      act(() => setExpandByDefault(true));
+      expect(window.localStorage.getItem(expandHistoryStorageKey)).toBe("true");
+      expect(textContent(renderer.root)).toContain("Выжимка a");
+
+      act(() => setExpandByDefault(false));
+      expect(window.localStorage.getItem(expandHistoryStorageKey)).toBe("false");
+      expect(textContent(renderer.root)).not.toContain("Выжимка a");
+      expect(textContent(renderer.root)).toContain("Выжимка b");
+
+      act(() => setExpandByDefault(true));
+    } finally {
+      act(() => harness.unmount());
+      act(() => renderer.unmount());
+    }
+
+    const reloaded = await mountPanel({ loadHistory });
+    try {
+      expect(historyToggles(reloaded).map((toggle) => toggle.props["aria-expanded"])).toEqual([
+        true,
+        true,
+      ]);
+    } finally {
+      act(() => reloaded.unmount());
+    }
+  });
+
   it("reports the whole panel as closed when collapsed and open when restored", async () => {
     const onOpenChange = vi.fn();
     const renderer = await mountPanel({ onOpenChange });
@@ -316,15 +467,13 @@ describe("BoardCardPinnedPanel", () => {
       expect(onOpenChange).toHaveBeenLastCalledWith(true);
 
       const collapsePanelButton = renderer.root.findByProps({
-        "aria-label": "Свернуть закреплённые карточки",
+        "aria-label": "Свернуть панель чата",
       });
       act(() => collapsePanelButton.props.onClick());
       expect(onOpenChange).toHaveBeenLastCalledWith(false);
 
       const expandPanelButton = renderer.root.find(
-        (node) =>
-          node.type === "button" &&
-          node.props["aria-label"] === "Развернуть закреплённые карточки: 1",
+        (node) => node.type === "button" && node.props["aria-label"] === "Развернуть панель чата",
       );
       act(() => expandPanelButton.props.onClick());
       expect(onOpenChange).toHaveBeenLastCalledWith(true);
