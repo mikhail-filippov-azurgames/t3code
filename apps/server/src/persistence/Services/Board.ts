@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   BoardCard,
+  BoardCardDeletionRecord,
   BoardCardEvent,
   BoardCardEventId,
   BoardCardId,
@@ -78,6 +79,46 @@ export interface BoardRepositoryShape {
     readonly limit?: typeof NonNegativeInt.Type;
   }) => Effect.Effect<ReadonlyArray<BoardCardEvent>, BoardRepositoryError>;
   readonly appendEvent: (event: BoardCardEvent) => Effect.Effect<void, BoardRepositoryError>;
+  /**
+   * Retention candidates the board-retention pass may archive: `done`,
+   * unarchived, untouched since `cutoff`. Oldest first, at most `limit`.
+   */
+  readonly listArchiveCandidates: (input: {
+    readonly cutoff: typeof IsoDateTime.Type;
+    readonly limit: typeof NonNegativeInt.Type;
+  }) => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
+  /**
+   * Retention candidates the board-retention pass may delete: `done`,
+   * archived, untouched since `cutoff`. Oldest first, at most `limit`.
+   */
+  readonly listDeleteCandidates: (input: {
+    readonly cutoff: typeof IsoDateTime.Type;
+    readonly limit: typeof NonNegativeInt.Type;
+  }) => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
+  /**
+   * Archive a card and its retention history entry in one transaction, so a
+   * crash cannot leave an archived card without its `archived by retention`
+   * entry (or the reverse).
+   */
+  readonly updateCardWithEvent: (
+    card: BoardCard,
+    event: BoardCardEvent,
+  ) => Effect.Effect<void, BoardRepositoryError>;
+  /**
+   * Delete a card (its history cascades) and record a minimal deletion proof
+   * in one transaction. The record carries no title or body.
+   */
+  readonly deleteCardWithRecord: (input: {
+    readonly cardId: BoardCardId;
+    readonly orchestratorThreadId: ThreadId;
+    readonly deletedAt: typeof IsoDateTime.Type;
+    readonly historyEventCount: typeof NonNegativeInt.Type;
+  }) => Effect.Effect<void, BoardRepositoryError>;
+  /** Minimal proofs of retention deletions, newest last. */
+  readonly listDeletionRecords: () => Effect.Effect<
+    ReadonlyArray<BoardCardDeletionRecord>,
+    BoardRepositoryError
+  >;
 }
 
 export class BoardRepository extends Context.Service<BoardRepository, BoardRepositoryShape>()(

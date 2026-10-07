@@ -56,6 +56,20 @@ export type BoardOrchestrator = typeof BoardOrchestrator.Type;
 export const BoardOrchestratorsListInput = Schema.Struct({});
 export type BoardOrchestratorsListInput = typeof BoardOrchestratorsListInput.Type;
 
+/**
+ * Proof that a board card was deleted by retention: which card of which
+ * coordinator, when, why, and how many history entries went with it.
+ * Carries no title or body, so a deleted card cannot be restored from it.
+ */
+export const BoardCardDeletionRecord = Schema.Struct({
+  cardId: BoardCardId,
+  orchestratorThreadId: ThreadId,
+  deletedAt: IsoDateTime,
+  reason: Schema.Literal("retention"),
+  historyEventCount: NonNegativeInt,
+});
+export type BoardCardDeletionRecord = typeof BoardCardDeletionRecord.Type;
+
 export const BoardOrchestratorsListResult = Schema.Struct({
   orchestrators: Schema.Array(BoardOrchestrator),
 });

@@ -527,8 +527,14 @@ export type OrchestratorMcpBoardDeleteCardInput = typeof OrchestratorMcpBoardDel
 export const OrchestratorMcpBoardDeleteCardResult = Schema.Struct({});
 export type OrchestratorMcpBoardDeleteCardResult = typeof OrchestratorMcpBoardDeleteCardResult.Type;
 
-// Same empty-record trick as capabilities: MCP requires a root object schema.
-export const OrchestratorMcpBoardListCardsInput = Schema.Record(Schema.String, Schema.Never);
+export const OrchestratorMcpBoardListCardsInput = Schema.Struct({
+  /**
+   * Archived cards are excluded by default so the archive does not grow the
+   * coordinator's context. Pass `true` to see archived cards with history,
+   * for example to return one from the archive.
+   */
+  includeArchived: Schema.optional(Schema.Boolean),
+});
 export type OrchestratorMcpBoardListCardsInput = typeof OrchestratorMcpBoardListCardsInput.Type;
 
 export const OrchestratorMcpBoardCardEntry = Schema.Struct({
@@ -558,6 +564,7 @@ export const OrchestratorMcpFailureCode = Schema.Literals([
   "task_not_found",
   "task_not_cancellable",
   "executor_required",
+  "archive_requires_done",
   "readiness_note_required",
   "readiness_not_ready",
   "provider_handoff_unsupported",

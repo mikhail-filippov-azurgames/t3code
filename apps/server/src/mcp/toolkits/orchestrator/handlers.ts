@@ -61,9 +61,9 @@ const make = Effect.gen(function* () {
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.boardDeleteCard(scope, input),
       ),
-    board_list_cards: () =>
+    board_list_cards: (input) =>
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
-        service.boardListCards(scope),
+        service.boardListCards(scope, input),
       ),
     architect_create_or_get: (input) =>
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>

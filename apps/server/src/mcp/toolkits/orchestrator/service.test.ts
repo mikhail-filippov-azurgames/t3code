@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import {
   BoardCard,
+  BoardCardDeletionRecord,
   BoardCardEvent,
   BoardCardEventId,
   BoardCardId,
@@ -987,6 +988,7 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
   readonly orchestrators: Map<ThreadId, BoardOrchestrator>;
   readonly cards: Map<BoardCardId, BoardCard>;
   readonly events: Map<BoardCardId, Array<BoardCardEvent>>;
+  readonly deletions: Map<BoardCardId, BoardCardDeletionRecord>;
 } {
   const orchestrators = new Map<ThreadId, BoardOrchestrator>(
     initialOrchestrators.map((threadId) => [
@@ -996,6 +998,7 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
   );
   const cards = new Map<BoardCardId, BoardCard>();
   const events = new Map<BoardCardId, Array<BoardCardEvent>>();
+  const deletions = new Map<BoardCardId, BoardCardDeletionRecord>();
   const repo: FakeBoardRepository = {
     listOrchestrators: () => Effect.succeed([...orchestrators.values()]),
     addOrchestrator: (input) =>
@@ -1050,8 +1053,48 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
       Effect.sync(() => {
         events.set(event.cardId, [...(events.get(event.cardId) ?? []), event]);
       }),
+    listArchiveCandidates: ({ cutoff, limit }) =>
+      Effect.succeed(
+        [...cards.values()]
+          .filter((card) => card.status === "done" && !card.archived && card.updatedAt <= cutoff)
+          .toSorted(
+            (left, right) =>
+              left.updatedAt.localeCompare(right.updatedAt) ||
+              left.cardId.localeCompare(right.cardId),
+          )
+          .slice(0, limit),
+      ),
+    listDeleteCandidates: ({ cutoff, limit }) =>
+      Effect.succeed(
+        [...cards.values()]
+          .filter((card) => card.status === "done" && card.archived && card.updatedAt <= cutoff)
+          .toSorted(
+            (left, right) =>
+              left.updatedAt.localeCompare(right.updatedAt) ||
+              left.cardId.localeCompare(right.cardId),
+          )
+          .slice(0, limit),
+      ),
+    updateCardWithEvent: (card, event) =>
+      Effect.sync(() => {
+        cards.set(card.cardId, card);
+        events.set(event.cardId, [...(events.get(event.cardId) ?? []), event]);
+      }),
+    deleteCardWithRecord: (input) =>
+      Effect.sync(() => {
+        deletions.set(input.cardId, {
+          cardId: input.cardId,
+          orchestratorThreadId: input.orchestratorThreadId,
+          deletedAt: input.deletedAt,
+          reason: "retention",
+          historyEventCount: input.historyEventCount,
+        });
+        cards.delete(input.cardId);
+        events.delete(input.cardId);
+      }),
+    listDeletionRecords: () => Effect.succeed([...deletions.values()]),
   };
-  return { repo, orchestrators, cards, events };
+  return { repo, orchestrators, cards, events, deletions };
 }
 
 function seedBoardCard(
@@ -3432,9 +3475,11 @@ describe("OrchestratorMcpService", () => {
 
       const archivedLegacy = yield* harness.service.boardUpdateCard(scope, {
         cardId: unsafeLegacyCard.cardId,
+        status: "done",
         archived: true,
       });
       expect(archivedLegacy.archived).toBe(true);
+      expect(archivedLegacy.status).toBe("done");
       expect(archivedLegacy.title).toBe(unsafeLegacyCard.title);
 
       for (const update of [
@@ -3795,12 +3840,94 @@ describe("OrchestratorMcpService", () => {
         },
       ]);
 
-      const listed = yield* harness.service.boardListCards(makeScope());
+      const listed = yield* harness.service.boardListCards(makeScope(), {});
       expect(listed.cards.map((entry) => entry.card.cardId)).toEqual([ownFirst.cardId, own.cardId]);
       expect(listed.cards[1]?.events).toHaveLength(1);
       expect(
         listed.cards.every((entry) => entry.card.orchestratorThreadId === parentThreadId),
       ).toBe(true);
+    }),
+  );
+
+  it.effect("refuses to archive a card that is not done", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const card = seedBoardCard(board, { status: "todo" });
+
+      const error = yield* harness.service
+        .boardUpdateCard(makeScope(), { cardId: card.cardId, archived: true })
+        .pipe(Effect.flip);
+      expect(error.code).toBe("archive_requires_done");
+      expect(board.cards.get(card.cardId)).toMatchObject({
+        status: "todo",
+        archived: false,
+        updatedAt: card.updatedAt,
+      });
+    }),
+  );
+
+  it.effect("archives a done card and returns any own card from the archive", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const done = seedBoardCard(board, { status: "done" });
+      const unfinished = seedBoardCard(board, { status: "todo", archived: true });
+
+      const archived = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: done.cardId,
+        archived: true,
+      });
+      expect(archived.archived).toBe(true);
+      expect(board.cards.get(done.cardId)?.archived).toBe(true);
+
+      const returned = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: unfinished.cardId,
+        archived: false,
+      });
+      expect(returned.archived).toBe(false);
+      expect(board.cards.get(unfinished.cardId)?.archived).toBe(false);
+    }),
+  );
+
+  it.effect("lists archived cards only with includeArchived", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const active = seedBoardCard(board, { title: "Active" });
+      const archivedDone = seedBoardCard(board, {
+        title: "Archived done",
+        status: "done",
+        archived: true,
+      });
+      board.events.set(archivedDone.cardId, [
+        {
+          entryId: BoardCardEventId.make("entry-archived"),
+          cardId: archivedDone.cardId,
+          at: now,
+          status: "done",
+          executorRole: "general",
+          model: null,
+          effort: null,
+          source: "system",
+          body: "archived by retention",
+        },
+      ]);
+
+      const listed = yield* harness.service.boardListCards(makeScope(), {});
+      expect(listed.cards.map((entry) => entry.card.cardId)).toEqual([active.cardId]);
+      expect(listed.cards.flatMap((entry) => entry.events)).toHaveLength(0);
+
+      const withArchive = yield* harness.service.boardListCards(makeScope(), {
+        includeArchived: true,
+      });
+      expect(withArchive.cards.map((entry) => entry.card.cardId)).toEqual([
+        active.cardId,
+        archivedDone.cardId,
+      ]);
+      expect(
+        withArchive.cards.find((entry) => entry.card.cardId === archivedDone.cardId)?.events,
+      ).toHaveLength(1);
     }),
   );
 

@@ -1,8 +1,10 @@
 import {
   BoardCard,
+  BoardCardDeletionRecord,
   BoardCardEvent,
   BoardCardId,
   BoardOrchestrator,
+  IsoDateTime,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -32,6 +34,10 @@ const FindCardsByPrefixInput = Schema.Struct({
 const ListCardEventsInput = Schema.Struct({
   cardId: BoardCardId,
   limit: Schema.optional(NonNegativeInt),
+});
+const RetentionCandidatesInput = Schema.Struct({
+  cutoff: IsoDateTime,
+  limit: NonNegativeInt,
 });
 
 const BoardCardDbRow = BoardCard.mapFields(
@@ -403,6 +409,105 @@ const makeBoardRepository = Effect.gen(function* () {
       `,
   });
 
+  const listArchiveCandidateRows = SqlSchema.findAll({
+    Request: RetentionCandidatesInput,
+    Result: BoardCardDbRow,
+    execute: ({ cutoff, limit }) =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          title,
+          body,
+          status,
+          readiness,
+          readiness_note AS "readinessNote",
+          created_by AS "createdBy",
+          assignee_json AS "assignee",
+          executor_role AS "executorRole",
+          executor_thread_id AS "executorThreadId",
+          outcome,
+          last_error AS "lastError",
+          failure_streak AS "failureStreak",
+          order_index AS "order",
+          archived,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM board_cards
+        WHERE status = 'done' AND archived = 0 AND updated_at <= ${cutoff}
+        ORDER BY updated_at ASC, card_id ASC
+        LIMIT ${limit}
+      `,
+  });
+
+  const listDeleteCandidateRows = SqlSchema.findAll({
+    Request: RetentionCandidatesInput,
+    Result: BoardCardDbRow,
+    execute: ({ cutoff, limit }) =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          title,
+          body,
+          status,
+          readiness,
+          readiness_note AS "readinessNote",
+          created_by AS "createdBy",
+          assignee_json AS "assignee",
+          executor_role AS "executorRole",
+          executor_thread_id AS "executorThreadId",
+          outcome,
+          last_error AS "lastError",
+          failure_streak AS "failureStreak",
+          order_index AS "order",
+          archived,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM board_cards
+        WHERE status = 'done' AND archived = 1 AND updated_at <= ${cutoff}
+        ORDER BY updated_at ASC, card_id ASC
+        LIMIT ${limit}
+      `,
+  });
+
+  const insertDeletionRow = SqlSchema.void({
+    Request: BoardCardDeletionRecord,
+    execute: (row) =>
+      sql`
+        INSERT INTO board_card_deletions (
+          card_id,
+          orchestrator_thread_id,
+          deleted_at,
+          reason,
+          history_event_count
+        )
+        VALUES (
+          ${row.cardId},
+          ${row.orchestratorThreadId},
+          ${row.deletedAt},
+          ${row.reason},
+          ${row.historyEventCount}
+        )
+      `,
+  });
+
+  const listDeletionRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: BoardCardDeletionRecord,
+    execute: () =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          deleted_at AS "deletedAt",
+          reason,
+          history_event_count AS "historyEventCount"
+        FROM board_card_deletions
+        ORDER BY deleted_at ASC, card_id ASC
+      `,
+  });
+
   const listOrchestrators: BoardRepositoryShape["listOrchestrators"] = () =>
     listOrchestratorRows().pipe(
       Effect.mapError(toBoardRepositoryError("BoardRepository.listOrchestrators:query")),
@@ -490,6 +595,54 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.appendEvent:query")),
     );
 
+  const listArchiveCandidates: BoardRepositoryShape["listArchiveCandidates"] = (input) =>
+    listArchiveCandidateRows(input).pipe(
+      Effect.map((rows) => rows.map(toBoardCard)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.listArchiveCandidates:query")),
+    );
+
+  const listDeleteCandidates: BoardRepositoryShape["listDeleteCandidates"] = (input) =>
+    listDeleteCandidateRows(input).pipe(
+      Effect.map((rows) => rows.map(toBoardCard)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.listDeleteCandidates:query")),
+    );
+
+  const updateCardWithEvent: BoardRepositoryShape["updateCardWithEvent"] = (card, event) =>
+    getCardById(card.cardId, "BoardRepository.updateCardWithEvent:read").pipe(
+      Effect.flatMap((previous) => {
+        const textFailure = boardCardAuthorTextFailure(card, Option.getOrUndefined(previous));
+        return textFailure === null
+          ? sql
+              .withTransaction(
+                updateCardRow(card).pipe(Effect.flatMap(() => insertEventRow(event))),
+              )
+              .pipe(
+                Effect.mapError(
+                  toBoardRepositoryError("BoardRepository.updateCardWithEvent:query"),
+                ),
+              )
+          : Effect.fail(textFailure);
+      }),
+    );
+
+  const deleteCardWithRecord: BoardRepositoryShape["deleteCardWithRecord"] = (input) =>
+    sql
+      .withTransaction(
+        insertDeletionRow({
+          cardId: input.cardId,
+          orchestratorThreadId: input.orchestratorThreadId,
+          deletedAt: input.deletedAt,
+          reason: "retention",
+          historyEventCount: input.historyEventCount,
+        }).pipe(Effect.flatMap(() => deleteCardRow({ cardId: input.cardId }))),
+      )
+      .pipe(Effect.mapError(toBoardRepositoryError("BoardRepository.deleteCardWithRecord:query")));
+
+  const listDeletionRecords: BoardRepositoryShape["listDeletionRecords"] = () =>
+    listDeletionRows().pipe(
+      Effect.mapError(toBoardRepositoryError("BoardRepository.listDeletionRecords:query")),
+    );
+
   return {
     listOrchestrators,
     addOrchestrator,
@@ -503,6 +656,11 @@ const makeBoardRepository = Effect.gen(function* () {
     listEvents,
     listEventsForCard,
     appendEvent,
+    listArchiveCandidates,
+    listDeleteCandidates,
+    updateCardWithEvent,
+    deleteCardWithRecord,
+    listDeletionRecords,
   } satisfies BoardRepositoryShape;
 });
 

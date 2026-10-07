@@ -659,6 +659,47 @@ describe("ServerSettings coordinator board nudge", () => {
   );
 });
 
+describe("ServerSettings board retention", () => {
+  it("archives after 1 day and deletes after 14 days by default", () => {
+    const settings = decodeServerSettings({});
+    expect(settings.boardArchiveAfterDays).toBe(1);
+    expect(settings.boardDeleteArchivedAfterDays).toBe(14);
+    expect(DEFAULT_SERVER_SETTINGS.boardArchiveAfterDays).toBe(1);
+    expect(DEFAULT_SERVER_SETTINGS.boardDeleteArchivedAfterDays).toBe(14);
+  });
+
+  it("reads and round-trips a configured retention", () => {
+    const input = { boardArchiveAfterDays: 7, boardDeleteArchivedAfterDays: 30 };
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+    expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+
+  it.each([-1, 0, 1.5, 3651, null])(
+    "rejects an archive period outside whole 1..3650 days: %s",
+    (value) => {
+      expect(() => decodeServerSettings({ boardArchiveAfterDays: value })).toThrow();
+      expect(() => decodeServerSettingsPatch({ boardArchiveAfterDays: value })).toThrow();
+    },
+  );
+
+  it.each([-1, 0, 2.5, 3651, null])(
+    "rejects a deletion period outside whole 1..3650 days: %s",
+    (value) => {
+      expect(() => decodeServerSettings({ boardDeleteArchivedAfterDays: value })).toThrow();
+      expect(() => decodeServerSettingsPatch({ boardDeleteArchivedAfterDays: value })).toThrow();
+    },
+  );
+
+  it.each([1, 3650])("accepts the retention bound %s", (value) => {
+    expect(decodeServerSettingsPatch({ boardArchiveAfterDays: value })).toEqual({
+      boardArchiveAfterDays: value,
+    });
+    expect(decodeServerSettingsPatch({ boardDeleteArchivedAfterDays: value })).toEqual({
+      boardDeleteArchivedAfterDays: value,
+    });
+  });
+});
+
 describe("ClientSettings pull request merge methods", () => {
   it("defaults to no project overrides and accepts supported methods", () => {
     expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});

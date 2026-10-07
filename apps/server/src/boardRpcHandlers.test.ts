@@ -160,6 +160,18 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       state.events.push(event);
       return Effect.void;
     },
+    listArchiveCandidates: () => Effect.succeed([]),
+    listDeleteCandidates: () => Effect.succeed([]),
+    updateCardWithEvent: (card, event) => {
+      state.cards = state.cards.map((row) => (row.cardId === card.cardId ? card : row));
+      state.events.push(event);
+      return Effect.void;
+    },
+    deleteCardWithRecord: ({ cardId }) => {
+      state.cards = state.cards.filter((card) => card.cardId !== cardId);
+      return Effect.void;
+    },
+    listDeletionRecords: () => Effect.succeed([]),
   };
 }
 
@@ -522,6 +534,24 @@ describe("board RPC handlers", () => {
       });
       assert.deepEqual(ambiguous.matches, []);
       assert.deepEqual(state.prefixQueries, ["cb37d411"]);
+    }),
+  );
+
+  it.effect("omits a retention-deleted card from resolve without failing", () =>
+    Effect.gen(function* () {
+      const deletedId = BoardCardId.make("d3adbeef-0000-4000-8000-000000000001");
+      const { handlers } = makeHarness({ cards: [], events: [] });
+
+      const result = yield* handlers.resolve({
+        tokens: [
+          BoardCardLookupToken.make("d3adbeef"),
+          BoardCardLookupToken.make(String(deletedId)),
+        ],
+        cardIds: [deletedId],
+      });
+
+      assert.deepEqual(result.matches, []);
+      assert.deepEqual(result.details, []);
     }),
   );
 

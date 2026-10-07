@@ -105,6 +105,26 @@ export const CoordinatorBoardNudgeActiveChildThreshold = Schema.Int.check(
 export type CoordinatorBoardNudgeActiveChildThreshold =
   typeof CoordinatorBoardNudgeActiveChildThreshold.Type;
 const DEFAULT_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD: CoordinatorBoardNudgeActiveChildThreshold = 1;
+export const MIN_BOARD_ARCHIVE_AFTER_DAYS = 1;
+export const MAX_BOARD_ARCHIVE_AFTER_DAYS = 3650;
+export const BoardArchiveAfterDays = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_BOARD_ARCHIVE_AFTER_DAYS,
+    maximum: MAX_BOARD_ARCHIVE_AFTER_DAYS,
+  }),
+);
+export type BoardArchiveAfterDays = typeof BoardArchiveAfterDays.Type;
+const DEFAULT_BOARD_ARCHIVE_AFTER_DAYS: BoardArchiveAfterDays = 1;
+export const MIN_BOARD_DELETE_ARCHIVED_AFTER_DAYS = 1;
+export const MAX_BOARD_DELETE_ARCHIVED_AFTER_DAYS = 3650;
+export const BoardDeleteArchivedAfterDays = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_BOARD_DELETE_ARCHIVED_AFTER_DAYS,
+    maximum: MAX_BOARD_DELETE_ARCHIVED_AFTER_DAYS,
+  }),
+);
+export type BoardDeleteArchivedAfterDays = typeof BoardDeleteArchivedAfterDays.Type;
+const DEFAULT_BOARD_DELETE_ARCHIVED_AFTER_DAYS: BoardDeleteArchivedAfterDays = 14;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -1375,6 +1395,25 @@ export const ServerSettings = Schema.Struct({
       Effect.succeed(DEFAULT_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD),
     ),
   ),
+  /**
+   * Days after a card's last change before the server archives it. Only
+   * `done` cards are ever archived by the server; `backlog` and unfinished
+   * cards are never touched. Any change to the card restarts the clock.
+   * Environment-wide, not a project override, because a coordinator spans
+   * projects.
+   */
+  boardArchiveAfterDays: BoardArchiveAfterDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_ARCHIVE_AFTER_DAYS)),
+  ),
+  /**
+   * Days after archival before the server deletes an archived `done` card
+   * together with its history. Archiving stamps `updatedAt`, so the period
+   * runs from the archival moment. Manually archived unfinished cards are
+   * never deleted by age. Deletion is irreversible.
+   */
+  boardDeleteArchivedAfterDays: BoardDeleteArchivedAfterDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_DELETE_ARCHIVED_AFTER_DAYS)),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -1711,6 +1750,8 @@ export const ServerSettingsPatch = Schema.Struct({
   coordinatorBoardNudgeActiveChildThreshold: Schema.optionalKey(
     CoordinatorBoardNudgeActiveChildThreshold,
   ),
+  boardArchiveAfterDays: Schema.optionalKey(BoardArchiveAfterDays),
+  boardDeleteArchivedAfterDays: Schema.optionalKey(BoardDeleteArchivedAfterDays),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

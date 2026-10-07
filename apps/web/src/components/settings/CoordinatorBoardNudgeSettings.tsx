@@ -15,7 +15,7 @@ import { searchableSetting } from "./settingsSearch";
 
 const ENABLE_DEFAULT_INTERVAL_MINUTES = 15;
 
-function BoundedIntegerInput({
+export function BoundedIntegerInput({
   value,
   min,
   max,

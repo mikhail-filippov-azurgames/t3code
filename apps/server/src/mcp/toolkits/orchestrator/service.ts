@@ -42,6 +42,7 @@ import {
   OrchestratorMcpBoardCreateCardResult,
   OrchestratorMcpBoardDeleteCardInput,
   OrchestratorMcpBoardDeleteCardResult,
+  OrchestratorMcpBoardListCardsInput,
   OrchestratorMcpBoardListCardsResult,
   OrchestratorMcpBoardUpdateCardInput,
   OrchestratorMcpBoardUpdateCardResult,
@@ -408,6 +409,7 @@ export interface OrchestratorMcpServiceShape {
   ) => Effect.Effect<OrchestratorMcpBoardDeleteCardResult, OrchestratorMcpFailure>;
   readonly boardListCards: (
     scope: McpInvocationScope,
+    input: OrchestratorMcpBoardListCardsInput,
   ) => Effect.Effect<OrchestratorMcpBoardListCardsResult, OrchestratorMcpFailure>;
   readonly architectCreateOrGet: (
     scope: McpInvocationScope,
@@ -4056,6 +4058,12 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ...(input.archived === undefined ? {} : { archived: input.archived }),
           updatedAt: at,
         };
+        if (input.archived === true && next.status !== "done") {
+          return yield* failure(
+            "archive_requires_done",
+            "Only done cards can be archived. Move the card to done first, or omit archived.",
+          );
+        }
         if (next.status === "done" && next.readiness !== "ready") {
           return yield* failure(
             "readiness_not_ready",
@@ -4139,10 +4147,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           .pipe(Effect.mapError(orchestrationFailure("delete board card")));
         return {};
       }),
-    boardListCards: (scope) =>
+    boardListCards: (scope, input) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
         const repo = yield* requireBoardRepository();
+        const includeArchived = input.includeArchived ?? false;
         const [cards, events] = yield* Effect.all([
           repo.listCards().pipe(Effect.mapError(orchestrationFailure("list board cards"))),
           repo.listEvents().pipe(Effect.mapError(orchestrationFailure("list board card events"))),
@@ -4155,6 +4164,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         }
         const owned = cards
           .filter((card) => card.orchestratorThreadId === scope.threadId)
+          .filter((card) => includeArchived || !card.archived)
           .toSorted((left, right) =>
             left.order === right.order
               ? left.cardId.localeCompare(right.cardId)
