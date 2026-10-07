@@ -50,6 +50,17 @@ const answeredRequest: OrchestratorMcpPublishableRecord = {
 
 const emptyPublishHandler = () => {};
 
+const longTokenRecord: OrchestratorMcpPublishableRecord = {
+  reviewId: "review-long-token-1",
+  origin: "architect-advice",
+  summary:
+    "See oc://doc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and t3code/apps/web/src/components/chat/ComposerPrimaryActions.tsx:132 for details.",
+  disposition: "recommendation",
+  refs: {},
+  question:
+    "Check oc://doc/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb?",
+};
+
 function renderComposerWithPublications(
   publishable: ReadonlyArray<OrchestratorMcpPublishableRecord>,
   props: {
@@ -283,6 +294,24 @@ describe("ComposerPrimaryActions", () => {
       if (renderer) await rendererAct(() => renderer!.unmount());
       vi.unstubAllGlobals();
     }
+  });
+
+  it("keeps long unbreakable preview tokens inside the panel width", () => {
+    const markup = renderComposerWithPublications([longTokenRecord]);
+
+    expect(markup).toContain(longTokenRecord.summary);
+    // Long file paths, oc://doc links and file:line refs must be allowed to
+    // break anywhere; overflow-wrap:break-word alone keeps the grid track as
+    // wide as the longest token and pushes content outside the panel.
+    expect(markup).toContain("wrap-anywhere");
+    // Grid items default to min-width:auto, which sizes the track from the
+    // longest unbreakable token and stretches the panel horizontally.
+    expect(markup).toContain("min-w-0");
+    // Residual overflow must be contained so the panel scrolls vertically
+    // instead of stretching the composer horizontally.
+    expect(markup).toContain("overflow-hidden");
+    // No non-wrapping whitespace that would force horizontal overflow.
+    expect(markup).not.toMatch(/whitespace-pre(?!-wrap)/);
   });
 
   it("disables publication while sending and shows the server error", () => {

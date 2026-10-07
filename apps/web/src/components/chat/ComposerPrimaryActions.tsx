@@ -124,22 +124,24 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
           className="w-80 max-w-[calc(100vw-2rem)]"
           {...composerFloatingLayerProps}
         >
-          <div className="grid gap-2 p-1">
+          <div className="grid min-w-0 gap-2 p-1">
             <p className="px-2 text-xs font-medium text-muted-foreground">
               Публикации для координатора
             </p>
             {publishable.map((record) => (
               <div
                 key={record.reviewId}
-                className="grid gap-2 rounded-md border border-border/60 bg-background/70 p-2"
+                className="grid min-w-0 max-w-full gap-2 overflow-hidden rounded-md border border-border/60 bg-background/70 p-2"
                 data-testid={`architect-publication-${record.reviewId}`}
               >
                 {record.question ? (
-                  <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                  <p className="min-w-0 whitespace-pre-wrap wrap-anywhere text-xs text-muted-foreground">
                     Запрос координатора: {record.question}
                   </p>
                 ) : null}
-                <p className="whitespace-pre-wrap break-words text-sm">{record.summary}</p>
+                <p className="min-w-0 whitespace-pre-wrap wrap-anywhere text-sm">
+                  {record.summary}
+                </p>
                 <p className="text-xs text-muted-foreground">
                   {record.disposition.replaceAll("-", " ")}
                 </p>
