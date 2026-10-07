@@ -58,8 +58,11 @@ import { BoardCardPinnedPanel } from "./BoardCardPinnedPanel";
 
 const environmentId = EnvironmentId.make("environment-local");
 const threadId = ThreadId.make("thread-1");
+const otherThreadId = ThreadId.make("thread-2");
 const cardId = BoardCardId.make(mocks.cardId);
 const activeTabStorageKey = `t3code:chat-side-panel-tab:${environmentId}:${threadId}`;
+const panelCollapsedStorageKey = `t3code:chat-side-panel-collapsed:${environmentId}:${threadId}`;
+const historyOverridesStorageKey = `t3code:chat-side-panel-history-entry-overrides:${environmentId}:${threadId}`;
 const expandHistoryStorageKey = "t3code:board:expand-coordinator-history-by-default";
 const createdAt = "2026-10-06T00:00:00.000Z";
 const card: BoardCard = {
@@ -106,25 +109,37 @@ function textContent(node: ReactTestInstance): string {
     .join("");
 }
 
-async function mountPanel(
-  options: {
-    readonly onOpenChange?: (open: boolean) => void;
-    readonly loadHistory?: CoordinatorSummaryHistoryLoader;
-  } = {},
-): Promise<ReactTestRenderer> {
+type MountPanelOptions = {
+  readonly threadId?: ThreadId;
+  readonly onOpenChange?: (open: boolean) => void;
+  readonly loadHistory?: CoordinatorSummaryHistoryLoader;
+};
+
+function panelElement(options: MountPanelOptions = {}) {
+  return (
+    <BoardCardPinnedPanel
+      environmentId={environmentId}
+      threadId={options.threadId ?? threadId}
+      {...(options.onOpenChange ? { onOpenChange: options.onOpenChange } : {})}
+      {...(options.loadHistory ? { loadHistory: options.loadHistory } : {})}
+    />
+  );
+}
+
+async function mountPanel(options: MountPanelOptions = {}): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(
-      <BoardCardPinnedPanel
-        environmentId={environmentId}
-        threadId={threadId}
-        {...(options.onOpenChange ? { onOpenChange: options.onOpenChange } : {})}
-        {...(options.loadHistory ? { loadHistory: options.loadHistory } : {})}
-      />,
-    );
+    renderer = create(panelElement(options));
     await Promise.resolve();
   });
   return renderer;
+}
+
+async function updatePanel(renderer: ReactTestRenderer, options: MountPanelOptions = {}) {
+  await act(async () => {
+    renderer.update(panelElement(options));
+    await Promise.resolve();
+  });
 }
 
 function historyEntry(id: string, overrides: Partial<CoordinatorSummaryHistoryEntry> = {}) {
@@ -323,6 +338,81 @@ describe("BoardCardPinnedPanel", () => {
       expect(textContent(reloadedRenderer.root)).toContain("Выжимок пока нет");
     } finally {
       act(() => reloadedRenderer.unmount());
+    }
+  });
+
+  it("persists history entry overrides per thread while unseen entries follow the default", async () => {
+    mocks.pins = [];
+    window.localStorage.setItem(expandHistoryStorageKey, "true");
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [historyEntry("shared-entry")],
+      nextCursor: null,
+    }));
+
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(true);
+      act(() => historyToggles(renderer)[0]!.props.onClick());
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(false);
+      expect(window.localStorage.getItem(historyOverridesStorageKey)).toBe(
+        JSON.stringify({ "shared-entry": false }),
+      );
+
+      await updatePanel(renderer, { threadId: otherThreadId, loadHistory });
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(true);
+      expect(
+        window.localStorage.getItem(
+          `t3code:chat-side-panel-history-entry-overrides:${environmentId}:${otherThreadId}`,
+        ),
+      ).toBeNull();
+
+      await updatePanel(renderer, { loadHistory });
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(false);
+      act(() => historyToggles(renderer)[0]!.props.onClick());
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(true);
+
+      await updatePanel(renderer, { threadId: otherThreadId, loadHistory });
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(true);
+      await updatePanel(renderer, { loadHistory });
+      expect(historyToggles(renderer)[0]!.props["aria-expanded"]).toBe(true);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("persists the panel collapsed state per thread", async () => {
+    const renderer = await mountPanel();
+    const historyTab = renderer.root.find(
+      (node) => node.props.role === "tab" && textContent(node) === "История",
+    );
+    act(() => historyTab.props.onClick());
+    act(() => renderer.root.findByProps({ "aria-label": "Свернуть панель чата" }).props.onClick());
+    expect(window.localStorage.getItem(panelCollapsedStorageKey)).toBe("true");
+    try {
+      await updatePanel(renderer, { threadId: otherThreadId });
+      expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(1);
+      expect(
+        renderer.root.find((node) => node.props.role === "tab" && node.props["aria-selected"]).props
+          .id,
+      ).toBe("chat-side-panel-tab-cards");
+      expect(
+        window.localStorage.getItem(
+          `t3code:chat-side-panel-collapsed:${environmentId}:${otherThreadId}`,
+        ),
+      ).toBeNull();
+
+      await updatePanel(renderer);
+      expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(0);
+      act(() =>
+        renderer.root.findByProps({ "aria-label": "Развернуть панель чата" }).props.onClick(),
+      );
+      expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(1);
+      expect(
+        renderer.root.find((node) => node.props.role === "tab" && node.props["aria-selected"]).props
+          .id,
+      ).toBe("chat-side-panel-tab-history");
+    } finally {
+      act(() => renderer.unmount());
     }
   });
 

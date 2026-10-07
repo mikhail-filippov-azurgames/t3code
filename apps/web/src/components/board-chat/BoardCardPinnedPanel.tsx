@@ -75,6 +75,8 @@ type SummaryHistoryLoadState = {
 };
 
 const HISTORY_LOAD_MORE_THRESHOLD_PX = 240;
+const HISTORY_ENTRY_OVERRIDES_SCHEMA = Schema.Record(Schema.String, Schema.Boolean);
+const EMPTY_HISTORY_ENTRY_OVERRIDES: Record<string, boolean> = {};
 
 function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
   return {
@@ -111,13 +113,21 @@ export function BoardCardPinnedPanel({
   const [loadError, setLoadError] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useLocalStorage(
+    `t3code:chat-side-panel-collapsed:${environmentId}:${threadId}`,
+    false,
+    Schema.Boolean,
+  );
   const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [expandHistoryByDefault] = useExpandCoordinatorHistoryByDefault();
-  // Only entries the user toggled by hand; the rest follow the default, so changing it applies to them.
-  const [historyEntryOverrides, setHistoryEntryOverrides] = useState<ReadonlyMap<string, boolean>>(
-    new Map(),
+  const [historyEntryOverrides, setHistoryEntryOverrides] = useLocalStorage<
+    Record<string, boolean>,
+    Record<string, boolean>
+  >(
+    `t3code:chat-side-panel-history-entry-overrides:${environmentId}:${threadId}`,
+    EMPTY_HISTORY_ENTRY_OVERRIDES,
+    HISTORY_ENTRY_OVERRIDES_SCHEMA,
   );
   const [historyState, setHistoryState] = useState<SummaryHistoryLoadState>(() =>
     emptyHistoryState(threadId),
@@ -145,9 +155,7 @@ export function BoardCardPinnedPanel({
     setPins(readBoardCardPins(environmentId, threadId));
     setDetails(new Map());
     setLoadError(false);
-    setCollapsed(false);
     setCollapsedCardIds(new Set());
-    setHistoryEntryOverrides(new Map());
     setActionError(null);
   }, [environmentId, threadId]);
 
@@ -173,9 +181,12 @@ export function BoardCardPinnedPanel({
     });
   }, []);
 
-  const toggleHistoryEntry = useCallback((entryId: string, expanded: boolean) => {
-    setHistoryEntryOverrides((current) => new Map(current).set(entryId, !expanded));
-  }, []);
+  const toggleHistoryEntry = useCallback(
+    (entryId: string, expanded: boolean) => {
+      setHistoryEntryOverrides((current) => ({ ...current, [entryId]: !expanded }));
+    },
+    [setHistoryEntryOverrides],
+  );
 
   useEffect(
     () =>
@@ -468,7 +479,7 @@ export function BoardCardPinnedPanel({
                   <HistoryEntry
                     key={entry.id}
                     entry={entry}
-                    expanded={historyEntryOverrides.get(entry.id) ?? expandHistoryByDefault}
+                    expanded={historyEntryOverrides[entry.id] ?? expandHistoryByDefault}
                     onToggle={toggleHistoryEntry}
                   />
                 ))}
