@@ -113,6 +113,90 @@ repositoryLayer("BoardRepository", (it) => {
     }),
   );
 
+  it.effect("finds the card linked to an executor thread", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const threadId = ThreadId.make("thread-executor-lookup");
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const executor = ThreadId.make("executor-1");
+      yield* repository.createCard(
+        makeCard({
+          cardId: BoardCardId.make("card-executor-plain"),
+          orchestratorThreadId: threadId,
+        }),
+      );
+      yield* repository.createCard(
+        makeCard({
+          cardId: BoardCardId.make("card-linked"),
+          orchestratorThreadId: threadId,
+          status: "in_progress",
+          executorThreadId: executor,
+        }),
+      );
+
+      const found = yield* repository.findCardByExecutor(executor);
+      assert.isTrue(Option.isSome(found));
+      if (Option.isSome(found)) {
+        assert.equal(found.value.cardId, BoardCardId.make("card-linked"));
+      }
+
+      const missing = yield* repository.findCardByExecutor(ThreadId.make("executor-unknown"));
+      assert.isTrue(Option.isNone(missing));
+
+      yield* repository.updateCard(
+        makeCard({
+          cardId: BoardCardId.make("card-linked"),
+          orchestratorThreadId: threadId,
+          status: "in_progress",
+          executorThreadId: null,
+        }),
+      );
+      const cleared = yield* repository.findCardByExecutor(executor);
+      assert.isTrue(Option.isNone(cleared));
+    }),
+  );
+
+  it.effect("updateCardWithPrevious writes against the already-read value", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const threadId = ThreadId.make("thread-update-with-previous");
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const card = makeCard({
+        cardId: BoardCardId.make("card-with-previous"),
+        orchestratorThreadId: threadId,
+      });
+      yield* repository.createCard(card);
+
+      const stored = Option.getOrThrow(yield* repository.getCard(card.cardId));
+      yield* repository.updateCardWithPrevious(
+        { ...stored, status: "orchestrator" },
+        Option.some(stored),
+      );
+      const updated = Option.getOrThrow(yield* repository.getCard(card.cardId));
+      assert.equal(updated.status, "orchestrator");
+
+      const secret = `ghp_${"A".repeat(32)}`;
+      const error = yield* Effect.flip(
+        repository.updateCardWithPrevious(
+          { ...updated, title: `Unsafe title ${secret}` },
+          Option.some(updated),
+        ),
+      );
+      assert.instanceOf(error, BoardRepositoryError);
+      assert.notInclude(error.message, secret);
+    }),
+  );
+
   it.effect("round-trips cards and ModelSelection and cascades events on deleteCard", () =>
     Effect.gen(function* () {
       const repository = yield* BoardRepository;

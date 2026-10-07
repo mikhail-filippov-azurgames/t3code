@@ -24,7 +24,6 @@ import {
   ArchitectureReviewRefs,
   BoardCard,
   BoardCardId,
-  BoardCardEvent,
   CommandId,
   EventId,
   isProviderDriverKind,
@@ -4113,8 +4112,10 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "Link assignee and executorThreadId before moving a card to in_progress.",
           );
         }
+        // `card` above is the already-read previous value, so the check inside
+        // runs against it and this update costs one read plus one write.
         yield* repo
-          .updateCard(next)
+          .updateCardWithPrevious(next, Option.some(card))
           .pipe(Effect.mapError(orchestrationFailure("update board card")));
         if (statusChanged || executorChanged) {
           const body = statusChanged
@@ -4152,16 +4153,12 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         const repo = yield* requireBoardRepository();
         const includeArchived = input.includeArchived ?? false;
-        const [cards, events] = yield* Effect.all([
-          repo.listCards().pipe(Effect.mapError(orchestrationFailure("list board cards"))),
-          repo.listEvents().pipe(Effect.mapError(orchestrationFailure("list board card events"))),
-        ]);
-        const eventsByCard = new Map<BoardCardId, Array<BoardCardEvent>>();
-        for (const event of events) {
-          const bucket = eventsByCard.get(event.cardId);
-          if (bucket === undefined) eventsByCard.set(event.cardId, [event]);
-          else bucket.push(event);
-        }
+        // Statuses only: per-card history stays out of the list response so a
+        // large board does not flood the coordinator's context on every wake.
+        // Full history for one card remains available through board.resolve.
+        const cards = yield* repo
+          .listCards()
+          .pipe(Effect.mapError(orchestrationFailure("list board cards")));
         const owned = cards
           .filter((card) => card.orchestratorThreadId === scope.threadId)
           .filter((card) => includeArchived || !card.archived)
@@ -4171,7 +4168,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               : left.order - right.order,
           );
         return {
-          cards: owned.map((card) => ({ card, events: eventsByCard.get(card.cardId) ?? [] })),
+          cards: owned.map((card) => ({ card, events: [] })),
         };
       }),
     architectCreateOrGet: (scope, input) =>

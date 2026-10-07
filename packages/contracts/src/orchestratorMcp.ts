@@ -530,8 +530,9 @@ export type OrchestratorMcpBoardDeleteCardResult = typeof OrchestratorMcpBoardDe
 export const OrchestratorMcpBoardListCardsInput = Schema.Struct({
   /**
    * Archived cards are excluded by default so the archive does not grow the
-   * coordinator's context. Pass `true` to see archived cards with history,
-   * for example to return one from the archive.
+   * coordinator's context. Pass `true` to see archived cards, for example
+   * to return one from the archive. The list carries statuses only; read a
+   * single card's history through board.resolve.
    */
   includeArchived: Schema.optional(Schema.Boolean),
 });

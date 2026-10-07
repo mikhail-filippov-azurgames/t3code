@@ -190,6 +190,13 @@ function makeHarness(
           Effect.andThen(Ref.set(cards, [])),
         ),
       listCards: () => Ref.get(cards).pipe(Effect.tap(() => Queue.offer(reads, undefined))),
+      findCardByExecutor: (threadId) =>
+        Ref.get(cards).pipe(
+          Effect.map((all) =>
+            Option.fromNullishOr(all.find((card) => card.executorThreadId === threadId)),
+          ),
+          Effect.tap(() => Queue.offer(reads, undefined)),
+        ),
       updateCard: (card) =>
         Effect.gen(function* () {
           if (

@@ -1026,12 +1026,22 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
       const card = cards.get(cardId);
       return Effect.succeed(card === undefined ? Option.none() : Option.some(card));
     },
+    findCardByExecutor: (threadId) =>
+      Effect.succeed(
+        Option.fromNullishOr(
+          [...cards.values()].find((card) => card.executorThreadId === threadId),
+        ),
+      ),
     createCard: (card) =>
       Effect.sync(() => {
         cards.set(card.cardId, card);
         events.set(card.cardId, []);
       }),
     updateCard: (card) =>
+      Effect.sync(() => {
+        cards.set(card.cardId, card);
+      }),
+    updateCardWithPrevious: (card) =>
       Effect.sync(() => {
         cards.set(card.cardId, card);
       }),
@@ -3817,7 +3827,7 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect("lists only the calling orchestrator's cards with their events", () =>
+  it.effect("lists only the calling orchestrator's cards without their history", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard([parentThreadId, ThreadId.make("other-orchestrator")]);
       const harness = makeHarness({ board: board.repo });
@@ -3842,10 +3852,42 @@ describe("OrchestratorMcpService", () => {
 
       const listed = yield* harness.service.boardListCards(makeScope(), {});
       expect(listed.cards.map((entry) => entry.card.cardId)).toEqual([ownFirst.cardId, own.cardId]);
-      expect(listed.cards[1]?.events).toHaveLength(1);
+      // History stays out of the list response even when it exists; the
+      // entries keep their shape so consumers do not break.
+      expect(listed.cards[1]?.events).toHaveLength(0);
       expect(
         listed.cards.every((entry) => entry.card.orchestratorThreadId === parentThreadId),
       ).toBe(true);
+    }),
+  );
+
+  it.effect("updates a card with a single ownership read and no legacy update", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      let reads = 0;
+      let legacyUpdates = 0;
+      const harness = makeHarness({
+        board: {
+          ...board.repo,
+          getCard: (cardId) => {
+            reads += 1;
+            return board.repo.getCard(cardId);
+          },
+          updateCard: (card) => {
+            legacyUpdates += 1;
+            return board.repo.updateCard(card);
+          },
+        },
+      });
+      const card = seedBoardCard(board, { status: "todo" });
+
+      const updated = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: card.cardId,
+        status: "orchestrator",
+      });
+      expect(updated.status).toBe("orchestrator");
+      expect(reads).toBe(1);
+      expect(legacyUpdates).toBe(0);
     }),
   );
 
@@ -3925,9 +3967,11 @@ describe("OrchestratorMcpService", () => {
         active.cardId,
         archivedDone.cardId,
       ]);
+      // Archived cards come back with statuses only; their history lives on
+      // behind board.resolve.
       expect(
         withArchive.cards.find((entry) => entry.card.cardId === archivedDone.cardId)?.events,
-      ).toHaveLength(1);
+      ).toHaveLength(0);
     }),
   );
 

@@ -32,7 +32,6 @@ import {
   MessageId,
   type OrchestrationEvent,
   type OrchestrationThreadShell,
-  type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
@@ -100,13 +99,6 @@ function shortDerivedNote(text: string): string {
 
 function shortErrorNote(error: string | undefined, status: DelegationCompleted["status"]): string {
   return shortDerivedNote(error ?? `executor turn ${status}`);
-}
-
-function findCardForExecutor(
-  cards: ReadonlyArray<BoardCard>,
-  threadId: ThreadId,
-): BoardCard | null {
-  return cards.find((card) => card.executorThreadId === threadId) ?? null;
 }
 
 /** A card whose executor session was lost when the process restarted. */
@@ -228,7 +220,7 @@ export const make = Effect.gen(function* () {
   ) {
     const terminal = readDelegationCompleted(event);
     if (terminal === null) return;
-    const card = findCardForExecutor(yield* board.listCards(), terminal.childThreadId);
+    const card = Option.getOrNull(yield* board.findCardByExecutor(terminal.childThreadId));
     // A missing card (already deleted) or a foreign executor id is a no-op.
     if (card === null || card.status !== "in_progress") return;
     const at = terminal.completedAt;
@@ -278,7 +270,7 @@ export const make = Effect.gen(function* () {
       yield* board.removeOrchestrator(event.payload.threadId);
       return;
     }
-    const card = findCardForExecutor(yield* board.listCards(), event.payload.threadId);
+    const card = Option.getOrNull(yield* board.findCardByExecutor(event.payload.threadId));
     if (card === null) return;
     const at = event.payload.deletedAt;
     if (card.status === "in_progress") {

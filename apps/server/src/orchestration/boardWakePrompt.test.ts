@@ -79,6 +79,18 @@ describe("Coordinator board brief", () => {
     }
   });
 
+  it("starts from the wake card context instead of mandating a full board list", () => {
+    assert.notInclude(BOARD_ORCHESTRATOR_TURN_TEXT, "Start with board_list_cards");
+    for (const statement of [
+      "already carries the affected card's context",
+      "start from that context instead of re-reading the whole board",
+      "only when you need the full board",
+      "after a restart and before a decision",
+    ]) {
+      assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, statement);
+    }
+  });
+
   it("requires causes to be shown by observable facts before being reported", () => {
     for (const requirement of [
       "Do not report a cause as a fact until it is shown by an observable fact",

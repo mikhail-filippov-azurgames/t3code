@@ -133,11 +133,19 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
     },
     getCard: (cardId) =>
       Effect.succeed(Option.fromNullishOr(state.cards.find((card) => card.cardId === cardId))),
+    findCardByExecutor: (threadId) =>
+      Effect.succeed(
+        Option.fromNullishOr(state.cards.find((card) => card.executorThreadId === threadId)),
+      ),
     createCard: (card) => {
       state.cards.push(card);
       return Effect.void;
     },
     updateCard: (card) => {
+      state.cards = state.cards.map((row) => (row.cardId === card.cardId ? card : row));
+      return Effect.void;
+    },
+    updateCardWithPrevious: (card) => {
       state.cards = state.cards.map((row) => (row.cardId === card.cardId ? card : row));
       return Effect.void;
     },
@@ -747,7 +755,8 @@ describe("board RPC handlers", () => {
       if (wake?.type === "thread.turn.start") {
         assert.strictEqual(wake.message.text, BOARD_ORCHESTRATOR_TURN_TEXT);
         for (const instruction of [
-          "board_list_cards",
+          "already carries the affected card's context",
+          "after a restart and before a decision",
           "board_create_card",
           "delegate_task",
           "orchestrator_capabilities",

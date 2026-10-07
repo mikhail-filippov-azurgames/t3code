@@ -258,7 +258,7 @@ export const BoardDeleteCardTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardDe
 
 export const BoardListCardsTool = Tool.make(ORCHESTRATOR_MCP_TOOL_NAMES.boardListCards, {
   description:
-    "List every card owned by this Coordinator thread with its readiness and readinessNote fields and append-only progress history, ordered by card order then id. Cards are never returned across Coordinator ownership. Archived cards and their history are excluded by default so the archive does not grow the working context; pass includeArchived true to see them, for example to return a card from the archive.",
+    "List every card owned by this Coordinator thread with its readiness and readinessNote fields, ordered by card order then id. The list carries statuses only, never progress history; resolve one card with board.resolve when its history is needed. Cards are never returned across Coordinator ownership. Archived cards are excluded by default so the archive does not grow the working context; pass includeArchived true to see them, for example to return a card from the archive.",
   parameters: OrchestratorMcpBoardListCardsInput,
   success: OrchestratorMcpBoardListCardsResult,
   failure: OrchestratorMcpFailure,

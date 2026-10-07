@@ -28,6 +28,7 @@ import {
 
 const GetOrchestratorInput = Schema.Struct({ threadId: ThreadId });
 const GetCardInput = Schema.Struct({ cardId: BoardCardId });
+const FindCardByExecutorInput = Schema.Struct({ executorThreadId: ThreadId });
 const FindCardsByPrefixInput = Schema.Struct({
   prefix: Schema.String.check(Schema.isPattern(/^[0-9a-f]{8}$/)),
 });
@@ -264,6 +265,37 @@ const makeBoardRepository = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM board_cards
         WHERE card_id = ${cardId}
+      `,
+  });
+
+  const findCardByExecutorRow = SqlSchema.findOneOption({
+    Request: FindCardByExecutorInput,
+    Result: BoardCardDbRow,
+    execute: ({ executorThreadId }) =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          title,
+          body,
+          status,
+          readiness,
+          readiness_note AS "readinessNote",
+          created_by AS "createdBy",
+          assignee_json AS "assignee",
+          executor_role AS "executorRole",
+          executor_thread_id AS "executorThreadId",
+          outcome,
+          last_error AS "lastError",
+          failure_streak AS "failureStreak",
+          order_index AS "order",
+          archived,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM board_cards
+        WHERE executor_thread_id = ${executorThreadId}
+        ORDER BY orchestrator_thread_id ASC, order_index ASC, created_at ASC, card_id ASC
+        LIMIT 1
       `,
   });
 
@@ -552,6 +584,12 @@ const makeBoardRepository = Effect.gen(function* () {
   const getCard: BoardRepositoryShape["getCard"] = (cardId) =>
     getCardById(cardId, "BoardRepository.getCard:query");
 
+  const findCardByExecutor: BoardRepositoryShape["findCardByExecutor"] = (executorThreadId) =>
+    findCardByExecutorRow({ executorThreadId }).pipe(
+      Effect.map(Option.map(toBoardCard)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.findCardByExecutor:query")),
+    );
+
   const createCard: BoardRepositoryShape["createCard"] = (card) => {
     const textFailure = boardCardAuthorTextFailure(card);
     return textFailure === null
@@ -572,6 +610,18 @@ const makeBoardRepository = Effect.gen(function* () {
           : Effect.fail(textFailure);
       }),
     );
+
+  const updateCardWithPrevious: BoardRepositoryShape["updateCardWithPrevious"] = (
+    card,
+    previous,
+  ) => {
+    const textFailure = boardCardAuthorTextFailure(card, Option.getOrUndefined(previous));
+    return textFailure === null
+      ? updateCardRow(card).pipe(
+          Effect.mapError(toBoardRepositoryError("BoardRepository.updateCardWithPrevious:query")),
+        )
+      : Effect.fail(textFailure);
+  };
 
   const deleteCard: BoardRepositoryShape["deleteCard"] = (cardId) =>
     deleteCardRow({ cardId }).pipe(
@@ -650,8 +700,10 @@ const makeBoardRepository = Effect.gen(function* () {
     listCards,
     findCardsByPrefix,
     getCard,
+    findCardByExecutor,
     createCard,
     updateCard,
+    updateCardWithPrevious,
     deleteCard,
     listEvents,
     listEventsForCard,

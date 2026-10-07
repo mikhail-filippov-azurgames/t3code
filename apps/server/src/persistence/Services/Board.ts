@@ -69,8 +69,24 @@ export interface BoardRepositoryShape {
   readonly getCard: (
     cardId: BoardCardId,
   ) => Effect.Effect<Option.Option<BoardCard>, BoardRepositoryError>;
+  /**
+   * The single card currently linked to an executor thread, if any. Backed by
+   * an index on `executor_thread_id`, so executor lookups never scan the table.
+   */
+  readonly findCardByExecutor: (
+    executorThreadId: ThreadId,
+  ) => Effect.Effect<Option.Option<BoardCard>, BoardRepositoryError>;
   readonly createCard: (card: BoardCard) => Effect.Effect<void, BoardRepositoryError>;
   readonly updateCard: (card: BoardCard) => Effect.Effect<void, BoardRepositoryError>;
+  /**
+   * Write a card whose previous state the caller already read. The
+   * author-text check runs against that value, so the update itself is a
+   * single statement with no extra read.
+   */
+  readonly updateCardWithPrevious: (
+    card: BoardCard,
+    previous: Option.Option<BoardCard>,
+  ) => Effect.Effect<void, BoardRepositoryError>;
   readonly deleteCard: (cardId: BoardCardId) => Effect.Effect<void, BoardRepositoryError>;
   readonly listEvents: () => Effect.Effect<ReadonlyArray<BoardCardEvent>, BoardRepositoryError>;
   /** Reads history for one card; a limit returns the newest entries first. */
