@@ -63,7 +63,7 @@ const DELEGATION_COMPLETED_ACTIVITY = "delegation.completed";
 
 const decodeDelegationCompleted = Schema.decodeUnknownOption(DelegationCompletedActivityPayload);
 
-const MAX_LAST_ERROR_LENGTH = 200;
+const MAX_DERIVED_NOTE_LENGTH = 200;
 
 type DelegationCompleted = DelegationCompletedActivityPayload;
 type ActivityAppendedEvent = Extract<OrchestrationEvent, { type: "thread.activity-appended" }>;
@@ -90,12 +90,16 @@ function readDelegationCompleted(event: OrchestrationEvent): DelegationCompleted
   return Option.getOrNull(decodeDelegationCompleted(event.payload.activity.payload));
 }
 
-/** A short, single-line fact for `lastError`; never the full provider message. */
+/** A short, single-line derived fact with secrets removed. */
+function shortDerivedNote(text: string): string {
+  const raw = projectDerivedText("summary", text).trim().replace(/\s+/g, " ");
+  return raw.length > MAX_DERIVED_NOTE_LENGTH
+    ? `${raw.slice(0, MAX_DERIVED_NOTE_LENGTH - 3)}...`
+    : raw;
+}
+
 function shortErrorNote(error: string | undefined, status: DelegationCompleted["status"]): string {
-  const raw = projectDerivedText("summary", error ?? `executor turn ${status}`)
-    .trim()
-    .replace(/\s+/g, " ");
-  return raw.length > MAX_LAST_ERROR_LENGTH ? `${raw.slice(0, MAX_LAST_ERROR_LENGTH - 3)}...` : raw;
+  return shortDerivedNote(error ?? `executor turn ${status}`);
 }
 
 function findCardForExecutor(
@@ -169,8 +173,7 @@ export const make = Effect.gen(function* () {
 
   /**
    * Write a non-success finish: bump the streak, optionally clear the dead
-   * executor reference, append history (with a separate `needs human` row at
-   * the limit) and post the card-context system message.
+   * executor reference, append history and post the card-context system message.
    */
   const writeFailure = Effect.fn("BoardReactor.writeFailure")(function* (input: {
     readonly card: BoardCard;
@@ -185,10 +188,15 @@ export const make = Effect.gen(function* () {
   }) {
     const failureStreak = input.card.failureStreak + 1;
     const needsHuman = failureStreak >= NEEDS_HUMAN_FAILURE_STREAK;
-    const note = projectDerivedText("summary", input.note);
+    const note = shortDerivedNote(input.note);
+    const readinessNote =
+      needsHuman && input.card.readiness !== "needs_human"
+        ? shortDerivedNote(`${failureStreak} executor failures in a row; last: ${note}`)
+        : null;
     const next: BoardCard = {
       ...input.card,
       ...(input.status === undefined ? {} : { status: input.status }),
+      ...(readinessNote === null ? {} : { readiness: "needs_human", readinessNote }),
       ...(input.clearExecutorThreadId ? { executorThreadId: null } : {}),
       outcome: input.outcome,
       lastError: note,
@@ -199,8 +207,13 @@ export const make = Effect.gen(function* () {
     yield* board.appendEvent(
       buildBoardCardEvent(next, { at: input.at, body: `${input.reason}: ${input.outcome}` }),
     );
-    if (needsHuman) {
-      yield* board.appendEvent(buildBoardCardEvent(next, { at: input.at, body: "needs human" }));
+    if (readinessNote !== null) {
+      yield* board.appendEvent(
+        buildBoardCardEvent(next, {
+          at: input.at,
+          body: `readiness -> needs_human: ${readinessNote}`,
+        }),
+      );
     }
     yield* appendCardSystemMessage(
       next,

@@ -433,26 +433,94 @@ describe("BoardReactor", () => {
     ),
   );
 
-  it.effect("marks the card needs human on the third consecutive failure", () =>
-    runScenario({ cards: [makeCard({ failureStreak: 2 })] }, (fixture) =>
+  it.effect("marks readiness after three failures and does not repeat the transition", () =>
+    runScenario({ cards: [makeCard()] }, (fixture) =>
       Effect.gen(function* () {
-        yield* handle(fixture, terminalEvent({ status: "failed" }));
+        for (const delegatedTurnId of ["turn-1", "turn-2"] as const) {
+          yield* handle(fixture, terminalEvent({ status: "failed", delegatedTurnId }));
+        }
 
-        const updates = yield* Ref.get(fixture.updates);
-        assert.equal(updates[0]?.failureStreak, BoardReactor.NEEDS_HUMAN_FAILURE_STREAK);
-        assert.equal(updates[0]?.outcome, "failed");
-
-        const appends = yield* Ref.get(fixture.appends);
-        assert.deepEqual(
-          appends.map((entry) => entry.body),
-          ["executor implementation finished: failed", "needs human"],
+        const updatesAfterTwoFailures = yield* Ref.get(fixture.updates);
+        assert.equal(updatesAfterTwoFailures.length, 2);
+        for (const update of updatesAfterTwoFailures) {
+          assert.equal(update.readiness, "ready");
+          assert.equal(update.readinessNote, null);
+        }
+        assert.equal(
+          (yield* Ref.get(fixture.appends)).filter((entry) =>
+            entry.body?.startsWith("readiness -> needs_human:"),
+          ).length,
+          0,
         );
 
-        const commands = yield* Ref.get(fixture.commands);
-        const command = commands[0];
-        assert.equal(command?.type, "thread.message.system.append");
-        if (command?.type === "thread.message.system.append") {
-          assert.include(command.message.text, "needs human");
+        const thirdError = `provider failed with token ${secretToken} ${"x".repeat(220)}`;
+        yield* handle(
+          fixture,
+          terminalEvent({
+            status: "failed",
+            delegatedTurnId: "turn-3",
+            terminalError: thirdError,
+          }),
+        );
+
+        const updatesAfterThreeFailures = yield* Ref.get(fixture.updates);
+        const thirdUpdate = updatesAfterThreeFailures[2];
+        assert.equal(thirdUpdate?.failureStreak, BoardReactor.NEEDS_HUMAN_FAILURE_STREAK);
+        assert.equal(thirdUpdate?.status, "in_progress");
+        assert.equal(thirdUpdate?.readiness, "needs_human");
+        assert.equal(
+          thirdUpdate?.readinessNote?.startsWith("3 executor failures in a row; last:"),
+          true,
+        );
+        assert.notInclude(thirdUpdate?.readinessNote ?? "", secretToken);
+        const thirdReadinessNote = thirdUpdate?.readinessNote ?? "";
+        assert.equal(thirdReadinessNote.length <= 200, true);
+
+        const appendsAfterThreeFailures = yield* Ref.get(fixture.appends);
+        const readinessEntriesAfterThreeFailures = appendsAfterThreeFailures.filter((entry) =>
+          entry.body?.startsWith("readiness -> needs_human:"),
+        );
+        assert.equal(readinessEntriesAfterThreeFailures.length, 1);
+        assert.equal(
+          readinessEntriesAfterThreeFailures[0]?.body,
+          `readiness -> needs_human: ${thirdReadinessNote}`,
+        );
+
+        const commandsAfterThreeFailures = yield* Ref.get(fixture.commands);
+        const thirdCommand = commandsAfterThreeFailures[2];
+        assert.equal(thirdCommand?.type, "thread.message.system.append");
+        if (thirdCommand?.type === "thread.message.system.append") {
+          assert.include(thirdCommand.message.text, "- needs human");
+        }
+
+        yield* handle(
+          fixture,
+          terminalEvent({
+            status: "failed",
+            delegatedTurnId: "turn-4",
+            terminalError: "fourth failure",
+          }),
+        );
+
+        const updatesAfterFourFailures = yield* Ref.get(fixture.updates);
+        const fourthUpdate = updatesAfterFourFailures[3];
+        assert.equal(fourthUpdate?.failureStreak, 4);
+        assert.equal(fourthUpdate?.status, "in_progress");
+        assert.equal(fourthUpdate?.readiness, "needs_human");
+        assert.equal(fourthUpdate?.readinessNote, thirdReadinessNote);
+
+        const appendsAfterFourFailures = yield* Ref.get(fixture.appends);
+        assert.equal(
+          appendsAfterFourFailures.filter((entry) =>
+            entry.body?.startsWith("readiness -> needs_human:"),
+          ).length,
+          1,
+        );
+        const commandsAfterFourFailures = yield* Ref.get(fixture.commands);
+        const fourthCommand = commandsAfterFourFailures[3];
+        assert.equal(fourthCommand?.type, "thread.message.system.append");
+        if (fourthCommand?.type === "thread.message.system.append") {
+          assert.include(fourthCommand.message.text, "- needs human");
         }
       }),
     ),
@@ -560,6 +628,47 @@ describe("BoardReactor", () => {
             }
           }),
       ),
+  );
+
+  it.effect("marks readiness when startup recovery reaches the failure threshold", () =>
+    runScenario(
+      {
+        cards: [makeCard({ failureStreak: 2 })],
+        shells: [
+          makeShell({ id: ORCHESTRATOR_ID }),
+          makeShell({ id: EXECUTOR_ID, session: makeSession(EXECUTOR_ID, "error") }),
+        ],
+      },
+      (fixture) =>
+        Effect.gen(function* () {
+          const updates = yield* Ref.get(fixture.updates);
+          assert.equal(updates.length, 1);
+          assert.equal(updates[0]?.status, "orchestrator");
+          assert.equal(updates[0]?.failureStreak, BoardReactor.NEEDS_HUMAN_FAILURE_STREAK);
+          assert.equal(updates[0]?.readiness, "needs_human");
+          assert.equal(
+            updates[0]?.readinessNote,
+            "3 executor failures in a row; last: executor session lost after restart",
+          );
+
+          const appends = yield* Ref.get(fixture.appends);
+          assert.deepEqual(
+            appends.map((entry) => entry.body),
+            [
+              "executor session lost after restart: cancelled",
+              `readiness -> needs_human: ${updates[0]?.readinessNote}`,
+            ],
+          );
+
+          const systemMessage = (yield* Ref.get(fixture.commands)).find(
+            (command) => command.type === "thread.message.system.append",
+          );
+          assert.isDefined(systemMessage);
+          if (systemMessage?.type === "thread.message.system.append") {
+            assert.include(systemMessage.message.text, "- needs human");
+          }
+        }),
+    ),
   );
 
   it.effect("leaves a card with a live executor session untouched on startup", () =>
