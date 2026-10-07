@@ -44,14 +44,7 @@ const STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
   done: "Done",
 };
 
-const ROLE_LABELS: Readonly<Record<BoardExecutorRole, string>> = {
-  architecture: "Architecture",
-  implementation: "Implementation",
-  review: "Review",
-  test: "Test",
-  research: "Research",
-  general: "General",
-};
+export { boardExecutorRoleLabel } from "@t3tools/client-runtime/board/labels";
 
 const READINESS_LABELS: Readonly<Record<BoardCardReadiness, string>> = {
   ready: "Ready",
@@ -61,10 +54,6 @@ const READINESS_LABELS: Readonly<Record<BoardCardReadiness, string>> = {
 
 export function boardStatusLabel(status: BoardCardStatus): string {
   return STATUS_LABELS[status];
-}
-
-export function boardExecutorRoleLabel(role: BoardExecutorRole): string {
-  return ROLE_LABELS[role];
 }
 
 export function boardReadinessLabel(readiness: BoardCardReadiness): string {

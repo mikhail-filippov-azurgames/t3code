@@ -111,6 +111,10 @@
       "types": "./src/boardCardMentions.ts",
       "default": "./src/boardCardMentions.ts"
     },
+    "./board/labels": {
+      "types": "./src/board/boardLabels.ts",
+      "default": "./src/board/boardLabels.ts"
+    },
     "./state/calendar": {
       "types": "./src/state/calendar.ts",
       "default": "./src/state/calendar.ts"

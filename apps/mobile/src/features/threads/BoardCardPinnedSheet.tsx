@@ -1,10 +1,10 @@
 import { clearBoardCardMentionCache } from "@t3tools/client-runtime/board-card-mentions";
+import { boardExecutorRoleLabel } from "@t3tools/client-runtime/board/labels";
 import type {
   BoardCard,
   BoardCardLookupDetail,
   BoardCardReadiness,
   BoardCardStatus,
-  BoardExecutorRole,
   EnvironmentId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -39,15 +39,6 @@ const BOARD_STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
   done: "Готово",
 };
 
-const BOARD_EXECUTOR_ROLE_LABELS: Readonly<Record<BoardExecutorRole, string>> = {
-  architecture: "Архитектура",
-  implementation: "Реализация",
-  review: "Проверка",
-  test: "Тестирование",
-  research: "Исследование",
-  general: "Общая задача",
-};
-
 function boardStatusLabel(status: BoardCardStatus): string {
   return BOARD_STATUS_LABELS[status];
 }
@@ -66,10 +57,6 @@ function boardReadinessMarker(readiness: BoardCardReadiness): string {
   if (readiness === "needs_human") return "⚠ ";
   if (readiness === "blocked") return "⛔ ";
   return "";
-}
-
-function boardExecutorRoleLabel(role: BoardExecutorRole): string {
-  return BOARD_EXECUTOR_ROLE_LABELS[role];
 }
 
 function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] {
