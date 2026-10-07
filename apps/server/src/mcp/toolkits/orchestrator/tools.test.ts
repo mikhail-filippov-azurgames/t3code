@@ -18,6 +18,7 @@ import {
   GetCoordinatorBindingTool,
   ListArchitectureReviewsTool,
   OrchestratorCapabilitiesTool,
+  PrepareCoordinatorPublicationTool,
   PublishToCoordinatorTool,
   SendToTaskTool,
   SwitchProviderTool,
@@ -53,6 +54,7 @@ describe("orchestrator MCP tools", () => {
     ArchitectureReviewRequestTool,
     ArchitectureReviewAnswerTool,
     ArchitectureReviewCancelTool,
+    PrepareCoordinatorPublicationTool,
     PublishToCoordinatorTool,
     GetCoordinatorBindingTool,
     ListArchitectureReviewsTool,
@@ -137,6 +139,7 @@ describe("orchestrator MCP tools", () => {
       ArchitectureReviewRequestTool,
       ArchitectureReviewAnswerTool,
       ArchitectureReviewCancelTool,
+      PrepareCoordinatorPublicationTool,
       PublishToCoordinatorTool,
     ]) {
       expect(Context.get(tool.annotations, Tool.Readonly)).toBe(false);
@@ -150,6 +153,9 @@ describe("orchestrator MCP tools", () => {
     expect(Tool.getDescription(ArchitectureReviewRequestTool)).toContain("executionPosture");
     expect(Tool.getDescription(ArchitectureReviewAnswerTool)).toContain("never wake");
     expect(Tool.getDescription(PublishToCoordinatorTool)).toContain("only architect-originated");
+    expect(Tool.getDescription(PrepareCoordinatorPublicationTool)).toContain("never wakes");
+    expect(Tool.getDescription(PrepareCoordinatorPublicationTool)).toContain("Publish button");
+    expect(Tool.getDescription(PrepareCoordinatorPublicationTool)).toContain("replaces");
     expect(Tool.getDescription(ArchitectDetachTool)).toContain("never restore");
   });
 
