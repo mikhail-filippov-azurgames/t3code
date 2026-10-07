@@ -56,6 +56,34 @@ vi.mock("./boardCardPins", () => ({
 import { useExpandCoordinatorHistoryByDefault } from "../board/boardPreferences";
 import { BoardCardPinnedPanel } from "./BoardCardPinnedPanel";
 
+class TestIntersectionObserver {
+  static instances: TestIntersectionObserver[] = [];
+  readonly callback: IntersectionObserverCallback;
+  readonly options: IntersectionObserverInit | undefined;
+  readonly observe = vi.fn();
+  readonly unobserve = vi.fn();
+  readonly disconnect = vi.fn();
+
+  constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+    this.callback = callback;
+    this.options = options;
+    TestIntersectionObserver.instances.push(this);
+  }
+
+  report(isIntersecting: boolean) {
+    this.callback(
+      [{ target: {}, isIntersecting } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+}
+
+function liveHistoryObservers() {
+  return TestIntersectionObserver.instances.filter(
+    (observer) => observer.disconnect.mock.calls.length === 0,
+  );
+}
+
 const environmentId = EnvironmentId.make("environment-local");
 const threadId = ThreadId.make("thread-1");
 const otherThreadId = ThreadId.make("thread-2");
@@ -129,7 +157,11 @@ function panelElement(options: MountPanelOptions = {}) {
 async function mountPanel(options: MountPanelOptions = {}): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(panelElement(options));
+    renderer = create(panelElement(options), {
+      // Host refs resolve to null without this, so the sentinel ref would
+      // never arm the observer under test.
+      createNodeMock: () => ({}),
+    });
     await Promise.resolve();
   });
   return renderer;
@@ -173,14 +205,12 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-async function scrollHistoryNearBottom(renderer: ReactTestRenderer, nearBottom = true) {
-  const list = renderer.root.find(
-    (node) => node.type === "div" && typeof node.props.onScroll === "function",
-  );
+async function fireHistorySentinel(isIntersecting = true) {
+  const observers = liveHistoryObservers();
+  const observer = observers[observers.length - 1];
+  expect(observer).toBeDefined();
   await act(async () => {
-    list.props.onScroll({
-      currentTarget: { scrollHeight: 2000, scrollTop: nearBottom ? 1650 : 0, clientHeight: 300 },
-    });
+    observer!.report(isIntersecting);
     await Promise.resolve();
   });
 }
@@ -198,6 +228,8 @@ function historyToggles(renderer: ReactTestRenderer) {
 describe("BoardCardPinnedPanel", () => {
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    TestIntersectionObserver.instances = [];
+    vi.stubGlobal("IntersectionObserver", TestIntersectionObserver);
     const store = new Map<string, string>();
     const storage = {
       clear: () => store.clear(),
@@ -591,7 +623,57 @@ describe("BoardCardPinnedPanel", () => {
     }
   });
 
-  it("loads the next page by cursor when the list is scrolled near its end", async () => {
+  it("loads the next page through the sentinel without any scrolling", async () => {
+    mocks.pins = [];
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async ({ cursor }) => {
+      if (cursor === undefined) {
+        return { entries: [historyEntry("a"), historyEntry("b")], nextCursor: cursorAfter("b") };
+      }
+      if (loadHistory.mock.calls.length === 2) {
+        return { entries: [historyEntry("c")], nextCursor: cursorAfter("c") };
+      }
+      return { entries: [historyEntry("d")], nextCursor: null };
+    });
+    const renderer = await mountPanel({ loadHistory });
+    try {
+      expect(historyRows(renderer)).toHaveLength(2);
+      // The short first page leaves nothing to scroll, so the sentinel is the
+      // only load trigger and arms with a prefetch margin.
+      const observers = liveHistoryObservers();
+      expect(observers).toHaveLength(1);
+      expect(observers[0]!.options).toEqual({ rootMargin: "240px" });
+      expect(
+        renderer.root.findAll((node) => typeof node.props.onScroll === "function"),
+      ).toHaveLength(0);
+
+      await fireHistorySentinel(false);
+      expect(loadHistory).toHaveBeenCalledOnce();
+
+      // No scroll happens here: the observer firing is the whole trigger.
+      await fireHistorySentinel();
+      expect(loadHistory).toHaveBeenCalledTimes(2);
+      expect(loadHistory).toHaveBeenLastCalledWith({ threadId, cursor: cursorAfter("b") });
+      expect(historyRows(renderer)).toHaveLength(3);
+      expect(historyRows(renderer)[2]).toContain("Ребёнок c");
+
+      // The observer re-arms after the loaded page and drives the next one.
+      expect(liveHistoryObservers()).toHaveLength(1);
+      expect(TestIntersectionObserver.instances).toHaveLength(2);
+      await fireHistorySentinel();
+      expect(loadHistory).toHaveBeenCalledTimes(3);
+      expect(loadHistory).toHaveBeenLastCalledWith({ threadId, cursor: cursorAfter("c") });
+      expect(historyRows(renderer)).toHaveLength(4);
+
+      expect(
+        renderer.root.findAllByProps({ "data-history-load-more-sentinel": "true" }),
+      ).toHaveLength(0);
+      expect(liveHistoryObservers()).toHaveLength(0);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("does not repeat the load while a request is in flight and stops when pages run out", async () => {
     mocks.pins = [];
     const secondPage = deferred<{
       entries: CoordinatorSummaryHistoryEntry[];
@@ -604,25 +686,39 @@ describe("BoardCardPinnedPanel", () => {
     );
     const renderer = await mountPanel({ loadHistory });
     try {
-      expect(historyRows(renderer)).toHaveLength(2);
+      const observers = liveHistoryObservers();
+      expect(observers).toHaveLength(1);
+      const sentinel = observers[0]!;
 
-      await scrollHistoryNearBottom(renderer, false);
-      expect(loadHistory).toHaveBeenCalledOnce();
-
-      await scrollHistoryNearBottom(renderer);
-      await scrollHistoryNearBottom(renderer);
+      await act(async () => {
+        sentinel.report(true);
+        await Promise.resolve();
+      });
       expect(loadHistory).toHaveBeenCalledTimes(2);
-      expect(loadHistory).toHaveBeenLastCalledWith({ threadId, cursor: cursorAfter("b") });
       expect(textContent(renderer.root)).toContain("Загрузка выжимок…");
+
+      // The in-flight request unarms the sentinel, but a repeated signal from
+      // the detached observer must still not start a second request.
+      await act(async () => {
+        sentinel.report(true);
+        await Promise.resolve();
+      });
+      expect(loadHistory).toHaveBeenCalledTimes(2);
 
       await act(async () => {
         secondPage.resolve({ entries: [historyEntry("c")], nextCursor: null });
         await Promise.resolve();
       });
       expect(historyRows(renderer)).toHaveLength(3);
-      expect(historyRows(renderer)[2]).toContain("Ребёнок c");
 
-      await scrollHistoryNearBottom(renderer);
+      // No pages left: the sentinel is gone and nothing observes anymore.
+      expect(
+        renderer.root.findAllByProps({ "data-history-load-more-sentinel": "true" }),
+      ).toHaveLength(0);
+      expect(liveHistoryObservers()).toHaveLength(0);
+      await act(async () => {
+        await Promise.resolve();
+      });
       expect(loadHistory).toHaveBeenCalledTimes(2);
     } finally {
       act(() => renderer.unmount());
@@ -641,11 +737,12 @@ describe("BoardCardPinnedPanel", () => {
     });
     const renderer = await mountPanel({ loadHistory });
     try {
-      await scrollHistoryNearBottom(renderer);
+      await fireHistorySentinel();
       expect(historyRows(renderer)).toHaveLength(1);
       expect(textContent(renderer.root)).toContain("Не удалось загрузить следующие выжимки.");
 
-      await scrollHistoryNearBottom(renderer);
+      // A failed page must not be asked for again on its own.
+      expect(liveHistoryObservers()).toHaveLength(0);
       expect(loadHistory).toHaveBeenCalledTimes(2);
 
       failNext = false;
@@ -676,7 +773,7 @@ describe("BoardCardPinnedPanel", () => {
     });
     const renderer = await mountPanel({ loadHistory });
     try {
-      await scrollHistoryNearBottom(renderer);
+      await fireHistorySentinel();
       const refresh = renderer.root.findByProps({ "aria-label": "Обновить историю" });
       await act(async () => {
         refresh.props.onClick();

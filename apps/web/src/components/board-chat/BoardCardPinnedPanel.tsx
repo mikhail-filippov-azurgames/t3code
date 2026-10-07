@@ -74,7 +74,6 @@ type SummaryHistoryLoadState = {
   readonly loadMoreError: boolean;
 };
 
-const HISTORY_LOAD_MORE_THRESHOLD_PX = 240;
 const HISTORY_ENTRY_OVERRIDES_SCHEMA = Schema.Record(Schema.String, Schema.Boolean);
 const EMPTY_HISTORY_ENTRY_OVERRIDES: Record<string, boolean> = {};
 
@@ -300,6 +299,41 @@ export function BoardCardPinnedPanel({
     };
   }, [loadHistory, refreshHistory, threadId]);
 
+  // The history list can be shorter than its scroll window (short entries on a
+  // tall screen): with nothing to scroll, onScroll never fires and the next
+  // pages stay unreachable. A sentinel at the bottom of the list drives the
+  // next page instead and fires right after mount when the first page is
+  // short, which is exactly the missing load.
+  const canLoadMoreHistory =
+    currentHistoryState.nextCursor !== null &&
+    !currentHistoryState.loading &&
+    !currentHistoryState.loadingMore &&
+    !currentHistoryState.loadMoreError;
+  // The sentinel is held as state rather than a ref because the history footer
+  // remounts as pages land: an effect reading a ref could keep observing a
+  // detached node and would never fire again.
+  const [historySentinel, setHistorySentinel] = useState<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (historySentinel === null || !canLoadMoreHistory) return;
+    const observer = new IntersectionObserver(
+      (observed) => {
+        if (observed.some((entry) => entry.isIntersecting)) void loadMoreHistory();
+      },
+      // Start the next page slightly before the sentinel is on screen.
+      { rootMargin: "240px" },
+    );
+    observer.observe(historySentinel);
+    return () => observer.disconnect();
+  }, [
+    canLoadMoreHistory,
+    historySentinel,
+    loadMoreHistory,
+    // Re-arm the observer after every loaded page: the sentinel moves down
+    // with the grown list, so the previous subscription would stop firing.
+    currentHistoryState.entries.length,
+    currentHistoryState.nextCursor,
+  ]);
+
   const openThread = useCallback(
     (targetThreadId: ThreadId) => {
       void navigate({
@@ -438,19 +472,7 @@ export function BoardCardPinnedPanel({
           ) : null}
         </div>
       ) : (
-        <div
-          className="min-h-0 flex-1 overflow-y-auto p-3"
-          onScroll={(event) => {
-            const list = event.currentTarget;
-            if (
-              !currentHistoryState.loadMoreError &&
-              list.scrollHeight - list.scrollTop - list.clientHeight <
-                HISTORY_LOAD_MORE_THRESHOLD_PX
-            ) {
-              void loadMoreHistory();
-            }
-          }}
-        >
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
             <p role="status" className="text-xs text-muted-foreground">
               Загрузка выжимок…
@@ -501,6 +523,13 @@ export function BoardCardPinnedPanel({
                     Повторить
                   </Button>
                 </div>
+              ) : null}
+              {canLoadMoreHistory ? (
+                <div
+                  ref={setHistorySentinel}
+                  data-history-load-more-sentinel="true"
+                  aria-hidden="true"
+                />
               ) : null}
             </>
           )}
