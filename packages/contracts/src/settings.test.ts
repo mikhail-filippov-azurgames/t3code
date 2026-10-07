@@ -262,33 +262,34 @@ describe("ClientSettings load balancing", () => {
 });
 
 describe("ClientSettings thread children action", () => {
-  it("asks by default for both delete and archive", () => {
-    expect(decodeClientSettings({}).deleteThreadChildren).toBe("ask");
+  it("asks by default for archive", () => {
     expect(decodeClientSettings({}).archiveThreadChildren).toBe("ask");
-    expect(decodeClientSettingsPatch({})).not.toHaveProperty("deleteThreadChildren");
     expect(decodeClientSettingsPatch({})).not.toHaveProperty("archiveThreadChildren");
   });
 
   it.each(["ask", "always-yes", "always-no"])("round-trips the %s mode", (mode) => {
-    const settings = decodeClientSettings({
-      deleteThreadChildren: mode,
-      archiveThreadChildren: mode,
-    });
-    expect(encodeClientSettings(settings).deleteThreadChildren).toBe(mode);
+    const settings = decodeClientSettings({ archiveThreadChildren: mode });
     expect(encodeClientSettings(settings).archiveThreadChildren).toBe(mode);
-    expect(decodeClientSettingsPatch({ deleteThreadChildren: mode }).deleteThreadChildren).toBe(
-      mode,
-    );
     expect(decodeClientSettingsPatch({ archiveThreadChildren: mode }).archiveThreadChildren).toBe(
       mode,
     );
   });
 
   it("rejects modes outside the three states", () => {
-    expect(() => decodeClientSettings({ deleteThreadChildren: "yes" })).toThrow();
     expect(() => decodeClientSettings({ archiveThreadChildren: true })).toThrow();
-    expect(() => decodeClientSettingsPatch({ deleteThreadChildren: "always" })).toThrow();
     expect(() => decodeClientSettingsPatch({ archiveThreadChildren: "always" })).toThrow();
+  });
+
+  it("ignores the removed deleteThreadChildren key instead of failing", () => {
+    for (const mode of ["ask", "always-yes", "always-no"]) {
+      const decoded = decodeClientSettings({ deleteThreadChildren: mode });
+      expect(decoded).not.toHaveProperty("deleteThreadChildren");
+      expect(decoded.archiveThreadChildren).toBe("ask");
+      expect(decodeClientSettingsPatch({ deleteThreadChildren: mode })).toEqual({});
+    }
+    expect(encodeClientSettings(decodeClientSettings({}))).not.toHaveProperty(
+      "deleteThreadChildren",
+    );
   });
 });
 

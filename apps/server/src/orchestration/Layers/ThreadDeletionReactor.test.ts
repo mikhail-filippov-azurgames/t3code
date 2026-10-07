@@ -26,6 +26,15 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../Services/ThreadDeletionReactor.ts";
+import { BoardRepository, type BoardRepositoryShape } from "../../persistence/Services/Board.ts";
+import {
+  CoordinatorArchitectRepository,
+  type CoordinatorArchitectRepositoryShape,
+} from "../../persistence/Services/CoordinatorArchitect.ts";
+import {
+  ProjectionSnapshotQuery,
+  type ProjectionSnapshotQueryShape,
+} from "../Services/ProjectionSnapshotQuery.ts";
 import {
   logCleanupCauseUnlessInterrupted,
   ThreadDeletionReactorLive,
@@ -108,10 +117,29 @@ describe("ThreadDeletionReactor drain", () => {
       const terminalManager = {
         close: () => Effect.void,
       } as unknown as TerminalManager.TerminalManager["Service"];
+      const emptySnapshot = {
+        snapshotSequence: 0,
+        projects: [],
+        threads: [],
+        updatedAt: now,
+      };
+      const snapshotQuery = {
+        getShellSnapshot: () => Effect.succeed(emptySnapshot),
+        getArchivedShellSnapshot: () => Effect.succeed(emptySnapshot),
+      } as unknown as ProjectionSnapshotQueryShape;
+      const board = {
+        listOrchestrators: () => Effect.succeed([]),
+      } as unknown as BoardRepositoryShape;
+      const architectStore = {
+        getActiveBindingByCoordinator: () => Effect.succeed(null),
+      } as unknown as CoordinatorArchitectRepositoryShape;
       const layer = ThreadDeletionReactorLive.pipe(
         Layer.provide(Layer.succeed(ProviderService, providerService)),
         Layer.provide(Layer.succeed(TerminalManager.TerminalManager, terminalManager)),
         Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
+        Layer.provide(Layer.succeed(ProjectionSnapshotQuery, snapshotQuery)),
+        Layer.provide(Layer.succeed(BoardRepository, board)),
+        Layer.provide(Layer.succeed(CoordinatorArchitectRepository, architectStore)),
       );
 
       yield* Effect.scoped(

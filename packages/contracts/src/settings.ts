@@ -268,9 +268,9 @@ const DEFAULT_QUIT_CONFIRMATION_MODE: QuitConfirmationMode = "hold";
 
 /**
  * What happens to a parent thread's delegated children when the parent is
- * deleted or archived: "ask" runs the children dialog, "always-yes" cascades
- * without asking, "always-no" touches only the parent. Both keys default to
- * "ask", so parents without children behave exactly as before.
+ * archived: "ask" runs the children dialog, "always-yes" cascades without
+ * asking, "always-no" touches only the parent. Deletion always removes the
+ * whole delegated subtree on the server, so there is no delete variant.
  */
 export const ThreadChildrenAction = Schema.Literals(["ask", "always-yes", "always-no"]);
 export type ThreadChildrenAction = typeof ThreadChildrenAction.Type;
@@ -404,9 +404,6 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadUnpin: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   archiveThreadChildren: ThreadChildrenAction.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_THREAD_CHILDREN_ACTION)),
-  ),
-  deleteThreadChildren: ThreadChildrenAction.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_THREAD_CHILDREN_ACTION)),
   ),
   dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
@@ -1850,7 +1847,6 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
   archiveThreadChildren: Schema.optionalKey(ThreadChildrenAction),
-  deleteThreadChildren: Schema.optionalKey(ThreadChildrenAction),
   diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffLayout: Schema.optionalKey(DiffLayout),

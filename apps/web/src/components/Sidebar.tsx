@@ -162,8 +162,8 @@ import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import {
   buildThreadActionMenuItems,
   collectDelegatedChildRefs,
-  collectDelegatedChildRefsForParents,
-  resolveDelegatedChildrenBulkCascade,
+  collectDelegatedDescendantRefs,
+  countDelegatedDescendants,
   runDelegatedChildrenAction,
   runDelegatedChildrenCleanup,
   selectStaleDelegatedChildren,
@@ -2353,7 +2353,6 @@ export default function Sidebar() {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
-  const deleteThreadChildren = useClientSettings((s) => s.deleteThreadChildren);
   const archiveThreadChildren = useClientSettings((s) => s.archiveThreadChildren);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
@@ -4494,61 +4493,40 @@ export default function Sidebar() {
       }
       if (clicked.value !== "delete") return;
       if (confirmThreadDelete) {
+        // The server deletes the whole delegated subtree, so the
+        // confirmation names the cascade instead of asking about it.
+        const descendantCount = threadKeys.reduce((total, threadKey) => {
+          const thread = threadByKeyRef.current.get(threadKey);
+          if (!thread) return total;
+          return (
+            total +
+            collectDelegatedDescendantRefs({
+              parent: scopeThreadRef(thread.environmentId, thread.id),
+              threads: readThreadShells(),
+            }).filter((childRef) => !threadKeys.includes(scopedThreadKey(childRef))).length
+          );
+        }, 0);
         const confirmed = await settlePromise(() =>
           api.dialogs.confirm(
             [
               `Delete ${count} thread${count === 1 ? "" : "s"}?`,
               "This permanently clears conversation history for these threads.",
+              ...(descendantCount > 0
+                ? [
+                    `${descendantCount} delegated subtask${descendantCount === 1 ? "" : "s"} under them will also be deleted.`,
+                  ]
+                : []),
             ].join("\n"),
             { variant: "destructive" },
           ),
         );
         if (confirmed._tag === "Failure" || !confirmed.value) return;
       }
-      // Delegated children resolve before any deletion in the batch, so a
-      // dismissed dialog cancels everything and no parent disappears ahead of
-      // its own dialog. Decisions then replay per entry below.
-      const childrenByParentKey = collectDelegatedChildRefsForParents({
-        parents: threadKeys.flatMap((threadKey) => {
-          const thread = threadByKeyRef.current.get(threadKey);
-          return thread ? [scopeThreadRef(thread.environmentId, thread.id)] : [];
-        }),
-        threads: readThreadShells(),
-        excludeKeys: new Set(threadKeys),
-      });
-      const cascadeKeys = await resolveDelegatedChildrenBulkCascade({
-        action: "delete",
-        mode: deleteThreadChildren,
-        childrenByParentKey,
-        ask: (request) => requestThreadChildrenDialog(request),
-      });
-      if (cascadeKeys === null) return;
       const { deletedThreadKeys, firstFailure } = await deleteSelectedThreadEntries({
         entries: threadKeys.map((threadKey) => ({ threadKey })),
         delete: async ({ threadKey }, deletedThreadKeys) => {
           const thread = threadByKeyRef.current.get(threadKey);
           if (!thread) return null;
-          if (cascadeKeys.has(threadKey)) {
-            for (const childRef of childrenByParentKey.get(threadKey) ?? []) {
-              const childResult = await deleteThread(childRef, { deletedThreadKeys });
-              if (
-                childResult._tag === "Failure" &&
-                !isAtomCommandInterrupted(childResult) &&
-                readThreadShell(childRef) !== null
-              ) {
-                const error = squashAtomCommandFailure(childResult);
-                toastManager.add(
-                  stackedThreadToast({
-                    type: "error",
-                    title: "Failed to delete delegated subtask",
-                    description: error instanceof Error ? error.message : "An error occurred.",
-                  }),
-                );
-                // Stop before the parent; the rest of the batch continues.
-                return null;
-              }
-            }
-          }
           return deleteThread(scopeThreadRef(thread.environmentId, thread.id), {
             deletedThreadKeys,
           });
@@ -4578,7 +4556,6 @@ export default function Sidebar() {
       clearSelection,
       confirmThreadDelete,
       deleteThread,
-      deleteThreadChildren,
       markThreadUnread,
       performSnooze,
       removeFromSelection,
@@ -4910,70 +4887,43 @@ export default function Sidebar() {
             return;
           }
           case "delete": {
-            const children = collectDelegatedChildRefs({
-              parent: threadRef,
-              threads: readThreadShells(),
-            });
-            const deletedChildKeys = new Set(children.map((childRef) => scopedThreadKey(childRef)));
-            const outcome = await runDelegatedChildrenAction({
-              children,
-              mode: deleteThreadChildren,
-              ask: () =>
-                requestThreadChildrenDialog({ action: "delete", childCount: children.length }),
-              runChild: async (childRef) => {
-                const result = await deleteThread(childRef, {
-                  deletedThreadKeys: deletedChildKeys,
-                });
-                if (
-                  result._tag === "Failure" &&
-                  !isAtomCommandInterrupted(result) &&
-                  readThreadShell(childRef) !== null
-                ) {
-                  return { ok: false, error: squashAtomCommandFailure(result) };
-                }
-                return { ok: true };
-              },
-              runParent: async ({ cascadeConfirmed }) => {
-                if (!cascadeConfirmed && confirmThreadDelete) {
-                  const confirmed = await settlePromise(() =>
-                    api.dialogs.confirm(
-                      [
-                        `Delete thread "${thread.title}"?`,
-                        "This permanently clears conversation history for this thread.",
-                      ].join("\n"),
-                      { variant: "destructive" },
-                    ),
-                  );
-                  if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
-                }
-                const result = await deleteThread(threadRef);
-                if (
-                  result._tag === "Failure" &&
-                  !isAtomCommandInterrupted(result) &&
-                  // A failure with the thread already gone is worktree cleanup
-                  // failing after a successful delete; deleteThread has toasted
-                  // that itself.
-                  readThreadShell(threadRef) !== null
-                ) {
-                  const error = squashAtomCommandFailure(result);
-                  toastManager.add(
-                    stackedThreadToast({
-                      type: "error",
-                      title: "Failed to delete thread",
-                      description: error instanceof Error ? error.message : "An error occurred.",
-                    }),
-                  );
-                  return { ok: false };
-                }
-                return { ok: true };
-              },
-            });
-            if (outcome.kind === "child-failed") {
-              const error = outcome.error;
+            // The server deletes the whole delegated subtree, so the client
+            // only confirms (naming the cascade) and deletes the thread.
+            if (confirmThreadDelete) {
+              const descendantCount = countDelegatedDescendants({
+                parent: threadRef,
+                threads: readThreadShells(),
+              });
+              const confirmed = await settlePromise(() =>
+                api.dialogs.confirm(
+                  [
+                    `Delete thread "${thread.title}"?`,
+                    "This permanently clears conversation history for this thread.",
+                    ...(descendantCount > 0
+                      ? [
+                          `${descendantCount} delegated subtask${descendantCount === 1 ? "" : "s"} under it will also be deleted.`,
+                        ]
+                      : []),
+                  ].join("\n"),
+                  { variant: "destructive" },
+                ),
+              );
+              if (confirmed._tag === "Failure" || !confirmed.value) return;
+            }
+            const result = await deleteThread(threadRef);
+            if (
+              result._tag === "Failure" &&
+              !isAtomCommandInterrupted(result) &&
+              // A failure with the thread already gone is worktree cleanup
+              // failing after a successful delete; deleteThread has toasted
+              // that itself.
+              readThreadShell(threadRef) !== null
+            ) {
+              const error = squashAtomCommandFailure(result);
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: "Failed to delete delegated subtask",
+                  title: "Failed to delete thread",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
@@ -5001,7 +4951,6 @@ export default function Sidebar() {
       copyPathToClipboard,
       copyThreadIdToClipboard,
       deleteThread,
-      deleteThreadChildren,
       handleMultiSelectContextMenu,
       markThreadUnread,
       openProjectSettings,

@@ -252,6 +252,62 @@ export interface DelegatedChildThreadLike {
  * by scoped key. Grandchildren stay out: deleting or archiving a child is its
  * own action and applies that child's settings when the user reaches it.
  */
+/**
+ * Every delegated descendant of `parent` — children, grandchildren, and
+ * beyond — resolved to scoped refs and sorted by scoped key. Archived threads
+ * are included on purpose: the server deletes the whole subtree, archived
+ * branches included, so the delete confirmation counts exactly what the
+ * server will remove. A visited set keeps the walk total even if lineage ever
+ * forms a cycle.
+ */
+export function collectDelegatedDescendantRefs(input: {
+  readonly parent: ScopedThreadRef;
+  readonly threads: ReadonlyArray<DelegatedChildThreadLike>;
+}): ReadonlyArray<ScopedThreadRef> {
+  const parentKey = scopedThreadKey(input.parent);
+  const visited = new Set<string>([parentKey]);
+  const refs: ScopedThreadRef[] = [];
+  let frontier: ReadonlyArray<ScopedThreadRef> = [input.parent];
+  while (frontier.length > 0) {
+    const next: ScopedThreadRef[] = [];
+    for (const current of frontier) {
+      for (const thread of input.threads) {
+        const delegationParent = thread.delegationParent;
+        if (delegationParent == null) continue;
+        if (
+          delegationParent.parentThreadId !== current.threadId ||
+          delegationParent.parentEnvironmentId !== current.environmentId
+        ) {
+          continue;
+        }
+        const childRef = scopeThreadRef(thread.environmentId, thread.id);
+        const childKey = scopedThreadKey(childRef);
+        if (visited.has(childKey)) continue;
+        visited.add(childKey);
+        refs.push(childRef);
+        next.push(childRef);
+      }
+    }
+    frontier = next;
+  }
+  return refs.sort((left, right) => {
+    const leftKey = scopedThreadKey(left);
+    const rightKey = scopedThreadKey(right);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+  });
+}
+
+/**
+ * How many delegated descendants `parent` has. Used by the delete
+ * confirmation, which warns about the server-side cascade.
+ */
+export function countDelegatedDescendants(input: {
+  readonly parent: ScopedThreadRef;
+  readonly threads: ReadonlyArray<DelegatedChildThreadLike>;
+}): number {
+  return collectDelegatedDescendantRefs(input).length;
+}
+
 export function collectDelegatedChildRefs(input: {
   readonly parent: ScopedThreadRef;
   readonly threads: ReadonlyArray<DelegatedChildThreadLike>;

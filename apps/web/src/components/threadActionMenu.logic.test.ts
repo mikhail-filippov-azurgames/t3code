@@ -7,6 +7,8 @@ import {
   buildThreadActionMenuItems,
   collectDelegatedChildRefs,
   collectDelegatedChildRefsForParents,
+  collectDelegatedDescendantRefs,
+  countDelegatedDescendants,
   delegatedChildrenCleanupMessage,
   delegatedChildrenDialogMessage,
   resolveDelegatedChildrenBulkCascade,
@@ -228,6 +230,79 @@ describe("collectDelegatedChildRefs", () => {
         ],
       }),
     ).toEqual([]);
+  });
+});
+
+describe("collectDelegatedDescendantRefs", () => {
+  it("walks every level including archived branches, sorted by scoped key", () => {
+    const refs = collectDelegatedDescendantRefs({
+      parent: parentRef,
+      threads: [
+        delegatedChild({ environmentId: "env-b", id: "second" }),
+        delegatedChild({ environmentId: "env-a", id: "first" }),
+        delegatedChild({
+          environmentId: "env-a",
+          id: "grandchild",
+          parentThreadId: "first",
+          parentEnvironmentId: "env-a",
+        }),
+        delegatedChild({
+          environmentId: "env-a",
+          id: "archived-child",
+          archivedAt: "2026-01-01T00:00:00Z",
+        }),
+        delegatedChild({
+          environmentId: "env-a",
+          id: "archived-grandchild",
+          parentThreadId: "archived-child",
+          parentEnvironmentId: "env-a",
+          archivedAt: "2026-01-01T00:00:00Z",
+        }),
+        delegatedChild({
+          environmentId: "env-a",
+          id: "other-parent",
+          parentThreadId: "someone-else",
+        }),
+        { id: ThreadId.make("plain"), environmentId: EnvironmentId.make("env-a") },
+      ],
+    });
+
+    expect(refs.map(scopedThreadKey)).toEqual([
+      "env-a:archived-child",
+      "env-a:archived-grandchild",
+      "env-a:first",
+      "env-a:grandchild",
+      "env-b:second",
+    ]);
+    expect(
+      countDelegatedDescendants({
+        parent: parentRef,
+        threads: [
+          delegatedChild({ environmentId: "env-a", id: "first" }),
+          delegatedChild({
+            environmentId: "env-a",
+            id: "grandchild",
+            parentThreadId: "first",
+            parentEnvironmentId: "env-a",
+          }),
+        ],
+      }),
+    ).toBe(2);
+  });
+
+  it("stays within the parent environment", () => {
+    const refs = collectDelegatedDescendantRefs({
+      parent: parentRef,
+      threads: [
+        delegatedChild({
+          environmentId: "env-a",
+          id: "lookalike",
+          parentEnvironmentId: "env-other",
+        }),
+      ],
+    });
+    expect(refs).toEqual([]);
+    expect(countDelegatedDescendants({ parent: parentRef, threads: [] })).toBe(0);
   });
 });
 
