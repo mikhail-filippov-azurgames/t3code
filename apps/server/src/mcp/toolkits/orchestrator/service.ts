@@ -730,6 +730,32 @@ function hasCurrentTaskProviderSwitch(
   });
 }
 
+// Stale-session allowance shared by the follow-up admission path and the
+// follow-up resume path: after a sanctioned provider switch the runtime
+// session still names the old provider (only provider events rebind it), so
+// a session that is idle and bound to no live turn may keep the queued
+// follow-up. Anything else fails closed.
+function sessionAllowsFollowUpStart(
+  thread: OrchestrationThread,
+  lineage: DelegationCreatedPayload,
+  currentIdentity: OrchestratorMcpRequestedIdentity,
+  rows: ReadonlyArray<ProjectionTurn>,
+): boolean {
+  const session = thread.session;
+  if (session === null) return true;
+  if (session.providerInstanceId === undefined) return false;
+  if (session.runtimeMode !== lineage.requested.runtimeMode) return false;
+  if (session.providerInstanceId === currentIdentity.providerInstanceId) return true;
+  return (
+    hasCurrentTaskProviderSwitch(thread, lineage) &&
+    session.activeTurnId === null &&
+    session.status !== "running" &&
+    session.status !== "starting" &&
+    thread.latestTurn?.state !== "running" &&
+    !rows.some((row) => row.turnId === null)
+  );
+}
+
 function modelSelectionMatchesRequested(
   modelSelection: ModelSelection,
   requested: OrchestratorMcpRequestedIdentity,
@@ -2230,30 +2256,86 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           activity.payload.requestId === input.receipt.result.messageId,
       );
       if (!hasTurnRequest && !startFailed) {
+        const lineage = findLineage(input.child);
+        const currentIdentity =
+          lineage === null ? null : findCurrentTaskIdentity(input.child, lineage);
+        // A sanctioned provider switch repoints the child at the current task
+        // identity while a receipt queued before the switch still names the
+        // previous one. Validate the child against the current identity so
+        // the follow-up continues on the new provider; a child matching
+        // neither still fails closed.
+        const receiptMatchesCurrent =
+          currentIdentity !== null &&
+          requestedIdentityMatches(input.receipt.result.requested, currentIdentity);
         if (
-          !modelSelectionMatchesRequested(
-            input.child.modelSelection,
-            input.receipt.result.requested,
-          ) ||
-          input.child.runtimeMode !== input.receipt.result.requested.runtimeMode ||
-          input.child.interactionMode !== input.receipt.result.requested.interactionMode ||
-          (input.child.session !== null &&
-            (input.child.session.providerInstanceId !==
-              input.receipt.result.requested.providerInstanceId ||
-              input.child.session.runtimeMode !== input.receipt.result.requested.runtimeMode))
+          lineage === null ||
+          currentIdentity === null ||
+          (!receiptMatchesCurrent && !hasCurrentTaskProviderSwitch(input.child, lineage)) ||
+          !modelSelectionMatchesRequested(input.child.modelSelection, currentIdentity) ||
+          input.child.runtimeMode !== lineage.requested.runtimeMode ||
+          input.child.interactionMode !== lineage.requested.interactionMode ||
+          currentIdentity.runtimeMode !== lineage.requested.runtimeMode ||
+          currentIdentity.interactionMode !== lineage.requested.interactionMode ||
+          !sessionAllowsFollowUpStart(input.child, lineage, currentIdentity, rows)
         ) {
           return yield* failure(
             "provider_configuration_changed",
             "The child identity changed before the accepted follow-up could start.",
           );
         }
+        const result = receiptMatchesCurrent
+          ? input.receipt.result
+          : { ...input.receipt.result, requested: currentIdentity };
         yield* dispatchFollowUpTurn({
           taskId: input.taskId,
           message: input.message,
-          result: input.receipt.result,
+          result,
         });
+        return result;
       }
       return input.receipt.result;
+    },
+  );
+
+  // Frozen-identity admission shared by fresh follow-ups and exact retries: the
+  // child shell must still name the current task identity, and a runtime
+  // session bound to a previous provider is accepted only under the
+  // post-switch conditions of sessionAllowsFollowUpStart.
+  const requireFollowUpIdentity = Effect.fn("OrchestratorMcpService.requireFollowUpIdentity")(
+    function* (input: {
+      readonly taskId: ThreadId;
+      readonly child: OrchestrationThread;
+      readonly lineage: DelegationCreatedPayload;
+    }) {
+      const rows = yield* listTurns(input.taskId);
+      const currentIdentity = findCurrentTaskIdentity(input.child, input.lineage);
+      if (
+        !modelSelectionMatchesRequested(input.child.modelSelection, currentIdentity) ||
+        input.child.runtimeMode !== input.lineage.requested.runtimeMode ||
+        input.child.interactionMode !== input.lineage.requested.interactionMode ||
+        currentIdentity.runtimeMode !== input.lineage.requested.runtimeMode ||
+        currentIdentity.interactionMode !== input.lineage.requested.interactionMode
+      ) {
+        return yield* failure(
+          "permission_escalation_denied",
+          "The child no longer matches its frozen provider and permission identity.",
+        );
+      }
+      if (input.child.session !== null) {
+        if (input.child.session.providerInstanceId === undefined) {
+          return yield* failure(
+            "permission_envelope_unverifiable",
+            "The child's active provider session has no verifiable provider instance.",
+          );
+        }
+        if (!sessionAllowsFollowUpStart(input.child, input.lineage, currentIdentity, rows)) {
+          return yield* failure(
+            "provider_configuration_changed",
+            "The child's active session no longer matches its delegated provider configuration.",
+          );
+        }
+      }
+      return currentIdentity;
     },
   );
 
@@ -3275,6 +3357,10 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               "This idempotency key already belongs to a different follow-up message.",
             );
           }
+          // An exact retry replays the accepted follow-up, but the child may
+          // have been repointed — or tampered with — since it was queued, so
+          // it runs the same frozen-identity admission as a fresh follow-up.
+          yield* requireFollowUpIdentity({ taskId: input.taskId, child, lineage });
           return yield* resumeFollowUpTurn({
             taskId: input.taskId,
             message: input.message,
@@ -3283,49 +3369,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           });
         }
 
-        const rows = yield* listTurns(input.taskId);
-        const currentIdentity = findCurrentTaskIdentity(child, lineage);
-        if (
-          !modelSelectionMatchesRequested(child.modelSelection, currentIdentity) ||
-          child.runtimeMode !== lineage.requested.runtimeMode ||
-          child.interactionMode !== lineage.requested.interactionMode ||
-          currentIdentity.runtimeMode !== lineage.requested.runtimeMode ||
-          currentIdentity.interactionMode !== lineage.requested.interactionMode
-        ) {
-          return yield* failure(
-            "permission_escalation_denied",
-            "The child no longer matches its frozen provider and permission identity.",
-          );
-        }
-        if (child.session !== null) {
-          if (child.session.providerInstanceId === undefined) {
-            return yield* failure(
-              "permission_envelope_unverifiable",
-              "The child's active provider session has no verifiable provider instance.",
-            );
-          }
-          if (child.session.runtimeMode !== lineage.requested.runtimeMode) {
-            return yield* failure(
-              "provider_configuration_changed",
-              "The child's active session no longer matches its delegated provider configuration.",
-            );
-          }
-          if (child.session.providerInstanceId !== currentIdentity.providerInstanceId) {
-            const canUseExplicitRepoint =
-              hasCurrentTaskProviderSwitch(child, lineage) &&
-              child.session.activeTurnId === null &&
-              child.session.status !== "running" &&
-              child.session.status !== "starting" &&
-              child.latestTurn?.state !== "running" &&
-              !rows.some((row) => row.turnId === null);
-            if (!canUseExplicitRepoint) {
-              return yield* failure(
-                "provider_configuration_changed",
-                "The child's active session no longer matches its delegated provider configuration.",
-              );
-            }
-          }
-        }
+        const currentIdentity = yield* requireFollowUpIdentity({
+          taskId: input.taskId,
+          child,
+          lineage,
+        });
 
         // The target envelope is rebuilt with the canonical frozen child caps,
         // never the caller surface set, so a broader caller cannot smuggle in
@@ -3871,15 +3919,20 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
                 })
                 .pipe(Effect.mapError(orchestrationFailure("persist provider-switch lineage")));
             }
-            // Advance only when nothing is queued or bound yet: the delegated
-            // turn was rejected or suppressed before it could start, and the
-            // stored prompt is replayed on the new provider. A queued or running
-            // turn is never restarted; it drains on the old provider. The replay
-            // carries followUpBehavior queue so startup recovery replays it after
-            // a crash before the reactor runs; the transition command ID keeps
-            // the replay once-only.
+            // Advance only when no live turn exists for the delegated
+            // message: the turn was rejected or suppressed before it could
+            // start, or it ended terminally failed on the exhausted provider,
+            // and the stored prompt is replayed on the new provider. A queued,
+            // running, or already-completed turn is never restarted: queued
+            // and running turns drain on the old provider, and completed work
+            // must not run twice. The replay carries followUpBehavior queue
+            // so startup recovery replays it after a crash before the reactor
+            // runs; the transition command ID keeps the replay once-only.
+            const hasLiveWork = matchingRows.some(
+              (row) => row.turnId === null || row.state !== "error",
+            );
             let advanced = false;
-            if (concrete === undefined && pendingCount === 0) {
+            if (!hasLiveWork) {
               const delegatedMessage = committed.messages.find(
                 (message) => message.id === lineage.delegatedMessageId && message.role === "user",
               );

@@ -944,7 +944,7 @@ function bindDelegatedTurn(
   harness: ReturnType<typeof makeHarness>,
   taskId: ThreadId,
   messageId: MessageId,
-  state: "running" | "completed" = "running",
+  state: "running" | "completed" | "error" = "running",
 ): TurnId {
   const turnId = TurnId.make("delegated-turn");
   const row = pendingTurn(taskId, messageId);
@@ -952,7 +952,7 @@ function bindDelegatedTurn(
     turnId,
     state,
     startedAt: now,
-    completedAt: state === "completed" ? now : null,
+    completedAt: state === "running" ? null : now,
   });
   harness.turns.set(taskId, [row]);
   const child = harness.children.get(taskId)!;
@@ -963,12 +963,12 @@ function bindDelegatedTurn(
       state,
       requestedAt: now,
       startedAt: now,
-      completedAt: state === "completed" ? now : null,
+      completedAt: state === "running" ? null : now,
       assistantMessageId: null,
     },
     session: {
       threadId: taskId,
-      status: state === "running" ? "running" : "ready",
+      status: state === "running" ? "running" : state === "error" ? "error" : "ready",
       providerName: "codex",
       providerInstanceId,
       runtimeMode: child.runtimeMode,
@@ -2610,6 +2610,120 @@ describe("OrchestratorMcpService", () => {
           model: "gpt-test",
         });
       }
+    }),
+  );
+
+  it.effect("replays a terminally failed delegated turn on the new provider", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      // The delegated turn ran on the exhausted provider and ended in error.
+      bindDelegatedTurn(harness, delegated.taskId, delegated.lineage.delegatedMessageId, "error");
+
+      const switched = yield* harness.service.switchProvider(scope, switchInput(delegated.taskId));
+
+      expect(switched.advanced).toBe(true);
+      expect(switched.scope).toMatchObject({
+        messageCount: 1,
+        pendingCount: 0,
+        lineagePreserved: true,
+      });
+      const starts = harness.dispatched.filter(({ type }) => type === "thread.turn.start");
+      expect(starts).toHaveLength(2);
+      const replay = starts[1];
+      expect(replay?.type).toBe("thread.turn.start");
+      if (replay?.type === "thread.turn.start") {
+        expect(replay.message.messageId).toBe(delegated.lineage.delegatedMessageId);
+        expect(replay.message.text).toBe("Implement the accepted widget contract.");
+        expect(replay.modelSelection).toMatchObject({
+          instanceId: secondProviderInstanceId,
+          model: "gpt-test",
+        });
+      }
+    }),
+  );
+
+  it.effect("starts a follow-up on the new provider after a switch instead of rejecting it", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({
+        includeSecondProvider: true,
+        failAfterFollowUpReceiptOnce: true,
+      });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const request = sendToTaskInput(delegated.taskId);
+      // The follow-up receipt is persisted, then the start is lost to a crash.
+      const first = yield* harness.service.sendToTask(scope, request).pipe(Effect.exit);
+      expect(first._tag).toBe("Failure");
+
+      const switched = yield* harness.service.switchProvider(scope, switchInput(delegated.taskId));
+      expect(switched.requested.providerInstanceId).toBe(secondProviderInstanceId);
+      // The projector applies the switch to the child shell; the harness
+      // does not, so simulate it before the follow-up retry.
+      const child = harness.children.get(delegated.taskId)!;
+      harness.children.set(delegated.taskId, {
+        ...child,
+        modelSelection: {
+          instanceId: secondProviderInstanceId,
+          model: "gpt-test",
+        },
+      });
+
+      const retried = yield* harness.service.sendToTask(scope, request);
+
+      expect(retried.status).toBe("queued");
+      expect(retried.requested.providerInstanceId).toBe(secondProviderInstanceId);
+      const start = harness.dispatched.findLast(
+        (command) =>
+          command.type === "thread.turn.start" && command.message.messageId === retried.messageId,
+      );
+      expect(start).toMatchObject({
+        type: "thread.turn.start",
+        modelSelection: { instanceId: secondProviderInstanceId, model: "gpt-test" },
+      });
+    }),
+  );
+
+  it.effect("denies an exact follow-up retry when the child shell missed the provider switch", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ includeSecondProvider: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const request = sendToTaskInput(delegated.taskId);
+      yield* harness.service.sendToTask(scope, request);
+      yield* harness.service.switchProvider(scope, switchInput(delegated.taskId));
+      // The child shell still names the old provider, so the retry must fail
+      // closed instead of dispatching the follow-up against it.
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service.sendToTask(scope, request).pipe(Effect.flip);
+
+      expect(error.code).toBe("permission_escalation_denied");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
+    }),
+  );
+
+  it.effect("rejects a follow-up retry when the child identity genuinely changed", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness({ failAfterFollowUpReceiptOnce: true });
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      const request = sendToTaskInput(delegated.taskId);
+      const first = yield* harness.service.sendToTask(scope, request).pipe(Effect.exit);
+      expect(first._tag).toBe("Failure");
+      // Repoint the child outside any sanctioned provider switch.
+      const child = harness.children.get(delegated.taskId)!;
+      harness.children.set(delegated.taskId, {
+        ...child,
+        modelSelection: { instanceId: secondProviderInstanceId, model: "gpt-test" },
+      });
+      const dispatchCount = harness.dispatched.length;
+
+      const error = yield* harness.service.sendToTask(scope, request).pipe(Effect.flip);
+
+      expect(error.code).toBe("permission_escalation_denied");
+      expect(harness.dispatched).toHaveLength(dispatchCount);
     }),
   );
 
