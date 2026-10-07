@@ -128,6 +128,37 @@ Read the permission configuration, then write a summary of the security policy.`
     expect(applyDerivedTextPolicy("read", input)).toEqual({ _tag: "Unchanged", text: input });
   });
 
+  it("is idempotent: projecting twice matches projecting once", () => {
+    const secretInputs = [
+      `Provider token: ${providerToken}`,
+      'api_key="7f3a9c4e5b6d0789QwErTyUiOp"',
+      "Cookie: session=Q9wE2rT7yU4iO6pA1sD3; theme=dark",
+    ];
+    const cleanInput = "Wake summary:\r\nГотово; прочитаны docs/api-key.md и config.ts.\n";
+
+    for (const purpose of ["summary", "wake", "completion-preview", "read"] as const) {
+      for (const input of secretInputs) {
+        const once = projectDerivedText(purpose, input);
+        expect(once).toContain(SECRET_REDACTION_LABEL);
+        expect(once).not.toContain(providerToken);
+        expect(projectDerivedText(purpose, once)).toBe(once);
+      }
+      expect(projectDerivedText(purpose, cleanInput)).toBe(cleanInput);
+    }
+  });
+
+  it("reports the second derived-text application as Unchanged", () => {
+    const first = applyDerivedTextPolicy("summary", `Provider token: ${providerToken}`);
+
+    expect(first._tag).toBe("Redacted");
+    if (first._tag === "Redacted") {
+      expect(applyDerivedTextPolicy("summary", first.text)).toEqual({
+        _tag: "Unchanged",
+        text: first.text,
+      });
+    }
+  });
+
   it("detects common structured credential formats with the shared rules", () => {
     const input = [
       "API_KEY=Ab1!Cd2@Ef3#Gh4$",

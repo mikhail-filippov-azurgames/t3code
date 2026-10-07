@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The legacy raw-fingerprint fixture hashes with node:crypto.
+import * as NodeCrypto from "node:crypto";
+
 import {
   DEFAULT_SERVER_SETTINGS,
   EventId,
@@ -405,6 +408,228 @@ it.effect(
         }).pipe(Effect.provide(layer));
       }),
     ),
+);
+
+it.effect("pays one generation for a legacy raw fingerprint, then deduplicates", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const eventQueue = yield* Queue.unbounded<OrchestrationEvent>();
+      const records = yield* Ref.make(new Map<string, DelegatedTaskSummaryRecord>());
+      const completions = yield* Queue.unbounded<void>();
+      const readSignals = yield* Queue.unbounded<number>();
+      const childThreadId = ThreadId.make("summary-legacy-fingerprint-child");
+      const parentThreadId = ThreadId.make("summary-legacy-fingerprint-parent");
+      const projectId = ProjectId.make("summary-legacy-fingerprint-project");
+      const parentEnvironmentId = "summary-legacy-fingerprint-environment";
+      const sourceTurnId = TurnId.make("summary-legacy-fingerprint-turn");
+      const previousTurnId = TurnId.make("summary-legacy-fingerprint-previous-turn");
+      const completedAt = "2026-09-20T10:00:00.000Z" as const;
+      const secret = "sk_live_0123456789ABCDEF";
+      const sourceReport = `Final report ${secret}`;
+      const sourceEvents = `tool.completed: Tool returned ${secret}`;
+      const previousText = "Outcome: legacy ready summary.";
+      // The pre-projection scheme fingerprinted scrubbed-but-unredacted text, so a
+      // legacy ready row misses once against the projected fingerprint and then
+      // stabilizes: the first completion pays for one generation, the redelivery
+      // must not pay again.
+      const legacyFingerprint = NodeCrypto.createHash("sha256")
+        .update(
+          [
+            scrubDelegatedTaskText(previousText),
+            scrubDelegatedTaskText(sourceReport),
+            scrubDelegatedTaskText(sourceEvents),
+            "completed",
+            "",
+          ].join(""),
+        )
+        .digest("hex");
+      const key = `${childThreadId}${sourceTurnId}`;
+      const previous: DelegatedTaskSummaryRecord = {
+        childThreadId,
+        parentEnvironmentId,
+        parentThreadId,
+        sourceTurnId: previousTurnId,
+        completedAt,
+        text: previousText,
+        source: "deterministic",
+        sourceTurnIds: [previousTurnId],
+        watermark: 41,
+        contentFingerprint: legacyFingerprint,
+        state: "ready",
+        error: null,
+        attemptCount: 0,
+        retryAfter: null,
+        updatedAt: completedAt,
+      };
+
+      const repository = Layer.mock(DelegatedTaskSummaryRepository)({
+        getByTurn: ({ childThreadId: child, sourceTurnId: turn }) =>
+          Ref.get(records).pipe(
+            Effect.map((rows) => rows.get(`${child}${turn}`) ?? null),
+            Effect.tap(() => Queue.offer(readSignals, 1)),
+          ),
+        getLatestBefore: () => Effect.succeed(previous),
+        insertPending: (row) =>
+          Ref.update(records, (rows) => {
+            const next = new Map(rows);
+            const rowKey = `${row.childThreadId}${row.sourceTurnId}`;
+            if (!next.has(rowKey)) next.set(rowKey, row);
+            return next;
+          }),
+        claimGeneration: ({ childThreadId: child, sourceTurnId: turn, retryAfter, updatedAt }) =>
+          Ref.modify(records, (rows) => {
+            const rowKey = `${child}${turn}`;
+            const current = rows.get(rowKey);
+            if (
+              current === undefined ||
+              current.state !== "pending" ||
+              current.attemptCount !== 0
+            ) {
+              return [false, rows];
+            }
+            const next = new Map(rows);
+            next.set(rowKey, { ...current, attemptCount: 1, retryAfter, updatedAt });
+            return [true, next];
+          }),
+        complete: (input) =>
+          Ref.update(records, (rows) => {
+            const next = new Map(rows);
+            const rowKey = `${input.childThreadId}${input.sourceTurnId}`;
+            const current = next.get(rowKey);
+            if (current !== undefined) {
+              next.set(rowKey, {
+                ...current,
+                ...input,
+                state: "ready",
+                error: null,
+                retryAfter: null,
+              });
+            }
+            return next;
+          }).pipe(Effect.andThen(Queue.offer(completions, undefined)), Effect.asVoid),
+        fail: (input) =>
+          Ref.update(records, (rows) => {
+            const next = new Map(rows);
+            const rowKey = `${input.childThreadId}${input.sourceTurnId}`;
+            const current = next.get(rowKey);
+            if (current !== undefined) {
+              next.set(rowKey, {
+                ...current,
+                state: input.final ? "error" : "pending",
+                error: scrubDelegatedTaskText(input.error),
+                retryAfter: input.retryAfter,
+                updatedAt: input.updatedAt,
+              });
+            }
+            return next;
+          }),
+      });
+      const engine = Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
+        subscribeDomainEvents: Effect.succeed(Stream.fromQueue(eventQueue)),
+      });
+      const snapshots = Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+        getProjectShellById: () => Effect.succeedNone,
+        getDelegatedTaskSummaryInput: () =>
+          Effect.succeed(
+            Option.some({
+              projectId,
+              parentEnvironmentId,
+              parentThreadId,
+              branch: "feature/task-memory",
+              worktreePath: `/workspace/${childThreadId}`,
+              assistantText: sourceReport,
+              activities: [{ kind: "tool.completed", summary: `Tool returned ${secret}` }],
+              threadWatermark: 42,
+            }),
+          ),
+        listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
+        listDelegatedTaskSummaryRecoveryCandidates: () =>
+          Effect.succeed({ rows: [], hasMore: false }),
+      });
+      let generatorCalls = 0;
+      const generator = Layer.mock(TextGeneration.TextGeneration)({
+        generateCommitMessage: () =>
+          Effect.gen(function* () {
+            generatorCalls++;
+            return {
+              subject: "Migrate legacy summary fingerprint",
+              body: "- Focused validation passed.",
+            };
+          }),
+      });
+      const dependencies = Layer.mergeAll(
+        repository,
+        engine,
+        snapshots,
+        generator,
+        ServerSettings.ServerSettingsService.layerTest(),
+      );
+      const layer = delegatedTaskSummaryReactorLayer.pipe(Layer.provideMerge(dependencies));
+
+      yield* Effect.gen(function* () {
+        const reactor = yield* DelegatedTaskSummaryReactor;
+        yield* reactor.start();
+
+        const completion = {
+          sequence: 1,
+          eventId: EventId.make("summary-legacy-fingerprint-event"),
+          aggregateKind: "thread" as const,
+          aggregateId: parentThreadId,
+          occurredAt: "2026-09-20T10:00:00.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "thread.activity-appended" as const,
+          payload: {
+            threadId: parentThreadId,
+            activity: {
+              id: EventId.make("summary-legacy-fingerprint-completion"),
+              tone: "info" as const,
+              kind: "delegation.completed",
+              summary: "Delegated child completed",
+              payload: {
+                version: 1 as const,
+                childThreadId,
+                delegatedTurnId: sourceTurnId,
+                status: "completed" as const,
+                completedAt,
+              },
+              turnId: null,
+              createdAt: "2026-09-20T10:00:00.000Z",
+            },
+          },
+        } satisfies OrchestrationEvent;
+
+        yield* Queue.offer(eventQueue, completion);
+        yield* Queue.take(completions);
+        const settled = (yield* Ref.get(records)).get(key) ?? null;
+
+        assert.equal(generatorCalls, 1);
+        assert.equal(settled?.state, "ready");
+        assert.equal(settled?.source, "model");
+        assert.notEqual(settled?.text, previousText);
+        assert.include(settled?.text ?? "", "Migrate legacy summary fingerprint");
+        assert.notEqual(settled?.contentFingerprint, legacyFingerprint);
+        assert.deepEqual(settled?.sourceTurnIds, [previousTurnId, sourceTurnId]);
+
+        // Settle the first pass fully (releasing its in-flight key) before the
+        // redelivery, then drain its two read signals so the take below
+        // observes exactly the redelivery.
+        yield* reactor.drain;
+        yield* Queue.take(readSignals);
+        yield* Queue.take(readSignals);
+        yield* Queue.offer(eventQueue, completion);
+        yield* Queue.take(readSignals);
+        yield* reactor.drain;
+
+        assert.equal(generatorCalls, 1);
+        assert.isTrue(Option.isNone(yield* Queue.poll(readSignals)));
+        assert.isTrue(Option.isNone(yield* Queue.poll(completions)));
+        assert.equal((yield* Ref.get(records)).get(key)?.state, "ready");
+      }).pipe(Effect.provide(layer));
+    }),
+  ),
 );
 
 it.effect("retries delegated summary recovery after a transient query failure", () =>

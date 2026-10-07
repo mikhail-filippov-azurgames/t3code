@@ -4251,4 +4251,109 @@ describe("OrchestratorMcpService", () => {
       });
     }),
   );
+
+  it.effect("preserves read payload structure across scalars, nesting, and __proto__ keys", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const taskId = ThreadId.make("memory-child-structure");
+      const child = memoryChild(taskId);
+      const nestedSecret = "sk_live_0123456789ABCDEF";
+      const nestedPayload = {
+        count: 7,
+        enabled: true,
+        missing: null,
+        note: `deploy token ${nestedSecret}`,
+        levels: [1, "two", { three: [nestedSecret, { four: null }] }],
+      };
+      // Object.fromEntries defines "__proto__" as an own data property without
+      // touching the prototype, mirroring a parsed JSON payload.
+      const protoPayload: Record<string, unknown> = Object.fromEntries([
+        ["__proto__", { polluted: true }],
+        ["safe", `value ${nestedSecret}`],
+      ]);
+      const withShapes = {
+        ...child,
+        activities: [
+          ...child.activities,
+          {
+            id: EventId.make(`${taskId}-null-payload`),
+            tone: "info",
+            kind: "custom.note",
+            summary: "Null payload survives the read projection",
+            payload: null,
+            turnId: null,
+            createdAt: now,
+          },
+          {
+            id: EventId.make(`${taskId}-number-payload`),
+            tone: "info",
+            kind: "custom.note",
+            summary: "Scalar payload survives the read projection",
+            payload: 42,
+            turnId: null,
+            createdAt: now,
+          },
+          {
+            id: EventId.make(`${taskId}-nested-payload`),
+            tone: "info",
+            kind: "custom.note",
+            summary: "Nested payload survives the read projection",
+            payload: nestedPayload,
+            turnId: null,
+            createdAt: now,
+          },
+          {
+            id: EventId.make(`${taskId}-proto-payload`),
+            tone: "info",
+            kind: "custom.note",
+            summary: "Proto payload survives the read projection",
+            payload: protoPayload,
+            turnId: null,
+            createdAt: now,
+          },
+        ],
+      } as OrchestrationThread;
+      harness.children.set(taskId, withShapes);
+
+      const transcript = yield* harness.service.taskRead(makeScope(), { taskId });
+      const payloadById = new Map(
+        transcript.activities.map((activity) => [activity.id, activity.payload]),
+      );
+
+      expect(payloadById.get(EventId.make(`${taskId}-null-payload`))).toBeNull();
+      expect(payloadById.get(EventId.make(`${taskId}-number-payload`))).toBe(42);
+
+      const nested = payloadById.get(EventId.make(`${taskId}-nested-payload`)) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(nested).toSorted()).toEqual([
+        "count",
+        "enabled",
+        "levels",
+        "missing",
+        "note",
+      ]);
+      expect(nested["count"]).toBe(7);
+      expect(nested["enabled"]).toBe(true);
+      expect(nested["missing"]).toBeNull();
+      expect(nested["note"]).toBe("deploy token [REDACTED]");
+      expect(nested["levels"]).toEqual([1, "two", { three: ["[REDACTED]", { four: null }] }]);
+      expect(nested).not.toBe(nestedPayload);
+      expect(nested["levels"]).not.toBe(nestedPayload.levels);
+      expect(nestedPayload.note).toContain(nestedSecret);
+
+      const proto = payloadById.get(EventId.make(`${taskId}-proto-payload`)) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(proto).toSorted()).toEqual(["__proto__", "safe"]);
+      expect(Object.getPrototypeOf(proto)).toBe(Object.prototype);
+      expect(Object.prototype.hasOwnProperty.call(proto, "__proto__")).toBe(true);
+      expect(proto["safe"]).toBe("value [REDACTED]");
+      expect(proto["__proto__"]).toEqual({ polluted: true });
+      expect(Object.getPrototypeOf(protoPayload)).toBe(Object.prototype);
+      expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
+    }),
+  );
 });
