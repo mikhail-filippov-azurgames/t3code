@@ -85,6 +85,30 @@ import { ServerActivation } from "../../serverActivation.ts";
 import { VcsStatusBroadcaster } from "../../vcs/VcsStatusBroadcaster.ts";
 import * as GitWorkflowService from "../../git/GitWorkflowService.ts";
 
+// Fail-closed probe for the delegated author-text gate: when set, the mocked
+// policy throws instead of returning a verdict, so the test below exercises
+// the catch path of the reactor check rather than the "secret found" path.
+const authorTextPolicyFailure = vi.hoisted(() => ({ shouldThrow: false }));
+
+function setAuthorTextPolicyShouldThrow(value: boolean): void {
+  authorTextPolicyFailure.shouldThrow = value;
+}
+
+vi.mock("../../security/SecretTextPolicy.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../security/SecretTextPolicy.ts")>();
+  return {
+    ...actual,
+    applyAuthorTextPolicy: (
+      ...args: Parameters<typeof actual.applyAuthorTextPolicy>
+    ): ReturnType<typeof actual.applyAuthorTextPolicy> => {
+      if (authorTextPolicyFailure.shouldThrow) {
+        throw new Error("injected author-text policy failure");
+      }
+      return actual.applyAuthorTextPolicy(...args);
+    },
+  };
+});
+
 const asProjectId = (value: string): ProjectId => ProjectId.make(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.make(value);
 const asMessageId = (value: string): MessageId => MessageId.make(value);
@@ -4746,6 +4770,69 @@ describe("ProviderCommandReactor", () => {
     );
     expect(failure?.payload).toMatchObject({ code: "author_text_rejected" });
     expect(JSON.stringify(failure).includes(secretToken)).toBe(false);
+    expect(thread?.session?.status).toBe("error");
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.kind === "delegation.provider-bound" ||
+          activity.kind === "provider.turn.send.claimed",
+      ),
+    ).toBe(false);
+    expect(harness.startSession).not.toHaveBeenCalled();
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a delegated start when the author-text check itself throws (fail-closed)", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const messageId = asMessageId("fail-closed-delegated-message");
+
+    // The reactor resolves the turn start asynchronously, so the failure
+    // probe must stay armed until the refusal is observed, not just until
+    // the dispatch is accepted.
+    setAuthorTextPolicyShouldThrow(true);
+    try {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.make("cmd-fail-closed-delegated-start"),
+          threadId,
+          message: {
+            messageId,
+            role: "user",
+            text: "Implement the accepted widget contract.",
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          delegationConfigFingerprint: "fail-closed-provider-config",
+          createdAt: now,
+        }),
+      );
+      await waitFor(async () => {
+        const model = await harness.readModel();
+        return model.threads.some((thread) =>
+          thread.activities.some(
+            (activity) =>
+              activity.kind === "provider.turn.start.failed" &&
+              typeof activity.payload === "object" &&
+              activity.payload !== null &&
+              "code" in activity.payload &&
+              activity.payload.code === "author_text_rejected",
+          ),
+        );
+      });
+    } finally {
+      setAuthorTextPolicyShouldThrow(false);
+    }
+    await harness.drain();
+
+    const thread = (await harness.readModel()).threads.find((entry) => entry.id === threadId);
+    const failure = thread?.activities.find(
+      (activity) => activity.kind === "provider.turn.start.failed",
+    );
+    expect(failure?.payload).toMatchObject({ code: "author_text_rejected" });
     expect(thread?.session?.status).toBe("error");
     expect(
       thread?.activities.some(

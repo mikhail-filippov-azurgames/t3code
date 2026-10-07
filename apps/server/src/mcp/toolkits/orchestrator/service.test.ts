@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The fingerprint site-count guard reads the service source text.
+import * as NodeFS from "node:fs";
+
 import { describe, expect, it } from "@effect/vitest";
 import {
   BoardCard,
@@ -32,6 +35,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
+import { vi } from "vite-plus/test";
 
 import { normalizeDelegationPermissionEnvelope } from "../../../provider/DelegationPermissionEnvelope.ts";
 import type { ProjectionTurn } from "../../../persistence/Services/ProjectionTurns.ts";
@@ -41,6 +45,30 @@ import {
   type OrchestratorMcpDependencies,
   type OrchestratorMcpServiceShape,
 } from "./service.ts";
+
+// Fail-closed probe for the author-text gate: when set, the mocked policy
+// throws instead of returning a verdict, so the test below exercises the
+// catch path of ensureAuthorTextAllowed rather than the "secret found" path.
+const authorTextPolicyFailure = vi.hoisted(() => ({ shouldThrow: false }));
+
+function setAuthorTextPolicyShouldThrow(value: boolean): void {
+  authorTextPolicyFailure.shouldThrow = value;
+}
+
+vi.mock("../../../security/SecretTextPolicy.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../security/SecretTextPolicy.ts")>();
+  return {
+    ...actual,
+    applyAuthorTextPolicy: (
+      ...args: Parameters<typeof actual.applyAuthorTextPolicy>
+    ): ReturnType<typeof actual.applyAuthorTextPolicy> => {
+      if (authorTextPolicyFailure.shouldThrow) {
+        throw new Error("injected author-text policy failure");
+      }
+      return actual.applyAuthorTextPolicy(...args);
+    },
+  };
+});
 
 const now = "2026-09-14T10:00:00.000Z";
 const parentThreadId = ThreadId.make("parent-thread");
@@ -1373,6 +1401,110 @@ describe("OrchestratorMcpService", () => {
         expect(error.code).toBe("author_text_rejected");
         expect(retryHarness.dispatched).toEqual([]);
       }
+    }),
+  );
+
+  it.effect(
+    "rejects clean delegated text when the author-text check itself throws (fail-closed)",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        setAuthorTextPolicyShouldThrow(true);
+        try {
+          const error = yield* harness.service
+            .delegateTask(
+              makeScope(),
+              delegateInput({ prompt: "Implement the accepted widget contract." }),
+            )
+            .pipe(Effect.flip);
+          expect(error.code).toBe("author_text_rejected");
+          expect(harness.dispatched).toEqual([]);
+          expect(harness.children.size).toBe(0);
+        } finally {
+          setAuthorTextPolicyShouldThrow(false);
+        }
+      }),
+  );
+
+  it.effect("attaches the delegation config fingerprint on every delegated turn start", () =>
+    Effect.gen(function* () {
+      // Initial delegated start plus a queued follow-up start.
+      const followUpHarness = makeHarness();
+      const followUpScope = makeScope();
+      const delegated = yield* followUpHarness.service.delegateTask(followUpScope, delegateInput());
+      const followUp = yield* followUpHarness.service.sendToTask(
+        followUpScope,
+        sendToTaskInput(delegated.taskId),
+      );
+      const followUpStarts = followUpHarness.dispatched.filter(
+        (command) => command.type === "thread.turn.start",
+      );
+      expect(followUpStarts).toHaveLength(2);
+      const initialStart = followUpStarts[0];
+      expect(initialStart?.type).toBe("thread.turn.start");
+      if (initialStart?.type === "thread.turn.start") {
+        expect(initialStart.delegationConfigFingerprint).toBe(
+          delegated.requested.providerConfigFingerprint,
+        );
+      }
+      for (const start of followUpStarts) {
+        expect(start.type).toBe("thread.turn.start");
+        if (start.type !== "thread.turn.start") continue;
+        expect(typeof start.delegationConfigFingerprint).toBe("string");
+        expect(start.delegationConfigFingerprint?.length).toBeGreaterThan(0);
+      }
+      const followUpStart = followUpStarts[1];
+      expect(followUpStart?.type).toBe("thread.turn.start");
+      if (followUpStart?.type === "thread.turn.start") {
+        expect(followUpStart.delegationConfigFingerprint).toBe(
+          followUp.requested.providerConfigFingerprint,
+        );
+      }
+
+      // Provider-switch replay of a suppressed delegated turn.
+      const switchHarness = makeHarness({ includeSecondProvider: true });
+      const switchScope = makeScope();
+      const switchDelegated = yield* switchHarness.service.delegateTask(
+        switchScope,
+        delegateInput(),
+      );
+      // The delegated turn was rejected before it could queue; the stored
+      // prompt is the only history and must be replayed, not restarted.
+      switchHarness.turns.set(switchDelegated.taskId, []);
+      const switched = yield* switchHarness.service.switchProvider(
+        switchScope,
+        switchInput(switchDelegated.taskId),
+      );
+      expect(switched.advanced).toBe(true);
+      const switchStarts = switchHarness.dispatched.filter(
+        (command) => command.type === "thread.turn.start",
+      );
+      expect(switchStarts).toHaveLength(2);
+      for (const start of switchStarts) {
+        expect(start.type).toBe("thread.turn.start");
+        if (start.type !== "thread.turn.start") continue;
+        expect(typeof start.delegationConfigFingerprint).toBe("string");
+        expect(start.delegationConfigFingerprint?.length).toBeGreaterThan(0);
+      }
+      const replay = switchStarts[1];
+      expect(replay?.type).toBe("thread.turn.start");
+      if (replay?.type === "thread.turn.start") {
+        expect(replay.delegationConfigFingerprint).toBe(
+          switched.requested.providerConfigFingerprint,
+        );
+      }
+
+      // Static guard: every thread.turn.start emission site in this service
+      // is accounted for — the three delegated sites covered above plus the
+      // architect/coordinator wake path, which is not a delegated start and
+      // must stay fingerprint-free.
+      const source = NodeFS.readFileSync(new URL("./service.ts", import.meta.url), "utf8");
+      expect(source.split('type: "thread.turn.start"')).toHaveLength(5);
+      const wakeStart = source.indexOf("const dispatchWakeTurn");
+      const wakeEnd = source.indexOf("const revokeArchitectCredential");
+      expect(wakeStart).toBeGreaterThan(-1);
+      expect(wakeEnd).toBeGreaterThan(wakeStart);
+      expect(source.slice(wakeStart, wakeEnd)).not.toContain("delegationConfigFingerprint");
     }),
   );
 
