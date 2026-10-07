@@ -30,6 +30,7 @@ import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSn
 import { OrchestrationLayerLive } from "../orchestration/runtimeLayer.ts";
 import { layerConfig as SqlitePersistenceLayerLive } from "../persistence/Layers/Sqlite.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import {
   clearPersistedServerRuntimeState,
   readPersistedServerRuntimeState,
@@ -202,6 +203,9 @@ const ProjectCliRuntimeLive = Layer.mergeAll(
   OrchestrationLayerLive.pipe(
     Layer.provideMerge(RepositoryIdentityResolver.layer),
     Layer.provideMerge(SqlitePersistenceLayerLive),
+    // The CLI never owns the purge retention: it erases with the default
+    // period while the server start remains the authoritative pass.
+    Layer.provideMerge(ServerSettings.ServerSettingsService.layerTest()),
   ),
 );
 

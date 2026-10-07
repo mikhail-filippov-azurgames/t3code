@@ -1050,6 +1050,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(RepositoryIdentityResolver.layer),
       Layer.provide(persistence),
+      Layer.provide(ServerSettingsService.layerTest()),
     );
     const projectionSnapshotLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
       Layer.provide(ThreadBackgroundLiveness.layer),

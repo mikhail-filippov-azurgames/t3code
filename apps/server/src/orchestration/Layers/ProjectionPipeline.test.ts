@@ -33,6 +33,7 @@ import {
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionStateRepository } from "../../persistence/Services/ProjectionState.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import {
   ORCHESTRATION_PROJECTOR_NAMES,
@@ -4267,6 +4268,7 @@ const engineLayer = it.layer(
     Layer.provide(OrchestrationCommandReceiptRepositoryLive),
     Layer.provide(RepositoryIdentityResolver.layer),
     Layer.provideMerge(SqlitePersistenceMemory),
+    Layer.provide(ServerSettingsService.layerTest()),
     Layer.provideMerge(
       ServerConfig.layerTest(process.cwd(), {
         prefix: "t3-projection-pipeline-engine-dispatch-",

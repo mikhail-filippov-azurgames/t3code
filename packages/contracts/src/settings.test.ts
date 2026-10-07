@@ -701,6 +701,33 @@ describe("ServerSettings board retention", () => {
   });
 });
 
+describe("ServerSettings deleted thread purge", () => {
+  it("purges after 14 days by default", () => {
+    expect(decodeServerSettings({}).deletedThreadPurgeAfterDays).toBe(14);
+    expect(DEFAULT_SERVER_SETTINGS.deletedThreadPurgeAfterDays).toBe(14);
+  });
+
+  it("reads and round-trips a configured purge period", () => {
+    const input = { deletedThreadPurgeAfterDays: 30 };
+    expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+    expect(decodeServerSettingsPatch(input)).toEqual(input);
+  });
+
+  it.each([-1, 0, 2.5, 3651, null])(
+    "rejects a purge period outside whole 1..3650 days: %s",
+    (value) => {
+      expect(() => decodeServerSettings({ deletedThreadPurgeAfterDays: value })).toThrow();
+      expect(() => decodeServerSettingsPatch({ deletedThreadPurgeAfterDays: value })).toThrow();
+    },
+  );
+
+  it.each([1, 3650])("accepts the purge bound %s", (value) => {
+    expect(decodeServerSettingsPatch({ deletedThreadPurgeAfterDays: value })).toEqual({
+      deletedThreadPurgeAfterDays: value,
+    });
+  });
+});
+
 describe("ClientSettings pull request merge methods", () => {
   it("defaults to no project overrides and accepts supported methods", () => {
     expect(decodeClientSettings({}).pullRequestMergeMethodOverrides).toEqual({});

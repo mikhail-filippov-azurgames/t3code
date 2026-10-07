@@ -284,6 +284,21 @@ export const SETTINGS_SEARCH_ITEMS = [
     scope: "environment-defaults",
   },
   {
+    id: "deleted-thread-purge",
+    title: "Erase deleted threads automatically",
+    to: "/settings/general",
+    searchTerms: ["thread delete retention erase purge permanent startup"],
+    scope: "environment-defaults",
+  },
+  {
+    id: "deleted-thread-purge-after",
+    title: "Days before a deleted thread is erased",
+    to: "/settings/general",
+    targetId: "deleted-thread-purge",
+    searchTerms: ["thread delete days erased purge permanent startup"],
+    scope: "environment-defaults",
+  },
+  {
     id: "thread-notifications",
     title: "Thread notifications",
     to: "/settings/general",

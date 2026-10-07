@@ -582,6 +582,7 @@ const integrationLayer = Layer.mergeAll(
   Layer.provide(OrchestrationCommandReceiptRepositoryLive),
   Layer.provide(RepositoryIdentityResolver.layer),
   Layer.provide(SqlitePersistenceMemory),
+  Layer.provide(ServerSettingsService.layerTest()),
   Layer.provideMerge(integrationServerConfig),
   Layer.provideMerge(NodeServices.layer),
 );

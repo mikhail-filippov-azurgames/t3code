@@ -125,6 +125,16 @@ export const BoardDeleteArchivedAfterDays = Schema.Int.check(
 );
 export type BoardDeleteArchivedAfterDays = typeof BoardDeleteArchivedAfterDays.Type;
 const DEFAULT_BOARD_DELETE_ARCHIVED_AFTER_DAYS: BoardDeleteArchivedAfterDays = 14;
+export const MIN_DELETED_THREAD_PURGE_AFTER_DAYS = 1;
+export const MAX_DELETED_THREAD_PURGE_AFTER_DAYS = 3650;
+export const DeletedThreadPurgeAfterDays = Schema.Int.check(
+  Schema.isBetween({
+    minimum: MIN_DELETED_THREAD_PURGE_AFTER_DAYS,
+    maximum: MAX_DELETED_THREAD_PURGE_AFTER_DAYS,
+  }),
+);
+export type DeletedThreadPurgeAfterDays = typeof DeletedThreadPurgeAfterDays.Type;
+const DEFAULT_DELETED_THREAD_PURGE_AFTER_DAYS: DeletedThreadPurgeAfterDays = 14;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -1411,6 +1421,16 @@ export const ServerSettings = Schema.Struct({
   boardDeleteArchivedAfterDays: BoardDeleteArchivedAfterDays.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_DELETE_ARCHIVED_AFTER_DAYS)),
   ),
+  /**
+   * Days after a thread's soft deletion before the server physically erases
+   * it at startup: its event stream, receipts, and every projection row,
+   * plus its reviews/binding when it is a coordinator. References to it
+   * from live threads are nulled, not deleted. Worktrees on disk and
+   * provider-side data are never touched. Erasure is irreversible.
+   */
+  deletedThreadPurgeAfterDays: DeletedThreadPurgeAfterDays.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_DELETED_THREAD_PURGE_AFTER_DAYS)),
+  ),
   backgroundActivity: BackgroundActivitySettings,
   // Legacy flat fields retained for old settings files and old clients. New
   // consumers should resolve `backgroundActivity` instead.
@@ -1749,6 +1769,7 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   boardArchiveAfterDays: Schema.optionalKey(BoardArchiveAfterDays),
   boardDeleteArchivedAfterDays: Schema.optionalKey(BoardDeleteArchivedAfterDays),
+  deletedThreadPurgeAfterDays: Schema.optionalKey(DeletedThreadPurgeAfterDays),
   backgroundActivity: Schema.optionalKey(
     Schema.Struct({
       schemaVersion: Schema.optionalKey(Schema.Literal(1)),

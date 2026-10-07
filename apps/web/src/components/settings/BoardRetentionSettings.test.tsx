@@ -41,10 +41,11 @@ vi.mock("./settingsLayout", () => ({
 }));
 vi.mock("../ui/input", () => ({ Input: "input" }));
 
-import { BoardRetentionSection } from "./BoardRetentionSettings";
+import { BoardRetentionSection, DeletedThreadPurgeSection } from "./BoardRetentionSettings";
 
 const ARCHIVE = "Days before a finished card is archived";
 const DELETE = "Days before an archived finished card is deleted";
+const PURGE = "Days before a deleted thread is erased";
 
 let renderer: ReactTestRenderer | null;
 
@@ -146,6 +147,60 @@ describe("board retention settings", () => {
     expect(state.updateSettings).toHaveBeenCalledWith({
       boardArchiveAfterDays: 1,
       boardDeleteArchivedAfterDays: 14,
+    });
+  });
+});
+
+describe("deleted thread purge settings", () => {
+  function renderPurge() {
+    act(() => {
+      renderer = create(<DeletedThreadPurgeSection />);
+    });
+  }
+
+  it("defaults to 14 days before erasure", () => {
+    expect(DEFAULT_UNIFIED_SETTINGS.deletedThreadPurgeAfterDays).toBe(14);
+    renderPurge();
+
+    expect(control(PURGE)[0]!.props.value).toBe("14");
+    expect(renderer!.root.findAllByType("button")).toHaveLength(0);
+  });
+
+  it("says erasure is permanent and worktrees are never touched", () => {
+    renderPurge();
+
+    expect(text()).toContain("erasure is permanent");
+    expect(text()).toContain("Worktrees on disk and provider-side histories are never touched");
+  });
+
+  it("shows the stored value and saves only values the schema accepts", () => {
+    state.settings = { deletedThreadPurgeAfterDays: 30 };
+    renderPurge();
+    expect(control(PURGE)[0]!.props.value).toBe("30");
+
+    act(() => renderer!.unmount());
+    state.settings = {};
+    renderPurge();
+
+    for (const invalid of ["", "0", "-1", "2.5", "3651", "abc"]) type(PURGE, invalid);
+    expect(state.updateSettings).not.toHaveBeenCalled();
+
+    type(PURGE, "30");
+    expect(state.updateSettings).toHaveBeenLastCalledWith({
+      deletedThreadPurgeAfterDays: 30,
+    });
+  });
+
+  it("offers a reset to the default only when it differs", () => {
+    renderPurge();
+    expect(renderer!.root.findAllByType("button")).toHaveLength(0);
+
+    act(() => renderer!.unmount());
+    state.settings = { deletedThreadPurgeAfterDays: 30 };
+    renderPurge();
+    act(() => renderer!.root.findByType("button").props.onClick());
+    expect(state.updateSettings).toHaveBeenCalledWith({
+      deletedThreadPurgeAfterDays: 14,
     });
   });
 });

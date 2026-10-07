@@ -19,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
@@ -27,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
@@ -42,6 +44,7 @@ import {
   type OrchestrationEventStoreShape,
 } from "../../persistence/Services/OrchestrationEventStore.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
@@ -89,6 +92,7 @@ function makeOrchestrationLayer(
           )
         : RepositoryIdentityResolver.layer,
     ),
+    Layer.provide(ServerSettingsService.layerTest()),
     Layer.provide(persistence),
     Layer.provideMerge(ServerConfigLayer),
     Layer.provideMerge(NodeServices.layer),
@@ -481,6 +485,7 @@ describe("OrchestrationEngine", () => {
       Layer.provide(ThreadBackgroundLiveness.layer),
       Layer.provide(OrchestrationCommandReceiptRepositoryLive),
       Layer.provide(SqlitePersistenceMemory),
+      Layer.provide(ServerSettingsService.layerTest()),
       Layer.provideMerge(NodeServices.layer),
     );
 
@@ -1529,6 +1534,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
+        Layer.provide(ServerSettingsService.layerTest()),
         Layer.provideMerge(ServerConfigLayer),
         Layer.provideMerge(NodeServices.layer),
       ),
@@ -1633,6 +1639,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(ThreadBackgroundLiveness.layer),
         Layer.provide(ThreadPlanProgress.layer),
         Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, flakyProjectionPipeline)),
+        Layer.provide(ServerSettingsService.layerTest()),
         Layer.provide(OrchestrationEventStoreLive),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
@@ -1784,6 +1791,7 @@ describe("OrchestrationEngine", () => {
         Layer.provide(ThreadPlanProgress.layer),
         Layer.provide(Layer.succeed(OrchestrationProjectionPipeline, flakyProjectionPipeline)),
         Layer.provide(Layer.succeed(OrchestrationEventStore, nonTransactionalStore)),
+        Layer.provide(ServerSettingsService.layerTest()),
         Layer.provide(OrchestrationCommandReceiptRepositoryLive),
         Layer.provide(RepositoryIdentityResolver.layer),
         Layer.provide(SqlitePersistenceMemory),
@@ -2136,5 +2144,62 @@ describe("OrchestrationEngine", () => {
     expect(withoutOrigin?.metadata.origin).toBeUndefined();
 
     await system.dispose();
+  });
+
+  it("purges threads deleted 15 days ago while the engine starts", async () => {
+    // A file database is shared by two runtimes: the first seeds rows
+    // before the engine exists, the second builds the engine (running the
+    // purge) and reads back the result.
+    const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "purge-wiring-"));
+    const dbPath = NodePath.join(directory, "state.sqlite");
+    const sqlLayer = makeSqlitePersistenceLive(dbPath).pipe(Layer.provide(NodeServices.layer));
+    const seedRuntime = ManagedRuntime.make(sqlLayer);
+    const seedThread = (name: string, deletedAt: string | null) =>
+      seedRuntime.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`
+            INSERT INTO projection_threads (
+              thread_id, project_id, title, model_selection_json, runtime_mode,
+              created_at, updated_at, deleted_at
+            ) VALUES (
+              ${`purge-wiring-${name}`}, 'project-1', ${`Thread ${name}`},
+              '{"instanceId":"codex","model":"gpt-5"}', 'full-access',
+              '2026-01-01T00:00:00.000Z', ${deletedAt ?? "2026-01-01T00:00:00.000Z"},
+              ${deletedAt}
+            )
+          `;
+        }),
+      );
+    const nowInstant = Effect.runSync(DateTime.now);
+    const fifteenDaysAgo = DateTime.formatIso(DateTime.subtract(nowInstant, { days: 15 }));
+    const twoDaysAgo = DateTime.formatIso(DateTime.subtract(nowInstant, { days: 2 }));
+    await seedThread("old", fifteenDaysAgo);
+    await seedThread("young", twoDaysAgo);
+    await seedRuntime.dispose();
+
+    const engineRuntime = ManagedRuntime.make(makeOrchestrationLayer(dbPath));
+    await engineRuntime.runPromise(Effect.service(OrchestrationEngineService));
+    await engineRuntime.dispose();
+
+    const readRuntime = ManagedRuntime.make(sqlLayer);
+    const remaining = await readRuntime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql<{
+          readonly threadId: string;
+          readonly deletedAt: string | null;
+        }>`
+          SELECT thread_id AS "threadId", deleted_at AS "deletedAt"
+          FROM projection_threads
+          WHERE thread_id LIKE 'purge-wiring-%'
+          ORDER BY thread_id ASC
+        `;
+      }),
+    );
+    await readRuntime.dispose();
+    await NodeFSP.rm(directory, { recursive: true, force: true });
+    expect(remaining.map((row) => row.threadId)).toEqual(["purge-wiring-young"]);
+    expect(remaining[0]?.deletedAt).toBe(twoDaysAgo);
   });
 });

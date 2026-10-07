@@ -31,6 +31,7 @@ import {
 } from "../../observability/Metrics.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
   isOrchestrationCommandRejection,
@@ -41,6 +42,7 @@ import {
   type OrchestrationProjectorDecodeError,
 } from "../Errors.ts";
 import { decideOrchestrationCommand } from "../decider.ts";
+import { purgeDeletedThreadsAtEngineStart } from "../DeletedThreadPurge.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
@@ -95,6 +97,9 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  // Fail construction early when settings are unavailable: the purge pass
+  // below needs the retention period before the command model loads.
+  yield* ServerSettingsService;
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const crypto = yield* Crypto.Crypto;
 
@@ -418,6 +423,19 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
   };
 
+  // Physically erase threads deleted at least `deletedThreadPurgeAfterDays`
+  // ago before the command read model loads, so it never sees an erased
+  // thread. A failed pass must not brick the server: per-thread erasure is
+  // atomic, leftovers are retried on the next start.
+  yield* purgeDeletedThreadsAtEngineStart.pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.failCause(cause)
+        : Effect.logWarning("deleted thread purge failed, retrying on next start", {
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  );
   yield* projectionPipeline.bootstrap;
   commandReadModel = yield* projectionSnapshotQuery.getCommandReadModel();
 
