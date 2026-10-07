@@ -31,6 +31,17 @@ describe("Coordinator board brief", () => {
     }
   });
 
+  it("explains readiness use and rechecking blocked work on every wake", () => {
+    for (const requirement of [
+      "Use readiness separately from status",
+      "needs_human with the exact one-line question",
+      "Set blocked with the external cause and what work it waits for",
+      "On any wake, re-check blocked cards whose note names the finished work",
+    ]) {
+      assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, requirement);
+    }
+  });
+
   it("requires the exact Architect skill and one active binding before board work", () => {
     for (const requirement of [
       "Before taking any substantive board action",

@@ -10,7 +10,13 @@
  */
 import type { BoardCard, BoardExecutorRole, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { ArrowLeftIcon, PlusIcon, RefreshCwIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  CircleAlertIcon,
+  OctagonAlertIcon,
+  PlusIcon,
+  RefreshCwIcon,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
@@ -36,12 +42,15 @@ import {
   boardExecutorRoleLabel,
   boardFailureText,
   boardListEvents,
+  boardReadinessLabel,
+  countNeedsHumanCards,
   BOARD_COLUMNS,
   BOARD_EXECUTOR_ROLES,
   DEFAULT_BOARD_FILTERS,
   filterBoardCards,
   groupBoardCardsByStatus,
   isCardStartable,
+  shouldShowBoardReadiness,
   type BoardFilters,
 } from "./board.logic";
 import { useSkipOrchestratorUnmarkConfirmation } from "./boardPreferences";
@@ -108,13 +117,18 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
       ? null
       : (shellByThreadKey.get(`${environmentId}:${selectedOrchestratorId}`)?.title ?? null);
 
-  const visibleCards = useMemo(() => {
-    const scoped =
+  const scopedCards = useMemo(
+    () =>
       selectedOrchestratorId === null
         ? cards
-        : cards.filter((card) => card.orchestratorThreadId === selectedOrchestratorId);
-    return filterBoardCards(scoped, filters);
-  }, [cards, filters, selectedOrchestratorId]);
+        : cards.filter((card) => card.orchestratorThreadId === selectedOrchestratorId),
+    [cards, selectedOrchestratorId],
+  );
+  const needsHumanCount = countNeedsHumanCards(scopedCards);
+  const visibleCards = useMemo(
+    () => filterBoardCards(scopedCards, filters),
+    [filters, scopedCards],
+  );
 
   const grouped = useMemo(() => groupBoardCardsByStatus(visibleCards), [visibleCards]);
   const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
@@ -320,6 +334,20 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                 </Button>
               </>
             )}
+            {needsHumanCount > 0 ? (
+              <Button
+                size="sm"
+                variant={filters.readiness === "needs_human" ? "destructive" : "outline"}
+                aria-label={`Filter to ${needsHumanCount} cards needing human attention`}
+                onClick={() => setFilters((current) => ({ ...current, readiness: "needs_human" }))}
+              >
+                <CircleAlertIcon aria-hidden="true" />
+                Needs human
+                <Badge variant="outline" size="sm" className="tabular-nums">
+                  {needsHumanCount}
+                </Badge>
+              </Button>
+            ) : null}
           </div>
         </WorkspacePageHeader>
 
@@ -346,6 +374,30 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                   setFilters((current) => ({ ...current, search: event.target.value }))
                 }
               />
+              <Select
+                value={filters.readiness}
+                onValueChange={(value) =>
+                  setFilters((current) => ({
+                    ...current,
+                    readiness: value as BoardFilters["readiness"],
+                  }))
+                }
+              >
+                <SelectTrigger aria-label="Filter by readiness" className="w-44">
+                  <SelectValue>
+                    {filters.readiness === "all"
+                      ? "All readiness"
+                      : filters.readiness === "needs_human"
+                        ? "Needs human"
+                        : "Blocked"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup alignItemWithTrigger={false}>
+                  <SelectItem value="all">All readiness</SelectItem>
+                  <SelectItem value="needs_human">Needs human</SelectItem>
+                  <SelectItem value="blocked">Blocked</SelectItem>
+                </SelectPopup>
+              </Select>
               <Select
                 value={filters.role ?? "all"}
                 onValueChange={(value) =>
@@ -503,6 +555,19 @@ function BoardColumn({
               {card.assignee !== null ? <span>· {card.assignee.model}</span> : null}
             </span>
             <span className="flex min-w-0 flex-wrap items-center gap-1">
+              {shouldShowBoardReadiness(card.readiness) ? (
+                <Badge
+                  variant={card.readiness === "needs_human" ? "destructive" : "outline"}
+                  size="sm"
+                >
+                  {card.readiness === "needs_human" ? (
+                    <CircleAlertIcon aria-hidden="true" className="size-3" />
+                  ) : (
+                    <OctagonAlertIcon aria-hidden="true" className="size-3" />
+                  )}
+                  {boardReadinessLabel(card.readiness)}
+                </Badge>
+              ) : null}
               {card.failureStreak >= 3 ? (
                 <Badge variant="destructive" size="sm">
                   needs human
@@ -517,6 +582,11 @@ function BoardColumn({
                 <Badge variant="secondary" size="sm">
                   ready
                 </Badge>
+              ) : null}
+              {shouldShowBoardReadiness(card.readiness) && card.readinessNote !== null ? (
+                <span className="w-full break-words text-[10px] text-muted-foreground">
+                  {card.readinessNote}
+                </span>
               ) : null}
             </span>
           </button>

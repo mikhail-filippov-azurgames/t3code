@@ -10,6 +10,7 @@
  *
  * @module boardShared
  */
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -34,6 +35,9 @@ export const BoardCardStatus = Schema.Literals([
   "done",
 ]);
 export type BoardCardStatus = typeof BoardCardStatus.Type;
+
+export const BoardCardReadiness = Schema.Literals(["ready", "needs_human", "blocked"]);
+export type BoardCardReadiness = typeof BoardCardReadiness.Type;
 
 /** Who created the orchestrator mark or the card. */
 export const BoardCreatedBy = Schema.Literals(["human", "orchestrator"]);
@@ -64,6 +68,10 @@ export const BoardCard = Schema.Struct({
   title: TrimmedNonEmptyString,
   body: Schema.String,
   status: BoardCardStatus,
+  readiness: BoardCardReadiness.pipe(Schema.withDecodingDefault(Effect.succeed("ready" as const))),
+  readinessNote: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
   createdBy: BoardCreatedBy,
   assignee: Schema.NullOr(ModelSelection),
   executorRole: ExecutorRole,

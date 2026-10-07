@@ -703,6 +703,8 @@ const buildHumanBoardCard = (
   executorThreadId: null,
   outcome: null,
   lastError: null,
+  readiness: "ready",
+  readinessNote: null,
   failureStreak: 0,
   order: 0,
   archived: false,

@@ -20,6 +20,8 @@ const card: BoardCard = {
   title: "Fix the board",
   body: "",
   status: "todo",
+  readiness: "ready",
+  readinessNote: null,
   createdBy: "human",
   assignee: null,
   executorRole: "implementation",

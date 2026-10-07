@@ -72,9 +72,30 @@ it.effect("decodes a minimal board card", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeCard(minimalCard);
     assert.strictEqual(parsed.status, "todo");
+    assert.strictEqual(parsed.readiness, "ready");
+    assert.strictEqual(parsed.readinessNote, null);
     assert.strictEqual(parsed.assignee, null);
     assert.strictEqual(parsed.executorThreadId, null);
     assert.strictEqual(parsed.failureStreak, 0);
+  }),
+);
+
+it.effect("ignores extra board card fields for mixed-version clients", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeCard({ ...minimalCard, futureField: "ignored" });
+    assert.strictEqual(parsed.readiness, "ready");
+    assert.strictEqual(parsed.readinessNote, null);
+  }),
+);
+
+it.effect("decodes all supported readiness values and rejects unknown values", () =>
+  Effect.gen(function* () {
+    for (const readiness of ["ready", "needs_human", "blocked"] as const) {
+      const parsed = yield* decodeCard({ ...minimalCard, readiness });
+      assert.strictEqual(parsed.readiness, readiness);
+    }
+    const invalid = yield* Effect.exit(decodeCard({ ...minimalCard, readiness: "waiting" }));
+    assert.isTrue(Exit.isFailure(invalid));
   }),
 );
 
@@ -184,6 +205,14 @@ it.effect("decodes board RPC inputs", () =>
       failureStreak: 0,
     });
     assert.strictEqual(update.status, "review");
+
+    const humanUpdate = yield* decodeUpdateInput({
+      cardId: "card-1",
+      readiness: "blocked",
+      readinessNote: "Waiting on a person",
+    });
+    assert.isFalse("readiness" in humanUpdate);
+    assert.isFalse("readinessNote" in humanUpdate);
 
     const start = yield* decodeStartInput({ cardId: "card-1" });
     assert.strictEqual(start.cardId, "card-1");

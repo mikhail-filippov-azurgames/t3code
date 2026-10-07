@@ -12,6 +12,7 @@ import {
   EXECUTOR_ROLES,
   type BoardCard,
   type BoardCardEvent,
+  type BoardCardReadiness,
   type BoardCardStatus,
   type BoardExecutorRole,
   type BoardListResult,
@@ -32,6 +33,8 @@ export const BOARD_COLUMNS: ReadonlyArray<{
 
 export const BOARD_EXECUTOR_ROLES: ReadonlyArray<BoardExecutorRole> = EXECUTOR_ROLES;
 
+export type BoardReadinessFilter = "all" | Exclude<BoardCardReadiness, "ready">;
+
 const STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
   backlog: "Backlog",
   todo: "To do",
@@ -50,12 +53,30 @@ const ROLE_LABELS: Readonly<Record<BoardExecutorRole, string>> = {
   general: "General",
 };
 
+const READINESS_LABELS: Readonly<Record<BoardCardReadiness, string>> = {
+  ready: "Ready",
+  needs_human: "Needs human",
+  blocked: "Blocked",
+};
+
 export function boardStatusLabel(status: BoardCardStatus): string {
   return STATUS_LABELS[status];
 }
 
 export function boardExecutorRoleLabel(role: BoardExecutorRole): string {
   return ROLE_LABELS[role];
+}
+
+export function boardReadinessLabel(readiness: BoardCardReadiness): string {
+  return READINESS_LABELS[readiness];
+}
+
+export function shouldShowBoardReadiness(readiness: BoardCardReadiness): boolean {
+  return readiness !== "ready";
+}
+
+export function countNeedsHumanCards(cards: ReadonlyArray<BoardCard>): number {
+  return cards.filter((card) => !card.archived && card.readiness === "needs_human").length;
 }
 
 /**
@@ -83,12 +104,14 @@ export function boardFailureText(cause: Cause.Cause<unknown>): string {
 export interface BoardFilters {
   readonly showArchived: boolean;
   readonly role: BoardExecutorRole | null;
+  readonly readiness: BoardReadinessFilter;
   readonly search: string;
 }
 
 export const DEFAULT_BOARD_FILTERS: BoardFilters = {
   showArchived: false,
   role: null,
+  readiness: "all",
   search: "",
 };
 
@@ -101,6 +124,7 @@ export function filterBoardCards(
   return cards.filter((card) => {
     if (!filters.showArchived && card.archived) return false;
     if (filters.role !== null && card.executorRole !== filters.role) return false;
+    if (filters.readiness !== "all" && card.readiness !== filters.readiness) return false;
     if (query.length === 0) return true;
     return card.title.toLowerCase().includes(query) || card.body.toLowerCase().includes(query);
   });

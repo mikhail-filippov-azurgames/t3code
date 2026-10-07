@@ -2,6 +2,7 @@ import { clearBoardCardMentionCache } from "@t3tools/client-runtime/board-card-m
 import type {
   BoardCard,
   BoardCardLookupDetail,
+  BoardCardReadiness,
   BoardCardStatus,
   BoardExecutorRole,
   EnvironmentId,
@@ -49,6 +50,22 @@ const BOARD_EXECUTOR_ROLE_LABELS: Readonly<Record<BoardExecutorRole, string>> = 
 
 function boardStatusLabel(status: BoardCardStatus): string {
   return BOARD_STATUS_LABELS[status];
+}
+
+const BOARD_READINESS_LABELS: Readonly<Record<BoardCardReadiness, string>> = {
+  ready: "Можно исполнять",
+  needs_human: "Требует внимания человека",
+  blocked: "Заблокирована",
+};
+
+function boardReadinessLabel(readiness: BoardCardReadiness): string {
+  return BOARD_READINESS_LABELS[readiness];
+}
+
+function boardReadinessMarker(readiness: BoardCardReadiness): string {
+  if (readiness === "needs_human") return "⚠ ";
+  if (readiness === "blocked") return "⛔ ";
+  return "";
 }
 
 function boardExecutorRoleLabel(role: BoardExecutorRole): string {
@@ -316,7 +333,8 @@ function BoardCardPinnedItem(props: {
           {card ? (
             <Text className="mt-1 text-xs text-foreground-secondary">
               {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)} ·{" "}
-              {card.archived ? "архив" : "активна"}
+              {card.archived ? "архив" : "активна"} · {boardReadinessMarker(card.readiness)}
+              {boardReadinessLabel(card.readiness)}
             </Text>
           ) : null}
         </View>
@@ -342,6 +360,11 @@ function BoardCardPinnedItem(props: {
           </Text>
           {card.body ? (
             <Text className="mb-3 text-sm leading-normal text-foreground">{card.body}</Text>
+          ) : null}
+          {card.readiness !== "ready" && card.readinessNote !== null ? (
+            <Text className="mb-3 rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-foreground">
+              {card.readinessNote}
+            </Text>
           ) : null}
           <View className="mb-3 flex-row flex-wrap gap-2">
             <BoardCardButton

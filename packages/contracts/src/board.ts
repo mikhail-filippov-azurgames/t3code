@@ -20,6 +20,7 @@ import {
   BoardCardEventSource,
   BoardCardId,
   BoardCardOutcome,
+  BoardCardReadiness,
   BoardCardStatus,
   BoardCreatedBy,
   ExecutorRole,
@@ -32,6 +33,7 @@ export {
   BoardCardEventSource,
   BoardCardId,
   BoardCardOutcome,
+  BoardCardReadiness,
   BoardCardStatus,
   BoardCreatedBy,
 };

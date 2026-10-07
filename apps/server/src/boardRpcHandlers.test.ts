@@ -10,6 +10,7 @@ import {
   type BoardCard,
   type BoardCardEvent,
   type BoardOrchestrator,
+  type BoardUpdateInput,
   type OrchestrationCommand,
   type OrchestrationSession,
   type OrchestrationShellSnapshot,
@@ -47,6 +48,8 @@ function makeCard(overrides: Partial<BoardCard> = {}): BoardCard {
     title: "Wire the board",
     body: "Connect the RPC handlers.",
     status: "todo",
+    readiness: "ready",
+    readinessNote: null,
     createdBy: "human",
     assignee: null,
     executorRole: "general",
@@ -575,6 +578,24 @@ describe("board RPC handlers", () => {
         state.events.map((event) => event.body),
         ["archived by human", "unarchived by human"],
       );
+    }),
+  );
+
+  it.effect("human board.update cannot change readiness", () =>
+    Effect.gen(function* () {
+      const card = makeCard();
+      const { handlers, state } = makeHarness({ cards: [card] });
+      const attemptedUpdate = {
+        cardId: card.cardId,
+        readiness: "blocked",
+        readinessNote: "Waiting on a human",
+      } as unknown as BoardUpdateInput;
+
+      const updated = yield* handlers.update(attemptedUpdate);
+
+      assert.strictEqual(updated.readiness, "ready");
+      assert.isNull(updated.readinessNote);
+      assert.strictEqual(state.events.length, 0);
     }),
   );
 

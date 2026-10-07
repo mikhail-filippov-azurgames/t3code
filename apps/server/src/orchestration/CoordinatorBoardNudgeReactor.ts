@@ -28,6 +28,7 @@ import type * as Scope from "effect/Scope";
 
 import { ServerSettingsService } from "../serverSettings.ts";
 import { BoardRepository, buildBoardCardEvent } from "../persistence/Services/Board.ts";
+import { CoordinatorArchitectRepository } from "../persistence/Services/CoordinatorArchitect.ts";
 import { projectDerivedText } from "../security/SecretTextPolicy.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
@@ -39,6 +40,19 @@ type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
 
 function isCandidateStatus(status: BoardCard["status"]): status is CandidateStatus {
   return CANDIDATE_STATUSES.includes(status as CandidateStatus);
+}
+
+function isBlockedCandidateStatus(status: BoardCard["status"]): boolean {
+  return status !== "backlog" && status !== "done";
+}
+
+function isWorkingReadyCard(card: BoardCard, coordinatorId: ThreadId): boolean {
+  return (
+    card.orchestratorThreadId === coordinatorId &&
+    !card.archived &&
+    card.readiness === "ready" &&
+    ["todo", "orchestrator", "in_progress", "review"].includes(card.status)
+  );
 }
 
 function statusPriority(status: CandidateStatus): number {
@@ -66,6 +80,11 @@ function compareCandidateCards(left: BoardCard, right: BoardCard): number {
   const byAge = compareDateTimeStrings(left.createdAt, right.createdAt);
   if (byAge !== 0) return byAge;
   return compareIdentifiers(String(left.cardId), String(right.cardId));
+}
+
+function compareCardAge(left: BoardCard, right: BoardCard): number {
+  const byAge = compareDateTimeStrings(left.createdAt, right.createdAt);
+  return byAge !== 0 ? byAge : compareIdentifiers(String(left.cardId), String(right.cardId));
 }
 
 function compareOrchestrators(left: BoardOrchestrator, right: BoardOrchestrator): number {
@@ -98,21 +117,28 @@ export function formatCoordinatorBoardNudgeMessage(
   threshold: number,
 ): string {
   const stateInstruction =
-    card.status === "review"
-      ? "Review the work and either finish this card or return it for changes."
-      : card.status === "todo"
-        ? "Plan this task and delegate it to an executor."
-        : "Plan this task, then move it to Plan (todo) before delegating.";
+    card.readiness === "blocked"
+      ? `This card is blocked and no other card can move: ${projectDerivedText("summary", card.readinessNote ?? "")}. Either fix the blocker now and set readiness to ready, or set needs_human with the exact question for the human, or, if the awaited work is still running, keep it blocked and end this turn.`
+      : card.status === "review"
+        ? "Review the work and either finish this card or return it for changes."
+        : card.status === "todo"
+          ? "Plan this task and delegate it to an executor."
+          : "Plan this task, then move it to Plan (todo) before delegating.";
   return [
     `This is an automatic board check, not a message from a person. The coordinator has ${activeChildCount} active child task(s); the nudge threshold is ${threshold}.`,
     `Card: ${projectDerivedText("summary", card.title)}`,
     `Card id: ${card.cardId}`,
     `State: ${card.status}`,
+    `Readiness: ${card.readiness}`,
     `Executor role: ${card.executorRole}`,
     ...(card.lastError === null ? [] : [`Last error: ${formatLastError(card.lastError)}`]),
     "",
     stateInstruction,
-    "If this card is waiting for a human decision, move it to Backlog or explain the decision needed and end this turn.",
+    ...(card.readiness === "blocked"
+      ? []
+      : [
+          "If this card needs a human answer or decision, set readiness to needs_human with a one-line readinessNote stating the exact question, tell the human, and end this turn. If it is blocked by an external cause, either fix it now and set ready, or set blocked with the cause and what it waits for, and end this turn. Do not move it to Backlog for this.",
+        ]),
   ].join("\n");
 }
 
@@ -134,12 +160,42 @@ export class CoordinatorBoardNudgeReactor extends Context.Service<
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const board = yield* BoardRepository;
+  const coordinatorArchitect = yield* Effect.serviceOption(CoordinatorArchitectRepository).pipe(
+    Effect.map(Option.getOrUndefined),
+  );
   const engine = yield* OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery;
   const settingsService = yield* ServerSettingsService;
 
   const logReason = (reason: string, details: Record<string, unknown> = {}) =>
     Effect.logInfo("coordinator board nudge", { reason, ...details });
+
+  const blockedByOpenReview = Effect.fn("CoordinatorBoardNudgeReactor.blockedByOpenReview")(
+    function* (coordinatorId: ThreadId) {
+      if (coordinatorArchitect === undefined) return false;
+      const result = yield* coordinatorArchitect
+        .listReviewsByCoordinator({ coordinatorThreadId: coordinatorId, status: "open" })
+        .pipe(
+          Effect.map((reviews) => ({ _tag: "success" as const, reviews })),
+          Effect.catch((error) => Effect.succeed({ _tag: "failure" as const, error })),
+        );
+      if (result._tag === "failure") {
+        yield* logReason("blocked-while-review-open", {
+          coordinatorId,
+          error: result.error.message,
+        });
+        return true;
+      }
+      if (result.reviews.length > 0) {
+        yield* logReason("blocked-while-review-open", {
+          coordinatorId,
+          openReviewCount: result.reviews.length,
+        });
+        return true;
+      }
+      return false;
+    },
+  );
 
   const sweep = Effect.fn("CoordinatorBoardNudgeReactor.sweep")(function* (
     settings: ServerSettings,
@@ -154,11 +210,19 @@ export const make = Effect.gen(function* () {
     const orchestrators = [...(yield* board.listOrchestrators())].sort(compareOrchestrators);
     const cards = yield* board.listCards();
     const orchestratorIds = new Set(orchestrators.map((orchestrator) => orchestrator.threadId));
-    const candidatesByCoordinator = new Map<ThreadId, Array<BoardCard>>();
+    const readyCandidatesByCoordinator = new Map<ThreadId, Array<BoardCard>>();
+    const blockedCandidatesByCoordinator = new Map<ThreadId, Array<BoardCard>>();
 
     for (const card of cards) {
-      if (card.archived || !isCandidateStatus(card.status)) continue;
+      if (card.archived) continue;
       if (!orchestratorIds.has(card.orchestratorThreadId)) continue;
+      if (card.readiness === "needs_human") {
+        yield* logReason("card-needs-human", {
+          coordinatorId: card.orchestratorThreadId,
+          cardId: card.cardId,
+        });
+        continue;
+      }
       if (card.failureStreak >= 3) {
         yield* logReason("card-limit", {
           coordinatorId: card.orchestratorThreadId,
@@ -167,13 +231,24 @@ export const make = Effect.gen(function* () {
         });
         continue;
       }
-      const coordinatorCards = candidatesByCoordinator.get(card.orchestratorThreadId) ?? [];
+      if (card.readiness === "blocked") {
+        if (!isBlockedCandidateStatus(card.status)) continue;
+        const coordinatorCards =
+          blockedCandidatesByCoordinator.get(card.orchestratorThreadId) ?? [];
+        coordinatorCards.push(card);
+        blockedCandidatesByCoordinator.set(card.orchestratorThreadId, coordinatorCards);
+        continue;
+      }
+      if (!isCandidateStatus(card.status)) continue;
+      const coordinatorCards = readyCandidatesByCoordinator.get(card.orchestratorThreadId) ?? [];
       coordinatorCards.push(card);
-      candidatesByCoordinator.set(card.orchestratorThreadId, coordinatorCards);
+      readyCandidatesByCoordinator.set(card.orchestratorThreadId, coordinatorCards);
     }
 
     const coordinatorsWithCandidates = orchestrators.filter(
-      (orchestrator) => (candidatesByCoordinator.get(orchestrator.threadId)?.length ?? 0) > 0,
+      (orchestrator) =>
+        (readyCandidatesByCoordinator.get(orchestrator.threadId)?.length ?? 0) > 0 ||
+        (blockedCandidatesByCoordinator.get(orchestrator.threadId)?.length ?? 0) > 0,
     );
     if (coordinatorsWithCandidates.length === 0) {
       yield* logReason("no-candidates");
@@ -181,7 +256,10 @@ export const make = Effect.gen(function* () {
     }
 
     for (const coordinator of orchestrators) {
-      if (!candidatesByCoordinator.has(coordinator.threadId)) {
+      if (
+        !readyCandidatesByCoordinator.has(coordinator.threadId) &&
+        !blockedCandidatesByCoordinator.has(coordinator.threadId)
+      ) {
         yield* logReason("no-candidates", { coordinatorId: coordinator.threadId });
       }
     }
@@ -197,8 +275,12 @@ export const make = Effect.gen(function* () {
       }
 
       const coordinatorId = coordinator.threadId;
-      const coordinatorCards = candidatesByCoordinator.get(coordinatorId) ?? [];
-      coordinatorCards.sort(compareCandidateCards);
+      const readyCards = [...(readyCandidatesByCoordinator.get(coordinatorId) ?? [])].sort(
+        compareCandidateCards,
+      );
+      const blockedCards = [...(blockedCandidatesByCoordinator.get(coordinatorId) ?? [])].sort(
+        compareCardAge,
+      );
       const shell = shellsById.get(coordinatorId);
       if (shell === undefined || shell.archivedAt !== null) {
         yield* logReason("no-candidates", { coordinatorId });
@@ -244,21 +326,48 @@ export const make = Effect.gen(function* () {
         (thread) =>
           thread.delegationParent?.parentThreadId === coordinatorId && hasLiveSessionWork(thread),
       ).length;
-      if (activeChildCount >= threshold) {
-        yield* logReason("threshold", {
-          coordinatorId,
-          activeChildCount,
-          threshold,
-        });
-        continue;
+      let coordinatorCards: Array<BoardCard>;
+      const blockedNudge = readyCards.length === 0;
+      if (!blockedNudge) {
+        if (activeChildCount >= threshold) {
+          yield* logReason("threshold", {
+            coordinatorId,
+            activeChildCount,
+            threshold,
+          });
+          continue;
+        }
+        coordinatorCards = readyCards;
+      } else {
+        if (blockedCards.length === 0) continue;
+        if (cards.some((card) => isWorkingReadyCard(card, coordinatorId))) {
+          yield* logReason("blocked-while-work-ready", { coordinatorId });
+          continue;
+        }
+        if (activeChildCount > 0) {
+          yield* logReason("blocked-while-children-live", {
+            coordinatorId,
+            activeChildCount,
+          });
+          continue;
+        }
+        if (yield* blockedByOpenReview(coordinatorId)) continue;
+        coordinatorCards = blockedCards;
       }
 
       for (const card of coordinatorCards) {
         const currentCard = Option.getOrNull(yield* board.getCard(card.cardId));
+        const currentStatusEligible =
+          currentCard !== null &&
+          (blockedNudge
+            ? isBlockedCandidateStatus(currentCard.status)
+            : isCandidateStatus(currentCard.status));
         if (
           currentCard === null ||
           currentCard.archived ||
-          !isCandidateStatus(currentCard.status) ||
+          currentCard.orchestratorThreadId !== coordinatorId ||
+          !currentStatusEligible ||
+          currentCard.readiness !== (blockedNudge ? "blocked" : "ready") ||
           currentCard.failureStreak >= 3 ||
           currentCard.status !== card.status ||
           currentCard.updatedAt !== card.updatedAt
@@ -268,6 +377,44 @@ export const make = Effect.gen(function* () {
             cardId: card.cardId,
           });
           continue;
+        }
+
+        if (blockedNudge) {
+          const latestCards = yield* board.listCards();
+          const latestCard = latestCards.find(
+            (candidate) => candidate.cardId === currentCard.cardId,
+          );
+          if (
+            latestCard === undefined ||
+            latestCard.archived ||
+            latestCard.readiness !== "blocked" ||
+            latestCard.status !== currentCard.status ||
+            latestCard.updatedAt !== currentCard.updatedAt
+          ) {
+            yield* logReason("no-candidates", {
+              coordinatorId,
+              cardId: card.cardId,
+            });
+            continue;
+          }
+          if (latestCards.some((candidate) => isWorkingReadyCard(candidate, coordinatorId))) {
+            yield* logReason("blocked-while-work-ready", { coordinatorId });
+            continue;
+          }
+          const latestSnapshot = yield* snapshots.getShellSnapshot();
+          const latestActiveChildCount = latestSnapshot.threads.filter(
+            (thread) =>
+              thread.delegationParent?.parentThreadId === coordinatorId &&
+              hasLiveSessionWork(thread),
+          ).length;
+          if (latestActiveChildCount > 0) {
+            yield* logReason("blocked-while-children-live", {
+              coordinatorId,
+              activeChildCount: latestActiveChildCount,
+            });
+            continue;
+          }
+          if (yield* blockedByOpenReview(coordinatorId)) continue;
         }
 
         const attemptId = coordinatorBoardNudgeAttemptId(coordinatorId, currentCard);
@@ -289,7 +436,7 @@ export const make = Effect.gen(function* () {
           return;
         }
         const latestThreshold = latestSettings.coordinatorBoardNudgeActiveChildThreshold;
-        if (activeChildCount >= latestThreshold) {
+        if (!blockedNudge && activeChildCount >= latestThreshold) {
           yield* logReason("threshold", {
             coordinatorId,
             activeChildCount,
@@ -340,12 +487,12 @@ export const make = Effect.gen(function* () {
 
   const runSweepSafely = (settings: ServerSettings) =>
     sweep(settings).pipe(
-      Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause)
-          ? Effect.failCause(cause)
-          : Effect.logWarning("coordinator board nudge sweep failed", {
-              cause: Cause.pretty(cause),
-            }),
+      Effect.catchCauseIf(
+        (cause) => !Cause.hasInterruptsOnly(cause),
+        (cause) =>
+          Effect.logWarning("coordinator board nudge sweep failed", {
+            cause: Cause.pretty(cause),
+          }),
       ),
     );
 

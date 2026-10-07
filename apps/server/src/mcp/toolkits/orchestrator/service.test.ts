@@ -1064,6 +1064,8 @@ function seedBoardCard(
     title: "Seeded card",
     body: "",
     status: "orchestrator",
+    readiness: "ready",
+    readinessNote: null,
     createdBy: "orchestrator",
     assignee: null,
     executorRole: "general",
@@ -3325,6 +3327,7 @@ describe("OrchestratorMcpService", () => {
         { title: `Unsafe ${secretToken}` },
         { body: `Unsafe ${secretToken}` },
         { lastError: `Unsafe ${secretToken}` },
+        { readiness: "blocked" as const, readinessNote: `Unsafe ${secretToken}` },
       ]) {
         const error = yield* harness.service
           .boardUpdateCard(scope, { cardId: card.cardId, ...update })
@@ -3358,6 +3361,8 @@ describe("OrchestratorMcpService", () => {
       expect(card).toMatchObject({
         orchestratorThreadId: parentThreadId,
         status: "orchestrator",
+        readiness: "ready",
+        readinessNote: null,
         createdBy: "orchestrator",
         executorRole: "implementation",
         assignee: null,
@@ -3411,6 +3416,118 @@ describe("OrchestratorMcpService", () => {
       const events = board.events.get(card.cardId) ?? [];
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ status: "backlog", body: "status -> backlog" });
+    }),
+  );
+
+  it.effect("requires a one-line readiness note for non-ready cards", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const card = seedBoardCard(board);
+
+      for (const readiness of ["needs_human", "blocked"] as const) {
+        const error = yield* harness.service
+          .boardUpdateCard(makeScope(), { cardId: card.cardId, readiness })
+          .pipe(Effect.flip);
+        expect(error.code).toBe("readiness_note_required");
+      }
+      for (const readinessNote of [
+        "x".repeat(201),
+        "first line\nsecond line",
+        "first line\u2028second line",
+      ]) {
+        const error = yield* harness.service
+          .boardUpdateCard(makeScope(), {
+            cardId: card.cardId,
+            readiness: "blocked",
+            readinessNote,
+          })
+          .pipe(Effect.flip);
+        expect(error.code).toBe("readiness_note_required");
+      }
+
+      const secretError = yield* harness.service
+        .boardUpdateCard(makeScope(), {
+          cardId: card.cardId,
+          readiness: "needs_human",
+          readinessNote: `Question contains ${secretToken}`,
+        })
+        .pipe(Effect.flip);
+      expect(secretError.code).toBe("author_text_rejected");
+      expect(secretError.message).not.toContain(secretToken);
+      expect(board.cards.get(card.cardId)?.readiness).toBe("ready");
+      expect(board.events.get(card.cardId)).toHaveLength(0);
+    }),
+  );
+
+  it.effect(
+    "records readiness changes once, clears notes on ready, and refuses done while blocked",
+    () =>
+      Effect.gen(function* () {
+        const board = makeFakeBoard([parentThreadId]);
+        const harness = makeHarness({ board: board.repo });
+        const card = seedBoardCard(board);
+
+        const blocked = yield* harness.service.boardUpdateCard(makeScope(), {
+          cardId: card.cardId,
+          readiness: "blocked",
+          readinessNote: "Waiting for architecture review",
+        });
+        expect(blocked).toMatchObject({
+          readiness: "blocked",
+          readinessNote: "Waiting for architecture review",
+        });
+        expect(board.events.get(card.cardId)).toHaveLength(1);
+        expect(board.events.get(card.cardId)?.[0]).toMatchObject({
+          body: "readiness -> blocked: Waiting for architecture review",
+        });
+
+        const updatedNote = yield* harness.service.boardUpdateCard(makeScope(), {
+          cardId: card.cardId,
+          readinessNote: "Waiting for the accepted review",
+        });
+        expect(updatedNote.readinessNote).toBe("Waiting for the accepted review");
+        expect(board.events.get(card.cardId)).toHaveLength(2);
+        expect(board.events.get(card.cardId)?.[1]?.body).toBe(
+          "readiness -> blocked: Waiting for the accepted review",
+        );
+
+        const doneError = yield* harness.service
+          .boardUpdateCard(makeScope(), { cardId: card.cardId, status: "done" })
+          .pipe(Effect.flip);
+        expect(doneError.code).toBe("readiness_not_ready");
+
+        const ready = yield* harness.service.boardUpdateCard(makeScope(), {
+          cardId: card.cardId,
+          readiness: "ready",
+        });
+        expect(ready).toMatchObject({ readiness: "ready", readinessNote: null });
+        expect(board.events.get(card.cardId)).toHaveLength(3);
+        expect(board.events.get(card.cardId)?.[2]?.body).toBe("readiness -> ready");
+      }),
+  );
+
+  it.effect("leaves readiness unchanged when the Coordinator changes status", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const card = seedBoardCard(board, {
+        readiness: "needs_human",
+        readinessNote: "Which output should I review?",
+      });
+
+      const updated = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: card.cardId,
+        status: "review",
+      });
+
+      expect(updated).toMatchObject({
+        status: "review",
+        readiness: "needs_human",
+        readinessNote: "Which output should I review?",
+      });
+      expect(board.events.get(card.cardId)).toHaveLength(1);
+      expect(board.events.get(card.cardId)?.[0]?.body).toBe("status -> review");
     }),
   );
 

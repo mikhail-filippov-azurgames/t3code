@@ -4,6 +4,7 @@ import {
   BoardCardStatus,
   ThreadId,
   type BoardCard,
+  type BoardCardReadiness,
   type BoardCardEvent,
   type BoardExecutorRole,
 } from "@t3tools/contracts";
@@ -15,11 +16,14 @@ import {
   boardEventsForCard,
   DEFAULT_BOARD_FILTERS,
   boardStatusLabel,
+  boardReadinessLabel,
+  countNeedsHumanCards,
   filterBoardCards,
   filterChatCandidates,
   groupBoardCardsByStatus,
   isCardHumanEditable,
   isCardStartable,
+  shouldShowBoardReadiness,
 } from "./board.logic";
 
 const ORCHESTRATOR = ThreadId.make("thread-orchestrator");
@@ -49,9 +53,12 @@ describe("Phase 1 board status compatibility", () => {
 
 function makeCard(input: {
   readonly id: string;
+  readonly coordinator?: ThreadId;
   readonly title?: string;
   readonly body?: string;
   readonly status?: BoardCardStatus;
+  readonly readiness?: BoardCardReadiness;
+  readonly readinessNote?: string | null;
   readonly role?: BoardExecutorRole;
   readonly archived?: boolean;
   readonly order?: number;
@@ -59,10 +66,12 @@ function makeCard(input: {
 }): BoardCard {
   return {
     cardId: BoardCardId.make(input.id),
-    orchestratorThreadId: ORCHESTRATOR,
+    orchestratorThreadId: input.coordinator ?? ORCHESTRATOR,
     title: input.title ?? `Card ${input.id}`,
     body: input.body ?? "",
     status: input.status ?? "todo",
+    readiness: input.readiness ?? "ready",
+    readinessNote: input.readinessNote ?? null,
     createdBy: "human",
     assignee: null,
     executorRole: input.role ?? "implementation",
@@ -104,6 +113,35 @@ describe("filterBoardCards", () => {
     );
   });
 
+  it("filters by readiness and counts only unarchived needs-human cards", () => {
+    const otherCoordinator = ThreadId.make("thread-other-coordinator");
+    const cards = [
+      makeCard({ id: "human", readiness: "needs_human" }),
+      makeCard({ id: "other-human", coordinator: otherCoordinator, readiness: "needs_human" }),
+      makeCard({ id: "blocked", readiness: "blocked" }),
+      makeCard({ id: "ready" }),
+      makeCard({ id: "archived-human", readiness: "needs_human", archived: true }),
+    ];
+
+    assert.deepEqual(
+      filterBoardCards(cards, { ...DEFAULT_BOARD_FILTERS, readiness: "needs_human" }).map(
+        (card) => card.cardId as string,
+      ),
+      ["human", "other-human"],
+    );
+    assert.deepEqual(
+      filterBoardCards(cards, { ...DEFAULT_BOARD_FILTERS, readiness: "blocked" }).map(
+        (card) => card.cardId as string,
+      ),
+      ["blocked"],
+    );
+    assert.strictEqual(countNeedsHumanCards(cards), 2);
+    assert.strictEqual(
+      countNeedsHumanCards(cards.filter((card) => card.orchestratorThreadId === ORCHESTRATOR)),
+      1,
+    );
+  });
+
   it("matches the search text against title and body, case-insensitively", () => {
     const cards = [
       makeCard({ id: "a", title: "Wire board contracts" }),
@@ -115,6 +153,17 @@ describe("filterBoardCards", () => {
       filtered.map((card) => card.cardId as string),
       ["a", "b"],
     );
+  });
+});
+
+describe("readiness labels", () => {
+  it("labels all values and hides the ready marker", () => {
+    assert.strictEqual(boardReadinessLabel("ready"), "Ready");
+    assert.strictEqual(boardReadinessLabel("needs_human"), "Needs human");
+    assert.strictEqual(boardReadinessLabel("blocked"), "Blocked");
+    assert.isFalse(shouldShowBoardReadiness("ready"));
+    assert.isTrue(shouldShowBoardReadiness("needs_human"));
+    assert.isTrue(shouldShowBoardReadiness("blocked"));
   });
 });
 

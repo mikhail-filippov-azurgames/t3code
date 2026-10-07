@@ -9,6 +9,7 @@
  * @module components/board/BoardCardDetailDialog
  */
 import type { BoardCard, BoardCardEvent } from "@t3tools/contracts";
+import { CircleAlertIcon, OctagonAlertIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "../ui/button";
@@ -26,9 +27,11 @@ import { BoardRoleIcon } from "./boardRoleIcons";
 import {
   boardExecutorRoleLabel,
   boardEventsForCard,
+  boardReadinessLabel,
   boardStatusLabel,
   formatBoardEventTime,
   isCardStartable,
+  shouldShowBoardReadiness,
 } from "./board.logic";
 
 export interface BoardCardDetailDialogProps {
@@ -80,12 +83,28 @@ export function BoardCardDetailDialog({
               <BoardRoleIcon role={card.executorRole} />
               {`${boardStatusLabel(card.status)} · ${boardExecutorRoleLabel(card.executorRole)}`}
             </span>
+            {shouldShowBoardReadiness(card.readiness) ? (
+              <span className="ml-2 inline-flex items-center gap-1">
+                {card.readiness === "needs_human" ? (
+                  <CircleAlertIcon aria-hidden="true" className="size-3.5 text-destructive" />
+                ) : (
+                  <OctagonAlertIcon aria-hidden="true" className="size-3.5 text-warning" />
+                )}
+                {boardReadinessLabel(card.readiness)}
+              </span>
+            ) : null}
             {card.failureStreak >= 3 ? " · needs human" : ""}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4 text-base sm:text-sm">
           {card.body.trim().length > 0 ? (
             <p className="whitespace-pre-wrap text-muted-foreground">{card.body}</p>
+          ) : null}
+
+          {shouldShowBoardReadiness(card.readiness) && card.readinessNote !== null ? (
+            <p className="rounded-md border border-warning/32 bg-warning-surface px-2.5 py-1.5 text-xs text-foreground">
+              {card.readinessNote}
+            </p>
           ) : null}
 
           {card.lastError !== null && card.lastError.trim().length > 0 ? (

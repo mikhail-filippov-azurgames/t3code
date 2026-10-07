@@ -73,7 +73,7 @@ const toBoardRepositoryError =
 
 const boardCardAuthorTextFailure = (
   card: BoardCard,
-  previous?: Pick<BoardCard, "title" | "body" | "lastError">,
+  previous?: Pick<BoardCard, "title" | "body" | "lastError" | "readinessNote">,
 ): BoardRepositoryError | null => {
   const texts: ReadonlyArray<readonly [AuthorTextField, string, boolean]> = [
     ["title", card.title, previous === undefined || card.title !== previous.title],
@@ -85,6 +85,15 @@ const boardCardAuthorTextFailure = (
             "lastError",
             card.lastError,
             previous === undefined || card.lastError !== previous.lastError,
+          ] as const,
+        ]),
+    ...(card.readinessNote === null
+      ? []
+      : [
+          [
+            "readinessNote",
+            card.readinessNote,
+            previous === undefined || card.readinessNote !== previous.readinessNote,
           ] as const,
         ]),
   ];
@@ -163,6 +172,8 @@ const makeBoardRepository = Effect.gen(function* () {
           title,
           body,
           status,
+          readiness,
+          readiness_note,
           created_by,
           assignee_json,
           executor_role,
@@ -181,6 +192,8 @@ const makeBoardRepository = Effect.gen(function* () {
           ${row.title},
           ${row.body},
           ${row.status},
+          ${row.readiness},
+          ${row.readinessNote},
           ${row.createdBy},
           ${row.assignee === null ? null : JSON.stringify(row.assignee)},
           ${row.executorRole},
@@ -204,6 +217,8 @@ const makeBoardRepository = Effect.gen(function* () {
         SET title = ${row.title},
             body = ${row.body},
             status = ${row.status},
+            readiness = ${row.readiness},
+            readiness_note = ${row.readinessNote},
             assignee_json = ${row.assignee === null ? null : JSON.stringify(row.assignee)},
             executor_role = ${row.executorRole},
             executor_thread_id = ${row.executorThreadId},
@@ -228,6 +243,8 @@ const makeBoardRepository = Effect.gen(function* () {
           title,
           body,
           status,
+          readiness,
+          readiness_note AS "readinessNote",
           created_by AS "createdBy",
           assignee_json AS "assignee",
           executor_role AS "executorRole",
@@ -255,6 +272,8 @@ const makeBoardRepository = Effect.gen(function* () {
           title,
           body,
           status,
+          readiness,
+          readiness_note AS "readinessNote",
           created_by AS "createdBy",
           assignee_json AS "assignee",
           executor_role AS "executorRole",
@@ -282,6 +301,8 @@ const makeBoardRepository = Effect.gen(function* () {
           title,
           body,
           status,
+          readiness,
+          readiness_note AS "readinessNote",
           created_by AS "createdBy",
           assignee_json AS "assignee",
           executor_role AS "executorRole",

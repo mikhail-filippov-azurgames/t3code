@@ -35,6 +35,8 @@ function makeCard(overrides: Partial<BoardCard> = {}): BoardCard {
     title: "Implement persistence",
     body: "Store board state in SQLite",
     status: "todo",
+    readiness: "ready",
+    readinessNote: null,
     createdBy: "human",
     assignee: null,
     executorRole: "implementation",
@@ -131,7 +133,12 @@ repositoryLayer("BoardRepository", (it) => {
       const selection = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5", [
         { id: "reasoningEffort", value: "high" },
       ]);
-      const card = makeCard({ assignee: selection, order: 3 });
+      const card = makeCard({
+        assignee: selection,
+        order: 3,
+        readiness: "needs_human",
+        readinessNote: "Which draft should I review?",
+      });
       yield* repository.createCard(card);
 
       const stored = yield* repository.getCard(BoardCardId.make("card-1"));
@@ -140,6 +147,8 @@ repositoryLayer("BoardRepository", (it) => {
         assert.deepEqual(stored.value.assignee, selection);
         assert.equal(stored.value.archived, false);
         assert.equal(stored.value.order, 3);
+        assert.equal(stored.value.readiness, "needs_human");
+        assert.equal(stored.value.readinessNote, "Which draft should I review?");
       }
 
       const updated = makeCard({
@@ -147,6 +156,8 @@ repositoryLayer("BoardRepository", (it) => {
         order: 3,
         status: "review",
         archived: true,
+        readiness: "blocked",
+        readinessNote: "Waiting for the architecture plan",
         failureStreak: 2,
         updatedAt: "2026-01-02T00:00:00.000Z",
       });
@@ -157,6 +168,8 @@ repositoryLayer("BoardRepository", (it) => {
       if (Option.isSome(reread)) {
         assert.equal(reread.value.status, "review");
         assert.equal(reread.value.archived, true);
+        assert.equal(reread.value.readiness, "blocked");
+        assert.equal(reread.value.readinessNote, "Waiting for the architecture plan");
         assert.equal(reread.value.failureStreak, 2);
         assert.deepEqual(reread.value.assignee, selection);
       }
@@ -375,6 +388,37 @@ repositoryLayer("BoardRepository", (it) => {
     }),
   );
 
+  it.effect("reads a legacy card row as ready after the readiness migration", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.make("thread-legacy-readiness-card");
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const cardId = BoardCardId.make("legacy-readiness-card");
+      yield* sql`
+        INSERT INTO board_cards (
+          card_id, orchestrator_thread_id, title, body, status, created_by,
+          assignee_json, executor_role, executor_thread_id, outcome, last_error,
+          failure_streak, order_index, archived, created_at, updated_at
+        ) VALUES (
+          ${cardId}, ${threadId}, 'Legacy row', '', 'todo', 'human',
+          NULL, 'general', NULL, NULL, NULL, 0, 0, 0,
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+        )
+      `;
+
+      const card = Option.getOrThrow(yield* repository.getCard(cardId));
+      assert.equal(card.title, "Legacy row");
+      assert.equal(card.readiness, "ready");
+      assert.isNull(card.readinessNote);
+    }),
+  );
+
   it.effect("rejects unsafe author text at the storage boundary and preserves safe bytes", () =>
     Effect.gen(function* () {
       const repository = yield* BoardRepository;
@@ -402,6 +446,12 @@ repositoryLayer("BoardRepository", (it) => {
           cardId: BoardCardId.make("unsafe-board-last-error"),
           orchestratorThreadId: threadId,
           lastError: `Unsafe error ${secret}`,
+        }),
+        makeCard({
+          cardId: BoardCardId.make("unsafe-board-readiness-note"),
+          orchestratorThreadId: threadId,
+          readiness: "blocked",
+          readinessNote: `Unsafe note ${secret}`,
         }),
       ]) {
         const error = yield* Effect.flip(repository.createCard(unsafe));
@@ -476,6 +526,7 @@ repositoryLayer("BoardRepository", (it) => {
         { ...safe, title: `Unsafe title ${secret}` },
         { ...safe, body: `Unsafe body ${secret}` },
         { ...safe, lastError: `Unsafe error ${secret}` },
+        { ...safe, readiness: "blocked" as const, readinessNote: `Unsafe note ${secret}` },
       ]) {
         const error = yield* Effect.flip(repository.updateCard(unsafeUpdate));
         assert.instanceOf(error, BoardRepositoryError);

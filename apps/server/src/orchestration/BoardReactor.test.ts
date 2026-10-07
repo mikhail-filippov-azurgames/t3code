@@ -47,6 +47,8 @@ function makeCard(overrides: Partial<BoardCard> = {}): BoardCard {
     title: "Ship the board",
     body: "Implement the reactor",
     status: "in_progress",
+    readiness: "ready",
+    readinessNote: null,
     createdBy: "orchestrator",
     assignee: null,
     executorRole: "implementation",
@@ -303,6 +305,29 @@ describe("BoardReactor", () => {
           assert.notInclude(command.message.text, secretToken);
         }
       }),
+    ),
+  );
+
+  it.effect("preserves blocked readiness when executor completion moves status to review", () =>
+    runScenario(
+      {
+        cards: [
+          makeCard({
+            readiness: "blocked",
+            readinessNote: "Waiting for the architecture plan",
+          }),
+        ],
+      },
+      (fixture) =>
+        Effect.gen(function* () {
+          yield* handle(fixture, terminalEvent({ status: "completed" }));
+
+          const updates = yield* Ref.get(fixture.updates);
+          assert.equal(updates.length, 1);
+          assert.equal(updates[0]?.status, "review");
+          assert.equal(updates[0]?.readiness, "blocked");
+          assert.equal(updates[0]?.readinessNote, "Waiting for the architecture plan");
+        }),
     ),
   );
 

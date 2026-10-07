@@ -41,8 +41,10 @@ vi.mock("@t3tools/client-runtime/board-card-mentions", () => ({
 vi.mock("../board/board.logic", () => ({
   boardFailureText: () => "Board action failed",
   boardExecutorRoleLabel: () => "Исполнитель",
+  boardReadinessLabel: () => "Требует внимания человека",
   boardStatusLabel: () => "В работе",
   isCardStartable: () => true,
+  shouldShowBoardReadiness: (readiness: string) => readiness !== "ready",
 }));
 vi.mock("./boardCardPins", () => ({
   boardCardPinsKey: () => "board-card-pins",
@@ -66,6 +68,8 @@ const card: BoardCard = {
   title: "Проверить запуск клиента",
   body: "Подробное описание карточки",
   status: "in_progress",
+  readiness: "needs_human",
+  readinessNote: "Какой формат клиента проверить?",
   createdBy: "human",
   assignee: null,
   executorRole: "implementation",
@@ -224,6 +228,9 @@ describe("BoardCardPinnedPanel", () => {
 
       article = renderer.root.findByProps({ "data-board-card-id": mocks.cardId });
       expect(textContent(article)).toContain(card.body);
+      expect(textContent(article)).toContain("Требует внимания человека");
+      expect(textContent(article)).toContain(card.readinessNote!);
+      expect(article.findAll((node) => node.type === "svg").length).toBeGreaterThan(0);
       expect(textContent(article)).toContain("Просьба оркестратору");
       expect(textContent(article)).toContain("История");
     } finally {

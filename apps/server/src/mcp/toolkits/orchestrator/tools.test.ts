@@ -115,6 +115,12 @@ describe("orchestrator MCP tools", () => {
       expect(Tool.getDescription(tool), tool.name).toContain("Coordinator thread");
     }
     expect(Tool.getDescription(BoardUpdateCardTool)).toContain("reported as not found");
+    expect(Tool.getDescription(BoardUpdateCardTool)).toContain("readiness is parallel to status");
+    expect(Tool.getDescription(BoardUpdateCardTool)).toContain("done requires readiness=ready");
+    expect(Tool.getDescription(BoardUpdateCardTool)).toContain(
+      "Do not use Backlog to mark waiting for a human",
+    );
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("readiness and readinessNote");
     expect(Tool.getDescription(BoardCreateCardTool)).toContain("The status value orchestrator");
     expect(Tool.getDescription(BoardCreateCardTool)).toContain("and is the default");
   });

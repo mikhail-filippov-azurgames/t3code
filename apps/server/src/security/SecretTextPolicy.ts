@@ -7,7 +7,8 @@ export type AuthorTextField =
   | "reason"
   | "summary"
   | "body"
-  | "lastError";
+  | "lastError"
+  | "readinessNote";
 
 export type DerivedTextPurpose = "summary" | "wake" | "completion-preview" | "read";
 

@@ -42,6 +42,8 @@ function makeCard(cardId: string): BoardCard {
     title: "Wire board contracts",
     body: "Add the board page.",
     status: "todo",
+    readiness: "ready",
+    readinessNote: null,
     createdBy: "human",
     assignee: createModelSelection(ProviderInstanceId.make("codex"), "gpt-6-astra"),
     executorRole: "implementation",

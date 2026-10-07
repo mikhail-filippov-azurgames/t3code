@@ -12,9 +12,11 @@ import { AsyncResult } from "effect/unstable/reactivity";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  CircleAlertIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   MessageCircleIcon,
+  OctagonAlertIcon,
   PanelLeftOpenIcon,
   PlayIcon,
   RotateCwIcon,
@@ -28,8 +30,10 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   boardFailureText,
   boardExecutorRoleLabel,
+  boardReadinessLabel,
   boardStatusLabel,
   isCardStartable,
+  shouldShowBoardReadiness,
 } from "../board/board.logic";
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -673,9 +677,26 @@ function PinnedCard(props: {
             </button>
           </h3>
           {card && !props.collapsed ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)}
-            </p>
+            <>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)}
+              </p>
+              {shouldShowBoardReadiness(card.readiness) ? (
+                <div className="mt-1 space-y-1 text-xs">
+                  <p className="inline-flex items-center gap-1 font-medium">
+                    {card.readiness === "needs_human" ? (
+                      <CircleAlertIcon aria-hidden="true" className="size-3.5 text-destructive" />
+                    ) : (
+                      <OctagonAlertIcon aria-hidden="true" className="size-3.5 text-warning" />
+                    )}
+                    {boardReadinessLabel(card.readiness)}
+                  </p>
+                  {card.readinessNote !== null ? (
+                    <p className="break-words text-muted-foreground">{card.readinessNote}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
         <Button

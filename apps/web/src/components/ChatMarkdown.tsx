@@ -139,7 +139,12 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import { Button } from "./ui/button";
 import { boardEnvironment } from "../state/board";
 import { addBoardCardPin } from "./board-chat/boardCardPins";
-import { boardExecutorRoleLabel, boardStatusLabel } from "./board/board.logic";
+import {
+  boardExecutorRoleLabel,
+  boardReadinessLabel,
+  boardStatusLabel,
+  shouldShowBoardReadiness,
+} from "./board/board.logic";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "./ui/collapsible";
 import { ScrollArea } from "./ui/scroll-area";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
@@ -3360,6 +3365,25 @@ function BoardCardMentionButton(props: {
             {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)} ·{" "}
             {orchestratorThreadTitle ?? String(card.orchestratorThreadId)}
           </p>
+          {shouldShowBoardReadiness(card.readiness) ? (
+            <p className="flex items-start gap-1">
+              {card.readiness === "needs_human" ? (
+                <TriangleAlertIcon
+                  aria-hidden="true"
+                  className="mt-0.5 size-3.5 shrink-0 text-destructive"
+                />
+              ) : (
+                <OctagonAlertIcon
+                  aria-hidden="true"
+                  className="mt-0.5 size-3.5 shrink-0 text-warning"
+                />
+              )}
+              <span>
+                {boardReadinessLabel(card.readiness)}
+                {card.readinessNote === null ? "" : ` · ${card.readinessNote}`}
+              </span>
+            </p>
+          ) : null}
           {recentEvents.length > 0 ? (
             <ol className="space-y-1 border-t border-border pt-1.5">
               {recentEvents.map((event) => (

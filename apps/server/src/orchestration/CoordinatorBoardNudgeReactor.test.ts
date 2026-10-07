@@ -4,6 +4,7 @@ import {
   type BoardCard,
   type BoardCardEvent,
   type BoardOrchestrator,
+  type ArchitectureReviewRecord,
   type OrchestrationCommand,
   type OrchestrationSession,
   type OrchestrationThreadShell,
@@ -26,6 +27,10 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { BoardRepository } from "../persistence/Services/Board.ts";
+import {
+  CoordinatorArchitectRepository,
+  CoordinatorArchitectRepositoryError,
+} from "../persistence/Services/CoordinatorArchitect.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import * as CoordinatorBoardNudgeReactor from "./CoordinatorBoardNudgeReactor.ts";
 import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
@@ -53,6 +58,8 @@ function makeCard(cardId: string, overrides: Partial<BoardCard> = {}): BoardCard
     title: `Task ${cardId}`,
     body: "Implement the task",
     status: "todo",
+    readiness: "ready",
+    readinessNote: null,
     createdBy: "orchestrator",
     assignee: null,
     executorRole: "implementation",
@@ -122,6 +129,8 @@ interface HarnessSeed {
   readonly cards?: ReadonlyArray<BoardCard>;
   readonly shells?: ReadonlyArray<OrchestrationThreadShell>;
   readonly history?: ReadonlyArray<BoardCardEvent>;
+  readonly getCardOverrides?: ReadonlyArray<BoardCard>;
+  readonly architectReviews?: "open" | "closed" | "failure";
 }
 
 function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
@@ -137,6 +146,7 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
     const snapshotReads = yield* Ref.make(0);
     const settingsReads = yield* Ref.make(0);
     const settingsReadNotifications = yield* Queue.unbounded<number>();
+    const reviewReads = yield* Ref.make(0);
 
     const board = Layer.mock(BoardRepository)({
       listOrchestrators: () =>
@@ -146,7 +156,12 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       getCard: (cardId) =>
         Ref.update(boardReads, (count) => count + 1).pipe(
           Effect.andThen(Ref.get(cards)),
-          Effect.map((all) => Option.fromNullishOr(all.find((card) => card.cardId === cardId))),
+          Effect.map(
+            (all) =>
+              seed.getCardOverrides?.find((card) => card.cardId === cardId) ??
+              all.find((card) => card.cardId === cardId),
+          ),
+          Effect.map(Option.fromNullishOr),
         ),
       listEventsForCard: ({ cardId }) =>
         Ref.update(boardReads, (count) => count + 1).pipe(
@@ -187,7 +202,53 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       ),
     });
 
-    const dependencies = Layer.mergeAll(board, engine, snapshot, settingsLayer);
+    const openReview = {
+      reviewId: "review-open",
+      bindingId: "binding-1",
+      coordinatorThreadId: COORDINATOR_ID,
+      architectThreadId: ThreadId.make("architect-1"),
+      subjectChildThreadId: null,
+      reason: "hard-bug",
+      question: "Is the retry safe to run twice?",
+      refs: {},
+      executionPosture: "continue",
+      answerDisposition: null,
+      status: "open",
+      answerSummary: null,
+      requestIdempotencyKey: "request-1",
+      answerIdempotencyKey: null,
+      answerPayloadFingerprint: null,
+      publishIdempotencyKey: null,
+      cancelIdempotencyKey: null,
+      cancelledAt: null,
+      cancelledBy: null,
+      createdAt: NOW,
+      answeredAt: null,
+      publishedAt: null,
+      publishDeliveredAt: null,
+      lastPublishFailure: null,
+    } satisfies ArchitectureReviewRecord;
+    const architect = Layer.mock(CoordinatorArchitectRepository)({
+      listReviewsByCoordinator: ({ status }) =>
+        Ref.update(reviewReads, (count) => count + 1).pipe(
+          Effect.andThen(() =>
+            seed.architectReviews === "failure"
+              ? Effect.fail(
+                  new CoordinatorArchitectRepositoryError({
+                    operation: "listReviewsByCoordinator",
+                  }),
+                )
+              : Effect.succeed(
+                  status === "open" && seed.architectReviews === "open" ? [openReview] : [],
+                ),
+          ),
+        ),
+    });
+
+    const dependencies =
+      seed.architectReviews === undefined
+        ? Layer.mergeAll(board, engine, snapshot, settingsLayer)
+        : Layer.mergeAll(board, engine, snapshot, settingsLayer, architect);
     const reactor = yield* CoordinatorBoardNudgeReactor.make.pipe(Effect.provide(dependencies));
 
     return {
@@ -198,6 +259,7 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       snapshotReads,
       settingsReads,
       settingsReadNotifications,
+      reviewReads,
     };
   });
 }
@@ -210,6 +272,7 @@ interface RunResult {
   readonly boardReads: number;
   readonly snapshotReads: number;
   readonly settingsReads: number;
+  readonly reviewReads: number;
 }
 
 function runFirstSweep(
@@ -247,6 +310,7 @@ function readHarness(harness: Harness): Effect.Effect<RunResult> {
       boardReads: yield* Ref.get(harness.boardReads),
       snapshotReads: yield* Ref.get(harness.snapshotReads),
       settingsReads: yield* Ref.get(harness.settingsReads),
+      reviewReads: yield* Ref.get(harness.reviewReads),
     };
   });
 }
@@ -341,14 +405,15 @@ describe("CoordinatorBoardNudgeReactor", () => {
           assert.equal(result.snapshotReads, 1);
           const turns = turnCommands(result.commands);
           assert.equal(turns.length, 1);
-          assert.equal(turns[0]?.type, "thread.turn.start");
-          if (turns[0]?.type !== "thread.turn.start") return;
-          assert.equal(turns[0].threadId, COORDINATOR_ID);
-          assert.equal(turns[0].runOrigin._tag, "board-idle-nudge");
-          assert.ok(turns[0].message.text.includes("Task ready"));
-          assert.ok(turns[0].message.text.includes("Card id: ready"));
-          assert.ok(turns[0].message.text.includes("1 active child task(s)"));
-          assert.ok(turns[0].message.text.includes("threshold is 2"));
+          const turn = turns[0];
+          assert.equal(turn?.type, "thread.turn.start");
+          if (turn?.type !== "thread.turn.start") return;
+          assert.equal(turn.threadId, COORDINATOR_ID);
+          assert.equal(turn.runOrigin?._tag, "board-idle-nudge");
+          assert.ok(turn.message.text.includes("Task ready"));
+          assert.ok(turn.message.text.includes("Card id: ready"));
+          assert.ok(turn.message.text.includes("1 active child task(s)"));
+          assert.ok(turn.message.text.includes("threshold is 2"));
           assert.equal(result.history.length, 1);
           assert.equal(result.history[0]?.cardId, BoardCardId.make("ready"));
         }),
@@ -457,6 +522,188 @@ describe("CoordinatorBoardNudgeReactor", () => {
     }),
   );
 
+  it.effect("never selects needs-human cards, including when they are the only cards", () =>
+    Effect.gen(function* () {
+      const result = yield* runFirstSweep({
+        cards: [
+          makeCard("human-only", {
+            readiness: "needs_human",
+            readinessNote: "Which plan should I use?",
+          }),
+        ],
+      });
+      assert.equal(turnCommands(result.commands).length, 0);
+      assert.equal(result.snapshotReads, 0);
+    }),
+  );
+
+  it.effect("does not select blocked while any ready work card exists", () =>
+    Effect.gen(function* () {
+      for (const status of ["todo", "orchestrator", "review"] as const) {
+        const result = yield* runFirstSweep({
+          cards: [
+            makeCard("blocked", {
+              status: "review",
+              readiness: "blocked",
+              readinessNote: "Waiting for a dependency",
+            }),
+            makeCard("ready-work", { status }),
+          ],
+        });
+        const turns = turnCommands(result.commands);
+        assert.equal(turns.length, 1);
+        assert.equal(turns[0]?.type, "thread.turn.start");
+        if (turns[0]?.type === "thread.turn.start") {
+          assert.ok(turns[0].message.text.includes("Card id: ready-work"));
+          assert.ok(!turns[0].message.text.includes("Card id: blocked"));
+        }
+      }
+
+      const inProgressOnly = yield* runFirstSweep({
+        cards: [
+          makeCard("blocked", {
+            status: "review",
+            readiness: "blocked",
+            readinessNote: "Waiting for a dependency",
+          }),
+          makeCard("in-progress-ready", { status: "in_progress" }),
+        ],
+      });
+      assert.equal(turnCommands(inProgressOnly.commands).length, 0);
+      assert.equal(inProgressOnly.reviewReads, 0);
+    }),
+  );
+
+  it.effect("chooses the oldest blocked card when only non-working states remain", () =>
+    Effect.gen(function* () {
+      const result = yield* runFirstSweep({
+        cards: [
+          makeCard("blocked-new", {
+            status: "review",
+            readiness: "blocked",
+            readinessNote: "Waiting for review B",
+            createdAt: "2026-01-15T12:00:00.000Z",
+          }),
+          makeCard("blocked-old", {
+            status: "in_progress",
+            readiness: "blocked",
+            readinessNote: "Waiting for review A",
+            createdAt: "2026-01-15T08:00:00.000Z",
+          }),
+          makeCard("backlog", { status: "backlog" }),
+          makeCard("done", { status: "done" }),
+          makeCard("archived", { archived: true }),
+          makeCard("needs-human", {
+            readiness: "needs_human",
+            readinessNote: "Needs a human decision",
+          }),
+        ],
+      });
+      const turns = turnCommands(result.commands);
+      assert.equal(turns.length, 1);
+      assert.equal(turns[0]?.type, "thread.turn.start");
+      if (turns[0]?.type === "thread.turn.start") {
+        assert.ok(turns[0].message.text.includes("Card id: blocked-old"));
+        assert.ok(turns[0].message.text.includes("Waiting for review A"));
+      }
+      assert.equal(result.reviewReads, 0);
+    }),
+  );
+
+  it.effect("waits for every live child, even below the regular nudge threshold", () =>
+    Effect.gen(function* () {
+      const childId = ThreadId.make("live-child-below-threshold");
+      const child = makeShell(childId, {
+        session: makeSession(childId, "running"),
+        delegationParent: {
+          parentThreadId: COORDINATOR_ID,
+          parentEnvironmentId: "environment-1",
+          role: "implementation",
+        },
+      });
+      const result = yield* runFirstSweep(
+        {
+          cards: [
+            makeCard("blocked", {
+              status: "review",
+              readiness: "blocked",
+              readinessNote: "Waiting for the executor",
+            }),
+          ],
+          shells: [makeShell(COORDINATOR_ID), child],
+        },
+        makeSettings(10, 2),
+      );
+      assert.equal(turnCommands(result.commands).length, 0);
+      assert.equal(result.reviewReads, 0);
+    }),
+  );
+
+  it.effect(
+    "blocks reminders for open reviews or review-read failures, and resumes after an answer",
+    () =>
+      Effect.gen(function* () {
+        const blocked = makeCard("blocked-review", {
+          status: "review",
+          readiness: "blocked",
+          readinessNote: "Waiting for the architecture review",
+        });
+        for (const architectReviews of ["open", "failure"] as const) {
+          const result = yield* runFirstSweep({ cards: [blocked], architectReviews });
+          assert.equal(turnCommands(result.commands).length, 0);
+          assert.equal(result.reviewReads, 1);
+        }
+
+        const answered = yield* runFirstSweep({ cards: [blocked], architectReviews: "closed" });
+        assert.equal(turnCommands(answered.commands).length, 1);
+        assert.equal(answered.reviewReads, 2);
+      }),
+  );
+
+  it.effect(
+    "sends one blocked reminder per card version and rechecks readiness before dispatch",
+    () =>
+      Effect.gen(function* () {
+        const blocked = makeCard("blocked-version", {
+          status: "review",
+          readiness: "blocked",
+          readinessNote: "Waiting for the plan",
+        });
+        const first = yield* runFirstSweep({ cards: [blocked] }, makeSettings(), 1);
+        assert.equal(turnCommands(first.commands).length, 1);
+
+        const replay = yield* runFirstSweep(
+          { cards: [blocked], history: first.history },
+          makeSettings(),
+        );
+        assert.equal(turnCommands(replay.commands).length, 0);
+
+        const nextVersion = makeCard("blocked-version", {
+          status: "review",
+          readiness: "blocked",
+          readinessNote: "Waiting for a different plan",
+          updatedAt: "2026-01-15T13:01:00.000Z",
+        });
+        const afterChange = yield* runFirstSweep(
+          { cards: [nextVersion], history: first.history },
+          makeSettings(),
+          1,
+        );
+        assert.equal(turnCommands(afterChange.commands).length, 1);
+
+        const changedBeforeRead = makeCard("blocked-version", {
+          status: "review",
+          readiness: "needs_human",
+          readinessNote: "Which plan should I use?",
+        });
+        const suppressed = yield* runFirstSweep({
+          cards: [blocked],
+          getCardOverrides: [changedBeforeRead],
+        });
+        assert.equal(turnCommands(suppressed.commands).length, 0);
+      }),
+  );
+
   it.effect("skips a busy, human-waiting, deferred, or recently messaged coordinator", () =>
     Effect.gen(function* () {
       const cases: ReadonlyArray<Partial<OrchestrationThreadShell>> = [
@@ -534,7 +781,7 @@ describe("CoordinatorBoardNudgeReactor", () => {
     );
   });
 
-  it("formats state guidance, the automatic source, and a sanitized last error", () => {
+  it("formats ready-state guidance, the automatic source, and a sanitized last error", () => {
     const card = makeCard("review-card", {
       title: "Review the patch",
       status: "review",
@@ -544,7 +791,12 @@ describe("CoordinatorBoardNudgeReactor", () => {
     assert.ok(text.includes("automatic board check, not a message from a person"));
     assert.ok(text.includes("Review the work"));
     assert.ok(text.includes("Last error: provider failed"));
-    assert.ok(text.includes("move it to Backlog"));
+    assert.ok(
+      text.includes(
+        "set readiness to needs_human with a one-line readinessNote stating the exact question",
+      ),
+    );
+    assert.ok(text.includes("Do not move it to Backlog for this."));
 
     assert.ok(
       CoordinatorBoardNudgeReactor.formatCoordinatorBoardNudgeMessage(
@@ -560,5 +812,19 @@ describe("CoordinatorBoardNudgeReactor", () => {
         1,
       ).includes("move it to Plan (todo)"),
     );
+
+    const secret = `ghp_${"A".repeat(32)}`;
+    const blockedText = CoordinatorBoardNudgeReactor.formatCoordinatorBoardNudgeMessage(
+      makeCard("blocked-card", {
+        readiness: "blocked",
+        readinessNote: `Waiting for review ${secret}`,
+      }),
+      0,
+      1,
+    );
+    assert.ok(blockedText.includes("This card is blocked and no other card can move:"));
+    assert.ok(blockedText.includes("set readiness to ready"));
+    assert.ok(blockedText.includes("keep it blocked and end this turn."));
+    assert.ok(!blockedText.includes(secret));
   });
 });

@@ -3799,6 +3799,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           executorThreadId: null,
           outcome: null,
           lastError: null,
+          readiness: "ready",
+          readinessNote: null,
           failureStreak: 0,
           order: 0,
           archived: false,
@@ -3824,6 +3826,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         }
         const at = yield* nowIso();
         const statusChanged = input.status !== undefined && input.status !== card.status;
+        const readiness = input.readiness ?? card.readiness;
+        const readinessNote =
+          readiness === "ready" ? null : (input.readinessNote ?? card.readinessNote);
+        const readinessChanged =
+          readiness !== card.readiness || readinessNote !== card.readinessNote;
         const executorChanged =
           (input.executorRole !== undefined && input.executorRole !== card.executorRole) ||
           (input.executorThreadId !== undefined &&
@@ -3834,6 +3841,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ...(input.title === undefined ? {} : { title: input.title }),
           ...(input.body === undefined ? {} : { body: input.body }),
           ...(input.status === undefined ? {} : { status: input.status }),
+          readiness,
+          readinessNote,
           ...(input.executorRole === undefined ? {} : { executorRole: input.executorRole }),
           ...(input.assignee === undefined ? {} : { assignee: input.assignee }),
           ...(input.executorThreadId === undefined
@@ -3846,6 +3855,24 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           ...(input.archived === undefined ? {} : { archived: input.archived }),
           updatedAt: at,
         };
+        if (next.status === "done" && next.readiness !== "ready") {
+          return yield* failure(
+            "readiness_not_ready",
+            "A card must be ready before it can move to done.",
+          );
+        }
+        if (
+          next.readiness !== "ready" &&
+          (next.readinessNote === null ||
+            next.readinessNote.trim().length === 0 ||
+            next.readinessNote.length > 200 ||
+            /[\r\n\u0085\u2028\u2029]/.test(next.readinessNote))
+        ) {
+          return yield* failure(
+            "readiness_note_required",
+            "A non-ready card needs a one-line readinessNote of at most 200 characters.",
+          );
+        }
         const startingExecution = card.status !== "in_progress" && next.status === "in_progress";
         const lastErrorCheck =
           next.lastError === null || (!startingExecution && next.lastError === card.lastError)
@@ -3860,6 +3887,9 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               ? [ensureAuthorTextAllowed("body", next.body)]
               : []),
             ...lastErrorCheck,
+            ...(next.readinessNote === null
+              ? []
+              : [ensureAuthorTextAllowed("readinessNote", next.readinessNote)]),
           ],
           { discard: true },
         );
@@ -3881,6 +3911,15 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           const body = statusChanged
             ? `status -> ${next.status}`
             : `executor -> ${next.executorRole}`;
+          yield* repo
+            .appendEvent(buildBoardCardEvent(next, { at, body }))
+            .pipe(Effect.mapError(orchestrationFailure("append board card event")));
+        }
+        if (readinessChanged) {
+          const body =
+            next.readiness === "ready"
+              ? "readiness -> ready"
+              : `readiness -> ${next.readiness}: ${next.readinessNote}`;
           yield* repo
             .appendEvent(buildBoardCardEvent(next, { at, body }))
             .pipe(Effect.mapError(orchestrationFailure("append board card event")));
