@@ -73,6 +73,7 @@ import * as PullRequestSyncReactor from "../src/orchestration/PullRequestSyncRea
 import * as ThreadPullRequestReactor from "../src/orchestration/ThreadPullRequestReactor.ts";
 import * as BoardReactor from "../src/orchestration/BoardReactor.ts";
 import * as DelegatedTaskSummaryReactor from "../src/orchestration/DelegatedTaskSummaryReactor.ts";
+import * as CoordinatorBoardNudgeReactor from "../src/orchestration/CoordinatorBoardNudgeReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
@@ -438,6 +439,11 @@ export const makeOrchestrationIntegrationHarness = (
         Layer.succeed(DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor, {
           start: () => Effect.void,
           drain: Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(CoordinatorBoardNudgeReactor.CoordinatorBoardNudgeReactor, {
+          start: () => Effect.void,
         }),
       ),
     );
