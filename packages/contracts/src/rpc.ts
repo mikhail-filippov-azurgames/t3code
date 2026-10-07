@@ -95,6 +95,7 @@ import { KeybindingsConfigError } from "./keybindings.ts";
 import {
   OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
   OrchestratorMcpFailure,
+  OrchestratorMcpGetArchitectSidebarByArchitectInput,
   OrchestratorMcpGetCoordinatorBindingInput,
   OrchestrationPublishArchitectPublicationInput,
   OrchestrationPublishArchitectPublicationResult,
@@ -1422,6 +1423,15 @@ const WsOrchestrationGetCoordinatorArchitectSidebarRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationGetCoordinatorArchitectSidebarByArchitectRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebarByArchitect,
+  {
+    payload: OrchestratorMcpGetArchitectSidebarByArchitectInput,
+    success: OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
+    error: Schema.Union([OrchestrationGetSnapshotError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationPublishArchitectPublicationRpc = Rpc.make(
   ORCHESTRATION_WS_METHODS.publishArchitectPublication,
   {
@@ -1772,6 +1782,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationListDelegatedTaskSummaryHistoryRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationGetCoordinatorArchitectSidebarRpc,
+  WsOrchestrationGetCoordinatorArchitectSidebarByArchitectRpc,
   WsOrchestrationPublishArchitectPublicationRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,

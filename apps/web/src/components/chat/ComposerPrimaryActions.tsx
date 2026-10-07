@@ -32,7 +32,7 @@ interface ComposerPrimaryActionsProps {
   publishable?: ReadonlyArray<OrchestratorMcpPublishableRecord>;
   publishingReviewId?: string | null;
   publishError?: string | null;
-  onPublish?: (record: OrchestratorMcpPublishableRecord) => void | Promise<void>;
+  onPublish?: ((record: OrchestratorMcpPublishableRecord) => void | Promise<void>) | undefined;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;

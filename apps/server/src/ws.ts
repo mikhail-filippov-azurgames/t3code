@@ -128,6 +128,10 @@ import {
 } from "./orchestration/ActivityPayloadProjection.ts";
 import { makeThreadLiveEventCoalescer } from "./orchestration/ThreadLiveEventCoalescer.ts";
 import { assertNotArchitectThread } from "./orchestration/coordinatorArchitect.ts";
+import {
+  buildArchitectSidebarSnapshot,
+  emptyArchitectSidebarSnapshot,
+} from "./orchestration/architectSidebar.ts";
 import { makeLiveStreamBudget, type RetainedLiveItem } from "./orchestration/LiveStreamBudget.ts";
 import {
   cleanupFailedUploadedAttachments,
@@ -3059,7 +3063,7 @@ const makeWsRpcLayer = (
                 ),
               );
               if (!settings.coordinatorArchitectSplit || coordinatorArchitect === undefined) {
-                return { binding: null, reviews: [], publishable: [] };
+                return emptyArchitectSidebarSnapshot();
               }
               const thread = yield* projectionSnapshotQuery
                 .getThreadShellById(input.coordinatorThreadId)
@@ -3073,7 +3077,7 @@ const makeWsRpcLayer = (
                   ),
                 );
               if (Option.isNone(thread)) {
-                return { binding: null, reviews: [], publishable: [] };
+                return emptyArchitectSidebarSnapshot();
               }
               const binding = yield* coordinatorArchitect
                 .getActiveBindingByCoordinator(input.coordinatorThreadId)
@@ -3086,7 +3090,7 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
-              if (binding === null) return { binding: null, reviews: [], publishable: [] };
+              if (binding === null) return emptyArchitectSidebarSnapshot();
               const reviews = yield* coordinatorArchitect
                 .listReviewsByCoordinator({ coordinatorThreadId: input.coordinatorThreadId })
                 .pipe(
@@ -3098,26 +3102,50 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
-              const publishable = reviews.flatMap((review) =>
-                review.bindingId === binding.bindingId &&
-                review.status === "answered" &&
-                review.answerSummary !== null &&
-                review.answerDisposition !== null
-                  ? [
-                      {
-                        reviewId: review.reviewId,
-                        origin: review.origin,
-                        summary: review.answerSummary,
-                        disposition: review.answerDisposition,
-                        refs: review.refs,
-                        ...(review.origin === "coordinator-request"
-                          ? { question: review.question }
-                          : {}),
-                      },
-                    ]
-                  : [],
+              return buildArchitectSidebarSnapshot(binding, reviews);
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
+        [ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebarByArchitect]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebarByArchitect,
+            Effect.gen(function* () {
+              const settings = yield* serverSettings.getSettings.pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationGetSnapshotError({
+                      message: "Failed to read the coordinator Architect feature setting",
+                      cause,
+                    }),
+                ),
               );
-              return { binding, reviews, publishable };
+              if (!settings.coordinatorArchitectSplit || coordinatorArchitect === undefined) {
+                return emptyArchitectSidebarSnapshot();
+              }
+              const binding = yield* coordinatorArchitect
+                .getActiveBindingByArchitect(input.architectThreadId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to read the coordinator Architect binding",
+                        cause,
+                      }),
+                  ),
+                );
+              if (binding === null) return emptyArchitectSidebarSnapshot();
+              const reviews = yield* coordinatorArchitect
+                .listReviewsByCoordinator({ coordinatorThreadId: binding.coordinatorThreadId })
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new OrchestrationGetSnapshotError({
+                        message: "Failed to read coordinator Architect reviews",
+                        cause,
+                      }),
+                  ),
+                );
+              return buildArchitectSidebarSnapshot(binding, reviews);
             }),
             { "rpc.aggregate": "orchestration" },
           ),

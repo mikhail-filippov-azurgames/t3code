@@ -208,6 +208,15 @@ describe("ComposerPrimaryActions", () => {
     expect(renderComposerWithPublications([])).not.toContain("Опубликовать координатору");
   });
 
+  it("shows the publication button on the first render when the snapshot carries publishable records", () => {
+    // Fresh load: an answered, unpublished record of the active binding is
+    // already in the first snapshot, with no state updates involved.
+    const markup = renderComposerWithPublications([preparedAdvice, answeredRequest]);
+    expect(markup).toContain('aria-label="Опубликовать координатору"');
+    expect(markup).toContain(preparedAdvice.summary);
+    expect(markup).toContain(answeredRequest.summary);
+  });
+
   it("previews prepared advice and unanswered-by-human coordinator replies", () => {
     const adviceMarkup = renderComposerWithPublications([preparedAdvice]);
     expect(adviceMarkup).toContain("Опубликовать координатору");

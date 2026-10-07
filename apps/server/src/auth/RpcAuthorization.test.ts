@@ -40,6 +40,15 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("reads the Architect sidebar snapshot read-only from either direction", () => {
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar)).toBe(
+      AuthOrchestrationReadScope,
+    );
+    expect(
+      requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebarByArchitect),
+    ).toBe(AuthOrchestrationReadScope);
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

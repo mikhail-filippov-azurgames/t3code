@@ -1002,6 +1002,14 @@ export const OrchestratorMcpGetCoordinatorBindingInput = Schema.Struct({
 export type OrchestratorMcpGetCoordinatorBindingInput =
   typeof OrchestratorMcpGetCoordinatorBindingInput.Type;
 
+/** Reverse lookup for a fresh Architect-thread load: the composer knows its
+ * own thread id before any sidebar pin reports the coordinator mapping. */
+export const OrchestratorMcpGetArchitectSidebarByArchitectInput = Schema.Struct({
+  architectThreadId: ThreadId,
+});
+export type OrchestratorMcpGetArchitectSidebarByArchitectInput =
+  typeof OrchestratorMcpGetArchitectSidebarByArchitectInput.Type;
+
 export const OrchestratorMcpGetCoordinatorBindingResult = Schema.Struct({
   binding: Schema.NullOr(CoordinatorArchitectBinding),
 });

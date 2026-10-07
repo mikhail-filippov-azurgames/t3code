@@ -977,7 +977,9 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
 import { useThreadDetail } from "../../state/entities";
 import {
+  canShowArchitectPublishButton,
   coordinatorArchitectEnvironment,
+  selectComposerArchitectSidebarSnapshot,
   useArchitectParentKeys,
 } from "../../state/coordinatorArchitect";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
@@ -1195,7 +1197,7 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   publishable: ReadonlyArray<OrchestratorMcpPublishableRecord>;
   publishingReviewId: string | null;
   publishError: string | null;
-  onPublish: (record: OrchestratorMcpPublishableRecord) => void | Promise<void>;
+  onPublish?: ((record: OrchestratorMcpPublishableRecord) => void | Promise<void>) | undefined;
 }) {
   return (
     <>
@@ -1561,7 +1563,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const coordinatorRef =
     coordinatorKey === undefined ? null : (parseScopedThreadKey(coordinatorKey) ?? null);
   const activeArchitectThreadRef = coordinatorRef === null ? null : activeServerThreadRef;
-  const coordinatorEnvironmentId = coordinatorRef?.environmentId ?? null;
+  const coordinatorEnvironmentId =
+    coordinatorRef?.environmentId ?? activeServerThreadRef?.environmentId ?? null;
   const architectSidebarQuery = useEnvironmentQuery(
     coordinatorRef === null
       ? null
@@ -1570,12 +1573,29 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           input: { coordinatorThreadId: coordinatorRef.threadId },
         }),
   );
+  // Fresh-load reverse lookup: the composer knows its own thread id on the
+  // first render, before any sidebar pin reports the coordinator mapping.
+  const architectSidebarByArchitectQuery = useEnvironmentQuery(
+    activeServerThreadRef === null || coordinatorRef !== null
+      ? null
+      : coordinatorArchitectEnvironment.sidebarSnapshotByArchitect({
+          environmentId: activeServerThreadRef.environmentId,
+          input: { architectThreadId: activeServerThreadRef.threadId },
+        }),
+  );
+  const architectSidebarSnapshot = selectComposerArchitectSidebarSnapshot({
+    byCoordinator: architectSidebarQuery.data,
+    byArchitect: architectSidebarByArchitectQuery.data,
+  });
   const activeArchitectDetail = useThreadDetail(activeArchitectThreadRef);
   const architectSnapshotVersion =
-    coordinatorKey === undefined
+    activeArchitectKey === null
       ? ""
-      : `${activeArchitectKey ?? ""}:${coordinatorKey}:${activeArchitectDetail?.updatedAt ?? ""}:${activeArchitectDetail?.activities.length ?? 0}:${activeArchitectDetail?.activities.at(-1)?.id ?? ""}`;
-  const refreshArchitectSidebar = useEffectEvent(() => architectSidebarQuery.refresh());
+      : `${activeArchitectKey}:${coordinatorKey ?? ""}:${activeArchitectDetail?.updatedAt ?? ""}:${activeArchitectDetail?.activities.length ?? 0}:${activeArchitectDetail?.activities.at(-1)?.id ?? ""}`;
+  const refreshArchitectSidebar = useEffectEvent(() => {
+    architectSidebarQuery.refresh();
+    architectSidebarByArchitectQuery.refresh();
+  });
   const previousArchitectSnapshotVersion = useRef(architectSnapshotVersion);
   useEffect(() => {
     if (
@@ -1595,9 +1615,20 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [publishedReviewIds, setPublishedReviewIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const publishable = (architectSidebarQuery.data?.publishable ?? []).filter(
+  const publishable = (architectSidebarSnapshot?.publishable ?? []).filter(
     (record) => !publishedReviewIds.has(record.reviewId),
   );
+  // Visible only in the Architect thread with an active binding and a
+  // non-empty publishable list. The fallback snapshot's binding is the
+  // active binding for the open thread itself, so a missing pin report keeps
+  // the button in the Architect thread instead of hiding it.
+  const canPublishToCoordinator = canShowArchitectPublishButton({
+    isArchitectThread:
+      activeArchitectThreadRef !== null ||
+      architectSidebarSnapshot?.binding?.architectThreadId === activeServerThreadRef?.threadId,
+    binding: architectSidebarSnapshot?.binding ?? null,
+    publishableCount: publishable.length,
+  });
   const onPublishArchitectPublication = async (record: OrchestratorMcpPublishableRecord) => {
     if (coordinatorEnvironmentId === null || publishingReviewId !== null) return;
     setPublishingReviewId(record.reviewId);
@@ -1617,7 +1648,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       next.add(record.reviewId);
       return next;
     });
-    architectSidebarQuery.refresh();
+    refreshArchitectSidebar();
   };
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
@@ -6965,7 +6996,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     publishable={publishable}
                     publishingReviewId={publishingReviewId}
                     publishError={publishError}
-                    onPublish={onPublishArchitectPublication}
+                    onPublish={canPublishToCoordinator ? onPublishArchitectPublication : undefined}
                     preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}

@@ -1,13 +1,22 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  type CoordinatorArchitectBinding,
+  type OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
+  type OrchestratorMcpPublishableRecord,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 
 import {
   architectParentKeysFromActiveChildren,
+  canShowArchitectPublishButton,
   readActiveArchitectChildren,
   reportActiveArchitectChild,
+  selectComposerArchitectSidebarSnapshot,
   subscribeActiveArchitectChildren,
 } from "./coordinatorArchitect";
 
@@ -90,5 +99,117 @@ describe("active Architect children index", () => {
       unsubscribe();
       reportActiveArchitectChild({ coordinatorKey, architectKey: null });
     }
+  });
+});
+
+const publishableRecord: OrchestratorMcpPublishableRecord = {
+  reviewId: "review-fresh-1",
+  origin: "coordinator-request",
+  summary: "Is the retry safe to run twice?",
+  disposition: "recommendation",
+  refs: {},
+  question: "Is the retry safe to run twice?",
+};
+
+const activeBinding = (
+  overrides: Partial<CoordinatorArchitectBinding> = {},
+): CoordinatorArchitectBinding => ({
+  bindingId: "binding-fresh",
+  coordinatorThreadId: ThreadId.make("coordinator-fresh"),
+  architectThreadId: ThreadId.make("arch:coordinator-fresh"),
+  projectId: ProjectId.make("project-1"),
+  architectTaskEffort: "high",
+  routingEvidence: null,
+  status: "active",
+  createdAt: "2026-10-07T12:00:00.000Z",
+  createdBy: ThreadId.make("coordinator-fresh"),
+  replacedByBindingId: null,
+  detachReason: null,
+  createIdempotencyKey: "create-fresh",
+  ...overrides,
+});
+
+const snapshotWith = (
+  publishable: ReadonlyArray<OrchestratorMcpPublishableRecord>,
+  binding: CoordinatorArchitectBinding | null = activeBinding(),
+): OrchestratorMcpCoordinatorArchitectSidebarSnapshot => ({
+  binding,
+  reviews: [],
+  publishable,
+});
+
+describe("composer Architect sidebar selection", () => {
+  it("falls back to the architect-keyed first load before any pin reports", () => {
+    const byArchitect = snapshotWith([publishableRecord]);
+    const selected = selectComposerArchitectSidebarSnapshot({
+      byCoordinator: null,
+      byArchitect,
+    });
+    expect(selected?.publishable.map((record) => record.reviewId)).toEqual(["review-fresh-1"]);
+  });
+
+  it("prefers the coordinator-keyed snapshot once the pin reports", () => {
+    const byCoordinator = snapshotWith([publishableRecord]);
+    const byArchitect = snapshotWith([]);
+    expect(selectComposerArchitectSidebarSnapshot({ byCoordinator, byArchitect })).toBe(
+      byCoordinator,
+    );
+  });
+
+  it("returns null when neither source has loaded", () => {
+    expect(
+      selectComposerArchitectSidebarSnapshot({ byCoordinator: null, byArchitect: null }),
+    ).toBeNull();
+  });
+});
+
+describe("Architect publish button visibility", () => {
+  it("shows on a fresh load with an answered, unpublished record of the active binding", () => {
+    expect(
+      canShowArchitectPublishButton({
+        isArchitectThread: true,
+        binding: activeBinding(),
+        publishableCount: 1,
+      }),
+    ).toBe(true);
+  });
+
+  it("hides outside the Architect thread even with a stale non-empty list", () => {
+    expect(
+      canShowArchitectPublishButton({
+        isArchitectThread: false,
+        binding: activeBinding(),
+        publishableCount: 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("hides when the binding is terminal", () => {
+    for (const status of ["detached", "replaced"] as const) {
+      expect(
+        canShowArchitectPublishButton({
+          isArchitectThread: true,
+          binding: activeBinding({ status }),
+          publishableCount: 1,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it("hides without a binding or without publishable records", () => {
+    expect(
+      canShowArchitectPublishButton({
+        isArchitectThread: true,
+        binding: null,
+        publishableCount: 1,
+      }),
+    ).toBe(false);
+    expect(
+      canShowArchitectPublishButton({
+        isArchitectThread: true,
+        binding: activeBinding(),
+        publishableCount: 0,
+      }),
+    ).toBe(false);
   });
 });

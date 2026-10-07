@@ -1,4 +1,8 @@
-import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_WS_METHODS,
+  type CoordinatorArchitectBinding,
+  type OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
+} from "@t3tools/contracts";
 import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
@@ -16,11 +20,51 @@ export const coordinatorArchitectEnvironment = {
     staleTimeMs: 2_000,
     idleTtlMs: 60_000,
   }),
+  /** Reverse lookup keyed by the Architect thread itself. A fresh client load
+   * knows its own thread id on the first render, before any sidebar pin
+   * reports the coordinator mapping — so the first snapshot already carries
+   * the publishable list instead of waiting for the report cascade. */
+  sidebarSnapshotByArchitect: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
+    label: "environment-data:orchestration:coordinator-architect-sidebar-by-architect",
+    tag: ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebarByArchitect,
+    staleTimeMs: 2_000,
+    idleTtlMs: 60_000,
+  }),
   publishArchitectPublication: createEnvironmentRpcCommand(connectionAtomRuntime, {
     label: "environment-command:orchestration:publish-architect-publication",
     tag: ORCHESTRATION_WS_METHODS.publishArchitectPublication,
   }),
 };
+
+/**
+ * Merge the two sidebar snapshot sources for the composer. Once a sidebar pin
+ * reports the coordinator mapping, the coordinator-keyed snapshot is
+ * authoritative; before that, the architect-keyed first load carries the
+ * publishable list.
+ */
+export function selectComposerArchitectSidebarSnapshot(input: {
+  readonly byCoordinator: OrchestratorMcpCoordinatorArchitectSidebarSnapshot | null;
+  readonly byArchitect: OrchestratorMcpCoordinatorArchitectSidebarSnapshot | null;
+}): OrchestratorMcpCoordinatorArchitectSidebarSnapshot | null {
+  return input.byCoordinator ?? input.byArchitect;
+}
+
+/**
+ * Publish button visibility: only in the Architect thread with an active
+ * binding and a non-empty publishable list.
+ */
+export function canShowArchitectPublishButton(input: {
+  readonly isArchitectThread: boolean;
+  readonly binding: CoordinatorArchitectBinding | null;
+  readonly publishableCount: number;
+}): boolean {
+  return (
+    input.isArchitectThread &&
+    input.binding !== null &&
+    input.binding.status === "active" &&
+    input.publishableCount > 0
+  );
+}
 
 /** Coordinator scoped key → bound Architect scoped key. */
 export type ActiveArchitectChildren = ReadonlyMap<string, string>;
