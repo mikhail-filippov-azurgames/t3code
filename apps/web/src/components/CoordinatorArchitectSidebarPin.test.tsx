@@ -47,6 +47,14 @@ const mocks = vi.hoisted(() => ({
   },
   architectSession: null as { status: "ready" | "running" | "starting" } | null,
   threadShellCalls: [] as unknown[],
+  threadDetail: {
+    updatedAt: "2026-09-28T12:00:00.000Z",
+    activities: [{ id: "architect-bound-1", kind: "architect.bound" }],
+  } as { updatedAt: string; activities: Array<{ id: string; kind: string }> } | null,
+  reportedChildren: [] as Array<{
+    coordinatorKey: string;
+    architectKey: string | null;
+  }>,
 }));
 
 vi.mock("../state/entities", () => ({
@@ -56,18 +64,17 @@ vi.mock("../state/entities", () => ({
       ? { session: mocks.architectSession }
       : null;
   },
-  useThreadDetail: () => ({
-    updatedAt: "2026-09-28T12:00:00.000Z",
-    activities: [{ id: "architect-bound-1", kind: "architect.bound" }],
-  }),
+  useThreadDetail: () => mocks.threadDetail,
 }));
 vi.mock("../state/coordinatorArchitect", () => ({
   coordinatorArchitectEnvironment: { sidebarSnapshot: () => "coordinator-query" },
-  reportActiveArchitectChild: () => {},
+  reportActiveArchitectChild: (input: { coordinatorKey: string; architectKey: string | null }) => {
+    mocks.reportedChildren.push(input);
+  },
 }));
 vi.mock("../state/query", () => ({
-  useEnvironmentQuery: () => ({
-    data: mocks.snapshot,
+  useEnvironmentQuery: (query: unknown) => ({
+    data: query === null ? null : mocks.snapshot,
     error: null,
     isPending: false,
     isSuccess: true,
@@ -85,13 +92,13 @@ vi.mock("./ui/tooltip", () => ({
   ),
 }));
 
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { CoordinatorArchitectSidebarPin } from "./CoordinatorArchitectSidebarPin";
 
 const component = () => (
   <CoordinatorArchitectSidebarPin
     environmentId={EnvironmentId.make("environment-1")}
     coordinatorThreadId={ThreadId.make("coordinator-1")}
-    isCurrentThread
     onNavigate={() => {}}
   />
 );
@@ -114,6 +121,11 @@ beforeEach(() => {
   mocks.snapshot.binding.status = "active";
   mocks.architectSession = null;
   mocks.threadShellCalls = [];
+  mocks.threadDetail = {
+    updatedAt: "2026-09-28T12:00:00.000Z",
+    activities: [{ id: "architect-bound-1", kind: "architect.bound" }],
+  };
+  mocks.reportedChildren = [];
 });
 
 afterEach(async () => {
@@ -193,5 +205,42 @@ describe("CoordinatorArchitectSidebarPin", () => {
 
     expect(view.toJSON()).toBeNull();
     expect(mocks.threadShellCalls).toEqual([null]);
+  });
+
+  it("stays pinned and renders the bar from an active binding when the coordinator is not selected", async () => {
+    // A non-coordinator thread is selected, so the coordinator detail carries
+    // no binding history and selection cannot enable the query: rendering must
+    // come from the binding alone.
+    mocks.threadDetail = {
+      updatedAt: "2026-09-28T12:00:00.000Z",
+      activities: [],
+    };
+    const view = await render();
+    const row = view.root.findByProps({ "data-testid": "coordinator-architect-pin-coordinator-1" });
+    const text = visibleText(row);
+
+    expect(text).toContain("Architect");
+    expect(text).toContain("codex · gpt-6-luna");
+
+    const environmentId = EnvironmentId.make("environment-1");
+    const coordinatorKey = scopedThreadKey(
+      scopeThreadRef(environmentId, ThreadId.make("coordinator-1")),
+    );
+    const architectKey = scopedThreadKey(
+      scopeThreadRef(environmentId, ThreadId.make("arch:binding-1")),
+    );
+    expect(mocks.reportedChildren).toContainEqual({ coordinatorKey, architectKey });
+  });
+
+  it("renders nothing and clears the pin without an active binding when not selected", async () => {
+    mocks.snapshot.binding.status = "detached";
+    mocks.threadDetail = {
+      updatedAt: "2026-09-28T12:00:00.000Z",
+      activities: [],
+    };
+    const view = await render();
+
+    expect(view.toJSON()).toBeNull();
+    expect(mocks.reportedChildren.at(-1)?.architectKey).toBeNull();
   });
 });

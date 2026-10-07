@@ -22,12 +22,9 @@ import { buildCoordinatorArchitectSidebarPrompt } from "./threadActionMenu.logic
 import { SidebarMenuSubItem } from "./ui/sidebar";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-const ARCHITECT_BOUND_ACTIVITY = "architect.bound";
-
 export interface CoordinatorArchitectSidebarPinProps {
   readonly environmentId: EnvironmentId;
   readonly coordinatorThreadId: ThreadId;
-  readonly isCurrentThread: boolean;
   readonly depth?: number;
   readonly onNavigate: (threadRef: ScopedThreadRef) => void;
 }
@@ -35,32 +32,29 @@ export interface CoordinatorArchitectSidebarPinProps {
 export function CoordinatorArchitectSidebarPin({
   environmentId,
   coordinatorThreadId,
-  isCurrentThread,
   depth = 0,
   onNavigate,
 }: CoordinatorArchitectSidebarPinProps) {
   const coordinatorRef = scopeThreadRef(environmentId, coordinatorThreadId);
   const coordinatorKey = scopedThreadKey(coordinatorRef);
   const detail = useThreadDetail(coordinatorRef);
-  const hasBindingHistory =
-    detail?.activities.some((activity) => activity.kind === ARCHITECT_BOUND_ACTIVITY) ?? false;
-  const enabled = isCurrentThread || hasBindingHistory;
+  // The binding query runs for every coordinator row regardless of which
+  // thread is selected: both the pin report below and the bar render depend
+  // on the binding alone, never on selection.
   const query = useEnvironmentQuery(
-    enabled
-      ? coordinatorArchitectEnvironment.sidebarSnapshot({
-          environmentId,
-          input: { coordinatorThreadId },
-        })
-      : null,
+    coordinatorArchitectEnvironment.sidebarSnapshot({
+      environmentId,
+      input: { coordinatorThreadId },
+    }),
   );
   const latestActivityId = detail?.activities.at(-1)?.id ?? "";
   const activityVersion = `${detail?.updatedAt ?? ""}:${detail?.activities.length ?? 0}:${latestActivityId}`;
   const previousActivityVersion = useRef(activityVersion);
 
   useEffect(() => {
-    if (enabled && previousActivityVersion.current !== activityVersion) query.refresh();
+    if (previousActivityVersion.current !== activityVersion) query.refresh();
     previousActivityVersion.current = activityVersion;
-  }, [activityVersion, enabled, query.refresh]);
+  }, [activityVersion, query.refresh]);
 
   const binding = query.data?.binding ?? null;
   const architectRef =

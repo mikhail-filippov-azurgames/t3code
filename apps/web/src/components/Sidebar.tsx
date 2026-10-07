@@ -5558,7 +5558,6 @@ export default function Sidebar() {
                               key={`architect-pin:${item.key}`}
                               environmentId={thread.environmentId}
                               coordinatorThreadId={thread.id as ThreadId}
-                              isCurrentThread={routeThreadKey === item.key}
                               depth={item.depth ?? 0}
                               onNavigate={navigateToThread}
                             />,

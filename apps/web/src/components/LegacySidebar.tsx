@@ -1096,7 +1096,6 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               <CoordinatorArchitectSidebarPin
                 environmentId={thread.environmentId}
                 coordinatorThreadId={thread.id as ThreadId}
-                isCurrentThread={activeRouteThreadKey === threadKey}
                 onNavigate={navigateToThread}
               />
             </React.Fragment>
