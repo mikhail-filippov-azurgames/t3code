@@ -222,9 +222,9 @@ export function BoardCardDetailDialog({
                   size="xs"
                   variant="outline"
                   disabled={busy}
-                  onClick={() => sendRequest(`Please change the status of card ${card.cardId}.`)}
+                  onClick={() => sendRequest(`Работай над карточкой ${card.cardId}`)}
                 >
-                  Ask to change status
+                  Ask to work on it
                 </Button>
                 <Button
                   size="xs"
