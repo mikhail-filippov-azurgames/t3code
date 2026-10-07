@@ -50,6 +50,14 @@ export interface BoardOrchestratorRequestInput {
   readonly interactionMode: ProviderInteractionMode;
 }
 
+/**
+ * How long the orchestrator registry read stays fresh. The registry changes
+ * rarely (adding or removing an orchestrator is an explicit human action),
+ * and every mutation refreshes the read explicitly, so a remount within this
+ * window reuses the cached list instead of refetching it on every mount.
+ */
+export const ORCHESTRATORS_LIST_STALE_TIME_MS = 300_000;
+
 export function createBoardEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | Crypto.Crypto | R, E>,
 ) {

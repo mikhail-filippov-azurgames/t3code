@@ -28,7 +28,7 @@ import {
 import { EnvironmentSupervisor } from "../connection/supervisor.ts";
 import type { RpcSession } from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { createBoardEnvironmentAtoms } from "./board.ts";
+import { createBoardEnvironmentAtoms, ORCHESTRATORS_LIST_STALE_TIME_MS } from "./board.ts";
 import { runAtomCommand } from "./runtime.ts";
 
 const environmentId = EnvironmentId.make("environment-1");
@@ -215,6 +215,29 @@ describe("createBoardEnvironmentAtoms", () => {
       ]);
       expect(calls.filter((call) => call === WS_METHODS.boardList)).toHaveLength(2);
       expect(calls.filter((call) => call === WS_METHODS.boardOrchestratorsList)).toHaveLength(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("orchestratorsList reuses the cached registry across remounts", () =>
+    Effect.gen(function* () {
+      // The registry changes rarely and every mutation refreshes it
+      // explicitly, so the stale window must comfortably cover remounts that
+      // previously refetched after 15 seconds.
+      expect(ORCHESTRATORS_LIST_STALE_TIME_MS).toBe(300_000);
+      const { atoms, calls, registry } = yield* makeHarness();
+      const atom = atoms.orchestratorsList({ environmentId, input: {} });
+      const mountAndRead = () =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* AtomRegistry.mount(registry, atom);
+            return yield* AtomRegistry.getResult(registry, atom, { suspendOnWaiting: true });
+          }),
+        );
+
+      const first = yield* mountAndRead();
+      const second = yield* mountAndRead();
+      expect(second).toEqual(first);
+      expect(calls.filter((call) => call === WS_METHODS.boardOrchestratorsList)).toHaveLength(1);
     }).pipe(Effect.scoped),
   );
 

@@ -2,6 +2,7 @@ import {
   BoardCard,
   BoardCardDeletionRecord,
   BoardCardEvent,
+  BoardCardEventId,
   BoardCardId,
   BoardOrchestrator,
   IsoDateTime,
@@ -36,6 +37,9 @@ const ListCardEventsInput = Schema.Struct({
   cardId: BoardCardId,
   limit: Schema.optional(NonNegativeInt),
 });
+const HasWorkingReadyCardInput = Schema.Struct({ orchestratorThreadId: ThreadId });
+const HasCardEventInput = Schema.Struct({ entryId: BoardCardEventId });
+const ExistsDbRow = Schema.Struct({ exists: Schema.Number });
 const RetentionCandidatesInput = Schema.Struct({
   cutoff: IsoDateTime,
   limit: NonNegativeInt,
@@ -358,6 +362,72 @@ const makeBoardRepository = Effect.gen(function* () {
       `,
   });
 
+  const listNudgeCandidateCardRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: BoardCardDbRow,
+    execute: () =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          title,
+          body,
+          status,
+          readiness,
+          readiness_note AS "readinessNote",
+          created_by AS "createdBy",
+          assignee_json AS "assignee",
+          executor_role AS "executorRole",
+          executor_thread_id AS "executorThreadId",
+          outcome,
+          last_error AS "lastError",
+          failure_streak AS "failureStreak",
+          order_index AS "order",
+          archived,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM board_cards
+        WHERE archived = 0
+          AND (
+            status IN ('orchestrator', 'review', 'todo', 'in_progress')
+            OR readiness = 'needs_human'
+            OR failure_streak >= 3
+          )
+        ORDER BY orchestrator_thread_id ASC, order_index ASC, created_at ASC, card_id ASC
+      `,
+  });
+
+  const hasWorkingReadyCardRow = SqlSchema.findOne({
+    Request: HasWorkingReadyCardInput,
+    Result: ExistsDbRow,
+    execute: ({ orchestratorThreadId }) =>
+      sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM board_cards
+          WHERE orchestrator_thread_id = ${orchestratorThreadId}
+            AND archived = 0
+            AND readiness = 'ready'
+            AND status IN ('todo', 'orchestrator', 'in_progress', 'review')
+          LIMIT 1
+        ) AS "exists"
+      `,
+  });
+
+  const hasCardEventRow = SqlSchema.findOne({
+    Request: HasCardEventInput,
+    Result: ExistsDbRow,
+    execute: ({ entryId }) =>
+      sql`
+        SELECT EXISTS (
+          SELECT 1
+          FROM board_card_events
+          WHERE entry_id = ${entryId}
+          LIMIT 1
+        ) AS "exists"
+      `,
+  });
+
   const findCardsByPrefixRows = SqlSchema.findAll({
     Request: FindCardsByPrefixInput,
     Result: BoardCardDbRow,
@@ -599,6 +669,24 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.listCards:query")),
     );
 
+  const listNudgeCandidateCards: BoardRepositoryShape["listNudgeCandidateCards"] = () =>
+    listNudgeCandidateCardRows().pipe(
+      Effect.map((rows) => rows.map(toBoardCard)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.listNudgeCandidateCards:query")),
+    );
+
+  const hasWorkingReadyCard: BoardRepositoryShape["hasWorkingReadyCard"] = (orchestratorThreadId) =>
+    hasWorkingReadyCardRow({ orchestratorThreadId }).pipe(
+      Effect.map((row) => row.exists === 1),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.hasWorkingReadyCard:query")),
+    );
+
+  const hasCardEvent: BoardRepositoryShape["hasCardEvent"] = (entryId) =>
+    hasCardEventRow({ entryId }).pipe(
+      Effect.map((row) => row.exists === 1),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.hasCardEvent:query")),
+    );
+
   const findCardsByPrefix: BoardRepositoryShape["findCardsByPrefix"] = (prefix) =>
     findCardsByPrefixRows({ prefix }).pipe(
       Effect.map((rows) => rows.map(toBoardCard)),
@@ -734,6 +822,9 @@ const makeBoardRepository = Effect.gen(function* () {
     addOrchestrator,
     removeOrchestrator,
     listCards,
+    listNudgeCandidateCards,
+    hasWorkingReadyCard,
+    hasCardEvent,
     findCardsByPrefix,
     getCard,
     findCardByExecutor,

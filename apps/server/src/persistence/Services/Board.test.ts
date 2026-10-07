@@ -1,4 +1,10 @@
-import { BoardCardId, type BoardCard, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  BoardCardEventId,
+  BoardCardId,
+  type BoardCard,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -726,6 +732,157 @@ repositoryLayer("BoardRepository", (it) => {
           assert.isNull(unchanged.value.lastError);
         }
       }
+    }),
+  );
+
+  it.effect("returns the same nudge candidates as a filtered full read", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const threadId = ThreadId.make("thread-nudge-candidates");
+      const otherId = ThreadId.make("thread-nudge-quiet");
+      for (const id of [threadId, otherId]) {
+        yield* seedThread(id);
+        yield* repository.addOrchestrator({
+          threadId: id,
+          createdBy: "human",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+      }
+
+      // Inserted out of read order so the test also pins the SQL ordering.
+      const cards = [
+        makeCard({
+          cardId: BoardCardId.make("nudge-done"),
+          orchestratorThreadId: threadId,
+          status: "done",
+          order: 3,
+          createdAt: "2026-01-01T00:00:03.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-ready"),
+          orchestratorThreadId: threadId,
+          status: "todo",
+          order: 1,
+          createdAt: "2026-01-01T00:00:01.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-backlog"),
+          orchestratorThreadId: threadId,
+          status: "backlog",
+          order: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-blocked"),
+          orchestratorThreadId: threadId,
+          status: "review",
+          readiness: "blocked",
+          readinessNote: "Waiting for a dependency",
+          order: 2,
+          createdAt: "2026-01-01T00:00:02.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-archived"),
+          orchestratorThreadId: threadId,
+          status: "todo",
+          archived: true,
+          order: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-human"),
+          orchestratorThreadId: threadId,
+          status: "backlog",
+          readiness: "needs_human",
+          readinessNote: "Which plan?",
+          order: 4,
+          createdAt: "2026-01-01T00:00:04.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-capped"),
+          orchestratorThreadId: threadId,
+          status: "done",
+          failureStreak: 3,
+          order: 5,
+          createdAt: "2026-01-01T00:00:05.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-working"),
+          orchestratorThreadId: threadId,
+          status: "in_progress",
+          order: 0,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+        makeCard({
+          cardId: BoardCardId.make("nudge-other-backlog"),
+          orchestratorThreadId: otherId,
+          status: "backlog",
+        }),
+      ];
+      yield* Effect.forEach(cards, (card) => repository.createCard(card));
+
+      const isCandidate = (card: BoardCard): boolean =>
+        !card.archived &&
+        (["orchestrator", "review", "todo", "in_progress"].includes(card.status) ||
+          card.readiness === "needs_human" ||
+          card.failureStreak >= 3);
+      const bySweepOrder = (left: BoardCard, right: BoardCard): number =>
+        left.orchestratorThreadId === right.orchestratorThreadId
+          ? left.order === right.order
+            ? left.createdAt === right.createdAt
+              ? String(left.cardId) < String(right.cardId)
+                ? -1
+                : 1
+              : left.createdAt < right.createdAt
+                ? -1
+                : 1
+            : left.order - right.order
+          : String(left.orchestratorThreadId) < String(right.orchestratorThreadId)
+            ? -1
+            : 1;
+      const expected = (yield* repository.listCards())
+        .filter(
+          (card) => card.orchestratorThreadId === threadId || card.orchestratorThreadId === otherId,
+        )
+        .filter(isCandidate)
+        .sort(bySweepOrder);
+
+      const owned = (card: BoardCard): boolean =>
+        card.orchestratorThreadId === threadId || card.orchestratorThreadId === otherId;
+      const candidates = (yield* repository.listNudgeCandidateCards()).filter(owned);
+      assert.deepEqual(
+        candidates.map((card) => card.cardId),
+        expected.map((card) => card.cardId),
+      );
+      assert.deepEqual(candidates, expected);
+
+      const isWorkingReady = (card: BoardCard, coordinator: ThreadId): boolean =>
+        card.orchestratorThreadId === coordinator &&
+        !card.archived &&
+        card.readiness === "ready" &&
+        ["todo", "orchestrator", "in_progress", "review"].includes(card.status);
+      const stored = yield* repository.listCards();
+      assert.equal(
+        yield* repository.hasWorkingReadyCard(threadId),
+        stored.some((card) => isWorkingReady(card, threadId)),
+      );
+      assert.isTrue(yield* repository.hasWorkingReadyCard(threadId));
+      assert.equal(
+        yield* repository.hasWorkingReadyCard(otherId),
+        stored.some((card) => isWorkingReady(card, otherId)),
+      );
+      assert.isFalse(yield* repository.hasWorkingReadyCard(otherId));
+
+      const ready = cards.find((card) => card.cardId === BoardCardId.make("nudge-ready"))!;
+      yield* repository.appendEvent(buildBoardCardEvent(ready, { at: "2026-01-01T00:01:00.000Z" }));
+      const history = yield* repository.listEventsForCard({ cardId: ready.cardId });
+      assert.equal(history.length, 1);
+      assert.equal(
+        yield* repository.hasCardEvent(history[0]!.entryId),
+        history.some((event) => event.entryId === history[0]!.entryId),
+      );
+      assert.isTrue(yield* repository.hasCardEvent(history[0]!.entryId));
+      assert.isFalse(yield* repository.hasCardEvent(BoardCardEventId.make("entry-missing")));
     }),
   );
 });

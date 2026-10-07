@@ -63,6 +63,33 @@ export interface BoardRepositoryShape {
   /** Cascade-deletes the orchestrator's cards and their progress history. */
   readonly removeOrchestrator: (threadId: ThreadId) => Effect.Effect<void, BoardRepositoryError>;
   readonly listCards: () => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
+  /**
+   * Sweep candidates for the coordinator idle-nudge pass: unarchived cards in
+   * a nudge-relevant status (`orchestrator`, `review`, `todo`, `in_progress`),
+   * plus any card the sweep logs and skips (`needs_human`, failure-capped).
+   * Rows the sweep only ever skips silently (archived, `backlog`, `done`)
+   * stay in SQL, in the same order as `listCards`, so a sweep never hydrates
+   * the whole table.
+   */
+  readonly listNudgeCandidateCards: () => Effect.Effect<
+    ReadonlyArray<BoardCard>,
+    BoardRepositoryError
+  >;
+  /**
+   * Whether the coordinator has a working-ready card: unarchived, readiness
+   * `ready`, status `todo`/`orchestrator`/`in_progress`/`review`. Backs the
+   * blocked-nudge recheck without rereading the whole table.
+   */
+  readonly hasWorkingReadyCard: (
+    orchestratorThreadId: ThreadId,
+  ) => Effect.Effect<boolean, BoardRepositoryError>;
+  /**
+   * Whether a progress-history entry exists. Backs the nudge dedup check
+   * without hydrating the card's whole history.
+   */
+  readonly hasCardEvent: (
+    entryId: BoardCardEventId,
+  ) => Effect.Effect<boolean, BoardRepositoryError>;
   /** Returns at most two rows, enough to distinguish a unique prefix from an ambiguous one. */
   readonly findCardsByPrefix: (
     prefix: string,

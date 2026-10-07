@@ -208,7 +208,9 @@ export const make = Effect.gen(function* () {
     const threshold = settings.coordinatorBoardNudgeActiveChildThreshold;
     const observedAtMillis = DateTime.toEpochMillis(yield* DateTime.now);
     const orchestrators = [...(yield* board.listOrchestrators())].sort(compareOrchestrators);
-    const cards = yield* board.listCards();
+    // Sweep candidates only: rows this pass can never act on (archived,
+    // backlog, done) stay in SQL instead of hydrating the whole table.
+    const cards = yield* board.listNudgeCandidateCards();
     const orchestratorIds = new Set(orchestrators.map((orchestrator) => orchestrator.threadId));
     const readyCandidatesByCoordinator = new Map<ThreadId, Array<BoardCard>>();
     const blockedCandidatesByCoordinator = new Map<ThreadId, Array<BoardCard>>();
@@ -380,12 +382,11 @@ export const make = Effect.gen(function* () {
         }
 
         if (blockedNudge) {
-          const latestCards = yield* board.listCards();
-          const latestCard = latestCards.find(
-            (candidate) => candidate.cardId === currentCard.cardId,
-          );
+          // Revalidate against point reads: the card itself plus an existence
+          // probe for working-ready cards, never the whole table again.
+          const latestCard = Option.getOrNull(yield* board.getCard(currentCard.cardId));
           if (
-            latestCard === undefined ||
+            latestCard === null ||
             latestCard.archived ||
             latestCard.readiness !== "blocked" ||
             latestCard.status !== currentCard.status ||
@@ -397,7 +398,7 @@ export const make = Effect.gen(function* () {
             });
             continue;
           }
-          if (latestCards.some((candidate) => isWorkingReadyCard(candidate, coordinatorId))) {
+          if (yield* board.hasWorkingReadyCard(coordinatorId)) {
             yield* logReason("blocked-while-work-ready", { coordinatorId });
             continue;
           }
@@ -418,8 +419,7 @@ export const make = Effect.gen(function* () {
         }
 
         const attemptId = coordinatorBoardNudgeAttemptId(coordinatorId, currentCard);
-        const cardEvents = yield* board.listEventsForCard({ cardId: currentCard.cardId });
-        if (cardEvents.some((event) => event.entryId === attemptId)) {
+        if (yield* board.hasCardEvent(BoardCardEventId.make(attemptId))) {
           yield* logReason("already-sent", {
             coordinatorId,
             cardId: currentCard.cardId,

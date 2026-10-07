@@ -143,6 +143,7 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
     const settingsValue = yield* Ref.make(settings);
     const settingsChanges = yield* PubSub.unbounded<ServerSettings>();
     const boardReads = yield* Ref.make(0);
+    const fullListReads = yield* Ref.make(0);
     const snapshotReads = yield* Ref.make(0);
     const settingsReads = yield* Ref.make(0);
     const settingsReadNotifications = yield* Queue.unbounded<number>();
@@ -152,7 +153,61 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       listOrchestrators: () =>
         Ref.update(boardReads, (count) => count + 1).pipe(Effect.andThen(Ref.get(orchestrators))),
       listCards: () =>
-        Ref.update(boardReads, (count) => count + 1).pipe(Effect.andThen(Ref.get(cards))),
+        Ref.update(boardReads, (count) => count + 1).pipe(
+          Effect.andThen(Ref.update(fullListReads, (count) => count + 1)),
+          Effect.andThen(Ref.get(cards)),
+        ),
+      listNudgeCandidateCards: () =>
+        Ref.update(boardReads, (count) => count + 1).pipe(
+          Effect.andThen(Ref.get(cards)),
+          Effect.map((all) =>
+            [...all]
+              .filter(
+                (card) =>
+                  !card.archived &&
+                  ((["orchestrator", "review", "todo", "in_progress"] as const).includes(
+                    card.status as "orchestrator",
+                  ) ||
+                    card.readiness === "needs_human" ||
+                    card.failureStreak >= 3),
+              )
+              .sort((left, right) =>
+                left.orchestratorThreadId === right.orchestratorThreadId
+                  ? left.order === right.order
+                    ? left.createdAt === right.createdAt
+                      ? String(left.cardId) < String(right.cardId)
+                        ? -1
+                        : 1
+                      : left.createdAt < right.createdAt
+                        ? -1
+                        : 1
+                    : left.order - right.order
+                  : String(left.orchestratorThreadId) < String(right.orchestratorThreadId)
+                    ? -1
+                    : 1,
+              ),
+          ),
+        ),
+      hasWorkingReadyCard: (orchestratorThreadId) =>
+        Ref.update(boardReads, (count) => count + 1).pipe(
+          Effect.andThen(Ref.get(cards)),
+          Effect.map((all) =>
+            all.some(
+              (card) =>
+                card.orchestratorThreadId === orchestratorThreadId &&
+                !card.archived &&
+                card.readiness === "ready" &&
+                (["todo", "orchestrator", "in_progress", "review"] as const).includes(
+                  card.status as "todo",
+                ),
+            ),
+          ),
+        ),
+      hasCardEvent: (entryId) =>
+        Ref.update(boardReads, (count) => count + 1).pipe(
+          Effect.andThen(Ref.get(history)),
+          Effect.map((all) => all.some((event) => event.entryId === entryId)),
+        ),
       getCard: (cardId) =>
         Ref.update(boardReads, (count) => count + 1).pipe(
           Effect.andThen(Ref.get(cards)),
@@ -258,6 +313,7 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       commands,
       history,
       boardReads,
+      fullListReads,
       snapshotReads,
       settingsReads,
       settingsReadNotifications,
@@ -272,6 +328,7 @@ interface RunResult {
   readonly commands: ReadonlyArray<OrchestrationCommand>;
   readonly history: ReadonlyArray<BoardCardEvent>;
   readonly boardReads: number;
+  readonly fullListReads: number;
   readonly snapshotReads: number;
   readonly settingsReads: number;
   readonly reviewReads: number;
@@ -310,6 +367,7 @@ function readHarness(harness: Harness): Effect.Effect<RunResult> {
       commands: yield* Ref.get(harness.commands),
       history: yield* Ref.get(harness.history),
       boardReads: yield* Ref.get(harness.boardReads),
+      fullListReads: yield* Ref.get(harness.fullListReads),
       snapshotReads: yield* Ref.get(harness.snapshotReads),
       settingsReads: yield* Ref.get(harness.settingsReads),
       reviewReads: yield* Ref.get(harness.reviewReads),
@@ -757,6 +815,126 @@ describe("CoordinatorBoardNudgeReactor", () => {
       assert.equal(turns.length, 3);
       assert.equal(new Set(turns.map((command) => command.threadId)).size, 3);
       assert.equal(turns.filter((command) => command.threadId === ids[0]).length, 1);
+    }),
+  );
+
+  it.effect("wakes the same coordinators without ever reading the whole card table", () =>
+    Effect.gen(function* () {
+      const other = ThreadId.make("coordinator-2");
+      const cases: ReadonlyArray<{
+        readonly name: string;
+        readonly seed: HarnessSeed;
+        readonly settings?: ServerSettings;
+        readonly expected: ReadonlyArray<string>;
+      }> = [
+        {
+          name: "ready-prefers-orchestrator",
+          seed: {
+            cards: [
+              makeCard("todo-card", { createdAt: "2026-01-15T09:00:00.000Z" }),
+              makeCard("orchestrator-card", {
+                status: "orchestrator",
+                createdAt: "2026-01-15T11:00:00.000Z",
+              }),
+            ],
+          },
+          expected: [`${COORDINATOR_ID}:orchestrator-card`],
+        },
+        {
+          name: "blocked-oldest-wins",
+          seed: {
+            cards: [
+              makeCard("blocked-new", {
+                status: "review",
+                readiness: "blocked",
+                readinessNote: "Waiting for B",
+                createdAt: "2026-01-15T12:00:00.000Z",
+              }),
+              makeCard("blocked-old", {
+                status: "review",
+                readiness: "blocked",
+                readinessNote: "Waiting for A",
+                createdAt: "2026-01-15T08:00:00.000Z",
+              }),
+            ],
+          },
+          expected: [`${COORDINATOR_ID}:blocked-old`],
+        },
+        {
+          name: "ready-wins-over-blocked",
+          seed: {
+            cards: [
+              makeCard("blocked", {
+                status: "review",
+                readiness: "blocked",
+                readinessNote: "Waiting",
+              }),
+              makeCard("ready-work", { status: "todo" }),
+            ],
+          },
+          expected: [`${COORDINATOR_ID}:ready-work`],
+        },
+        {
+          name: "threshold-suppresses",
+          seed: {},
+          settings: makeSettings(10, 0),
+          expected: [],
+        },
+        {
+          name: "only-skipped-cards",
+          seed: {
+            cards: [
+              makeCard("backlog", { status: "backlog" }),
+              makeCard("done", { status: "done" }),
+              makeCard("archived", { archived: true }),
+              makeCard("failed", { failureStreak: 3 }),
+              makeCard("human", {
+                readiness: "needs_human",
+                readinessNote: "Which plan?",
+              }),
+            ],
+          },
+          expected: [],
+        },
+        {
+          name: "blocked-suppressed-by-working-ready",
+          seed: {
+            cards: [
+              makeCard("blocked", {
+                status: "review",
+                readiness: "blocked",
+                readinessNote: "Waiting",
+              }),
+              makeCard("working", { status: "in_progress" }),
+            ],
+          },
+          expected: [],
+        },
+        {
+          name: "two-coordinators",
+          seed: {
+            orchestrators: [makeCoordinator(), makeCoordinator(other)],
+            shells: [makeShell(COORDINATOR_ID), makeShell(other)],
+            cards: [
+              makeCard("first", { orchestratorThreadId: COORDINATOR_ID }),
+              makeCard("second", { orchestratorThreadId: other }),
+            ],
+          },
+          expected: [`${COORDINATOR_ID}:first`, `${other}:second`],
+        },
+      ];
+
+      for (const { name, seed, settings, expected } of cases) {
+        const result = yield* runFirstSweep(seed, settings ?? makeSettings(), expected.length);
+        const woken = turnCommands(result.commands).map((command) => {
+          assert.equal(command.type, "thread.turn.start");
+          if (command.type !== "thread.turn.start") return "unknown";
+          const match = /Card id: (\S+)/.exec(command.message.text);
+          return `${command.threadId}:${match?.[1] ?? "unknown"}`;
+        });
+        assert.deepEqual(woken, expected, `case ${name} woke a different set`);
+        assert.equal(result.fullListReads, 0, `case ${name} read the whole card table`);
+      }
     }),
   );
 
