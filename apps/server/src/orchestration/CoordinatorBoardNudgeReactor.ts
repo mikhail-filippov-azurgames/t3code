@@ -34,7 +34,7 @@ import { ProjectionSnapshotQuery } from "./Services/ProjectionSnapshotQuery.ts";
 
 export const NUDGES_PER_SWEEP_LIMIT = 3;
 
-const CANDIDATE_STATUSES = ["todo", "review", "orchestrator"] as const;
+const CANDIDATE_STATUSES = ["orchestrator", "review", "todo"] as const;
 type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
 
 function isCandidateStatus(status: BoardCard["status"]): status is CandidateStatus {
@@ -43,11 +43,11 @@ function isCandidateStatus(status: BoardCard["status"]): status is CandidateStat
 
 function statusPriority(status: CandidateStatus): number {
   switch (status) {
-    case "todo":
+    case "orchestrator":
       return 0;
     case "review":
       return 1;
-    case "orchestrator":
+    case "todo":
       return 2;
   }
 }

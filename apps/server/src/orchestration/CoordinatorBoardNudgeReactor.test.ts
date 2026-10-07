@@ -275,7 +275,7 @@ describe("CoordinatorBoardNudgeReactor", () => {
   );
 
   it.effect(
-    "waits a full interval, counts only live session work, and selects the oldest Plan card",
+    "waits a full interval, counts only live session work, and prefers the orchestrator card",
     () =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -345,14 +345,74 @@ describe("CoordinatorBoardNudgeReactor", () => {
           if (turns[0]?.type !== "thread.turn.start") return;
           assert.equal(turns[0].threadId, COORDINATOR_ID);
           assert.equal(turns[0].runOrigin._tag, "board-idle-nudge");
-          assert.ok(turns[0].message.text.includes("Oldest Plan task"));
-          assert.ok(turns[0].message.text.includes("Card id: todo-old"));
+          assert.ok(turns[0].message.text.includes("Task ready"));
+          assert.ok(turns[0].message.text.includes("Card id: ready"));
           assert.ok(turns[0].message.text.includes("1 active child task(s)"));
           assert.ok(turns[0].message.text.includes("threshold is 2"));
           assert.equal(result.history.length, 1);
-          assert.equal(result.history[0]?.cardId, BoardCardId.make("todo-old"));
+          assert.equal(result.history[0]?.cardId, BoardCardId.make("ready"));
         }),
       ),
+  );
+
+  it.effect("orders candidates orchestrator, then review, then todo", () =>
+    Effect.gen(function* () {
+      const cases: ReadonlyArray<{
+        readonly cards: ReadonlyArray<BoardCard>;
+        readonly expected: string;
+      }> = [
+        {
+          cards: [
+            makeCard("todo-card", { createdAt: "2026-01-15T09:00:00.000Z" }),
+            makeCard("review-card", {
+              status: "review",
+              createdAt: "2026-01-15T10:00:00.000Z",
+            }),
+            makeCard("orchestrator-card", {
+              status: "orchestrator",
+              createdAt: "2026-01-15T11:00:00.000Z",
+            }),
+          ],
+          expected: "orchestrator-card",
+        },
+        {
+          cards: [
+            makeCard("todo-card", { createdAt: "2026-01-15T09:00:00.000Z" }),
+            makeCard("review-card", {
+              status: "review",
+              createdAt: "2026-01-15T10:00:00.000Z",
+            }),
+          ],
+          expected: "review-card",
+        },
+        { cards: [makeCard("todo-card")], expected: "todo-card" },
+        {
+          cards: [
+            makeCard("orchestrator-new", {
+              status: "orchestrator",
+              createdAt: "2026-01-15T11:00:00.000Z",
+            }),
+            makeCard("orchestrator-old", {
+              status: "orchestrator",
+              createdAt: "2026-01-15T08:00:00.000Z",
+            }),
+          ],
+          expected: "orchestrator-old",
+        },
+      ];
+
+      for (const { cards, expected } of cases) {
+        const result = yield* runFirstSweep({ cards }, makeSettings(), 1);
+        const turns = turnCommands(result.commands);
+        assert.equal(turns.length, 1);
+        assert.equal(turns[0]?.type, "thread.turn.start");
+        if (turns[0]?.type !== "thread.turn.start") continue;
+        assert.ok(
+          turns[0].message.text.includes(`Card id: ${expected}`),
+          `expected ${expected}, got: ${turns[0].message.text}`,
+        );
+      }
+    }),
   );
 
   it.effect("does not nudge at or above the active-child threshold", () =>
