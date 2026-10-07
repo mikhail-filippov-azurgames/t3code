@@ -27,7 +27,11 @@ import type * as Scope from "effect/Scope";
 
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { DelegatedTaskSummaryRepository } from "../persistence/Services/DelegatedTaskSummaries.ts";
+import {
+  DelegatedTaskSummaryRepository,
+  MAX_DELEGATED_SUMMARY_ATTEMPTS,
+  type DelegatedTaskSummaryRecord,
+} from "../persistence/Services/DelegatedTaskSummaries.ts";
 import { scrubDelegatedTaskText } from "../DelegatedTaskMemoryText.ts";
 import { projectDerivedText } from "../security/SecretTextPolicy.ts";
 import * as ProjectionSnapshotQuery from "./Services/ProjectionSnapshotQuery.ts";
@@ -39,8 +43,48 @@ const MAX_REPORT_CHARS = 5_000;
 const MAX_EVENT_CHARS = 1_800;
 const MAX_SUMMARY_CHARS = 600;
 const MAX_SOURCE_TURNS = 32;
-const RETRY_LEASE_MS = 30_000;
 const RECOVERY_PAGE_SIZE = 100;
+/**
+ * Claim lease: how long one paid generation may hold its turn before another
+ * claimant may take it. Longer than the 180s provider timeouts so a slow but
+ * live generation can never overlap a second paid call for the same turn.
+ */
+const RETRY_LEASE_MS = 300_000;
+/**
+ * Retry delay after a transport failure. Longer than the 180s provider
+ * timeouts so a retry never fires straight back into the same outage window.
+ */
+const SUMMARY_RETRY_DELAY_MS = 600_000;
+
+/** Failure wordings that mark a billable attempt as transport, hence retryable. */
+const TRANSPORT_FAILURE_PATTERNS = [/timed out/i, /CLI command failed/i];
+
+/**
+ * True for transport failures (provider timeout, CLI invocation failure) that
+ * are worth one more paid attempt. Every other failure — empty output,
+ * invalid output, missing worktree, uncertain prior claim — is terminal and
+ * keeps the deterministic fallback.
+ */
+export function isTransportSummaryFailure(message: string): boolean {
+  return TRANSPORT_FAILURE_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function isSummaryLeaseActive(
+  retryAfter: DelegatedTaskSummaryRecord["retryAfter"],
+  now: IsoDateTime,
+): boolean {
+  return retryAfter !== null && retryAfter !== undefined && retryAfter > now;
+}
+
+/** Legacy terminal error rows with a transport cause and budget left are retried. */
+function isRetryableSummaryError(row: DelegatedTaskSummaryRecord): boolean {
+  return (
+    row.state === "error" &&
+    row.attemptCount < MAX_DELEGATED_SUMMARY_ATTEMPTS &&
+    row.error !== null &&
+    isTransportSummaryFailure(row.error)
+  );
+}
 
 const decodeTerminal = Schema.decodeUnknownOption(DelegationCompletedActivityPayload);
 type ActivityAppendedEvent = Extract<
@@ -203,14 +247,29 @@ export const make = Effect.gen(function* () {
     yield* Effect.ensuring(
       Effect.gen(function* () {
         const existing = yield* summaries.getByTurn({ childThreadId, sourceTurnId });
-        if (existing !== null && (existing.state === "ready" || existing.state === "error")) return;
+        if (existing?.state === "ready") return;
         const now = DateTime.formatIso(yield* DateTime.now);
-        if (
-          existing?.retryAfter !== null &&
-          existing?.retryAfter !== undefined &&
-          existing.retryAfter > now
-        )
+        if (existing !== null && isSummaryLeaseActive(existing.retryAfter, now)) return;
+        if (existing !== null && existing.state === "error" && !isRetryableSummaryError(existing))
           return;
+        if (
+          existing !== null &&
+          existing.state === "pending" &&
+          existing.attemptCount > 0 &&
+          (existing.error === null || !isTransportSummaryFailure(existing.error))
+        ) {
+          yield* summaries.fail({
+            childThreadId,
+            sourceTurnId,
+            error:
+              existing.error ??
+              "Summary generation outcome is uncertain after a prior durable claim; deterministic summary retained.",
+            retryAfter: null,
+            final: true,
+            updatedAt: now,
+          });
+          return;
+        }
 
         const childInputOption = yield* snapshots.getDelegatedTaskSummaryInput({
           childThreadId,
@@ -281,7 +340,8 @@ export const make = Effect.gen(function* () {
           });
         }
         const current = yield* summaries.getByTurn({ childThreadId, sourceTurnId });
-        if (current === null || current.state !== "pending") return;
+        if (current === null || (current.state !== "pending" && !isRetryableSummaryError(current)))
+          return;
         if (previous?.contentFingerprint === fingerprint && previous.state === "ready") {
           yield* summaries.complete({
             childThreadId,
@@ -295,19 +355,6 @@ export const make = Effect.gen(function* () {
           });
           return;
         }
-        if (current.attemptCount > 0) {
-          yield* summaries.fail({
-            childThreadId,
-            sourceTurnId,
-            error:
-              "Summary generation outcome is uncertain after a prior durable claim; deterministic summary retained.",
-            retryAfter: null,
-            final: true,
-            updatedAt: now,
-          });
-          return;
-        }
-
         const parentProjectId = childInput.projectId;
         const projectOption = yield* snapshots.getProjectShellById(parentProjectId);
         const project = Option.getOrNull(projectOption);
@@ -375,12 +422,18 @@ export const make = Effect.gen(function* () {
               500,
             ) || "Text generation failed.";
         const failureTime = DateTime.formatIso(yield* DateTime.now);
+        // The claim above already spent one budgeted attempt; a transport
+        // failure with budget left stays pending on a lease, everything else
+        // (or an exhausted budget) is terminal with the deterministic fallback.
+        const attemptsUsed = current.attemptCount + 1;
+        const retryable =
+          isTransportSummaryFailure(error) && attemptsUsed < MAX_DELEGATED_SUMMARY_ATTEMPTS;
         yield* summaries.fail({
           childThreadId,
           sourceTurnId,
           error,
-          retryAfter: null,
-          final: true,
+          retryAfter: retryable ? addMillis(failureTime, SUMMARY_RETRY_DELAY_MS) : null,
+          final: !retryable,
           updatedAt: failureTime,
         });
       }),

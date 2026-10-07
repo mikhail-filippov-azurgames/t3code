@@ -6,6 +6,15 @@ import * as Schema from "effect/Schema";
 export type DelegatedSummarySource = "model" | "deterministic";
 export type DelegatedSummaryState = "pending" | "ready" | "error";
 
+/**
+ * Total paid generation claims allowed per child turn: the initial attempt
+ * plus up to two retries. Transport timeouts correlate (an overloaded
+ * provider stays slow for minutes), and every attempt is billable, so
+ * retries past the third attempt burn money without new information.
+ * Exhausting the budget marks the summary terminally failed instead.
+ */
+export const MAX_DELEGATED_SUMMARY_ATTEMPTS = 3;
+
 export interface DelegatedTaskSummaryRecord {
   readonly childThreadId: ThreadId;
   readonly parentEnvironmentId: string;
@@ -56,7 +65,13 @@ export interface DelegatedTaskSummaryRepositoryShape {
   readonly insertPending: (
     row: DelegatedTaskSummaryRecord,
   ) => Effect.Effect<void, DelegatedTaskSummaryRepositoryError>;
-  /** Atomically claims the one billable generator call for this child turn. */
+  /**
+   * Atomically claims the one billable generator call for this child turn.
+   * The first claim takes a fresh pending row; a retry re-claims only after
+   * the previous lease expired (or for a legacy terminal error row without a
+   * lease), and never past {@link MAX_DELEGATED_SUMMARY_ATTEMPTS}. The atomic
+   * UPDATE keeps at most one generation in flight per turn.
+   */
   readonly claimGeneration: (input: {
     readonly childThreadId: ThreadId;
     readonly sourceTurnId: TurnId;

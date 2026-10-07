@@ -3987,6 +3987,68 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
     }),
   );
 
+  it.effect("returns terminal turns with error summaries as recovery candidates", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const timestamp = "2026-09-27T08:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('retry-project', 'Retry', '/workspace', '[]', ${timestamp}, ${timestamp})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          worktree_path, latest_turn_id, created_at, updated_at, archived_at, deleted_at,
+          pending_approval_count, pending_user_input_count
+        ) VALUES
+          ('retry-child', 'retry-project', 'Retry child', '{}', 'full-access', 'default',
+            '/workspace/retry', 'retry-turn', ${timestamp}, ${timestamp}, NULL, NULL, 0, 0)
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id, thread_id, turn_id, tone, kind, summary, payload_json, sequence, created_at
+        ) VALUES (
+          'retry-lineage', 'retry-child', NULL, 'info', 'delegation.created', 'Created',
+          '{"version":1,"taskId":"retry-child","childThreadId":"retry-child","parentEnvironmentId":"env-retry","parentThreadId":"parent-retry","projectId":"retry-project","role":"implementation"}',
+          1, ${timestamp}
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id, turn_id, pending_message_id, assistant_message_id, state, requested_at,
+          started_at, completed_at, checkpoint_files_json
+        ) VALUES (
+          'retry-child', 'retry-turn', NULL, NULL, 'completed',
+          ${timestamp}, ${timestamp}, ${timestamp}, '[]'
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES (
+          'retry-child', 'env-retry', 'parent-retry', 'retry-turn', ${timestamp},
+          'Summary not generated (raw excerpt). Status: completed.', 'deterministic', '["retry-turn"]',
+          1, 'fingerprint-retry', 'error', 'Codex CLI request timed out.', 1, NULL, ${timestamp}
+        )
+      `;
+
+      // A stuck transport error stays discoverable so the summary reactor can
+      // spend its remaining attempts; only a ready summary suppresses it.
+      const candidates = yield* query.listDelegatedTaskSummaryRecoveryCandidates({ limit: 10 });
+      const scoped = candidates.rows.filter(
+        ({ childThreadId }) => childThreadId === ThreadId.make("retry-child"),
+      );
+      assert.deepStrictEqual(
+        scoped.map(({ childThreadId, sourceTurnId }) => [childThreadId, sourceTurnId]),
+        [[ThreadId.make("retry-child"), TurnId.make("retry-turn")]],
+      );
+    }),
+  );
+
   it.effect("keeps ambiguous legacy wake IDs scoped during completion recovery", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;

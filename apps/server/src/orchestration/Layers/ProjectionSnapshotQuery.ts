@@ -1708,7 +1708,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               SELECT 1 FROM projection_delegated_task_summaries summaries
               WHERE summaries.child_thread_id = turns.thread_id
                 AND summaries.source_turn_id = turns.turn_id
-                AND summaries.state IN ('ready', 'error')
+                -- Error rows stay recoverable: a transport failure (timeout,
+                -- CLI error) may be retried after its lease, so only a ready
+                -- summary suppresses re-queueing. The summary reactor decides
+                -- per row (lease, attempt budget, failure class); terminal
+                -- rows are a cheap early return there, and parent-callback
+                -- re-dispatch is idempotent per command id.
+                AND summaries.state = 'ready'
             )
             OR EXISTS (
               SELECT 1

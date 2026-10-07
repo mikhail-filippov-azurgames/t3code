@@ -8,6 +8,7 @@ import { DelegatedTaskSummaryRepositoryLive } from "../Layers/DelegatedTaskSumma
 import { SqlitePersistenceMemory } from "../Layers/Sqlite.ts";
 import {
   DelegatedTaskSummaryRepository,
+  MAX_DELEGATED_SUMMARY_ATTEMPTS,
   type DelegatedTaskSummaryRecord,
 } from "./DelegatedTaskSummaries.ts";
 
@@ -226,6 +227,124 @@ repositoryLayer("DelegatedTaskSummaryRepository", (it) => {
       });
       assert.notInclude(projected?.text ?? "", secret);
       assert.include(projected?.text ?? "", "[REDACTED]");
+    }),
+  );
+
+  it.effect("reclaims a generation after its lease expires, up to the attempt cap", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const retryChildThreadId = ThreadId.make("summary-child-retry");
+      const retryTurnId = TurnId.make("summary-turn-retry");
+      const thirdAt = "2026-09-01T10:02:00.000Z";
+      const fourthAt = "2026-09-01T10:03:00.000Z";
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, created_at, updated_at
+        ) VALUES (
+          ${retryChildThreadId}, 'summary-project', 'Retry Child', '{"instanceId":"codex","model":"gpt-5"}',
+          'full-access', ${firstAt}, ${firstAt}
+        )
+      `;
+      const repository = yield* DelegatedTaskSummaryRepository;
+      const input = { childThreadId: retryChildThreadId, sourceTurnId: retryTurnId };
+      yield* repository.insertPending(
+        pendingRow({
+          childThreadId: retryChildThreadId,
+          sourceTurnId: retryTurnId,
+          sourceTurnIds: [retryTurnId],
+        }),
+      );
+
+      assert.isTrue(
+        yield* repository.claimGeneration({ ...input, retryAfter: secondAt, updatedAt: firstAt }),
+      );
+      // A concurrent claimant loses while the first lease is still active.
+      assert.isFalse(
+        yield* repository.claimGeneration({ ...input, retryAfter: secondAt, updatedAt: firstAt }),
+      );
+      // A transport failure keeps the row pending on a retry lease.
+      yield* repository.fail({
+        ...input,
+        error: "Codex CLI request timed out.",
+        retryAfter: secondAt,
+        final: false,
+        updatedAt: secondAt,
+      });
+      const leased = yield* repository.getByTurn(input);
+      assert.deepEqual(leased?.state, "pending");
+      assert.deepEqual(leased?.attemptCount, 1);
+      assert.deepEqual(leased?.retryAfter, secondAt);
+
+      // After the lease expires the retry re-claims; attempts stop at the cap
+      // even when every lease has expired, so failures cannot bill forever.
+      let attempts = 1;
+      for (
+        let claimAt = thirdAt;
+        attempts < MAX_DELEGATED_SUMMARY_ATTEMPTS;
+        claimAt = fourthAt, attempts++
+      ) {
+        assert.isTrue(
+          yield* repository.claimGeneration({ ...input, retryAfter: claimAt, updatedAt: claimAt }),
+        );
+        yield* repository.fail({
+          ...input,
+          error: "Codex CLI request timed out.",
+          retryAfter: claimAt,
+          final: false,
+          updatedAt: claimAt,
+        });
+      }
+      const exhausted = yield* repository.getByTurn(input);
+      assert.deepEqual(exhausted?.attemptCount, MAX_DELEGATED_SUMMARY_ATTEMPTS);
+      assert.isFalse(
+        yield* repository.claimGeneration({ ...input, retryAfter: fourthAt, updatedAt: fourthAt }),
+      );
+    }),
+  );
+
+  it.effect("reclaims a legacy transport error row without a lease, once", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const legacyChildThreadId = ThreadId.make("summary-child-legacy-error");
+      const legacyTurnId = TurnId.make("summary-turn-legacy-error");
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, created_at, updated_at
+        ) VALUES (
+          ${legacyChildThreadId}, 'summary-project', 'Legacy Child', '{"instanceId":"codex","model":"gpt-5"}',
+          'full-access', ${firstAt}, ${firstAt}
+        )
+      `;
+      const repository = yield* DelegatedTaskSummaryRepository;
+      const input = { childThreadId: legacyChildThreadId, sourceTurnId: legacyTurnId };
+      yield* repository.insertPending(
+        pendingRow({
+          childThreadId: legacyChildThreadId,
+          sourceTurnId: legacyTurnId,
+          sourceTurnIds: [legacyTurnId],
+        }),
+      );
+      assert.isTrue(
+        yield* repository.claimGeneration({ ...input, retryAfter: secondAt, updatedAt: firstAt }),
+      );
+      yield* repository.fail({
+        ...input,
+        error: "Codex CLI request timed out.",
+        retryAfter: null,
+        final: true,
+        updatedAt: secondAt,
+      });
+      assert.deepEqual((yield* repository.getByTurn(input))?.state, "error");
+
+      // The stuck row may be claimed exactly once more; the fresh lease then
+      // protects the retry from a concurrent second generation.
+      assert.isTrue(
+        yield* repository.claimGeneration({ ...input, retryAfter: secondAt, updatedAt: secondAt }),
+      );
+      assert.isFalse(
+        yield* repository.claimGeneration({ ...input, retryAfter: secondAt, updatedAt: secondAt }),
+      );
+      assert.deepEqual((yield* repository.getByTurn(input))?.attemptCount, 2);
     }),
   );
 

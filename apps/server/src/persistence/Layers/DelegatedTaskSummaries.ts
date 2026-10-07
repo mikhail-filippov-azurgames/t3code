@@ -18,6 +18,7 @@ import { projectDerivedText } from "../../security/SecretTextPolicy.ts";
 import {
   DelegatedTaskSummaryRepository,
   DelegatedTaskSummaryRepositoryError,
+  MAX_DELEGATED_SUMMARY_ATTEMPTS,
   type DelegatedTaskSummaryRecord,
   type DelegatedTaskSummaryRepositoryShape,
 } from "../Services/DelegatedTaskSummaries.ts";
@@ -184,7 +185,12 @@ const make = Effect.gen(function* () {
       UPDATE projection_delegated_task_summaries
       SET attempt_count = attempt_count + 1, retry_after = ${retryAfter}, updated_at = ${updatedAt}
       WHERE child_thread_id = ${childThreadId} AND source_turn_id = ${sourceTurnId}
-        AND state = 'pending' AND attempt_count = 0
+        AND attempt_count < ${MAX_DELEGATED_SUMMARY_ATTEMPTS}
+        AND (
+          (state = 'pending' AND attempt_count = 0)
+          OR (retry_after IS NOT NULL AND retry_after < ${updatedAt})
+          OR (state = 'error' AND retry_after IS NULL)
+        )
       RETURNING child_thread_id AS "childThreadId"
     `,
   });
