@@ -1060,6 +1060,8 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
           [...cards.values()].find((card) => card.executorThreadId === threadId),
         ),
       ),
+    listCardsByExecutor: (threadId) =>
+      Effect.succeed([...cards.values()].filter((card) => card.executorThreadId === threadId)),
     createCard: (card) =>
       Effect.sync(() => {
         cards.set(card.cardId, card);

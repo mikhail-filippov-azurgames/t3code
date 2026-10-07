@@ -299,6 +299,36 @@ const makeBoardRepository = Effect.gen(function* () {
       `,
   });
 
+  const listCardsByExecutorRows = SqlSchema.findAll({
+    Request: FindCardByExecutorInput,
+    Result: BoardCardDbRow,
+    execute: ({ executorThreadId }) =>
+      sql`
+        SELECT
+          card_id AS "cardId",
+          orchestrator_thread_id AS "orchestratorThreadId",
+          title,
+          body,
+          status,
+          readiness,
+          readiness_note AS "readinessNote",
+          created_by AS "createdBy",
+          assignee_json AS "assignee",
+          executor_role AS "executorRole",
+          executor_thread_id AS "executorThreadId",
+          outcome,
+          last_error AS "lastError",
+          failure_streak AS "failureStreak",
+          order_index AS "order",
+          archived,
+          created_at AS "createdAt",
+          updated_at AS "updatedAt"
+        FROM board_cards
+        WHERE executor_thread_id = ${executorThreadId}
+        ORDER BY orchestrator_thread_id ASC, order_index ASC, created_at ASC, card_id ASC
+      `,
+  });
+
   const listCardRows = SqlSchema.findAll({
     Request: Schema.Void,
     Result: BoardCardDbRow,
@@ -590,6 +620,12 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.findCardByExecutor:query")),
     );
 
+  const listCardsByExecutor: BoardRepositoryShape["listCardsByExecutor"] = (executorThreadId) =>
+    listCardsByExecutorRows({ executorThreadId }).pipe(
+      Effect.map((rows) => rows.map(toBoardCard)),
+      Effect.mapError(toBoardRepositoryError("BoardRepository.listCardsByExecutor:query")),
+    );
+
   const createCard: BoardRepositoryShape["createCard"] = (card) => {
     const textFailure = boardCardAuthorTextFailure(card);
     return textFailure === null
@@ -682,7 +718,7 @@ const makeBoardRepository = Effect.gen(function* () {
           cardId: input.cardId,
           orchestratorThreadId: input.orchestratorThreadId,
           deletedAt: input.deletedAt,
-          reason: "retention",
+          reason: input.reason,
           historyEventCount: input.historyEventCount,
         }).pipe(Effect.flatMap(() => deleteCardRow({ cardId: input.cardId }))),
       )
@@ -701,6 +737,7 @@ const makeBoardRepository = Effect.gen(function* () {
     findCardsByPrefix,
     getCard,
     findCardByExecutor,
+    listCardsByExecutor,
     createCard,
     updateCard,
     updateCardWithPrevious,

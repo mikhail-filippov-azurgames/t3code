@@ -1,8 +1,10 @@
 import {
   BoardCardId,
+  CommandId,
   ProviderInstanceId,
   ProjectId,
   type BoardCard,
+  type BoardCardDeletionRecord,
   type BoardCardEvent,
   type BoardOrchestrator,
   EventId,
@@ -23,7 +25,12 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
-import { BoardRepository } from "../persistence/Services/Board.ts";
+import {
+  BoardRepository,
+  type BoardRepositoryShape,
+  buildBoardCardEvent,
+  deleteBoardCardWithRecord,
+} from "../persistence/Services/Board.ts";
 import {
   ProjectionTurnRepository,
   type ProjectionTurn,
@@ -145,14 +152,14 @@ function terminalEvent(input: {
   };
 }
 
-function threadDeletedEvent(threadId: ThreadId): OrchestrationEvent {
+function threadDeletedEvent(threadId: ThreadId, commandId?: CommandId): OrchestrationEvent {
   return {
     sequence: 2,
     eventId: EventId.make("event-2"),
     aggregateKind: "thread",
     aggregateId: threadId,
     occurredAt: NOW,
-    commandId: null,
+    commandId: commandId ?? null,
     causationEventId: null,
     correlationId: null,
     metadata: {},
@@ -166,6 +173,7 @@ function makeHarness(
     readonly cards?: ReadonlyArray<BoardCard>;
     readonly shells?: ReadonlyArray<OrchestrationThreadShell>;
     readonly turns?: ReadonlyArray<ProjectionTurn>;
+    readonly events?: ReadonlyArray<BoardCardEvent>;
   } = {},
 ) {
   return Effect.gen(function* () {
@@ -177,7 +185,8 @@ function makeHarness(
       { threadId: ORCHESTRATOR_ID, createdBy: "human", createdAt: NOW },
     ]);
     const updates = yield* Ref.make<ReadonlyArray<BoardCard>>([]);
-    const appends = yield* Ref.make<ReadonlyArray<BoardCardEvent>>([]);
+    const appends = yield* Ref.make<ReadonlyArray<BoardCardEvent>>(seed.events ?? []);
+    const deletions = yield* Ref.make<ReadonlyArray<BoardCardDeletionRecord>>([]);
     const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
     const reads = yield* Queue.unbounded<void>();
 
@@ -197,6 +206,32 @@ function makeHarness(
           ),
           Effect.tap(() => Queue.offer(reads, undefined)),
         ),
+      listCardsByExecutor: (threadId) =>
+        Ref.get(cards).pipe(
+          Effect.map((all) => all.filter((card) => card.executorThreadId === threadId)),
+          Effect.tap(() => Queue.offer(reads, undefined)),
+        ),
+      listEventsForCard: ({ cardId }) =>
+        Ref.get(appends).pipe(Effect.map((all) => all.filter((event) => event.cardId === cardId))),
+      // INV-D2: the only deletion the executor path may use. Plain
+      // `deleteCard` below dies, so any second path fails the test.
+      deleteCardWithRecord: (input) =>
+        Effect.gen(function* () {
+          yield* Ref.update(deletions, (all) => [
+            ...all,
+            {
+              cardId: input.cardId,
+              orchestratorThreadId: input.orchestratorThreadId,
+              deletedAt: input.deletedAt,
+              reason: input.reason,
+              historyEventCount: input.historyEventCount,
+            },
+          ]);
+          yield* Ref.update(cards, (all) => all.filter((card) => card.cardId !== input.cardId));
+          yield* Ref.update(appends, (all) => all.filter((event) => event.cardId !== input.cardId));
+        }),
+      listDeletionRecords: () => Ref.get(deletions),
+      deleteCard: () => Effect.die(new Error("use deleteCardWithRecord (INV-D2)")),
       updateCard: (card) =>
         Effect.gen(function* () {
           if (
@@ -238,6 +273,7 @@ function makeHarness(
       orchestrators,
       updates,
       appends,
+      deletions,
       commands,
       publish: (event: OrchestrationEvent) => PubSub.publish(events, event),
       processed: reads,
@@ -262,6 +298,7 @@ interface ScenarioSeed {
   readonly cards?: ReadonlyArray<BoardCard>;
   readonly shells?: ReadonlyArray<OrchestrationThreadShell>;
   readonly turns?: ReadonlyArray<ProjectionTurn>;
+  readonly events?: ReadonlyArray<BoardCardEvent>;
 }
 
 const runScenario = (
@@ -559,22 +596,192 @@ describe("BoardReactor", () => {
     ),
   );
 
-  it.effect("clears the dangling executor reference when its thread is deleted", () =>
-    runScenario({ cards: [makeCard()] }, (fixture) =>
+  it.effect(
+    "deletes every card of a deleted executor thread with history and one record each",
+    () =>
+      runScenario(
+        {
+          cards: [
+            makeCard({ cardId: BoardCardId.make("card-1"), status: "in_progress" }),
+            makeCard({ cardId: BoardCardId.make("card-2"), status: "review" }),
+            makeCard({ cardId: BoardCardId.make("card-3"), status: "todo" }),
+          ],
+          events: [
+            buildBoardCardEvent(
+              makeCard({ cardId: BoardCardId.make("card-1"), status: "in_progress" }),
+              { at: NOW, body: "executor started" },
+            ),
+            buildBoardCardEvent(
+              makeCard({ cardId: BoardCardId.make("card-1"), status: "in_progress" }),
+              { at: NOW, body: "executor progressed" },
+            ),
+            buildBoardCardEvent(
+              makeCard({ cardId: BoardCardId.make("card-2"), status: "review" }),
+              { at: NOW, body: "executor finished" },
+            ),
+          ],
+        },
+        (fixture) =>
+          Effect.gen(function* () {
+            yield* handle(fixture, threadDeletedEvent(EXECUTOR_ID));
+
+            // INV-D1: no card keeps the deleted executor thread id.
+            assert.deepEqual(yield* Ref.get(fixture.cards), []);
+            assert.deepEqual(
+              (yield* Ref.get(fixture.cards)).filter(
+                (card) => card.executorThreadId === EXECUTOR_ID,
+              ),
+              [],
+            );
+            // History went with the cards.
+            assert.deepEqual(yield* Ref.get(fixture.appends), []);
+            // No link-clearing updates: deletion is the only path (INV-D2).
+            assert.deepEqual(yield* Ref.get(fixture.updates), []);
+
+            const deletions = yield* Ref.get(fixture.deletions);
+            assert.deepEqual(deletions, [
+              {
+                cardId: BoardCardId.make("card-1"),
+                orchestratorThreadId: ORCHESTRATOR_ID,
+                deletedAt: NOW,
+                reason: "executor-thread-deleted",
+                historyEventCount: 2,
+              },
+              {
+                cardId: BoardCardId.make("card-2"),
+                orchestratorThreadId: ORCHESTRATOR_ID,
+                deletedAt: NOW,
+                reason: "executor-thread-deleted",
+                historyEventCount: 1,
+              },
+              {
+                cardId: BoardCardId.make("card-3"),
+                orchestratorThreadId: ORCHESTRATOR_ID,
+                deletedAt: NOW,
+                reason: "executor-thread-deleted",
+                historyEventCount: 0,
+              },
+            ]);
+
+            // Only the in_progress card is announced, without waking anyone.
+            const commands = yield* Ref.get(fixture.commands);
+            assert.equal(commands.length, 1);
+            const notice = commands[0];
+            assert.equal(notice?.type, "thread.message.system.append");
+            if (notice?.type === "thread.message.system.append") {
+              assert.equal(notice.threadId, ORCHESTRATOR_ID);
+              assert.equal(notice.message.text, "card card-1 deleted with its executor thread");
+            }
+          }),
+      ),
+  );
+
+  it.effect("notifies once without waking on an external deletion of an in_progress executor", () =>
+    runScenario({ cards: [makeCard({ status: "in_progress" })] }, (fixture) =>
       Effect.gen(function* () {
-        yield* handle(fixture, threadDeletedEvent(EXECUTOR_ID));
+        yield* handle(
+          fixture,
+          threadDeletedEvent(EXECUTOR_ID, CommandId.make("web-thread-delete:executor-1")),
+        );
 
-        const updates = yield* Ref.get(fixture.updates);
-        assert.equal(updates.length, 1);
-        assert.equal(updates[0]?.status, "orchestrator");
-        assert.equal(updates[0]?.executorThreadId, null);
-        assert.equal(updates[0]?.outcome, "cancelled");
-        assert.equal(updates[0]?.failureStreak, 1);
+        assert.deepEqual(yield* Ref.get(fixture.cards), []);
+        const deletions = yield* Ref.get(fixture.deletions);
+        assert.equal(deletions.length, 1);
+        assert.equal(deletions[0]?.reason, "executor-thread-deleted");
 
-        const appends = yield* Ref.get(fixture.appends);
-        assert.equal(appends[0]?.body, "executor thread deleted while in progress: cancelled");
+        const commands = yield* Ref.get(fixture.commands);
+        assert.equal(commands.length, 1);
+        const notice = commands[0];
+        assert.equal(notice?.type, "thread.message.system.append");
+        if (notice?.type === "thread.message.system.append") {
+          assert.equal(notice.threadId, ORCHESTRATOR_ID);
+          assert.equal(notice.message.text, "card card-1 deleted with its executor thread");
+        }
+        assert.isFalse(
+          commands.some((command) => command.type === "thread.turn.start"),
+          "the coordinator is informed, never woken",
+        );
       }),
     ),
+  );
+
+  it.effect("stays silent when the deletion comes from the coordinator itself", () =>
+    runScenario(
+      {
+        cards: [
+          makeCard({
+            cardId: BoardCardId.make("card-a"),
+            status: "in_progress",
+            executorThreadId: ThreadId.make("executor-a"),
+          }),
+          makeCard({
+            cardId: BoardCardId.make("card-b"),
+            status: "in_progress",
+            executorThreadId: ThreadId.make("executor-b"),
+          }),
+        ],
+      },
+      (fixture) =>
+        Effect.gen(function* () {
+          // Subtree cascade edge from the card's own coordinator.
+          yield* handle(
+            fixture,
+            threadDeletedEvent(
+              ThreadId.make("executor-a"),
+              CommandId.make(`thread-subtree-delete:${ORCHESTRATOR_ID}:executor-a`),
+            ),
+          );
+          // The coordinator itself is gone: its executor deletions need no notice.
+          yield* Ref.update(fixture.orchestrators, () => []);
+          yield* handle(fixture, threadDeletedEvent(ThreadId.make("executor-b")));
+
+          assert.deepEqual(yield* Ref.get(fixture.cards), []);
+          const deletions = yield* Ref.get(fixture.deletions);
+          assert.equal(deletions.length, 2);
+          for (const record of deletions) {
+            assert.equal(record.reason, "executor-thread-deleted");
+          }
+          assert.deepEqual(yield* Ref.get(fixture.commands), []);
+        }),
+    ),
+  );
+
+  it.effect("deletes retention and executor-thread cards through one shared function", () =>
+    Effect.gen(function* () {
+      // The executor-thread path above never touches plain `deleteCard`
+      // (the mock dies on it); the retention sweep proves the same side by
+      // its deletion-record assertions. Here both reasons flow through the
+      // one shared helper with identical mechanics.
+      const history = [
+        buildBoardCardEvent(makeCard({ status: "done" }), { at: NOW, body: "done" }),
+      ];
+      const calls: Array<{ reason: string; historyEventCount: number }> = [];
+      const fakeBoard: Pick<BoardRepositoryShape, "listEventsForCard" | "deleteCardWithRecord"> = {
+        listEventsForCard: () => Effect.succeed(history),
+        deleteCardWithRecord: (input) =>
+          Effect.sync(() => {
+            calls.push({
+              reason: input.reason,
+              historyEventCount: input.historyEventCount,
+            });
+          }).pipe(Effect.asVoid),
+      };
+      const card = makeCard();
+      yield* deleteBoardCardWithRecord(fakeBoard, {
+        card,
+        deletedAt: NOW,
+        reason: "retention",
+      });
+      yield* deleteBoardCardWithRecord(fakeBoard, {
+        card,
+        deletedAt: NOW,
+        reason: "executor-thread-deleted",
+      });
+      assert.deepEqual(calls, [
+        { reason: "retention", historyEventCount: 1 },
+        { reason: "executor-thread-deleted", historyEventCount: 1 },
+      ]);
+    }),
   );
 
   it.effect("removes the orchestrator and its cards when the orchestrator thread is deleted", () =>

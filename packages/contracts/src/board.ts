@@ -57,15 +57,27 @@ export const BoardOrchestratorsListInput = Schema.Struct({});
 export type BoardOrchestratorsListInput = typeof BoardOrchestratorsListInput.Type;
 
 /**
- * Proof that a board card was deleted by retention: which card of which
- * coordinator, when, why, and how many history entries went with it.
- * Carries no title or body, so a deleted card cannot be restored from it.
+ * Why a board card was deleted. `retention` is the age-based retention pass;
+ * `executor-thread-deleted` is the board reactor removing every card whose
+ * executor thread was deleted (INV-D1). Both paths share one deletion
+ * function, so the proof cannot drift between them (INV-D2).
+ */
+export const BoardCardDeletionReason = Schema.Union([
+  Schema.Literal("retention"),
+  Schema.Literal("executor-thread-deleted"),
+]);
+export type BoardCardDeletionReason = typeof BoardCardDeletionReason.Type;
+
+/**
+ * Proof that a board card was deleted: which card of which coordinator,
+ * when, why, and how many history entries went with it. Carries no title or
+ * body, so a deleted card cannot be restored from it.
  */
 export const BoardCardDeletionRecord = Schema.Struct({
   cardId: BoardCardId,
   orchestratorThreadId: ThreadId,
   deletedAt: IsoDateTime,
-  reason: Schema.Literal("retention"),
+  reason: BoardCardDeletionReason,
   historyEventCount: NonNegativeInt,
 });
 export type BoardCardDeletionRecord = typeof BoardCardDeletionRecord.Type;

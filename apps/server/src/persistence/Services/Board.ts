@@ -3,6 +3,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   BoardCard,
+  BoardCardDeletionReason,
   BoardCardDeletionRecord,
   BoardCardEvent,
   BoardCardEventId,
@@ -76,6 +77,15 @@ export interface BoardRepositoryShape {
   readonly findCardByExecutor: (
     executorThreadId: ThreadId,
   ) => Effect.Effect<Option.Option<BoardCard>, BoardRepositoryError>;
+  /**
+   * Every card linked to an executor thread. One delegated thread may back
+   * several cards (shared executor threads are normal), so executor-thread
+   * deletion selects all of them (INV-D1) instead of the first match. Backed
+   * by the same `executor_thread_id` index as `findCardByExecutor`.
+   */
+  readonly listCardsByExecutor: (
+    executorThreadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
   readonly createCard: (card: BoardCard) => Effect.Effect<void, BoardRepositoryError>;
   readonly updateCard: (card: BoardCard) => Effect.Effect<void, BoardRepositoryError>;
   /**
@@ -128,9 +138,10 @@ export interface BoardRepositoryShape {
     readonly cardId: BoardCardId;
     readonly orchestratorThreadId: ThreadId;
     readonly deletedAt: typeof IsoDateTime.Type;
+    readonly reason: BoardCardDeletionReason;
     readonly historyEventCount: typeof NonNegativeInt.Type;
   }) => Effect.Effect<void, BoardRepositoryError>;
-  /** Minimal proofs of retention deletions, newest last. */
+  /** Minimal proofs of card deletions (`retention`, `executor-thread-deleted`), newest last. */
   readonly listDeletionRecords: () => Effect.Effect<
     ReadonlyArray<BoardCardDeletionRecord>,
     BoardRepositoryError
@@ -146,6 +157,33 @@ export class BoardRepository extends Context.Service<BoardRepository, BoardRepos
  * call. `model`/`effort` come from the assigned executor, so they are null
  * until an assignee exists.
  */
+export interface DeleteBoardCardInput {
+  readonly card: BoardCard;
+  readonly deletedAt: typeof IsoDateTime.Type;
+  readonly reason: BoardCardDeletionReason;
+}
+
+/**
+ * The single card-deletion path (INV-D2): count the card's history, then
+ * delete the card (its history cascades) with a deletion proof in one
+ * transaction. Both the retention pass and executor-thread deletion call
+ * this function, so the two paths cannot drift apart.
+ */
+export const deleteBoardCardWithRecord = (
+  board: Pick<BoardRepositoryShape, "listEventsForCard" | "deleteCardWithRecord">,
+  input: DeleteBoardCardInput,
+): Effect.Effect<void, BoardRepositoryError> =>
+  Effect.gen(function* () {
+    const events = yield* board.listEventsForCard({ cardId: input.card.cardId });
+    yield* board.deleteCardWithRecord({
+      cardId: input.card.cardId,
+      orchestratorThreadId: input.card.orchestratorThreadId,
+      deletedAt: input.deletedAt,
+      reason: input.reason,
+      historyEventCount: events.length,
+    });
+  });
+
 export function buildBoardCardEvent(
   card: BoardCard,
   input: { at: IsoDateTime; body?: string },

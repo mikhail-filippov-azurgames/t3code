@@ -22,7 +22,11 @@ import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 
 import { ServerSettingsService } from "../serverSettings.ts";
-import { BoardRepository, buildBoardCardEvent } from "../persistence/Services/Board.ts";
+import {
+  BoardRepository,
+  buildBoardCardEvent,
+  deleteBoardCardWithRecord,
+} from "../persistence/Services/Board.ts";
 
 export const RETENTION_BATCH_LIMIT = 500;
 const RETENTION_INTERVAL = Duration.hours(1);
@@ -87,13 +91,12 @@ export const make = Effect.gen(function* () {
         yield* logReason("delete-skip", { cardId: candidate.cardId });
         continue;
       }
-      const events = yield* board.listEventsForCard({ cardId: current.cardId });
       const at = DateTime.formatIso(yield* DateTime.now);
-      yield* board.deleteCardWithRecord({
-        cardId: current.cardId,
-        orchestratorThreadId: current.orchestratorThreadId,
+      // The single deletion path (INV-D2), shared with executor-thread deletion.
+      yield* deleteBoardCardWithRecord(board, {
+        card: current,
         deletedAt: at,
-        historyEventCount: events.length,
+        reason: "retention",
       });
       deleted += 1;
       yield* logReason("deleted", { cardId: current.cardId });

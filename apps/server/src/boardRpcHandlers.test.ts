@@ -137,6 +137,8 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       Effect.succeed(
         Option.fromNullishOr(state.cards.find((card) => card.executorThreadId === threadId)),
       ),
+    listCardsByExecutor: (threadId) =>
+      Effect.succeed(state.cards.filter((card) => card.executorThreadId === threadId)),
     createCard: (card) => {
       state.cards.push(card);
       return Effect.void;

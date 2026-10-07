@@ -8,11 +8,13 @@
  * `in_progress`, records the outcome: success moves it to `review`; any
  * non-success keeps it `in_progress`, bumps `failureStreak`, and marks
  * `needs human` once the streak reaches three. It also clears
- * `executorThreadId` when an executor thread is deleted, because that column
- * has no foreign key and would otherwise dangle. Thread deletion is a soft
- * delete (`projection_threads.deleted_at`), so the board foreign keys never
- * fire; deleting an orchestrator thread therefore removes the orchestrator row
- * here, and cards plus history cascade from it.
+ * every card linked to a deleted executor thread, because that column has
+ * no foreign key and shared executor threads are normal: one delegated
+ * thread may back several cards, so all of them go (INV-D1) through the
+ * single deletion path with a deletion proof (INV-D2). Thread deletion is a
+ * soft delete (`projection_threads.deleted_at`), so the board foreign keys
+ * never fire; deleting an orchestrator thread therefore removes the
+ * orchestrator row here, and cards plus history cascade from it.
  *
  * On startup it also recovers cards left `in_progress` by an executor session
  * orphaned during a restart: such a session never emits a terminal event, so
@@ -44,7 +46,11 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 
-import { BoardRepository, buildBoardCardEvent } from "../persistence/Services/Board.ts";
+import {
+  BoardRepository,
+  buildBoardCardEvent,
+  deleteBoardCardWithRecord,
+} from "../persistence/Services/Board.ts";
 import {
   ProjectionTurnRepository,
   type ProjectionTurn,
@@ -99,6 +105,39 @@ function shortDerivedNote(text: string): string {
 
 function shortErrorNote(error: string | undefined, status: DelegationCompleted["status"]): string {
   return shortDerivedNote(error ?? `executor turn ${status}`);
+}
+
+/**
+ * Command-id prefixes that mark a `thread.deleted` event as coordinator-
+ * originated, i.e. the coordinator's own teardown deleted the executor:
+ * - `thread-subtree-delete:<parent>:<child>` is the server subtree cascade
+ *   (ThreadDeletionReactor) deleting a child because its parent went;
+ * - `board:orchestrator-remove:child:` is the board RPC unmarking a
+ *   coordinator and deleting its executor children afterwards;
+ * - `architect-delete:` is the architect teardown on coordinator deletion.
+ * Anything else (a human deleting the thread in web/mobile, a bootstrap
+ * cleanup, …) is external to the coordinator.
+ */
+const SUBTREE_DELETE_PREFIX = "thread-subtree-delete:";
+const ORCHESTRATOR_REMOVE_CHILD_PREFIX = "board:orchestrator-remove:child:";
+const ARCHITECT_DELETE_PREFIX = "architect-delete:";
+
+/**
+ * Whether the executor-thread deletion was caused by the card's own
+ * coordinator going away, rather than by an external deletion. A subtree
+ * edge counts only when it starts at the card's own coordinator: a cascade
+ * from a mid-tree external deletion still notifies the live coordinator.
+ */
+function isCoordinatorOriginatedDelete(commandId: CommandId | null, card: BoardCard): boolean {
+  if (commandId === null) return false;
+  const id = String(commandId);
+  if (id.startsWith(ORCHESTRATOR_REMOVE_CHILD_PREFIX)) return true;
+  if (id.startsWith(ARCHITECT_DELETE_PREFIX)) return true;
+  if (id.startsWith(SUBTREE_DELETE_PREFIX)) {
+    const [parentId] = id.slice(SUBTREE_DELETE_PREFIX.length).split(":");
+    return parentId === String(card.orchestratorThreadId);
+  }
+  return false;
 }
 
 /** A card whose executor session was lost when the process restarted. */
@@ -270,26 +309,44 @@ export const make = Effect.gen(function* () {
       yield* board.removeOrchestrator(event.payload.threadId);
       return;
     }
-    const card = Option.getOrNull(yield* board.findCardByExecutor(event.payload.threadId));
-    if (card === null) return;
+    // INV-D1: a deleted executor thread leaves no card behind. Shared
+    // executor threads are normal, so select every card of the thread — not
+    // the first match — and delete each through the single deletion path
+    // (INV-D2), which removes the card with its history and a deletion proof.
+    const cards = yield* board.listCardsByExecutor(event.payload.threadId);
+    if (cards.length === 0) return;
     const at = event.payload.deletedAt;
-    if (card.status === "in_progress") {
-      // The executor can never emit a terminal event now; keep the loss visible.
-      yield* writeFailure({
+    const coordinatorAlive = (card: BoardCard) =>
+      orchestrators.some((orchestrator) => orchestrator.threadId === card.orchestratorThreadId);
+    for (const card of cards) {
+      yield* deleteBoardCardWithRecord(board, {
         card,
-        at,
-        outcome: "cancelled",
-        note: "executor thread deleted",
-        clearExecutorThreadId: true,
-        status: "orchestrator",
-        key: "executor-thread-deleted",
-        reason: "executor thread deleted while in progress",
+        deletedAt: at,
+        reason: "executor-thread-deleted",
       });
-      return;
     }
-    const next: BoardCard = { ...card, executorThreadId: null, updatedAt: at };
-    yield* board.updateCard(next);
-    yield* board.appendEvent(buildBoardCardEvent(next, { at, body: "executor thread deleted" }));
+    for (const card of cards) {
+      // The executor can never emit a terminal event now; keep the loss
+      // visible with one system message per in_progress card — but only when
+      // the deletion came from outside the coordinator. A coordinator that
+      // deleted its own card via MCP finds nothing here, and a coordinator
+      // that is itself gone needs no notice. Never wakes anyone, never asks
+      // the human.
+      if (card.status !== "in_progress") continue;
+      if (!coordinatorAlive(card)) continue;
+      if (isCoordinatorOriginatedDelete(event.commandId, card)) continue;
+      const key = `board:card:${card.cardId}:executor-thread-deleted`;
+      yield* engine.dispatch({
+        type: "thread.message.system.append",
+        commandId: CommandId.make(key),
+        threadId: card.orchestratorThreadId,
+        message: {
+          messageId: MessageId.make(key),
+          text: `card ${card.cardId} deleted with its executor thread`,
+        },
+        createdAt: at,
+      });
+    }
   });
 
   const wakeOrchestrator = Effect.fn("BoardReactor.wakeOrchestrator")(function* (

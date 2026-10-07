@@ -161,6 +161,109 @@ repositoryLayer("BoardRepository", (it) => {
     }),
   );
 
+  it.effect("lists every card of a shared executor thread and records each reason", () =>
+    Effect.gen(function* () {
+      const repository = yield* BoardRepository;
+      const threadId = ThreadId.make("thread-shared-executor");
+      yield* seedThread(threadId);
+      yield* repository.addOrchestrator({
+        threadId,
+        createdBy: "human",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+      const shared = ThreadId.make("executor-shared");
+      const first = makeCard({
+        cardId: BoardCardId.make("card-shared-first"),
+        orchestratorThreadId: threadId,
+        executorThreadId: shared,
+      });
+      const second = makeCard({
+        cardId: BoardCardId.make("card-shared-second"),
+        orchestratorThreadId: threadId,
+        executorThreadId: shared,
+      });
+      const other = makeCard({
+        cardId: BoardCardId.make("card-shared-other"),
+        orchestratorThreadId: threadId,
+        executorThreadId: ThreadId.make("executor-other"),
+      });
+      yield* repository.createCard(first);
+      yield* repository.createCard(second);
+      yield* repository.createCard(other);
+      yield* repository.appendEvent(
+        buildBoardCardEvent(first, { at: "2026-01-01T00:00:01.000Z", body: "started" }),
+      );
+      yield* repository.appendEvent(
+        buildBoardCardEvent(first, { at: "2026-01-01T00:00:02.000Z", body: "progressed" }),
+      );
+      yield* repository.appendEvent(
+        buildBoardCardEvent(second, { at: "2026-01-01T00:00:01.000Z", body: "started" }),
+      );
+      yield* repository.appendEvent(
+        buildBoardCardEvent(other, { at: "2026-01-01T00:00:01.000Z", body: "unrelated" }),
+      );
+
+      // INV-D1 selection: both cards of the shared thread, nothing else.
+      assert.deepEqual(
+        (yield* repository.listCardsByExecutor(shared)).map((card) => card.cardId),
+        [first.cardId, second.cardId],
+      );
+      assert.deepEqual(
+        yield* repository.listCardsByExecutor(ThreadId.make("executor-unknown")),
+        [],
+      );
+
+      yield* repository.deleteCardWithRecord({
+        cardId: first.cardId,
+        orchestratorThreadId: threadId,
+        deletedAt: "2026-01-02T00:00:00.000Z",
+        reason: "executor-thread-deleted",
+        historyEventCount: 2,
+      });
+      yield* repository.deleteCardWithRecord({
+        cardId: second.cardId,
+        orchestratorThreadId: threadId,
+        deletedAt: "2026-01-02T00:00:00.000Z",
+        reason: "retention",
+        historyEventCount: 1,
+      });
+
+      assert.isTrue(Option.isNone(yield* repository.getCard(first.cardId)));
+      assert.isTrue(Option.isNone(yield* repository.getCard(second.cardId)));
+      assert.deepEqual(yield* repository.listEventsForCard({ cardId: first.cardId }), []);
+      assert.deepEqual(yield* repository.listEventsForCard({ cardId: second.cardId }), []);
+      assert.deepEqual(
+        (yield* repository.listCardsByExecutor(shared)).map((card) => card.cardId),
+        [],
+      );
+      // The untouched card keeps its history.
+      const otherEvents = yield* repository.listEventsForCard({ cardId: other.cardId });
+      assert.equal(otherEvents.length, 1);
+      assert.equal(otherEvents[0]?.body, "unrelated");
+      assert.isTrue(Option.isSome(yield* repository.getCard(other.cardId)));
+
+      const records = (yield* repository.listDeletionRecords()).filter(
+        (record) => record.cardId === first.cardId || record.cardId === second.cardId,
+      );
+      assert.deepEqual(records, [
+        {
+          cardId: first.cardId,
+          orchestratorThreadId: threadId,
+          deletedAt: "2026-01-02T00:00:00.000Z",
+          reason: "executor-thread-deleted",
+          historyEventCount: 2,
+        },
+        {
+          cardId: second.cardId,
+          orchestratorThreadId: threadId,
+          deletedAt: "2026-01-02T00:00:00.000Z",
+          reason: "retention",
+          historyEventCount: 1,
+        },
+      ]);
+    }),
+  );
+
   it.effect("updateCardWithPrevious writes against the already-read value", () =>
     Effect.gen(function* () {
       const repository = yield* BoardRepository;
