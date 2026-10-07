@@ -25,6 +25,8 @@ import {
   OrchestratorMcpListArchitectureReviewsResult,
   OrchestratorMcpPublishToCoordinatorInput,
   OrchestratorMcpPublishToCoordinatorResult,
+  OrchestratorMcpPrepareCoordinatorPublicationInput,
+  OrchestratorMcpPrepareCoordinatorPublicationResult,
   OrchestratorMcpReviewAnswerInput,
   OrchestratorMcpReviewAnswerResult,
   OrchestratorMcpReviewCancelInput,
@@ -364,6 +366,23 @@ export const ArchitectureReviewCancelTool = Tool.make(
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+export const PrepareCoordinatorPublicationTool = Tool.make(
+  ORCHESTRATOR_MCP_TOOL_NAMES.prepareCoordinatorPublication,
+  {
+    description:
+      "Prepares a coordinator publication; never wakes the coordinator; the human publishes it with the Publish button; replaces your previous unpublished preparation. Reuse the same idempotencyKey only for an exact retry.",
+    parameters: OrchestratorMcpPrepareCoordinatorPublicationInput,
+    success: OrchestratorMcpPrepareCoordinatorPublicationResult,
+    failure: OrchestratorMcpFailure,
+    dependencies,
+  },
+)
+  .annotate(Tool.Title, "Prepare coordinator publication")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const PublishToCoordinatorTool = Tool.make(
   ORCHESTRATOR_MCP_TOOL_NAMES.publishToCoordinator,
   {
@@ -437,6 +456,7 @@ export const OrchestratorMcpToolkit = Toolkit.make(
   ArchitectureReviewRequestTool,
   ArchitectureReviewAnswerTool,
   ArchitectureReviewCancelTool,
+  PrepareCoordinatorPublicationTool,
   PublishToCoordinatorTool,
   GetCoordinatorBindingTool,
   ListArchitectureReviewsTool,

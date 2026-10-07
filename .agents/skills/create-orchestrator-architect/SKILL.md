@@ -24,7 +24,8 @@ Do not trust cached provider state: verify provider instance, driver, model, opt
 ## Rules the skill must state back
 
 - Soft-delete only: `architect_replace` and `architect_detach` mark the binding `replaced`/`detached` and revoke the architect credential in order (durable commit first, revocation receipt after). Detached bindings are retained, never resurrected, never purged.
-- Publish-only wake: review answers never wake the coordinator. Only `publish_to_coordinator` wakes it, exactly once per review, proven by a wake-delivered marker.
+- Coordinator wakes from the Architect side: `publish_to_coordinator` by the Architect for coordinator requests, and the human Publish button for any answered record. Ordinary user↔Architect conversation never wakes the coordinator; answers alone never wake it. Publication is exactly once per review, proven by a wake-delivered marker.
+- Unrequested advice: call `prepare_coordinator_publication`; it never wakes the coordinator and replaces the previous unpublished preparation. Tell the human to inspect it in the Architect composer and press the Publish button.
 - Reviews: `architecture_review_request` needs an explicit `executionPosture` (`continue` | `pause-branch` | `pause-all`, no default). Answers carry a required `answerDisposition`. First answer wins; reusing an answer key with a different payload returns `idempotency_conflict`.
 - Queries: the coordinator/human may query the coordinator binding and reviews; the bound Architect may query its own binding and reviews only.
 - Denies: executors get `architect_denied` on all nine architect/review tools. A stale architect credential after detach fails the durable binding check.

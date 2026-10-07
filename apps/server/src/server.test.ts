@@ -4936,6 +4936,33 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest)),
   );
 
+  it.effect("routes human Architect publication through the authenticated WebSocket RPC", () =>
+    Effect.gen(function* () {
+      yield* buildAppUnderTest();
+
+      const { cookie } = yield* bootstrapBrowserSession();
+      const wsUrl = appendSessionCookieToWsUrl(
+        yield* getWsServerUrl("/ws", { authenticated: false }),
+        cookie?.split(";")[0] ?? "",
+      );
+      const error = yield* Effect.flip(
+        Effect.scoped(
+          withWsRpcClient(wsUrl, (client) =>
+            client[ORCHESTRATION_WS_METHODS.publishArchitectPublication]({
+              reviewId: "missing-human-publication",
+              idempotencyKey: "human-publication-ws-route",
+            }),
+          ),
+        ),
+      );
+
+      assert.equal(error._tag, "OrchestratorMcpFailure");
+      if (error._tag === "OrchestratorMcpFailure") {
+        assert.equal(error.code, "review_not_found");
+      }
+    }).pipe(Effect.provide(NodeHttpServer.layerTest)),
+  );
+
   it.effect("advertises the usable file manager and its reveal label", () =>
     Effect.gen(function* () {
       yield* buildAppUnderTest({

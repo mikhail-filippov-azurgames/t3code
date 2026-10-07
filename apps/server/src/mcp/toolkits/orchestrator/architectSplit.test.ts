@@ -230,6 +230,7 @@ function makeMemoryStore(): CoordinatorArchitectRepositoryShape & {
 } {
   const bindings = new Map<string, MemoryBindingRow>();
   const reviews = new Map<string, ArchitectureReviewRecord>();
+  const requestPayloadFingerprints = new Map<string, string>();
   const activeFor = (coordinatorThreadId: string): MemoryBindingRow | null => {
     for (const row of bindings.values()) {
       if (row.coordinatorThreadId === coordinatorThreadId && row.status === "active") return row;
@@ -429,11 +430,90 @@ function makeMemoryStore(): CoordinatorArchitectRepositoryShape & {
         createdAt: input.createdAt,
         answeredAt: null,
         publishedAt: null,
+        origin: "coordinator-request",
+        publishedBy: null,
         publishDeliveredAt: null,
         lastPublishFailure: null,
       };
       reviews.set(row.reviewId, row);
+      requestPayloadFingerprints.set(row.reviewId, input.requestPayloadFingerprint);
       return Effect.succeed({ review: row, created: true });
+    },
+    upsertPreparedPublication: (input) => {
+      const prior = [...reviews.values()].find(
+        (row) =>
+          row.coordinatorThreadId === input.coordinatorThreadId &&
+          row.requestIdempotencyKey === input.idempotencyKey,
+      );
+      if (prior !== undefined) {
+        if (
+          prior.origin !== "architect-advice" ||
+          prior.bindingId !== input.bindingId ||
+          requestPayloadFingerprints.get(prior.reviewId) !== input.payloadFingerprint
+        ) {
+          return Effect.fail(
+            new CoordinatorArchitectIdempotencyConflict({
+              operation: "upsertPreparedPublication",
+              existingId: prior.reviewId,
+            }),
+          );
+        }
+        return Effect.succeed(prior);
+      }
+      const existing = [...reviews.values()].find(
+        (row) =>
+          row.bindingId === input.bindingId &&
+          row.origin === "architect-advice" &&
+          row.status === "answered",
+      );
+      const row: ArchitectureReviewRecord = {
+        ...(existing ?? {
+          reviewId: input.reviewId,
+          bindingId: input.bindingId,
+          coordinatorThreadId: ThreadId.make(input.coordinatorThreadId),
+          architectThreadId: ThreadId.make(input.architectThreadId),
+          subjectChildThreadId: null,
+          reason: "direct-advice" as const,
+          requestIdempotencyKey: input.idempotencyKey,
+          answerIdempotencyKey: null,
+          answerPayloadFingerprint: null,
+          publishIdempotencyKey: null,
+          cancelIdempotencyKey: null,
+          cancelledAt: null,
+          cancelledBy: null,
+          publishDeliveredAt: null,
+          lastPublishFailure: null,
+        }),
+        reviewId: existing?.reviewId ?? input.reviewId,
+        bindingId: input.bindingId,
+        coordinatorThreadId: ThreadId.make(input.coordinatorThreadId),
+        architectThreadId: ThreadId.make(input.architectThreadId),
+        subjectChildThreadId: null,
+        reason: "direct-advice",
+        question: input.summary,
+        refs: { architectOclRefs: [...input.oclRefs] },
+        executionPosture: input.executionPosture,
+        answerDisposition: input.disposition,
+        status: "answered",
+        answerSummary: input.summary,
+        requestIdempotencyKey: input.idempotencyKey,
+        answerIdempotencyKey: input.idempotencyKey,
+        answerPayloadFingerprint: input.payloadFingerprint,
+        publishIdempotencyKey: null,
+        cancelIdempotencyKey: null,
+        cancelledAt: null,
+        cancelledBy: null,
+        createdAt: input.preparedAt,
+        answeredAt: input.preparedAt,
+        publishedAt: null,
+        origin: "architect-advice",
+        publishedBy: null,
+        publishDeliveredAt: null,
+        lastPublishFailure: null,
+      };
+      reviews.set(row.reviewId, row);
+      requestPayloadFingerprints.set(row.reviewId, input.payloadFingerprint);
+      return Effect.succeed(row);
     },
     getReviewById: (reviewId) => Effect.succeed(reviews.get(reviewId) ?? null),
     getReviewByRequestKey: (input) => {
@@ -497,6 +577,7 @@ function makeMemoryStore(): CoordinatorArchitectRepositoryShape & {
         status: "published",
         publishIdempotencyKey: input.publishIdempotencyKey,
         publishedAt: input.publishedAt,
+        publishedBy: input.publishedBy,
       });
       return Effect.succeed({ _tag: "applied" } as const);
     },
@@ -2031,8 +2112,347 @@ describe("phase 1 coordinator/architect service", () => {
       const stored = listed.reviews.find((row) => row.reviewId === requested.reviewId);
       assert.isNotNull(stored?.answeredAt);
       assert.isNotNull(stored?.publishedAt);
+      assert.strictEqual(stored?.publishedBy, "architect");
       assert.isNotNull(stored?.publishDeliveredAt);
       assert.isNull(stored?.lastPublishFailure);
+    }),
+  );
+
+  it.effect("prepares one advice record, replaces it, and never wakes the coordinator", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const coordinatorScope = scopeFor(coordinatorId);
+      const created = yield* harness.service.architectCreateOrGet(coordinatorScope, {
+        coordinatorThreadId: coordinatorId,
+        taskEffort: "medium",
+        idempotencyKey: "create-prepared-advice",
+      });
+      const architectScope = scopeFor(created.architectThreadId, "architect");
+      const first = yield* harness.service.prepareCoordinatorPublication(architectScope, {
+        summary: "Add a bounded cache.",
+        disposition: "recommendation",
+        executionPosture: "continue",
+        idempotencyKey: "prepare-advice-1",
+      });
+      const firstRecord = yield* harness.store.getReviewById(first.reviewId);
+      assert.strictEqual(first.status, "answered");
+      assert.strictEqual(firstRecord?.origin, "architect-advice");
+      assert.strictEqual(firstRecord?.status, "answered");
+      assert.strictEqual(firstRecord?.answerSummary, "Add a bounded cache.");
+      assert.strictEqual(firstRecord?.publishedBy, null);
+
+      const replacement = yield* harness.service.prepareCoordinatorPublication(architectScope, {
+        summary: "Add a bounded cache behind a feature flag.",
+        disposition: "needs-human-decision",
+        executionPosture: "pause-branch",
+        idempotencyKey: "prepare-advice-2",
+      });
+      assert.strictEqual(replacement.reviewId, first.reviewId);
+      const replacementRecord = yield* harness.store.getReviewById(first.reviewId);
+      assert.strictEqual(
+        replacementRecord?.answerSummary,
+        "Add a bounded cache behind a feature flag.",
+      );
+      assert.strictEqual(replacementRecord?.answerDisposition, "needs-human-decision");
+      const reviews = yield* harness.store.listReviewsByCoordinator({
+        coordinatorThreadId: created.binding.coordinatorThreadId,
+      });
+      assert.strictEqual(reviews.length, 1);
+      assert.deepStrictEqual(
+        harness.dispatched.filter(
+          (command) =>
+            command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+        ),
+        [],
+      );
+
+      const refused = yield* runFailure(
+        harness.service.publishToCoordinator(architectScope, {
+          reviewId: first.reviewId,
+          idempotencyKey: "bypass-human-button",
+        }),
+      );
+      assert.strictEqual(refused, "human_publish_required");
+      assert.deepStrictEqual(
+        harness.dispatched.filter(
+          (command) =>
+            command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+        ),
+        [],
+      );
+    }),
+  );
+
+  it.effect("publishes advice and answered requests from the human button exactly once", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const coordinatorScope = scopeFor(coordinatorId);
+      const created = yield* harness.service.architectCreateOrGet(coordinatorScope, {
+        coordinatorThreadId: coordinatorId,
+        taskEffort: "medium",
+        idempotencyKey: "create-human-publish",
+      });
+      const architectScope = scopeFor(created.architectThreadId, "architect");
+      const advice = yield* harness.service.prepareCoordinatorPublication(architectScope, {
+        summary: "Keep the fallback path enabled.",
+        disposition: "recommendation",
+        executionPosture: "continue",
+        idempotencyKey: "prepare-human-advice",
+      });
+      const firstPublish = yield* harness.service.publishArchitectPublication({
+        reviewId: advice.reviewId,
+        idempotencyKey: "human-publish-advice",
+      });
+      assert.strictEqual(firstPublish.status, "published");
+      let stored = yield* harness.store.getReviewById(advice.reviewId);
+      assert.strictEqual(stored?.status, "published");
+      assert.strictEqual(stored?.publishedBy, "human");
+      const coordinatorWake = harness.dispatched.find(
+        (command) =>
+          command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+      );
+      assert.isDefined(coordinatorWake);
+      const wakeText = String(
+        (coordinatorWake?.["message"] as { readonly text?: unknown } | undefined)?.text,
+      );
+      assert.isTrue(wakeText.startsWith("Published by the human via the Publish button"));
+      assert.include(wakeText, "Keep the fallback path enabled.");
+
+      yield* harness.service.publishArchitectPublication({
+        reviewId: advice.reviewId,
+        idempotencyKey: "human-publish-advice",
+      });
+      const repeatPublish = yield* runFailure(
+        harness.service.publishArchitectPublication({
+          reviewId: advice.reviewId,
+          idempotencyKey: "human-publish-advice-new-key",
+        }),
+      );
+      assert.strictEqual(repeatPublish, "review_state_conflict");
+      assert.strictEqual(
+        harness.dispatched.filter(
+          (command) =>
+            command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+        ).length,
+        1,
+      );
+
+      const request = yield* harness.service.architectureReviewRequest(coordinatorScope, {
+        coordinatorThreadId: coordinatorId,
+        reason: "hard-bug",
+        question: "Can the retry happen twice?",
+        executionPosture: "continue",
+        idempotencyKey: "human-publish-request",
+      });
+      yield* harness.service.architectureReviewAnswer(architectScope, {
+        reviewId: request.reviewId,
+        disposition: "needs-more-evidence",
+        summary: "Capture one failing retry log.",
+        idempotencyKey: "answer-human-publish-request",
+      });
+      yield* harness.service.publishArchitectPublication({
+        reviewId: request.reviewId,
+        idempotencyKey: "human-publish-request-answer",
+      });
+      stored = yield* harness.store.getReviewById(request.reviewId);
+      assert.strictEqual(stored?.origin, "coordinator-request");
+      assert.strictEqual(stored?.publishedBy, "human");
+      assert.strictEqual(
+        harness.dispatched.filter(
+          (command) =>
+            command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+        ).length,
+        2,
+      );
+    }),
+  );
+
+  it.effect(
+    "denies preparation and human publication after the Architect binding is detached",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        const coordinatorScope = scopeFor(coordinatorId);
+        const created = yield* harness.service.architectCreateOrGet(coordinatorScope, {
+          coordinatorThreadId: coordinatorId,
+          taskEffort: "medium",
+          idempotencyKey: "create-detached-publish",
+        });
+        const architectScope = scopeFor(created.architectThreadId, "architect");
+        const advice = yield* harness.service.prepareCoordinatorPublication(architectScope, {
+          summary: "Leave retries capped.",
+          disposition: "recommendation",
+          executionPosture: "continue",
+          idempotencyKey: "prepare-detached-publish",
+        });
+        yield* harness.service.architectDetach(coordinatorScope, {
+          coordinatorThreadId: coordinatorId,
+          reason: "No longer needed.",
+          idempotencyKey: "detach-before-human-publish",
+        });
+        const prepareFailure = yield* runFailure(
+          harness.service.prepareCoordinatorPublication(architectScope, {
+            summary: "Another suggestion.",
+            disposition: "recommendation",
+            executionPosture: "continue",
+            idempotencyKey: "prepare-after-detach",
+          }),
+        );
+        const publishFailure = yield* runFailure(
+          harness.service.publishArchitectPublication({
+            reviewId: advice.reviewId,
+            idempotencyKey: "human-publish-after-detach",
+          }),
+        );
+        assert.strictEqual(prepareFailure, "architect_denied");
+        assert.strictEqual(publishFailure, "binding_not_found");
+        assert.deepStrictEqual(
+          harness.dispatched.filter(
+            (command) =>
+              command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+          ),
+          [],
+        );
+      }),
+  );
+
+  it.effect(
+    "denies preparation and human publication after the Architect binding is replaced",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        const coordinatorScope = scopeFor(coordinatorId);
+        const created = yield* harness.service.architectCreateOrGet(coordinatorScope, {
+          coordinatorThreadId: coordinatorId,
+          taskEffort: "medium",
+          idempotencyKey: "create-replaced-publish",
+        });
+        const architectScope = scopeFor(created.architectThreadId, "architect");
+        const advice = yield* harness.service.prepareCoordinatorPublication(architectScope, {
+          summary: "Keep the fallback enabled.",
+          disposition: "recommendation",
+          executionPosture: "continue",
+          idempotencyKey: "prepare-before-replacement",
+        });
+        const replacement = yield* harness.service.architectReplace(coordinatorScope, {
+          coordinatorThreadId: coordinatorId,
+          taskEffort: "medium",
+          modelSelection: architectModelSelection,
+          routingEvidence: architectRoutingEvidence("medium"),
+          reason: "Rotate the Architect before publishing.",
+          idempotencyKey: "replace-before-human-publish",
+        });
+        assert.notStrictEqual(replacement.binding.bindingId, created.binding.bindingId);
+
+        const prepareFailure = yield* runFailure(
+          harness.service.prepareCoordinatorPublication(architectScope, {
+            summary: "No longer active.",
+            disposition: "recommendation",
+            executionPosture: "continue",
+            idempotencyKey: "prepare-after-replacement",
+          }),
+        );
+        const publishFailure = yield* runFailure(
+          harness.service.publishArchitectPublication({
+            reviewId: advice.reviewId,
+            idempotencyKey: "human-publish-after-replacement",
+          }),
+        );
+        assert.strictEqual(prepareFailure, "architect_denied");
+        assert.strictEqual(publishFailure, "binding_not_found");
+        assert.deepStrictEqual(
+          harness.dispatched.filter(
+            (command) =>
+              command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+          ),
+          [],
+        );
+      }),
+  );
+
+  it.effect(
+    "keeps a prepared publication answered when the orchestrator service is reconstructed",
+    () =>
+      Effect.gen(function* () {
+        const harness = makeHarness();
+        const coordinatorScope = scopeFor(coordinatorId);
+        const created = yield* harness.service.architectCreateOrGet(coordinatorScope, {
+          coordinatorThreadId: coordinatorId,
+          taskEffort: "medium",
+          idempotencyKey: "create-prepared-restart",
+        });
+        const prepared = yield* harness.service.prepareCoordinatorPublication(
+          scopeFor(created.architectThreadId, "architect"),
+          {
+            summary: "Keep the guard enabled after restart.",
+            disposition: "recommendation",
+            executionPosture: "continue",
+            idempotencyKey: "prepare-before-restart",
+          },
+        );
+
+        const restarted = makeHarness(harness.store);
+        const listed = yield* restarted.service.listArchitectureReviews(coordinatorScope, {
+          coordinatorThreadId: coordinatorId,
+          status: "answered",
+        });
+        const review = listed.reviews.find((record) => record.reviewId === prepared.reviewId);
+        assert.isDefined(review);
+        assert.strictEqual(review?.origin, "architect-advice");
+        assert.strictEqual(review?.status, "answered");
+        assert.strictEqual(review?.answerSummary, "Keep the guard enabled after restart.");
+        assert.deepStrictEqual(
+          [...harness.dispatched, ...restarted.dispatched].filter(
+            (command) =>
+              command["type"] === "thread.turn.start" && command["threadId"] === coordinatorId,
+          ),
+          [],
+        );
+      }),
+  );
+
+  it.effect("rejects secrets and non-Architect callers before preparing a publication", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const coordinatorScope = scopeFor(coordinatorId);
+      const created = yield* harness.service.architectCreateOrGet(coordinatorScope, {
+        coordinatorThreadId: coordinatorId,
+        taskEffort: "medium",
+        idempotencyKey: "create-prepare-guards",
+      });
+      const architectScope = scopeFor(created.architectThreadId, "architect");
+      const secret = `ghp_${"A".repeat(32)}`;
+      const unsafe = yield* runFailure(
+        harness.service.prepareCoordinatorPublication(architectScope, {
+          summary: `Do not publish ${secret}`,
+          disposition: "recommendation",
+          executionPosture: "continue",
+          idempotencyKey: "unsafe-preparation",
+        }),
+      );
+      const coordinator = yield* runFailure(
+        harness.service.prepareCoordinatorPublication(coordinatorScope, {
+          summary: "Coordinator cannot prepare advice.",
+          disposition: "recommendation",
+          executionPosture: "continue",
+          idempotencyKey: "coordinator-preparation",
+        }),
+      );
+      const executor = yield* runFailure(
+        harness.service.prepareCoordinatorPublication(scopeFor(ThreadId.make("executor-thread")), {
+          summary: "Executor cannot prepare advice.",
+          disposition: "recommendation",
+          executionPosture: "continue",
+          idempotencyKey: "executor-preparation",
+        }),
+      );
+      assert.strictEqual(unsafe, "author_text_rejected");
+      assert.strictEqual(coordinator, "architect_denied");
+      assert.strictEqual(executor, "architect_denied");
+      const reviews = yield* harness.store.listReviewsByCoordinator({
+        coordinatorThreadId: coordinatorId,
+      });
+      assert.deepStrictEqual(reviews, []);
     }),
   );
 

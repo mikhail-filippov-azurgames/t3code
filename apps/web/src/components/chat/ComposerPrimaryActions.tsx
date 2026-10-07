@@ -1,5 +1,6 @@
 import { memo, type PointerEventHandler } from "react";
-import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon, UploadIcon } from "lucide-react";
+import type { OrchestratorMcpPublishableRecord } from "@t3tools/contracts";
 import { useEnvironmentIdentificationMode } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { StageBackdropButtonArt, useSidebarStageBackdropVariant } from "../SidebarStageBackdrop";
@@ -28,11 +29,17 @@ interface ComposerPrimaryActionsProps {
   isEnvironmentUnavailable: boolean;
   isPreparingWorktree: boolean;
   hasSendableContent: boolean;
+  publishable?: ReadonlyArray<OrchestratorMcpPublishableRecord>;
+  publishingReviewId?: string | null;
+  publishError?: string | null;
+  onPublish?: (record: OrchestratorMcpPublishableRecord) => void | Promise<void>;
   preserveComposerFocusOnPointerDown?: boolean;
   onPreviousPendingQuestion: () => void;
   onInterrupt: () => void;
   onImplementPlanInNewThread: () => void;
 }
+
+const EMPTY_PUBLISHABLE: ReadonlyArray<OrchestratorMcpPublishableRecord> = [];
 
 const formatPendingPrimaryActionLabel = (input: {
   compact: boolean;
@@ -68,6 +75,10 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   isEnvironmentUnavailable,
   isPreparingWorktree,
   hasSendableContent,
+  publishable = EMPTY_PUBLISHABLE,
+  publishingReviewId = null,
+  publishError = null,
+  onPublish,
   preserveComposerFocusOnPointerDown = false,
   onPreviousPendingQuestion,
   onInterrupt,
@@ -81,6 +92,79 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const stageBackdropVariant = useSidebarStageBackdropVariant(
     environmentIdentificationMode === "artwork",
   );
+  const renderPublishMenu = () => {
+    if (publishable.length === 0 || onPublish === undefined) return null;
+    return (
+      <Menu>
+        <MenuTrigger
+          render={
+            <Button
+              type="button"
+              size={compact ? "icon-sm" : "sm"}
+              variant="outline"
+              className={cn("rounded-full", compact ? "size-8 px-0" : "px-3")}
+              aria-label="Опубликовать координатору"
+              title="Опубликовать координатору"
+              {...pointerFocusProps}
+            />
+          }
+        >
+          {compact ? (
+            <>
+              <UploadIcon className="size-3.5" aria-hidden="true" />
+              <span className="sr-only">Опубликовать координатору</span>
+            </>
+          ) : (
+            "Опубликовать координатору"
+          )}
+        </MenuTrigger>
+        <MenuPopup
+          align="end"
+          side="top"
+          className="w-80 max-w-[calc(100vw-2rem)]"
+          {...composerFloatingLayerProps}
+        >
+          <div className="grid gap-2 p-1">
+            <p className="px-2 text-xs font-medium text-muted-foreground">
+              Публикации для координатора
+            </p>
+            {publishable.map((record) => (
+              <div
+                key={record.reviewId}
+                className="grid gap-2 rounded-md border border-border/60 bg-background/70 p-2"
+                data-testid={`architect-publication-${record.reviewId}`}
+              >
+                {record.question ? (
+                  <p className="whitespace-pre-wrap break-words text-xs text-muted-foreground">
+                    Запрос координатора: {record.question}
+                  </p>
+                ) : null}
+                <p className="whitespace-pre-wrap break-words text-sm">{record.summary}</p>
+                <p className="text-xs text-muted-foreground">
+                  {record.disposition.replaceAll("-", " ")}
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="justify-self-end"
+                  disabled={publishingReviewId !== null}
+                  onClick={() => void onPublish(record)}
+                  aria-label={`Опубликовать ${record.summary}`}
+                >
+                  {publishingReviewId === record.reviewId ? "Публикация…" : "Опубликовать"}
+                </Button>
+              </div>
+            ))}
+            {publishError ? (
+              <p role="alert" className="px-2 text-xs text-destructive-foreground">
+                {publishError}
+              </p>
+            ) : null}
+          </div>
+        </MenuPopup>
+      </Menu>
+    );
+  };
 
   const renderStopGenerationButton = (insidePendingAction: boolean) => (
     <button
@@ -106,6 +190,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (pendingAction) {
     return (
       <div className={cn("flex items-center justify-end", compact ? "gap-1.5" : "gap-2")}>
+        {renderPublishMenu()}
         {isRunning ? renderStopGenerationButton(true) : null}
         {pendingAction.questionIndex > 0 ? (
           compact ? (
@@ -161,23 +246,27 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   if (showPlanFollowUpPrompt) {
     if (promptHasText) {
       return (
-        <Button
-          type="submit"
-          size="sm"
-          className={cn(
-            "rounded-full bg-message-action text-message-action-foreground hover:bg-message-action-hover",
-            compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8",
-          )}
-          {...pointerFocusProps}
-          disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
-        >
-          {isConnecting || isSendBusy ? "Sending..." : "Refine"}
-        </Button>
+        <div className="flex items-center justify-end gap-2">
+          {renderPublishMenu()}
+          <Button
+            type="submit"
+            size="sm"
+            className={cn(
+              "rounded-full bg-message-action text-message-action-foreground hover:bg-message-action-hover",
+              compact ? "h-9 px-3 sm:h-8" : "h-9 px-4 sm:h-8",
+            )}
+            {...pointerFocusProps}
+            disabled={isSendBusy || isSendDisabled || isConnecting || isEnvironmentUnavailable}
+          >
+            {isConnecting || isSendBusy ? "Sending..." : "Refine"}
+          </Button>
+        </div>
       );
     }
 
     return (
       <div data-chat-composer-implement-actions="true" className="flex items-center justify-end">
+        {renderPublishMenu()}
         <Button
           type="submit"
           size="sm"
@@ -270,13 +359,19 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   );
 
   if (!isRunning) {
-    return sendButton;
+    return (
+      <div className="flex items-center justify-end gap-2">
+        {renderPublishMenu()}
+        {sendButton}
+      </div>
+    );
   }
 
   // While a turn runs, a sendable draft queues for the next tool boundary, so
   // the send button stays next to Stop on every viewport.
   return (
     <>
+      {renderPublishMenu()}
       {renderStopGenerationButton(false)}
       {hasSendableContent ? sendButton : null}
     </>

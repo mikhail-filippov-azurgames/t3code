@@ -27,11 +27,14 @@ import type {
   ProviderInteractionMode,
   ResolvedKeybindingsConfig,
   RuntimeMode,
+  OrchestratorMcpPublishableRecord,
   ScopedThreadRef,
   ServerProvider,
   ThreadId,
   SnapShotSource,
 } from "@t3tools/contracts";
+import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   ProviderDriverKind,
   ProviderInstanceId,
@@ -56,6 +59,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useEffectEvent,
   useImperativeHandle,
   useLayoutEffect,
   useMemo,
@@ -971,6 +975,11 @@ import { searchProviderSkills } from "../../providerSkillSearch";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "../../state/server";
+import { useThreadDetail } from "../../state/entities";
+import {
+  coordinatorArchitectEnvironment,
+  useArchitectParentKeys,
+} from "../../state/coordinatorArchitect";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 
 const WORKSPACE_SNAPSHOT_RETRY_COOLDOWN_MS = 10_000;
@@ -1183,6 +1192,10 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
   onCompactContext?: (() => void) | undefined;
   compactDisabled: boolean;
   compactDisabledReason: string | null;
+  publishable: ReadonlyArray<OrchestratorMcpPublishableRecord>;
+  publishingReviewId: string | null;
+  publishError: string | null;
+  onPublish: (record: OrchestratorMcpPublishableRecord) => void | Promise<void>;
 }) {
   return (
     <>
@@ -1209,6 +1222,10 @@ const ComposerFooterPrimaryActions = memo(function ComposerFooterPrimaryActions(
         isEnvironmentUnavailable={props.isEnvironmentUnavailable}
         isPreparingWorktree={props.isPreparingWorktree}
         hasSendableContent={props.hasSendableContent}
+        publishable={props.publishable}
+        publishingReviewId={props.publishingReviewId}
+        publishError={props.publishError}
+        onPublish={props.onPublish}
         preserveComposerFocusOnPointerDown={props.preserveComposerFocusOnPointerDown ?? false}
         onPreviousPendingQuestion={props.onPreviousPendingQuestion}
         onInterrupt={props.onInterrupt}
@@ -1534,6 +1551,74 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onExpandImage,
     onFileOpen,
   } = props;
+  const activeServerThreadRef =
+    routeKind === "server" && activeThreadId !== null ? routeThreadRef : null;
+  const architectParentKeys = useArchitectParentKeys();
+  const activeArchitectKey =
+    activeServerThreadRef === null ? null : scopedThreadKey(activeServerThreadRef);
+  const coordinatorKey =
+    activeArchitectKey === null ? undefined : architectParentKeys.get(activeArchitectKey);
+  const coordinatorRef =
+    coordinatorKey === undefined ? null : (parseScopedThreadKey(coordinatorKey) ?? null);
+  const activeArchitectThreadRef = coordinatorRef === null ? null : activeServerThreadRef;
+  const coordinatorEnvironmentId = coordinatorRef?.environmentId ?? null;
+  const architectSidebarQuery = useEnvironmentQuery(
+    coordinatorRef === null
+      ? null
+      : coordinatorArchitectEnvironment.sidebarSnapshot({
+          environmentId: coordinatorRef.environmentId,
+          input: { coordinatorThreadId: coordinatorRef.threadId },
+        }),
+  );
+  const activeArchitectDetail = useThreadDetail(activeArchitectThreadRef);
+  const architectSnapshotVersion =
+    coordinatorKey === undefined
+      ? ""
+      : `${activeArchitectKey ?? ""}:${coordinatorKey}:${activeArchitectDetail?.updatedAt ?? ""}:${activeArchitectDetail?.activities.length ?? 0}:${activeArchitectDetail?.activities.at(-1)?.id ?? ""}`;
+  const refreshArchitectSidebar = useEffectEvent(() => architectSidebarQuery.refresh());
+  const previousArchitectSnapshotVersion = useRef(architectSnapshotVersion);
+  useEffect(() => {
+    if (
+      previousArchitectSnapshotVersion.current !== architectSnapshotVersion &&
+      architectSnapshotVersion !== ""
+    ) {
+      refreshArchitectSidebar();
+    }
+    previousArchitectSnapshotVersion.current = architectSnapshotVersion;
+  }, [architectSnapshotVersion]);
+  const publishArchitectPublication = useAtomCommand(
+    coordinatorArchitectEnvironment.publishArchitectPublication,
+    { reportFailure: false },
+  );
+  const [publishingReviewId, setPublishingReviewId] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  const [publishedReviewIds, setPublishedReviewIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const publishable = (architectSidebarQuery.data?.publishable ?? []).filter(
+    (record) => !publishedReviewIds.has(record.reviewId),
+  );
+  const onPublishArchitectPublication = async (record: OrchestratorMcpPublishableRecord) => {
+    if (coordinatorEnvironmentId === null || publishingReviewId !== null) return;
+    setPublishingReviewId(record.reviewId);
+    setPublishError(null);
+    const result = await publishArchitectPublication({
+      environmentId: coordinatorEnvironmentId,
+      input: { reviewId: record.reviewId, idempotencyKey: randomUUID() },
+    });
+    setPublishingReviewId(null);
+    if (result._tag === "Failure") {
+      const error = squashAtomCommandFailure(result);
+      setPublishError(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    setPublishedReviewIds((current) => {
+      const next = new Set(current);
+      next.add(record.reviewId);
+      return next;
+    });
+    architectSidebarQuery.refresh();
+  };
   const activeTasksProgress = props.threadSyncPhase === null ? props.activeTasksProgress : null;
   const activeTaskSteps = props.threadSyncPhase === null ? props.activeTaskSteps : null;
   // ------------------------------------------------------------------
@@ -6877,6 +6962,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     }
                     isPreparingWorktree={isPreparingWorktree}
                     hasSendableContent={composerSendState.hasSendableContent}
+                    publishable={publishable}
+                    publishingReviewId={publishingReviewId}
+                    publishError={publishError}
+                    onPublish={onPublishArchitectPublication}
                     preserveComposerFocusOnPointerDown={isMobileViewport || isComposerResting}
                     onPreviousPendingQuestion={onPreviousActivePendingUserInputQuestion}
                     onInterrupt={handleInterruptPrimaryAction}

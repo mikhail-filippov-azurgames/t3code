@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import {
@@ -60,6 +61,7 @@ export const ORCHESTRATOR_MCP_TOOL_NAMES = {
   architectureReviewRequest: "architecture_review_request",
   architectureReviewAnswer: "architecture_review_answer",
   architectureReviewCancel: "architecture_review_cancel",
+  prepareCoordinatorPublication: "prepare_coordinator_publication",
   publishToCoordinator: "publish_to_coordinator",
   getCoordinatorBinding: "get_coordinator_binding",
   listArchitectureReviews: "list_architecture_reviews",
@@ -567,6 +569,7 @@ export const OrchestratorMcpFailureCode = Schema.Literals([
   "binding_conflict",
   "review_not_found",
   "review_state_conflict",
+  "human_publish_required",
   "feature_disabled",
 ]);
 export type OrchestratorMcpFailureCode = typeof OrchestratorMcpFailureCode.Type;
@@ -766,6 +769,15 @@ export const ArchitectureReviewStatus = Schema.Literals([
 ]);
 export type ArchitectureReviewStatus = typeof ArchitectureReviewStatus.Type;
 
+export const ArchitectureReviewOrigin = Schema.Literals([
+  "coordinator-request",
+  "architect-advice",
+]);
+export type ArchitectureReviewOrigin = typeof ArchitectureReviewOrigin.Type;
+
+export const ArchitectureReviewPublishedBy = Schema.Literals(["architect", "coordinator", "human"]);
+export type ArchitectureReviewPublishedBy = typeof ArchitectureReviewPublishedBy.Type;
+
 const BoundedReviewQuestion = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
 const BoundedAnswerSummary = Schema.String.check(Schema.isMaxLength(2_000));
 const BoundedDetachReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
@@ -833,6 +845,12 @@ export const ArchitectureReviewRecord = Schema.Struct({
   createdAt: IsoDateTime,
   answeredAt: Schema.NullOr(IsoDateTime),
   publishedAt: Schema.NullOr(IsoDateTime),
+  origin: ArchitectureReviewOrigin.pipe(
+    Schema.withDecodingDefaultTypeKey(Effect.succeed("coordinator-request" as const)),
+  ),
+  publishedBy: Schema.NullOr(ArchitectureReviewPublishedBy).pipe(
+    Schema.withDecodingDefaultTypeKey(Effect.succeed(null)),
+  ),
   // Additive observability: `answeredAt` proves an answer was recorded,
   // `publishDeliveredAt` proves the coordinator wake actually fired. A
   // recorded answer without delivery (failed or refused publish) is
@@ -922,6 +940,23 @@ export const OrchestratorMcpReviewAnswerResult = Schema.Struct({
 });
 export type OrchestratorMcpReviewAnswerResult = typeof OrchestratorMcpReviewAnswerResult.Type;
 
+export const OrchestratorMcpPrepareCoordinatorPublicationInput = Schema.Struct({
+  summary: BoundedAnswerSummary,
+  disposition: ArchitectureReviewAnswerDisposition,
+  oclRefs: Schema.optional(boundedArray(OrchestratorMcpOclDocumentRef, 32)),
+  executionPosture: ArchitectureReviewExecutionPosture,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type OrchestratorMcpPrepareCoordinatorPublicationInput =
+  typeof OrchestratorMcpPrepareCoordinatorPublicationInput.Type;
+
+export const OrchestratorMcpPrepareCoordinatorPublicationResult = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  status: Schema.Literal("answered"),
+});
+export type OrchestratorMcpPrepareCoordinatorPublicationResult =
+  typeof OrchestratorMcpPrepareCoordinatorPublicationResult.Type;
+
 export const OrchestratorMcpReviewCancelInput = Schema.Struct({
   reviewId: TrimmedNonEmptyString,
   reason: BoundedDetachReason,
@@ -949,6 +984,18 @@ export const OrchestratorMcpPublishToCoordinatorResult = Schema.Struct({
 export type OrchestratorMcpPublishToCoordinatorResult =
   typeof OrchestratorMcpPublishToCoordinatorResult.Type;
 
+export const OrchestrationPublishArchitectPublicationInput = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type OrchestrationPublishArchitectPublicationInput =
+  typeof OrchestrationPublishArchitectPublicationInput.Type;
+
+export const OrchestrationPublishArchitectPublicationResult =
+  OrchestratorMcpPublishToCoordinatorResult;
+export type OrchestrationPublishArchitectPublicationResult =
+  typeof OrchestrationPublishArchitectPublicationResult.Type;
+
 export const OrchestratorMcpGetCoordinatorBindingInput = Schema.Struct({
   coordinatorThreadId: ThreadId,
 });
@@ -974,11 +1021,24 @@ export const OrchestratorMcpListArchitectureReviewsResult = Schema.Struct({
 export type OrchestratorMcpListArchitectureReviewsResult =
   typeof OrchestratorMcpListArchitectureReviewsResult.Type;
 
+export const OrchestratorMcpPublishableRecord = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  origin: ArchitectureReviewOrigin,
+  summary: BoundedAnswerSummary,
+  disposition: ArchitectureReviewAnswerDisposition,
+  refs: ArchitectureReviewRefs,
+  question: Schema.optional(BoundedReviewQuestion),
+});
+export type OrchestratorMcpPublishableRecord = typeof OrchestratorMcpPublishableRecord.Type;
+
 /** Read model for the human sidebar pin. It is a unary snapshot; thread
  * activity updates continue to arrive through the existing subscribeThread. */
 export const OrchestratorMcpCoordinatorArchitectSidebarSnapshot = Schema.Struct({
   binding: Schema.NullOr(CoordinatorArchitectBinding),
   reviews: boundedArray(ArchitectureReviewRecord, 100),
+  publishable: boundedArray(OrchestratorMcpPublishableRecord, 100).pipe(
+    Schema.withDecodingDefaultTypeKey(Effect.succeed([])),
+  ),
 });
 export type OrchestratorMcpCoordinatorArchitectSidebarSnapshot =
   typeof OrchestratorMcpCoordinatorArchitectSidebarSnapshot.Type;

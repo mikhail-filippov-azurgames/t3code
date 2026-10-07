@@ -35,6 +35,9 @@ describe("RPC authorization scopes", () => {
     expect(
       requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.listDelegatedTaskSummaryHistory),
     ).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_WS_METHODS.publishArchitectPublication)).toBe(
+      AuthOrchestrationOperateScope,
+    );
   });
 
   it("allows relay status reads without granting relay installation access", () => {

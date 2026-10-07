@@ -96,6 +96,8 @@ import {
   OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
   OrchestratorMcpFailure,
   OrchestratorMcpGetCoordinatorBindingInput,
+  OrchestrationPublishArchitectPublicationInput,
+  OrchestrationPublishArchitectPublicationResult,
 } from "./orchestratorMcp.ts";
 import {
   ClientOrchestrationCommand,
@@ -1420,6 +1422,15 @@ const WsOrchestrationGetCoordinatorArchitectSidebarRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationPublishArchitectPublicationRpc = Rpc.make(
+  ORCHESTRATION_WS_METHODS.publishArchitectPublication,
+  {
+    payload: OrchestrationPublishArchitectPublicationInput,
+    success: OrchestrationPublishArchitectPublicationResult,
+    error: Schema.Union([OrchestratorMcpFailure, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationSubscribeShellRpc = Rpc.make(ORCHESTRATION_WS_METHODS.subscribeShell, {
   payload: OrchestrationRpcSchemas.subscribeShell.input,
   success: OrchestrationRpcSchemas.subscribeShell.output,
@@ -1761,6 +1772,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationListDelegatedTaskSummaryHistoryRpc,
   WsOrchestrationGetArchivedShellSnapshotRpc,
   WsOrchestrationGetCoordinatorArchitectSidebarRpc,
+  WsOrchestrationPublishArchitectPublicationRpc,
   WsOrchestrationSubscribeShellRpc,
   WsOrchestrationSubscribeThreadRpc,
 );

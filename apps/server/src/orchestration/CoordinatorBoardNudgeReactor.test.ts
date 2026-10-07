@@ -225,6 +225,8 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       createdAt: NOW,
       answeredAt: null,
       publishedAt: null,
+      origin: "coordinator-request",
+      publishedBy: null,
       publishDeliveredAt: null,
       lastPublishFailure: null,
     } satisfies ArchitectureReviewRecord;

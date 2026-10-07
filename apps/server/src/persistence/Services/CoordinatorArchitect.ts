@@ -3,9 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type {
   ArchitectureReviewAnswerDisposition,
+  ArchitectureReviewExecutionPosture,
   ArchitectureReviewRecord,
   ArchitectureReviewRequestRefs,
-  ArchitectureReviewRefs,
   ArchitectureReviewStatus,
   CoordinatorArchitectBinding,
   CoordinatorArchitectRoutingEvidence,
@@ -87,6 +87,21 @@ export interface ReviewPublishInput {
   readonly reviewId: string;
   readonly publishIdempotencyKey: string;
   readonly publishedAt: string;
+  readonly publishedBy: NonNullable<ArchitectureReviewRecord["publishedBy"]>;
+}
+
+export interface PreparedPublicationUpsertInput {
+  readonly reviewId: string;
+  readonly bindingId: string;
+  readonly coordinatorThreadId: string;
+  readonly architectThreadId: string;
+  readonly summary: string;
+  readonly disposition: ArchitectureReviewAnswerDisposition;
+  readonly oclRefs: ReadonlyArray<OrchestratorMcpOclDocumentRef>;
+  readonly executionPosture: ArchitectureReviewExecutionPosture;
+  readonly idempotencyKey: string;
+  readonly payloadFingerprint: string;
+  readonly preparedAt: string;
 }
 
 export interface ReviewPublishDeliveredInput {
@@ -192,6 +207,13 @@ export interface CoordinatorArchitectRepositoryShape {
     input: ReviewInsertInput,
   ) => Effect.Effect<
     { readonly review: ArchitectureReviewRecord; readonly created: boolean },
+    CoordinatorArchitectRepositoryError | CoordinatorArchitectIdempotencyConflict
+  >;
+  /** One unanswered human publication per binding; a new key replaces it, an exact key replays. */
+  readonly upsertPreparedPublication: (
+    input: PreparedPublicationUpsertInput,
+  ) => Effect.Effect<
+    ArchitectureReviewRecord,
     CoordinatorArchitectRepositoryError | CoordinatorArchitectIdempotencyConflict
   >;
   readonly getReviewById: (

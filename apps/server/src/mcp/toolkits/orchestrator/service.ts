@@ -49,6 +49,7 @@ import {
   OrchestratorMcpGetCoordinatorBindingResult,
   OrchestratorMcpListArchitectureReviewsResult,
   OrchestratorMcpPublishToCoordinatorResult,
+  OrchestratorMcpPrepareCoordinatorPublicationResult,
   OrchestratorMcpRequestedIdentity,
   OrchestratorMcpReviewAnswerResult,
   OrchestratorMcpReviewCancelResult,
@@ -68,6 +69,7 @@ import {
   ThreadId,
   type AgentRunOrigin,
   type ArchitectureReviewRecord,
+  type ArchitectureReviewPublishedBy,
   type CoordinatorArchitectBinding,
   type CoordinatorArchitectRoutingEvidence,
   type ModelSelection,
@@ -83,9 +85,12 @@ import {
   type OrchestratorMcpGetCoordinatorBindingInput,
   type OrchestratorMcpListArchitectureReviewsInput,
   type OrchestratorMcpPublishToCoordinatorInput,
+  type OrchestratorMcpPrepareCoordinatorPublicationInput,
   type OrchestratorMcpReviewAnswerInput,
   type OrchestratorMcpReviewCancelInput,
   type OrchestratorMcpReviewRequestInput,
+  type OrchestrationPublishArchitectPublicationInput,
+  type OrchestrationPublishArchitectPublicationResult,
   type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpFailureCode,
   type OrchestratorMcpHandoff,
@@ -428,10 +433,17 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpReviewCancelInput,
   ) => Effect.Effect<OrchestratorMcpReviewCancelResult, OrchestratorMcpFailure>;
+  readonly prepareCoordinatorPublication: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpPrepareCoordinatorPublicationInput,
+  ) => Effect.Effect<OrchestratorMcpPrepareCoordinatorPublicationResult, OrchestratorMcpFailure>;
   readonly publishToCoordinator: (
     scope: McpInvocationScope,
     input: OrchestratorMcpPublishToCoordinatorInput,
   ) => Effect.Effect<OrchestratorMcpPublishToCoordinatorResult, OrchestratorMcpFailure>;
+  readonly publishArchitectPublication: (
+    input: OrchestrationPublishArchitectPublicationInput,
+  ) => Effect.Effect<OrchestrationPublishArchitectPublicationResult, OrchestratorMcpFailure>;
   readonly getCoordinatorBinding: (
     scope: McpInvocationScope,
     input: OrchestratorMcpGetCoordinatorBindingInput,
@@ -2745,6 +2757,14 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       }
       const summary = review.answerSummary ?? "";
       const refs = review.refs;
+      const text =
+        review.publishedBy === "human"
+          ? `Published by the human via the Publish button\n${
+              review.origin === "coordinator-request"
+                ? `Coordinator question:\n${review.question}\n\n`
+                : ""
+            }Disposition: ${disposition}\nSummary: ${summary}\nStable references: ${reviewRefsJson(refs)}`
+          : `Architecture review published [${disposition}]:\n${summary}\nStable references: ${reviewRefsJson(refs)}`;
       // The delivered marker is written by the provider reactor only after
       // `sendTurn` is confirmed, so a failed send cannot leave a marker here.
       yield* dispatchWakeTurn({
@@ -2752,12 +2772,140 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         runOrigin: { _tag: "coordinator-publication-wake" },
         turnCommandId: publishWakeTurnCommandId(review.reviewId),
         messageId: publishWakeMessageId(review.reviewId),
-        text: `Architecture review published [${disposition}]:\n${summary}\nStable references: ${reviewRefsJson(refs)}`,
+        text,
         modelSelection: shell.modelSelection,
         runtimeMode: shell.runtimeMode,
         interactionMode: shell.interactionMode,
         createdAt: at,
       });
+    });
+
+  const recordPublishFailure = (
+    store: CoordinatorArchitectRepositoryShape,
+    reviewId: string,
+    attemptedAt: string,
+    error: unknown,
+  ) =>
+    store
+      .recordPublishFailure({
+        reviewId,
+        reason: publishFailureReasonToken(error),
+        message: (isOrchestratorMcpFailure(error) ? error.message : errorMessage(error)).slice(
+          0,
+          2_000,
+        ),
+        attemptedAt,
+      })
+      .pipe(Effect.mapError(mapStoreError("record publish failure")), Effect.ignore);
+
+  const refusePublish = (
+    store: CoordinatorArchitectRepositoryShape,
+    reviewId: string,
+    attemptedAt: string,
+    code: OrchestratorMcpFailureCode,
+    message: string,
+  ) =>
+    Effect.gen(function* () {
+      const error = failure(code, message);
+      yield* recordPublishFailure(store, reviewId, attemptedAt, error);
+      return yield* error;
+    });
+
+  const publishAnsweredReview = (
+    store: CoordinatorArchitectRepositoryShape,
+    review: ArchitectureReviewRecord,
+    binding: CoordinatorArchitectBinding,
+    input: {
+      readonly idempotencyKey: string;
+      readonly publishedBy: ArchitectureReviewPublishedBy;
+      readonly publishedAt: string;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const unsafeField =
+        rejectedAuthorTextField("question", review.question) ??
+        (review.answerSummary === null
+          ? null
+          : rejectedAuthorTextField("summary", review.answerSummary));
+      if (unsafeField !== null) {
+        return yield* refusePublish(
+          store,
+          review.reviewId,
+          input.publishedAt,
+          "author_text_rejected",
+          `The authored ${unsafeField} could not be confirmed secret-free. Remove sensitive values and try again.`,
+        );
+      }
+
+      const transition = yield* store
+        .publishReview({
+          reviewId: review.reviewId,
+          publishIdempotencyKey: input.idempotencyKey,
+          publishedAt: input.publishedAt,
+          publishedBy: input.publishedBy,
+        })
+        .pipe(Effect.mapError(mapStoreError("publish architecture review")));
+      if (transition._tag === "conflict") {
+        return yield* refusePublish(
+          store,
+          review.reviewId,
+          input.publishedAt,
+          "idempotency_conflict",
+          "This publish key was already used for this review.",
+        );
+      }
+      if (transition._tag === "state") {
+        return yield* refusePublish(
+          store,
+          review.reviewId,
+          input.publishedAt,
+          "review_state_conflict",
+          "Only answered reviews can be published.",
+        );
+      }
+      if (transition._tag === "unsafe_text") {
+        return yield* refusePublish(
+          store,
+          review.reviewId,
+          input.publishedAt,
+          "author_text_rejected",
+          "The stored review contains sensitive text and cannot be published. Remove sensitive values and try again.",
+        );
+      }
+
+      const stored =
+        (yield* store
+          .getReviewById(review.reviewId)
+          .pipe(Effect.mapError(mapStoreError("read architecture review")))) ?? review;
+      const deliver = Effect.gen(function* () {
+        if (transition._tag === "applied" || transition._tag === "replay") {
+          yield* appendPhase1Activity({
+            threadId: binding.coordinatorThreadId,
+            commandId: `arch:review-published:${review.reviewId}`,
+            activityId: `arch:review-published:${review.reviewId}`,
+            kind: REVIEW_PUBLISHED_ACTIVITY,
+            summary: "Architecture review published",
+            payload: {
+              reviewId: stored.reviewId,
+              disposition: stored.answerDisposition,
+              summary: stored.answerSummary,
+              refs: stored.refs,
+              publishedBy: stored.publishedBy,
+            },
+            createdAt: input.publishedAt,
+          });
+        }
+        yield* wakeCoordinatorForPublish(stored, binding, input.publishedAt);
+      }).pipe(
+        Effect.tapError((error) =>
+          recordPublishFailure(store, review.reviewId, input.publishedAt, error),
+        ),
+      );
+      yield* deliver;
+      return {
+        reviewId: review.reviewId,
+        status: "published",
+      } satisfies OrchestratorMcpPublishToCoordinatorResult;
     });
 
   // Creating a card is the one board write a non-orchestrator could otherwise
@@ -4685,78 +4833,95 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           status: "cancelled",
         } satisfies OrchestratorMcpReviewCancelResult;
       }),
+    prepareCoordinatorPublication: (scope, input) =>
+      Effect.gen(function* () {
+        yield* requireCapability(scope);
+        yield* requireSplitEnabled();
+        const store = yield* requireArchitectStore();
+        const binding = yield* store
+          .getActiveBindingByArchitect(scope.threadId)
+          .pipe(Effect.mapError(mapStoreError("read architect binding")));
+        if (binding === null) {
+          return yield* failure(
+            "architect_denied",
+            "Only an Architect with an active binding may prepare a coordinator publication.",
+          );
+        }
+        yield* loadSwitchParent(scope);
+        yield* ensureAuthorTextAllowed("summary", input.summary);
+        const oclRefs = input.oclRefs ?? [];
+        const preparedAt = yield* nowIso();
+        const review = yield* store
+          .upsertPreparedPublication({
+            reviewId: deterministicId(
+              "architecture-advice",
+              binding.bindingId,
+              input.idempotencyKey,
+            ),
+            bindingId: binding.bindingId,
+            coordinatorThreadId: binding.coordinatorThreadId,
+            architectThreadId: binding.architectThreadId,
+            summary: input.summary,
+            disposition: input.disposition,
+            oclRefs,
+            executionPosture: input.executionPosture,
+            idempotencyKey: input.idempotencyKey,
+            payloadFingerprint: hash({
+              summary: input.summary,
+              disposition: input.disposition,
+              oclRefs,
+              executionPosture: input.executionPosture,
+            }),
+            preparedAt,
+          })
+          .pipe(Effect.mapError(mapStoreError("prepare coordinator publication")));
+        return {
+          reviewId: review.reviewId,
+          status: "answered",
+        } satisfies OrchestratorMcpPrepareCoordinatorPublicationResult;
+      }),
     publishToCoordinator: (scope, input) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
         const at = yield* nowIso();
-        // Durable refusal record: any publish failure for a known review is
-        // written to that review with its stable reason token (the
-        // `[reason=...]` token for parent_not_active refusals such as
-        // `parent_scope_drift`, otherwise the failure code), so the
-        // coordinator can see the cause in `list_architecture_reviews`
-        // without reading logs. Status and idempotency semantics are
-        // untouched: recording never changes them and never turns a failed
-        // delivery into a success.
-        const recordPublishFailure = (reviewId: string, error: unknown) => {
-          const reason = publishFailureReasonToken(error);
-          const message = isOrchestratorMcpFailure(error) ? error.message : errorMessage(error);
-          return store
-            .recordPublishFailure({
-              reviewId,
-              reason,
-              message: message.slice(0, 2_000),
-              attemptedAt: at,
-            })
-            .pipe(Effect.mapError(mapStoreError("record publish failure")), Effect.ignore);
-        };
-        const refuse = function* (
-          reviewId: string,
-          code: OrchestratorMcpFailureCode,
-          message: string,
-        ) {
-          const error = failure(code, message);
-          yield* recordPublishFailure(reviewId, error);
-          return yield* error;
-        };
         const review = yield* store
           .getReviewById(input.reviewId)
           .pipe(Effect.mapError(mapStoreError("read architecture review")));
         if (review === null) {
           return yield* failure("review_not_found", "The architecture review was not found.");
         }
-        // Sole architect-originated coordinator wake: the caller is the bound
-        // architect (own review) or the coordinator/human on it.
         const caller = yield* resolveControlPlaneCaller(scope);
         const isOwnerArchitect =
           caller.kind === "architect" && caller.binding.bindingId === review.bindingId;
         const isCoordinator = scope.threadId === review.coordinatorThreadId;
         if (!isOwnerArchitect && !isCoordinator) {
-          return yield* refuse(
+          return yield* refusePublish(
+            store,
             review.reviewId,
+            at,
             caller.kind === "architect" ? "architect_denied" : "capability_denied",
             "Only the bound architect or the coordinator may publish this review.",
           );
         }
-        const unsafeField =
-          rejectedAuthorTextField("question", review.question) ??
-          (review.answerSummary === null
-            ? null
-            : rejectedAuthorTextField("summary", review.answerSummary));
-        if (unsafeField !== null) {
-          return yield* refuse(
+        if (review.origin === "architect-advice") {
+          return yield* refusePublish(
+            store,
             review.reviewId,
-            "author_text_rejected",
-            `The authored ${unsafeField} could not be confirmed secret-free. Remove sensitive values and try again.`,
+            at,
+            "human_publish_required",
+            "Prepared Architect publications can only be published by the human Publish button.",
           );
         }
         const binding = yield* store
           .getBindingById(review.bindingId)
           .pipe(Effect.mapError(mapStoreError("read architect binding")));
         if (binding === null) {
-          return yield* refuse(
+          return yield* refusePublish(
+            store,
             review.reviewId,
+            at,
             "binding_not_found",
             "The review binding no longer exists.",
           );
@@ -4764,78 +4929,53 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         // Validate the credential's frozen scope before changing review state;
         // a drift refusal is recorded below and remains a failed publish.
         yield* loadSwitchParent(scope).pipe(
-          Effect.tapError((error) => recordPublishFailure(review.reviewId, error)),
+          Effect.tapError((error) => recordPublishFailure(store, review.reviewId, at, error)),
         );
-        const transition = yield* store
-          .publishReview({
-            reviewId: review.reviewId,
-            publishIdempotencyKey: input.idempotencyKey,
-            publishedAt: at,
-          })
-          .pipe(Effect.mapError(mapStoreError("publish architecture review")));
-        if (transition._tag === "conflict") {
-          return yield* refuse(
+        return yield* publishAnsweredReview(store, review, binding, {
+          idempotencyKey: input.idempotencyKey,
+          publishedBy: isOwnerArchitect ? "architect" : "coordinator",
+          publishedAt: at,
+        });
+      }),
+    publishArchitectPublication: (input) =>
+      Effect.gen(function* () {
+        yield* requireSplitEnabled();
+        const store = yield* requireArchitectStore();
+        const at = yield* nowIso();
+        const review = yield* store
+          .getReviewById(input.reviewId)
+          .pipe(Effect.mapError(mapStoreError("read architecture review")));
+        if (review === null) {
+          return yield* failure("review_not_found", "The architecture review was not found.");
+        }
+        const binding = yield* store
+          .getActiveBindingByCoordinator(review.coordinatorThreadId)
+          .pipe(Effect.mapError(mapStoreError("read architect binding")));
+        if (binding === null || binding.bindingId !== review.bindingId) {
+          return yield* refusePublish(
+            store,
             review.reviewId,
-            "idempotency_conflict",
-            "This publish key was already used for this review.",
+            at,
+            "binding_not_found",
+            "The review no longer belongs to the active Architect binding.",
           );
         }
-        if (transition._tag === "state") {
-          return yield* refuse(
+        const sameKeyReplay =
+          review.status === "published" && review.publishIdempotencyKey === input.idempotencyKey;
+        if (review.status !== "answered" && !sameKeyReplay) {
+          return yield* refusePublish(
+            store,
             review.reviewId,
+            at,
             "review_state_conflict",
             "Only answered reviews can be published.",
           );
         }
-        if (transition._tag === "unsafe_text") {
-          return yield* refuse(
-            review.reviewId,
-            "author_text_rejected",
-            "The stored review contains sensitive text and cannot be published. Remove sensitive values and try again.",
-          );
-        }
-        const stored =
-          transition._tag === "replay"
-            ? ((yield* store
-                .getReviewById(review.reviewId)
-                .pipe(Effect.mapError(mapStoreError("read architecture review")))) ?? review)
-            : review;
-        // Publish content and wake delivery. A failure here must not become
-        // a silent success: the wake error is recorded on the review and the
-        // call still fails, so `published` without `publishDeliveredAt` plus
-        // `lastPublishFailure` tells the coordinator delivery never fired.
-        const deliver = Effect.gen(function* () {
-          if (transition._tag === "applied" || transition._tag === "replay") {
-            // The published content carries the STORED disposition with summary
-            // and stable links — never a caller-supplied replacement.
-            yield* appendPhase1Activity({
-              threadId: binding.coordinatorThreadId,
-              commandId: `arch:review-published:${review.reviewId}`,
-              activityId: `arch:review-published:${review.reviewId}`,
-              kind: REVIEW_PUBLISHED_ACTIVITY,
-              summary: "Architecture review published",
-              payload: {
-                reviewId: stored.reviewId,
-                disposition: stored.answerDisposition,
-                summary: stored.answerSummary,
-                refs: stored.refs,
-              },
-              createdAt: at,
-            });
-          }
-          // Marker-gated: replay is a no-op once the wake marker exists, and a
-          // crash between wake dispatch and marker reuses the deterministic
-          // wake ids (receipt dedup → exactly one coordinator turn).
-          yield* wakeCoordinatorForPublish(stored, binding, at);
-        }).pipe(Effect.tapError((error) => recordPublishFailure(review.reviewId, error)));
-        yield* deliver;
-        // This call proves the wake command was ACCEPTED, not delivered. The
-        // review row's `publishDeliveredAt` is written post-send by the
-        // provider reactor, so a failed send can never look delivered here.
-        return {
-          reviewId: review.reviewId,
-          status: "published",
-        } satisfies OrchestratorMcpPublishToCoordinatorResult;
+        return yield* publishAnsweredReview(store, review, binding, {
+          idempotencyKey: input.idempotencyKey,
+          publishedBy: "human",
+          publishedAt: at,
+        });
       }),
     getCoordinatorBinding: (scope, input) =>
       Effect.gen(function* () {

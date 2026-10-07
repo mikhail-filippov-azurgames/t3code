@@ -204,12 +204,14 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
         reviewId: "review-1",
         publishIdempotencyKey: "publish-1",
         publishedAt: at,
+        publishedBy: "architect",
       });
       assert.deepEqual(cancelThenPublish, { _tag: "applied" });
       const publishReplay = yield* repository.publishReview({
         reviewId: "review-1",
         publishIdempotencyKey: "publish-1",
         publishedAt: at,
+        publishedBy: "architect",
       });
       assert.deepEqual(publishReplay, { _tag: "replay" });
       // Publish-then-cancel is rejected: published is terminal.
@@ -222,6 +224,80 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
         cancelledBy: "coordinator-1",
       });
       assert.deepEqual(lateCancel, { _tag: "state" });
+    }),
+  );
+
+  it.effect("replaces one prepared Architect publication per binding transactionally", () =>
+    Effect.gen(function* () {
+      const repository = yield* CoordinatorArchitectRepository;
+      yield* repository.createOrGetBinding(
+        bindingInput({
+          bindingId: "binding-prepared",
+          coordinatorThreadId: "coordinator-prepared",
+          architectThreadId: "arch:coordinator-prepared",
+          createIdempotencyKey: "create-prepared",
+          createRequestFingerprint: "prepared-fp",
+        }),
+      );
+      const first = yield* repository.upsertPreparedPublication({
+        reviewId: "advice-first",
+        bindingId: "binding-prepared",
+        coordinatorThreadId: "coordinator-prepared",
+        architectThreadId: "arch:coordinator-prepared",
+        summary: "Use a short lived cache.",
+        disposition: "recommendation",
+        oclRefs: [],
+        executionPosture: "continue",
+        idempotencyKey: "prepare-first",
+        payloadFingerprint: "prepare-fp-1",
+        preparedAt: at,
+      });
+      assert.strictEqual(first.origin, "architect-advice");
+      assert.strictEqual(first.status, "answered");
+      assert.strictEqual(first.answerSummary, "Use a short lived cache.");
+
+      const replay = yield* repository.upsertPreparedPublication({
+        reviewId: "advice-first-retry",
+        bindingId: "binding-prepared",
+        coordinatorThreadId: "coordinator-prepared",
+        architectThreadId: "arch:coordinator-prepared",
+        summary: "Use a short lived cache.",
+        disposition: "recommendation",
+        oclRefs: [],
+        executionPosture: "continue",
+        idempotencyKey: "prepare-first",
+        payloadFingerprint: "prepare-fp-1",
+        preparedAt: at,
+      });
+      assert.strictEqual(replay.reviewId, first.reviewId);
+      assert.strictEqual(replay.answerSummary, first.answerSummary);
+
+      const replacement = yield* repository.upsertPreparedPublication({
+        reviewId: "advice-second",
+        bindingId: "binding-prepared",
+        coordinatorThreadId: "coordinator-prepared",
+        architectThreadId: "arch:coordinator-prepared",
+        summary: "Keep the cache behind a feature flag.",
+        disposition: "needs-human-decision",
+        oclRefs: ["oc://doc/123e4567-e89b-42d3-a456-426614174009"],
+        executionPosture: "pause-branch",
+        idempotencyKey: "prepare-second",
+        payloadFingerprint: "prepare-fp-2",
+        preparedAt: at,
+      });
+      assert.strictEqual(replacement.reviewId, first.reviewId);
+      assert.strictEqual(replacement.answerSummary, "Keep the cache behind a feature flag.");
+      assert.deepEqual(replacement.refs.architectOclRefs, [
+        "oc://doc/123e4567-e89b-42d3-a456-426614174009",
+      ]);
+      assert.strictEqual(replacement.publishedBy, null);
+
+      const listed = yield* repository.listReviewsByCoordinator({
+        coordinatorThreadId: "coordinator-prepared",
+        status: "answered",
+      });
+      assert.strictEqual(listed.length, 1);
+      assert.strictEqual(listed[0]?.reviewId, first.reviewId);
     }),
   );
 
@@ -282,6 +358,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
         reviewId: "review-delivery",
         publishIdempotencyKey: "publish-delivery",
         publishedAt: at,
+        publishedBy: "architect",
       });
       yield* repository.markPublishDelivered({
         reviewId: "review-delivery",
@@ -344,6 +421,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
         reviewId: "review-2",
         publishIdempotencyKey: "publish-1",
         publishedAt: at,
+        publishedBy: "architect",
       });
       assert.deepEqual(latePublish, { _tag: "state" });
       const stored = yield* repository.getReviewById("review-2");
@@ -436,6 +514,7 @@ repositoryLayer("CoordinatorArchitectRepository", (it) => {
         reviewId: "review-storage-safe",
         publishIdempotencyKey: "publish-storage-legacy",
         publishedAt: at,
+        publishedBy: "architect",
       });
       assert.deepEqual(publish, { _tag: "unsafe_text" });
       const stored = yield* repository.getReviewById("review-storage-safe");

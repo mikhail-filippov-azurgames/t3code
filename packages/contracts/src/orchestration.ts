@@ -41,6 +41,7 @@ export const ORCHESTRATION_WS_METHODS = {
   listDelegatedTaskSummaryHistory: "orchestration.listDelegatedTaskSummaryHistory",
   getArchivedShellSnapshot: "orchestration.getArchivedShellSnapshot",
   getCoordinatorArchitectSidebar: "orchestration.getCoordinatorArchitectSidebar",
+  publishArchitectPublication: "orchestration.publishArchitectPublication",
   subscribeShell: "orchestration.subscribeShell",
   subscribeThread: "orchestration.subscribeThread",
 } as const;

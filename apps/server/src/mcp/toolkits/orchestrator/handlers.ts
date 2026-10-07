@@ -89,6 +89,10 @@ const make = Effect.gen(function* () {
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.architectureReviewCancel(scope, input),
       ),
+    prepare_coordinator_publication: (input) =>
+      Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
+        service.prepareCoordinatorPublication(scope, input),
+      ),
     publish_to_coordinator: (input) =>
       Effect.flatMap(McpInvocationContext.McpInvocationContext, (scope) =>
         service.publishToCoordinator(scope, input),

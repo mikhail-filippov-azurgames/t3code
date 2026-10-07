@@ -1,5 +1,8 @@
 import { ORCHESTRATION_WS_METHODS } from "@t3tools/contracts";
-import { createEnvironmentRpcQueryAtomFamily } from "@t3tools/client-runtime/state/runtime";
+import {
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
+} from "@t3tools/client-runtime/state/runtime";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -12,6 +15,10 @@ export const coordinatorArchitectEnvironment = {
     tag: ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar,
     staleTimeMs: 2_000,
     idleTtlMs: 60_000,
+  }),
+  publishArchitectPublication: createEnvironmentRpcCommand(connectionAtomRuntime, {
+    label: "environment-command:orchestration:publish-architect-publication",
+    tag: ORCHESTRATION_WS_METHODS.publishArchitectPublication,
   }),
 };
 

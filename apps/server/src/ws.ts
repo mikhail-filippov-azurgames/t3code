@@ -207,6 +207,7 @@ import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { requiredScopeForRpcMethod } from "./auth/RpcAuthorization.ts";
 import { resolveOpenContextDoc } from "./opencontext/openContextDocs.ts";
+import { createOrchestratorMcpService } from "./mcp/toolkits/orchestrator/service.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
@@ -3009,6 +3010,41 @@ const makeWsRpcLayer = (
             ),
             { "rpc.aggregate": "orchestration" },
           ),
+        [ORCHESTRATION_WS_METHODS.publishArchitectPublication]: (input) =>
+          observeRpcEffect(
+            ORCHESTRATION_WS_METHODS.publishArchitectPublication,
+            Effect.gen(function* () {
+              const fileSystem = yield* FileSystem.FileSystem;
+              const path = yield* Path.Path;
+              const service = createOrchestratorMcpService({
+                dispatch: dispatchFromClient,
+                subscribeDomainEvents: orchestrationEngine.subscribeDomainEvents,
+                getThreadShellById: projectionSnapshotQuery.getThreadShellById,
+                getProjectShellById: projectionSnapshotQuery.getProjectShellById,
+                getThreadDetailById: projectionSnapshotQuery.getThreadDetailById,
+                listTurnsByThreadId: projectionTurns.listByThreadId,
+                getProviders: providerRegistry.getProviders,
+                getSettings: serverSettings.getSettings.pipe(
+                  Effect.mapError(
+                    (error) =>
+                      new OrchestratorMcpFailure({
+                        code: "orchestration_error",
+                        message: `Could not read server settings: ${error instanceof Error ? error.message : String(error)}`,
+                      }),
+                  ),
+                ),
+                loadPermissionEnvelope: (envelopeInput) =>
+                  loadDelegationPermissionEnvelope(envelopeInput).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                  ),
+                now: nowIso,
+                ...(coordinatorArchitect === undefined ? {} : { coordinatorArchitect }),
+              });
+              return yield* service.publishArchitectPublication(input);
+            }),
+            { "rpc.aggregate": "orchestration" },
+          ),
         [ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar]: (input) =>
           observeRpcEffect(
             ORCHESTRATION_WS_METHODS.getCoordinatorArchitectSidebar,
@@ -3023,7 +3059,7 @@ const makeWsRpcLayer = (
                 ),
               );
               if (!settings.coordinatorArchitectSplit || coordinatorArchitect === undefined) {
-                return { binding: null, reviews: [] };
+                return { binding: null, reviews: [], publishable: [] };
               }
               const thread = yield* projectionSnapshotQuery
                 .getThreadShellById(input.coordinatorThreadId)
@@ -3036,7 +3072,9 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
-              if (Option.isNone(thread)) return { binding: null, reviews: [] };
+              if (Option.isNone(thread)) {
+                return { binding: null, reviews: [], publishable: [] };
+              }
               const binding = yield* coordinatorArchitect
                 .getActiveBindingByCoordinator(input.coordinatorThreadId)
                 .pipe(
@@ -3048,7 +3086,7 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
-              if (binding === null) return { binding: null, reviews: [] };
+              if (binding === null) return { binding: null, reviews: [], publishable: [] };
               const reviews = yield* coordinatorArchitect
                 .listReviewsByCoordinator({ coordinatorThreadId: input.coordinatorThreadId })
                 .pipe(
@@ -3060,7 +3098,26 @@ const makeWsRpcLayer = (
                       }),
                   ),
                 );
-              return { binding, reviews };
+              const publishable = reviews.flatMap((review) =>
+                review.bindingId === binding.bindingId &&
+                review.status === "answered" &&
+                review.answerSummary !== null &&
+                review.answerDisposition !== null
+                  ? [
+                      {
+                        reviewId: review.reviewId,
+                        origin: review.origin,
+                        summary: review.answerSummary,
+                        disposition: review.answerDisposition,
+                        refs: review.refs,
+                        ...(review.origin === "coordinator-request"
+                          ? { question: review.question }
+                          : {}),
+                      },
+                    ]
+                  : [],
+              );
+              return { binding, reviews, publishable };
             }),
             { "rpc.aggregate": "orchestration" },
           ),

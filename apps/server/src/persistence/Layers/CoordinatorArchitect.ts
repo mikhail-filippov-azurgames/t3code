@@ -10,6 +10,8 @@ import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import {
   ArchitectureReviewAnswerDisposition,
   ArchitectureReviewExecutionPosture,
+  ArchitectureReviewOrigin,
+  ArchitectureReviewPublishedBy,
   ArchitectureReviewReason,
   ArchitectureReviewRefs,
   ArchitectureReviewStatus,
@@ -26,12 +28,12 @@ import {
   CoordinatorArchitectIdempotencyConflict,
   CoordinatorArchitectRepository,
   CoordinatorArchitectRepositoryError,
-  type BindingCloseInput,
   type BindingCreateInput,
   type BindingReplacementWinnerInput,
   type ReviewAnswerInput,
   type ReviewCancelInput,
   type ReviewInsertInput,
+  type PreparedPublicationUpsertInput,
   type ReviewPublishInput,
   type ReviewTransitionResult,
   type CoordinatorArchitectRepositoryShape,
@@ -109,6 +111,8 @@ const DbReviewRow = Schema.Struct({
   createdAt: Schema.String,
   answeredAt: Schema.NullOr(Schema.String),
   publishedAt: Schema.NullOr(Schema.String),
+  origin: ArchitectureReviewOrigin,
+  publishedBy: Schema.NullOr(ArchitectureReviewPublishedBy),
   publishDeliveredAt: Schema.NullOr(Schema.String),
   lastPublishFailureReason: Schema.NullOr(Schema.String),
   lastPublishFailureMessage: Schema.NullOr(Schema.String),
@@ -174,6 +178,8 @@ const toReview = (row: typeof DbReviewRow.Type): ArchitectureReviewRecord => ({
   createdAt: row.createdAt,
   answeredAt: row.answeredAt,
   publishedAt: row.publishedAt,
+  origin: row.origin,
+  publishedBy: row.publishedBy,
   publishDeliveredAt: row.publishDeliveredAt,
   lastPublishFailure:
     row.lastPublishFailureReason === null || row.lastPublishFailureAt === null
@@ -357,12 +363,44 @@ const make = Effect.gen(function* () {
         cancelled_at AS "cancelledAt",
         cancelled_by AS "cancelledBy", created_at AS "createdAt",
         answered_at AS "answeredAt", published_at AS "publishedAt",
+        origin, published_by AS "publishedBy",
         publish_delivered_at AS "publishDeliveredAt",
         last_publish_failure_reason AS "lastPublishFailureReason",
         last_publish_failure_message AS "lastPublishFailureMessage",
         last_publish_failure_at AS "lastPublishFailureAt"
       FROM architecture_review
       WHERE review_id = ${reviewId}
+    `,
+  });
+  const selectPreparedPublicationByBinding = SqlSchema.findOneOption({
+    Request: Schema.Struct({ bindingId: Schema.String }),
+    Result: DbReviewRow,
+    execute: ({ bindingId }) => sql`
+      SELECT
+        review_id AS "reviewId", binding_id AS "bindingId",
+        coordinator_thread_id AS "coordinatorThreadId", architect_thread_id AS "architectThreadId",
+        subject_child_thread_id AS "subjectChildThreadId", reason, question,
+        refs_json AS "refsJson", execution_posture AS "executionPosture",
+        answer_disposition AS "answerDisposition", status, answer_summary AS "answerSummary",
+        request_idempotency_key AS "requestIdempotencyKey",
+        request_payload_fingerprint AS "requestPayloadFingerprint",
+        answer_idempotency_key AS "answerIdempotencyKey",
+        answer_payload_fingerprint AS "answerPayloadFingerprint",
+        publish_idempotency_key AS "publishIdempotencyKey",
+        cancel_idempotency_key AS "cancelIdempotencyKey",
+        cancel_payload_fingerprint AS "cancelPayloadFingerprint",
+        cancelled_at AS "cancelledAt", cancelled_by AS "cancelledBy",
+        created_at AS "createdAt", answered_at AS "answeredAt",
+        published_at AS "publishedAt", origin, published_by AS "publishedBy",
+        publish_delivered_at AS "publishDeliveredAt",
+        last_publish_failure_reason AS "lastPublishFailureReason",
+        last_publish_failure_message AS "lastPublishFailureMessage",
+        last_publish_failure_at AS "lastPublishFailureAt"
+      FROM architecture_review
+      WHERE binding_id = ${bindingId}
+        AND origin = 'architect-advice' AND status = 'answered'
+      ORDER BY created_at DESC, review_id DESC
+      LIMIT 1
     `,
   });
   const selectReviewByRequestKey = SqlSchema.findOneOption({
@@ -388,6 +426,7 @@ const make = Effect.gen(function* () {
         cancelled_at AS "cancelledAt",
         cancelled_by AS "cancelledBy", created_at AS "createdAt",
         answered_at AS "answeredAt", published_at AS "publishedAt",
+        origin, published_by AS "publishedBy",
         publish_delivered_at AS "publishDeliveredAt",
         last_publish_failure_reason AS "lastPublishFailureReason",
         last_publish_failure_message AS "lastPublishFailureMessage",
@@ -420,6 +459,7 @@ const make = Effect.gen(function* () {
         cancelled_at AS "cancelledAt",
         cancelled_by AS "cancelledBy", created_at AS "createdAt",
         answered_at AS "answeredAt", published_at AS "publishedAt",
+        origin, published_by AS "publishedBy",
         publish_delivered_at AS "publishDeliveredAt",
         last_publish_failure_reason AS "lastPublishFailureReason",
         last_publish_failure_message AS "lastPublishFailureMessage",
@@ -727,6 +767,111 @@ const make = Effect.gen(function* () {
       }),
     );
 
+  const upsertPreparedPublication: CoordinatorArchitectRepositoryShape["upsertPreparedPublication"] =
+    (input: PreparedPublicationUpsertInput) => {
+      const textFailure = authorTextFailure("upsertPreparedPublication", "summary", input.summary);
+      if (textFailure !== null) return Effect.fail(textFailure);
+      return withImmediateTransactionRetry(
+        Effect.gen(function* () {
+          const priorByKey = yield* selectReviewByRequestKey({
+            coordinatorThreadId: input.coordinatorThreadId,
+            requestIdempotencyKey: input.idempotencyKey,
+          });
+          if (Option.isSome(priorByKey)) {
+            if (
+              priorByKey.value.origin !== "architect-advice" ||
+              priorByKey.value.bindingId !== input.bindingId ||
+              priorByKey.value.requestPayloadFingerprint !== input.payloadFingerprint
+            ) {
+              return yield* new CoordinatorArchitectIdempotencyConflict({
+                operation: "upsertPreparedPublication",
+                existingId: priorByKey.value.reviewId,
+              });
+            }
+            return toReview(priorByKey.value);
+          }
+
+          const existing = yield* selectPreparedPublicationByBinding({
+            bindingId: input.bindingId,
+          });
+          const refsJson = encodeRefs({ architectOclRefs: [...input.oclRefs] });
+          if (Option.isSome(existing)) {
+            yield* sql`
+            UPDATE architecture_review
+            SET coordinator_thread_id = ${input.coordinatorThreadId},
+              architect_thread_id = ${input.architectThreadId},
+              subject_child_thread_id = NULL,
+              reason = 'direct-advice',
+              question = ${input.summary},
+              refs_json = ${refsJson},
+              execution_posture = ${input.executionPosture},
+              answer_disposition = ${input.disposition},
+              status = 'answered',
+              answer_summary = ${input.summary},
+              request_idempotency_key = ${input.idempotencyKey},
+              request_payload_fingerprint = ${input.payloadFingerprint},
+              answer_idempotency_key = ${input.idempotencyKey},
+              answer_payload_fingerprint = ${input.payloadFingerprint},
+              publish_idempotency_key = NULL,
+              cancel_idempotency_key = NULL,
+              cancel_payload_fingerprint = NULL,
+              cancelled_at = NULL,
+              cancelled_by = NULL,
+              created_at = ${input.preparedAt},
+              answered_at = ${input.preparedAt},
+              published_at = NULL,
+              origin = 'architect-advice',
+              published_by = NULL,
+              publish_delivered_at = NULL,
+              last_publish_failure_reason = NULL,
+              last_publish_failure_message = NULL,
+              last_publish_failure_at = NULL
+            WHERE review_id = ${existing.value.reviewId}
+              AND origin = 'architect-advice' AND status = 'answered'
+          `;
+          } else {
+            yield* sql`
+            INSERT INTO architecture_review (
+              review_id, binding_id, coordinator_thread_id, architect_thread_id,
+              subject_child_thread_id, reason, question, refs_json, execution_posture,
+              answer_disposition, status, answer_summary,
+              request_idempotency_key, request_payload_fingerprint,
+              answer_idempotency_key, answer_payload_fingerprint,
+              publish_idempotency_key, cancel_idempotency_key, cancel_payload_fingerprint,
+              cancelled_at, cancelled_by, created_at, answered_at, published_at,
+              publish_delivered_at, last_publish_failure_reason,
+              last_publish_failure_message, last_publish_failure_at, origin, published_by
+            ) VALUES (
+              ${input.reviewId}, ${input.bindingId}, ${input.coordinatorThreadId},
+              ${input.architectThreadId}, NULL, 'direct-advice', ${input.summary}, ${refsJson},
+              ${input.executionPosture}, ${input.disposition}, 'answered', ${input.summary},
+              ${input.idempotencyKey}, ${input.payloadFingerprint},
+              ${input.idempotencyKey}, ${input.payloadFingerprint},
+              NULL, NULL, NULL, NULL, NULL, ${input.preparedAt}, ${input.preparedAt}, NULL,
+              NULL, NULL, NULL, NULL, 'architect-advice', NULL
+            )
+          `;
+          }
+
+          const stored = yield* selectReviewById({
+            reviewId: Option.isSome(existing) ? existing.value.reviewId : input.reviewId,
+          });
+          if (Option.isNone(stored)) {
+            return yield* Effect.die(
+              new Error("prepared architecture publication missing after upsert"),
+            );
+          }
+          return toReview(stored.value);
+        }),
+      ).pipe(
+        Effect.mapError((cause) =>
+          isIdempotencyConflict(cause)
+            ? cause
+            : toRepositoryError("upsertPreparedPublication")(cause),
+        ),
+      );
+    };
+
   const sameKeyReplay = (
     storedKey: string | null,
     inputKey: string,
@@ -806,7 +951,8 @@ const make = Effect.gen(function* () {
             UPDATE architecture_review
             SET status = 'published',
               publish_idempotency_key = ${input.publishIdempotencyKey},
-              published_at = ${input.publishedAt}
+              published_at = ${input.publishedAt},
+              published_by = ${input.publishedBy}
             WHERE review_id = ${input.reviewId} AND status = 'answered'
           `;
         return { _tag: "applied" } as ReviewTransitionResult;
@@ -1012,6 +1158,7 @@ const make = Effect.gen(function* () {
     linkReplacementWinner,
     listBindingsByCoordinator,
     insertReview,
+    upsertPreparedPublication,
     getReviewById,
     getReviewByRequestKey,
     listReviewsByCoordinator,

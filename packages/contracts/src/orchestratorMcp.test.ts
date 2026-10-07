@@ -18,6 +18,7 @@ import {
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpFailure,
   OrchestratorMcpPublishToCoordinatorInput,
+  OrchestratorMcpPrepareCoordinatorPublicationInput,
   OrchestratorMcpReviewAnswerInput,
   OrchestratorMcpReviewRequestInput,
   OrchestratorMcpSendToTaskInput,
@@ -139,6 +140,7 @@ describe("orchestrator MCP contracts", () => {
       "architecture_review_request",
       "architecture_review_answer",
       "architecture_review_cancel",
+      "prepare_coordinator_publication",
       "publish_to_coordinator",
       "get_coordinator_binding",
       "list_architecture_reviews",
@@ -661,7 +663,11 @@ describe("phase 1 coordinator/architect contracts", () => {
     const decodeSnapshot = Schema.decodeUnknownSync(
       OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
     );
-    expect(decodeSnapshot({ binding: null, reviews: [] })).toEqual({ binding: null, reviews: [] });
+    expect(decodeSnapshot({ binding: null, reviews: [] })).toEqual({
+      binding: null,
+      reviews: [],
+      publishable: [],
+    });
   });
 
   it("decodes review delivery state distinctly from the status machine", () => {
@@ -700,6 +706,8 @@ describe("phase 1 coordinator/architect contracts", () => {
     const legacy = decodeRecord(legacyShape);
     expect(legacy.publishDeliveredAt).toBeUndefined();
     expect(legacy.lastPublishFailure).toBeUndefined();
+    expect(legacy.origin).toBe("coordinator-request");
+    expect(legacy.publishedBy).toBeNull();
     // No answer: nothing recorded, nothing delivered, no failure.
     const open = decodeRecord(base);
     expect(open.answeredAt).toBeNull();
@@ -731,6 +739,16 @@ describe("phase 1 coordinator/architect contracts", () => {
       lastPublishFailure: null,
     });
     expect(delivered.publishDeliveredAt).not.toBeNull();
+  });
+
+  it("decodes the human publication preparation input", () => {
+    const decoded = Schema.decodeUnknownSync(OrchestratorMcpPrepareCoordinatorPublicationInput)({
+      summary: "Use a bounded cache and keep the fallback path.",
+      disposition: "recommendation",
+      executionPosture: "continue",
+      idempotencyKey: "prepare-1",
+    });
+    expect(decoded.oclRefs).toBeUndefined();
   });
 
   it("decodes routing evidence naming the current accepted policy revision", () => {
