@@ -584,7 +584,7 @@ function BoardColumn({
                 </Badge>
               ) : null}
               {shouldShowBoardReadiness(card.readiness) && card.readinessNote !== null ? (
-                <span className="w-full break-words text-[10px] text-muted-foreground">
+                <span className="w-full whitespace-pre-line line-clamp-3 break-words text-[10px] text-muted-foreground">
                   {card.readinessNote}
                 </span>
               ) : null}

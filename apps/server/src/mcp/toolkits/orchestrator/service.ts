@@ -4071,14 +4071,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         }
         if (
           next.readiness !== "ready" &&
-          (next.readinessNote === null ||
-            next.readinessNote.trim().length === 0 ||
-            next.readinessNote.length > 200 ||
-            /[\r\n\u0085\u2028\u2029]/.test(next.readinessNote))
+          (next.readinessNote === null || next.readinessNote.trim().length === 0)
         ) {
           return yield* failure(
             "readiness_note_required",
-            "A non-ready card needs a one-line readinessNote of at most 200 characters.",
+            "A non-ready card needs a non-empty readinessNote.",
           );
         }
         const startingExecution = card.status !== "in_progress" && next.status === "in_progress";

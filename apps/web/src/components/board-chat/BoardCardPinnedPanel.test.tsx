@@ -285,6 +285,21 @@ describe("BoardCardPinnedPanel", () => {
     }
   });
 
+  it("renders the readiness note whole with preserved line breaks", async () => {
+    const renderer = await mountPanel();
+    try {
+      const article = renderer.root.findByProps({ "data-board-card-id": mocks.cardId });
+      const notes = article.findAll(
+        (node) => node.type === "p" && textContent(node) === card.readinessNote,
+      );
+      expect(notes).toHaveLength(1);
+      expect(String(notes[0]!.props.className)).toContain("whitespace-pre-wrap");
+      expect(String(notes[0]!.props.className)).toContain("break-words");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
   it("switches between cards and history inside one shared panel", async () => {
     const renderer = await mountPanel();
     try {

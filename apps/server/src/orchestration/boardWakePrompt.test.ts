@@ -34,7 +34,7 @@ describe("Coordinator board brief", () => {
   it("explains readiness use and rechecking blocked work on every wake", () => {
     for (const requirement of [
       "Use readiness separately from status",
-      "needs_human with the exact one-line question",
+      "needs_human with the exact question",
       "Set blocked with the external cause and what work it waits for",
       "On any wake, re-check blocked cards whose note names the finished work",
     ]) {

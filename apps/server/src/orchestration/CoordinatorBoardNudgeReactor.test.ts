@@ -794,9 +794,7 @@ describe("CoordinatorBoardNudgeReactor", () => {
     assert.ok(text.includes("Review the work"));
     assert.ok(text.includes("Last error: provider failed"));
     assert.ok(
-      text.includes(
-        "set readiness to needs_human with a one-line readinessNote stating the exact question",
-      ),
+      text.includes("set readiness to needs_human with a readinessNote stating the exact question"),
     );
     assert.ok(text.includes("Do not move it to Backlog for this."));
 

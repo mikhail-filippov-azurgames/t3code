@@ -103,10 +103,6 @@ function shortDerivedNote(text: string): string {
     : raw;
 }
 
-function shortErrorNote(error: string | undefined, status: DelegationCompleted["status"]): string {
-  return shortDerivedNote(error ?? `executor turn ${status}`);
-}
-
 /**
  * Command-id prefixes that mark a `thread.deleted` event as coordinator-
  * originated, i.e. the coordinator's own teardown deleted the executor:
@@ -222,7 +218,7 @@ export const make = Effect.gen(function* () {
     const note = shortDerivedNote(input.note);
     const readinessNote =
       needsHuman && input.card.readiness !== "needs_human"
-        ? shortDerivedNote(`${failureStreak} executor failures in a row; last: ${note}`)
+        ? `${failureStreak} executor failures in a row; last: ${projectDerivedText("summary", input.note).trim()}`
         : null;
     const next: BoardCard = {
       ...input.card,
@@ -293,7 +289,7 @@ export const make = Effect.gen(function* () {
       card,
       at,
       outcome: terminal.status === "cancelled" ? "cancelled" : "failed",
-      note: shortErrorNote(terminal.terminalError, terminal.status),
+      note: terminal.terminalError ?? `executor turn ${terminal.status}`,
       clearExecutorThreadId: false,
       key: `terminal:${terminal.delegatedTurnId}`,
       reason: `executor ${card.executorRole} finished`,

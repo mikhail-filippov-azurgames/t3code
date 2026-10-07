@@ -292,6 +292,24 @@ describe("backlog status", () => {
       assert.strictEqual(parsed.status, "backlog");
     }),
   );
+
+  it.effect("accepts a long multiline readiness note without truncation", () =>
+    Effect.gen(function* () {
+      const lines = Array.from(
+        { length: 100 },
+        (_, index) => `line ${index + 1}: which migration order should the executor use?`,
+      );
+      const readinessNote = `${lines.join("\n").slice(0, 4998)}\n?`;
+      assert.strictEqual(readinessNote.length, 5000);
+      assert.include(readinessNote, "\n");
+      const parsed = yield* decodeMcpUpdateInput({
+        cardId: "card-1",
+        readiness: "needs_human",
+        readinessNote,
+      });
+      assert.strictEqual(parsed.readinessNote, readinessNote);
+    }),
+  );
 });
 
 describe("board card validation", () => {

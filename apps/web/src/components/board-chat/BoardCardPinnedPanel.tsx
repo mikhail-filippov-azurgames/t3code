@@ -732,7 +732,9 @@ function PinnedCard(props: {
                     {boardReadinessLabel(card.readiness)}
                   </p>
                   {card.readinessNote !== null ? (
-                    <p className="break-words text-muted-foreground">{card.readinessNote}</p>
+                    <p className="whitespace-pre-wrap break-words text-muted-foreground">
+                      {card.readinessNote}
+                    </p>
                   ) : null}
                 </div>
               ) : null}

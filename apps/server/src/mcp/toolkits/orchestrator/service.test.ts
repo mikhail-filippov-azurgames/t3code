@@ -3722,7 +3722,7 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect("requires a one-line readiness note for non-ready cards", () =>
+  it.effect("requires a non-empty readiness note for non-ready cards", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard([parentThreadId]);
       const harness = makeHarness({ board: board.repo });
@@ -3734,11 +3734,7 @@ describe("OrchestratorMcpService", () => {
           .pipe(Effect.flip);
         expect(error.code).toBe("readiness_note_required");
       }
-      for (const readinessNote of [
-        "x".repeat(201),
-        "first line\nsecond line",
-        "first line\u2028second line",
-      ]) {
+      for (const readinessNote of ["", "   ", "\n  \n"]) {
         const error = yield* harness.service
           .boardUpdateCard(makeScope(), {
             cardId: card.cardId,
@@ -3760,6 +3756,34 @@ describe("OrchestratorMcpService", () => {
       expect(secretError.message).not.toContain(secretToken);
       expect(board.cards.get(card.cardId)?.readiness).toBe("ready");
       expect(board.events.get(card.cardId)).toHaveLength(0);
+    }),
+  );
+
+  it.effect("stores a long multiline readiness note whole and lists it verbatim", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const card = seedBoardCard(board);
+
+      const lines = Array.from(
+        { length: 100 },
+        (_, index) => `line ${index + 1}: which migration order should the executor use?`,
+      );
+      const readinessNote = `${lines.join("\n").slice(0, 4998)}\n?`;
+      expect(readinessNote).toHaveLength(5000);
+      expect(readinessNote).toContain("\n");
+
+      const updated = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: card.cardId,
+        readiness: "needs_human",
+        readinessNote,
+      });
+      expect(updated.readinessNote).toBe(readinessNote);
+      expect(board.cards.get(card.cardId)?.readinessNote).toBe(readinessNote);
+
+      const listed = yield* harness.service.boardListCards(makeScope(), {});
+      const listedCard = listed.cards.find((entry) => entry.card.cardId === card.cardId)?.card;
+      expect(listedCard?.readinessNote).toBe(readinessNote);
     }),
   );
 

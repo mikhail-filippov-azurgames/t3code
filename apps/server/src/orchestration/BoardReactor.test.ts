@@ -497,7 +497,8 @@ describe("BoardReactor", () => {
           0,
         );
 
-        const thirdError = `provider failed with token ${secretToken} ${"x".repeat(220)}`;
+        const longCauseTail = `step detail ${"y".repeat(300)}`;
+        const thirdError = `provider failed with token ${secretToken}\nretried migration twice\n${longCauseTail}`;
         yield* handle(
           fixture,
           terminalEvent({
@@ -518,7 +519,10 @@ describe("BoardReactor", () => {
         );
         assert.notInclude(thirdUpdate?.readinessNote ?? "", secretToken);
         const thirdReadinessNote = thirdUpdate?.readinessNote ?? "";
-        assert.equal(thirdReadinessNote.length <= 200, true);
+        assert.equal(thirdReadinessNote.length > 200, true);
+        assert.include(thirdReadinessNote, "\n");
+        assert.include(thirdReadinessNote, longCauseTail);
+        assert.equal((thirdUpdate?.lastError?.length ?? 0) <= 200, true);
 
         const appendsAfterThreeFailures = yield* Ref.get(fixture.appends);
         const readinessEntriesAfterThreeFailures = appendsAfterThreeFailures.filter((entry) =>

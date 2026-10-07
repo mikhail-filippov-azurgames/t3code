@@ -118,6 +118,9 @@ describe("orchestrator MCP tools", () => {
     }
     expect(Tool.getDescription(BoardUpdateCardTool)).toContain("reported as not found");
     expect(Tool.getDescription(BoardUpdateCardTool)).toContain("readiness is parallel to status");
+    expect(Tool.getDescription(BoardUpdateCardTool)).toContain("needs a readinessNote");
+    expect(Tool.getDescription(BoardUpdateCardTool)).not.toContain("one-line");
+    expect(Tool.getDescription(BoardUpdateCardTool)).not.toContain("200 characters");
     expect(Tool.getDescription(BoardUpdateCardTool)).toContain("done requires readiness=ready");
     expect(Tool.getDescription(BoardUpdateCardTool)).toContain(
       "Do not use Backlog to mark waiting for a human",

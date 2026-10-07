@@ -137,7 +137,7 @@ export function formatCoordinatorBoardNudgeMessage(
     ...(card.readiness === "blocked"
       ? []
       : [
-          "If this card needs a human answer or decision, set readiness to needs_human with a one-line readinessNote stating the exact question, tell the human, and end this turn. If it is blocked by an external cause, either fix it now and set ready, or set blocked with the cause and what it waits for, and end this turn. Do not move it to Backlog for this.",
+          "If this card needs a human answer or decision, set readiness to needs_human with a readinessNote stating the exact question, tell the human, and end this turn. If it is blocked by an external cause, either fix it now and set ready, or set blocked with the cause and what it waits for, and end this turn. Do not move it to Backlog for this.",
         ]),
   ].join("\n");
 }

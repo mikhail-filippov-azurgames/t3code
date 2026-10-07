@@ -502,11 +502,7 @@ export const OrchestratorMcpBoardUpdateCardInput = Schema.Struct({
   body: Schema.optional(Schema.String),
   status: Schema.optional(OrchestratorMcpBoardCardStatus),
   readiness: Schema.optional(BoardCardReadiness),
-  readinessNote: Schema.optional(
-    Schema.String.check(Schema.isMaxLength(200)).check(
-      Schema.isPattern(/^[^\r\n\u0085\u2028\u2029]*$/),
-    ),
-  ),
+  readinessNote: Schema.optional(Schema.String),
   executorRole: Schema.optional(OrchestratorMcpTaskRole),
   assignee: Schema.optional(Schema.NullOr(ModelSelection)),
   executorThreadId: Schema.optional(Schema.NullOr(ThreadId)),

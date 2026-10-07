@@ -50,12 +50,15 @@ function textContent(node: ReactTestInstance): string {
 
 let renderer: ReactTestRenderer | undefined;
 
-function render(onRequest: (card: BoardCard, text: string) => void): ReactTestRenderer {
+function render(
+  onRequest: (card: BoardCard, text: string) => void,
+  overrides: Partial<BoardCard> = {},
+): ReactTestRenderer {
   let created!: ReactTestRenderer;
   act(() => {
     created = create(
       <BoardCardDetailDialog
-        card={card}
+        card={{ ...card, ...overrides }}
         events={[]}
         executorTitle={null}
         busy={false}
@@ -94,5 +97,21 @@ describe("BoardCardDetailDialog coordinator presets", () => {
     act(() => button.props.onClick());
 
     expect(onRequest).toHaveBeenCalledWith(card, "Работай над карточкой card-1");
+  });
+
+  it("renders a long multiline readiness note whole and preserves its line breaks", () => {
+    const readinessNote = [
+      "Which migration order should the executor use?",
+      "Context: the accepted review names three steps.",
+      "Question: may the executor start with step two?",
+    ].join("\n");
+    const view = render(vi.fn(), { readiness: "needs_human", readinessNote });
+
+    const notes = view.root.findAll(
+      (node) => node.type === "p" && textContent(node) === readinessNote,
+    );
+    expect(notes).toHaveLength(1);
+    expect(String(notes[0]!.props.className)).toContain("whitespace-pre-wrap");
+    expect(String(notes[0]!.props.className)).toContain("break-words");
   });
 });

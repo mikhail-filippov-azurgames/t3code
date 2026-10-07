@@ -3337,7 +3337,7 @@ function MarkdownThreadIdLink({
   );
 }
 
-function BoardCardMentionButton(props: {
+export function BoardCardMentionButton(props: {
   readonly match: BoardCardLookupMatch;
   readonly onPin: (cardId: string) => void;
 }) {
@@ -3378,9 +3378,9 @@ function BoardCardMentionButton(props: {
                   className="mt-0.5 size-3.5 shrink-0 text-warning"
                 />
               )}
-              <span>
+              <span className="min-w-0 flex-1 truncate">
                 {boardReadinessLabel(card.readiness)}
-                {card.readinessNote === null ? "" : ` · ${card.readinessNote}`}
+                {card.readinessNote === null ? "" : ` · ${card.readinessNote.split(/\r?\n/)[0]}`}
               </span>
             </p>
           ) : null}

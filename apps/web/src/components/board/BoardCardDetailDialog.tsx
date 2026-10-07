@@ -102,7 +102,7 @@ export function BoardCardDetailDialog({
           ) : null}
 
           {shouldShowBoardReadiness(card.readiness) && card.readinessNote !== null ? (
-            <p className="rounded-md border border-warning/32 bg-warning-surface px-2.5 py-1.5 text-xs text-foreground">
+            <p className="whitespace-pre-wrap break-words rounded-md border border-warning/32 bg-warning-surface px-2.5 py-1.5 text-xs text-foreground">
               {card.readinessNote}
             </p>
           ) : null}
