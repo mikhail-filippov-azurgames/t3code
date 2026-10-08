@@ -1,4 +1,5 @@
 import {
+  BoardArchivedCount,
   BoardCard,
   BoardCardDeletionRecord,
   BoardCardEvent,
@@ -22,11 +23,13 @@ import { applyAuthorTextPolicy, type AuthorTextField } from "../../security/Secr
 
 import {
   AddBoardOrchestratorInput,
+  archiveRequiresDoneFailure,
   BoardRepository,
   BoardRepositoryError,
   type BoardRepositoryShape,
 } from "../Services/Board.ts";
 
+const ListScopeInput = Schema.Struct({ includeArchived: Schema.Boolean });
 const GetOrchestratorInput = Schema.Struct({ threadId: ThreadId });
 const GetCardInput = Schema.Struct({ cardId: BoardCardId });
 const FindCardByExecutorInput = Schema.Struct({ executorThreadId: ThreadId });
@@ -122,6 +125,12 @@ const boardCardAuthorTextFailure = (
   }
   return null;
 };
+
+const boardCardWriteFailure = (
+  card: BoardCard,
+  previous: BoardCard | undefined,
+): BoardRepositoryError | null =>
+  archiveRequiresDoneFailure(card, previous) ?? boardCardAuthorTextFailure(card, previous);
 
 const makeBoardRepository = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -334,9 +343,9 @@ const makeBoardRepository = Effect.gen(function* () {
   });
 
   const listCardRows = SqlSchema.findAll({
-    Request: Schema.Void,
+    Request: ListScopeInput,
     Result: BoardCardDbRow,
-    execute: () =>
+    execute: ({ includeArchived }) =>
       sql`
         SELECT
           card_id AS "cardId",
@@ -358,7 +367,24 @@ const makeBoardRepository = Effect.gen(function* () {
           created_at AS "createdAt",
           updated_at AS "updatedAt"
         FROM board_cards
+        ${includeArchived ? sql`` : sql`WHERE archived = 0`}
         ORDER BY orchestrator_thread_id ASC, order_index ASC, created_at ASC, card_id ASC
+      `,
+  });
+
+  const countArchivedCardRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: BoardArchivedCount,
+    execute: () =>
+      sql`
+        SELECT
+          orchestrator_thread_id AS "orchestratorThreadId",
+          status,
+          COUNT(*) AS "count"
+        FROM board_cards
+        WHERE archived = 1
+        GROUP BY orchestrator_thread_id, status
+        ORDER BY orchestrator_thread_id ASC, status ASC
       `,
   });
 
@@ -498,9 +524,9 @@ const makeBoardRepository = Effect.gen(function* () {
   });
 
   const listEventRows = SqlSchema.findAll({
-    Request: Schema.Void,
+    Request: ListScopeInput,
     Result: BoardCardEventDbRow,
-    execute: () =>
+    execute: ({ includeArchived }) =>
       sql`
         SELECT
           entry_id AS "entryId",
@@ -513,6 +539,11 @@ const makeBoardRepository = Effect.gen(function* () {
           body,
           source
         FROM board_card_events
+        ${
+          includeArchived
+            ? sql``
+            : sql`WHERE card_id IN (SELECT card_id FROM board_cards WHERE archived = 0)`
+        }
         ORDER BY at ASC, entry_id ASC
       `,
   });
@@ -663,10 +694,15 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.removeOrchestrator:query")),
     );
 
-  const listCards: BoardRepositoryShape["listCards"] = () =>
-    listCardRows().pipe(
+  const listCards: BoardRepositoryShape["listCards"] = (input) =>
+    listCardRows({ includeArchived: input?.includeArchived ?? true }).pipe(
       Effect.map((rows) => rows.map(toBoardCard)),
       Effect.mapError(toBoardRepositoryError("BoardRepository.listCards:query")),
+    );
+
+  const countArchivedCards: BoardRepositoryShape["countArchivedCards"] = () =>
+    countArchivedCardRows().pipe(
+      Effect.mapError(toBoardRepositoryError("BoardRepository.countArchivedCards:query")),
     );
 
   const listNudgeCandidateCards: BoardRepositoryShape["listNudgeCandidateCards"] = () =>
@@ -715,7 +751,7 @@ const makeBoardRepository = Effect.gen(function* () {
     );
 
   const createCard: BoardRepositoryShape["createCard"] = (card) => {
-    const textFailure = boardCardAuthorTextFailure(card);
+    const textFailure = boardCardWriteFailure(card, undefined);
     return textFailure === null
       ? insertCardRow(card).pipe(
           Effect.mapError(toBoardRepositoryError("BoardRepository.createCard:query")),
@@ -726,7 +762,7 @@ const makeBoardRepository = Effect.gen(function* () {
   const updateCard: BoardRepositoryShape["updateCard"] = (card) =>
     getCardById(card.cardId, "BoardRepository.updateCard:read").pipe(
       Effect.flatMap((previous) => {
-        const textFailure = boardCardAuthorTextFailure(card, Option.getOrUndefined(previous));
+        const textFailure = boardCardWriteFailure(card, Option.getOrUndefined(previous));
         return textFailure === null
           ? updateCardRow(card).pipe(
               Effect.mapError(toBoardRepositoryError("BoardRepository.updateCard:query")),
@@ -739,7 +775,7 @@ const makeBoardRepository = Effect.gen(function* () {
     card,
     previous,
   ) => {
-    const textFailure = boardCardAuthorTextFailure(card, Option.getOrUndefined(previous));
+    const textFailure = boardCardWriteFailure(card, Option.getOrUndefined(previous));
     return textFailure === null
       ? updateCardRow(card).pipe(
           Effect.mapError(toBoardRepositoryError("BoardRepository.updateCardWithPrevious:query")),
@@ -752,8 +788,8 @@ const makeBoardRepository = Effect.gen(function* () {
       Effect.mapError(toBoardRepositoryError("BoardRepository.deleteCard:query")),
     );
 
-  const listEvents: BoardRepositoryShape["listEvents"] = () =>
-    listEventRows().pipe(
+  const listEvents: BoardRepositoryShape["listEvents"] = (input) =>
+    listEventRows({ includeArchived: input?.includeArchived ?? true }).pipe(
       Effect.map((rows) => rows.map(toBoardCardEvent)),
       Effect.mapError(toBoardRepositoryError("BoardRepository.listEvents:query")),
     );
@@ -784,7 +820,7 @@ const makeBoardRepository = Effect.gen(function* () {
   const updateCardWithEvent: BoardRepositoryShape["updateCardWithEvent"] = (card, event) =>
     getCardById(card.cardId, "BoardRepository.updateCardWithEvent:read").pipe(
       Effect.flatMap((previous) => {
-        const textFailure = boardCardAuthorTextFailure(card, Option.getOrUndefined(previous));
+        const textFailure = boardCardWriteFailure(card, Option.getOrUndefined(previous));
         return textFailure === null
           ? sql
               .withTransaction(
@@ -822,6 +858,7 @@ const makeBoardRepository = Effect.gen(function* () {
     addOrchestrator,
     removeOrchestrator,
     listCards,
+    countArchivedCards,
     listNudgeCandidateCards,
     hasWorkingReadyCard,
     hasCardEvent,

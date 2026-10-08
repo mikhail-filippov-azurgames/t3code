@@ -12,6 +12,7 @@ import { describe, it } from "vite-plus/test";
 import { assert } from "vite-plus/test";
 
 import {
+  addBoardStatusCounts,
   BOARD_COLUMNS,
   boardEventsForCard,
   DEFAULT_BOARD_FILTERS,
@@ -20,12 +21,14 @@ import {
   countArchivedBoardCardsByStatus,
   countBoardCardsByStatus,
   countNeedsHumanCards,
+  countOmittedArchivedByStatus,
   filterBoardCards,
   filterChatCandidates,
   groupBoardCardsByStatus,
   isCardHumanEditable,
   isCardStartable,
   shouldShowBoardReadiness,
+  sumBoardStatusCounts,
 } from "./board.logic";
 
 const ORCHESTRATOR = ThreadId.make("thread-orchestrator");
@@ -286,6 +289,33 @@ describe("board status counters", () => {
     for (const status of BoardCardStatus.literals) {
       assert.strictEqual(archived[status], archivedOnly.get(status)?.length ?? 0);
     }
+  });
+
+  it("adds the archive the server counted to the archive that arrived as rows, once", () => {
+    const other = ThreadId.make("thread-other");
+    const omitted = {
+      cards: [],
+      events: [],
+      archivedCounts: [
+        { orchestratorThreadId: ORCHESTRATOR, status: "done" as const, count: 4 },
+        { orchestratorThreadId: ORCHESTRATOR, status: "todo" as const, count: 1 },
+        { orchestratorThreadId: other, status: "done" as const, count: 2 },
+      ],
+    };
+    assert.strictEqual(countOmittedArchivedByStatus(omitted, null).done, 6);
+    assert.strictEqual(countOmittedArchivedByStatus(omitted, ORCHESTRATOR).done, 4);
+    assert.strictEqual(sumBoardStatusCounts(countOmittedArchivedByStatus(omitted, other)), 2);
+    assert.strictEqual(sumBoardStatusCounts(countOmittedArchivedByStatus(null, null)), 0);
+
+    // A list that carries the archive as rows has no counts, so nothing is added twice.
+    const rows = [makeCard({ id: "a", status: "done", archived: true })];
+    const full = { cards: rows, events: [] };
+    const total = addBoardStatusCounts(
+      countArchivedBoardCardsByStatus(rows),
+      countOmittedArchivedByStatus(full, null),
+    );
+    assert.strictEqual(total.done, 1);
+    assert.strictEqual(sumBoardStatusCounts(total), 1);
   });
 
   it("reports zero for statuses with no cards", () => {

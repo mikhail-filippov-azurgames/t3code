@@ -1070,13 +1070,28 @@ export const makeBoardRpcHandlers = (deps: BoardRpcDependencies): BoardRpcHandle
       return { matches, details: details.filter((entry) => entry !== undefined) };
     });
 
-  const list: BoardRpcHandlers["list"] = (_input) =>
+  const list: BoardRpcHandlers["list"] = (input) =>
     Effect.gen(function* () {
-      const [cards, events] = yield* Effect.all([repository.listCards(), repository.listEvents()], {
-        concurrency: 2,
-      }).pipe(Effect.mapError(toBoardError("board.list")));
-      return { cards, events };
-    });
+      if (input.includeArchived === true) {
+        const [cards, events] = yield* Effect.all(
+          [
+            repository.listCards({ includeArchived: true }),
+            repository.listEvents({ includeArchived: true }),
+          ],
+          { concurrency: 2 },
+        );
+        return { cards, events };
+      }
+      const [cards, events, archivedCounts] = yield* Effect.all(
+        [
+          repository.listCards({ includeArchived: false }),
+          repository.listEvents({ includeArchived: false }),
+          repository.countArchivedCards(),
+        ],
+        { concurrency: 3 },
+      );
+      return { cards, events, archivedCounts };
+    }).pipe(Effect.mapError(toBoardError("board.list")));
 
   const create: BoardRpcHandlers["create"] = (input) =>
     Effect.gen(function* () {

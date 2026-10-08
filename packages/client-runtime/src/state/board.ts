@@ -83,6 +83,11 @@ export function createBoardEnvironmentAtoms<R, E>(
     staleTimeMs: 15_000,
   });
 
+  // The list is read with and without the archive; a write can change either view.
+  const refreshLists = (environmentId: EnvironmentId, registry: AtomRegistry.AtomRegistry) => {
+    registry.refresh(list({ environmentId, input: {} }));
+    registry.refresh(list({ environmentId, input: { includeArchived: true } }));
+  };
   // Registry changes also cascade cards, so both reads refresh together.
   const refreshAll = (
     { environmentId }: { readonly environmentId: EnvironmentId },
@@ -90,12 +95,12 @@ export function createBoardEnvironmentAtoms<R, E>(
   ) =>
     Effect.sync(() => {
       registry.refresh(orchestratorsList({ environmentId, input: {} }));
-      registry.refresh(list({ environmentId, input: {} }));
+      refreshLists(environmentId, registry);
     });
   const refreshCards = (
     { environmentId }: { readonly environmentId: EnvironmentId },
     registry: AtomRegistry.AtomRegistry,
-  ) => Effect.sync(() => registry.refresh(list({ environmentId, input: {} })));
+  ) => Effect.sync(() => refreshLists(environmentId, registry));
 
   const requestOrchestrator = createEnvironmentCommand(runtime, {
     label: "environment-data:board:request-orchestrator",

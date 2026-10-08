@@ -187,6 +187,42 @@ describe("createBoardEnvironmentAtoms", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("create refreshes the list with the archive too when it is on screen", () =>
+    Effect.gen(function* () {
+      const { atoms, calls, registry } = yield* makeHarness();
+      const activeAtom = atoms.list({ environmentId, input: {} });
+      const withArchiveAtom = atoms.list({ environmentId, input: { includeArchived: true } });
+      yield* AtomRegistry.mount(registry, activeAtom);
+      yield* AtomRegistry.mount(registry, withArchiveAtom);
+      yield* AtomRegistry.getResult(registry, activeAtom, { suspendOnWaiting: true });
+      yield* AtomRegistry.getResult(registry, withArchiveAtom, { suspendOnWaiting: true });
+      expect(calls.filter((call) => call === WS_METHODS.boardList)).toHaveLength(2);
+
+      yield* Effect.promise(() =>
+        runAtomCommand(
+          registry,
+          atoms.create,
+          {
+            environmentId,
+            input: {
+              orchestratorThreadId: threadId,
+              title: "Wire board contracts",
+              body: "Add the board page.",
+              executorRole: "implementation",
+            },
+          },
+          { reportFailure: false },
+        ),
+      );
+
+      const refreshed = yield* AtomRegistry.getResult(registry, withArchiveAtom, {
+        suspendOnWaiting: true,
+      });
+      expect(refreshed.cards.map((card) => card.cardId as string)).toEqual(["card-created"]);
+      expect(calls.filter((call) => call === WS_METHODS.boardList)).toHaveLength(4);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("orchestratorAdd refreshes both the registry and the cards", () =>
     Effect.gen(function* () {
       const { atoms, calls, registry } = yield* makeHarness();

@@ -347,7 +347,7 @@ repositoryLayer("BoardRepository", (it) => {
       const updated = makeCard({
         assignee: selection,
         order: 3,
-        status: "review",
+        status: "done",
         archived: true,
         readiness: "blocked",
         readinessNote: "Waiting for the architecture plan",
@@ -359,7 +359,7 @@ repositoryLayer("BoardRepository", (it) => {
       const reread = yield* repository.getCard(BoardCardId.make("card-1"));
       assert.isTrue(Option.isSome(reread));
       if (Option.isSome(reread)) {
-        assert.equal(reread.value.status, "review");
+        assert.equal(reread.value.status, "done");
         assert.equal(reread.value.archived, true);
         assert.equal(reread.value.readiness, "blocked");
         assert.equal(reread.value.readinessNote, "Waiting for the architecture plan");
@@ -785,7 +785,6 @@ repositoryLayer("BoardRepository", (it) => {
           cardId: BoardCardId.make("nudge-archived"),
           orchestratorThreadId: threadId,
           status: "todo",
-          archived: true,
           order: 0,
           createdAt: "2026-01-01T00:00:00.000Z",
         }),
@@ -820,6 +819,9 @@ repositoryLayer("BoardRepository", (it) => {
         }),
       ];
       yield* Effect.forEach(cards, (card) => repository.createCard(card));
+      // The repository refuses to archive an unfinished card, so seed the legacy row directly.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE board_cards SET archived = 1 WHERE card_id = 'nudge-archived'`;
 
       const isCandidate = (card: BoardCard): boolean =>
         !card.archived &&

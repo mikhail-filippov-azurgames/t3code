@@ -274,10 +274,12 @@ repositoryLayer("BoardRetentionReactor", (it) => {
         const repository = yield* BoardRepository;
         const card = makeCard("retention-manual-archive", coordinator, {
           status: "todo",
-          archived: true,
           updatedAt: isoDaysAgo(90),
         });
         yield* repository.createCard(card);
+        // The repository refuses to archive an unfinished card, so seed the legacy row directly.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE board_cards SET archived = 1 WHERE card_id = ${card.cardId}`;
         const settings = yield* makeSettingsLayer(retentionSettings());
 
         yield* startReactor(settings);

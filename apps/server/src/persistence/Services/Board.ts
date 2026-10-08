@@ -2,6 +2,7 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
+  BoardArchivedCount,
   BoardCard,
   BoardCardDeletionReason,
   BoardCardDeletionRecord,
@@ -45,6 +46,32 @@ export class BoardRepositoryError extends Schema.TaggedError<BoardRepositoryErro
   }
 }
 
+export const ARCHIVE_REQUIRES_DONE_CODE = "archive_requires_done";
+export const ARCHIVE_REQUIRES_DONE_DETAIL =
+  "Only done cards can be archived. Move the card to done first, or omit archived.";
+
+/**
+ * The archive invariant, enforced by every repository write so no caller can
+ * bypass it: a card may only be archived while `done`. It rejects a write that
+ * newly produces an archived unfinished card (a fresh card, an unfinished card
+ * being archived, or an archived done card leaving `done`). A card that was
+ * already archived unfinished stays writable, so legacy rows are neither
+ * blocked nor silently repaired.
+ */
+export const archiveRequiresDoneFailure = (
+  card: Pick<BoardCard, "archived" | "status">,
+  previous: Pick<BoardCard, "archived" | "status"> | undefined,
+): BoardRepositoryError | null => {
+  const violates = (value: Pick<BoardCard, "archived" | "status">) =>
+    value.archived && value.status !== "done";
+  return violates(card) && (previous === undefined || !violates(previous))
+    ? new BoardRepositoryError({
+        operation: `BoardRepository.${ARCHIVE_REQUIRES_DONE_CODE}`,
+        detail: ARCHIVE_REQUIRES_DONE_DETAIL,
+      })
+    : null;
+};
+
 export const AddBoardOrchestratorInput = Schema.Struct({
   threadId: ThreadId,
   createdBy: BoardCreatedBy,
@@ -62,7 +89,15 @@ export interface BoardRepositoryShape {
   ) => Effect.Effect<BoardOrchestrator, BoardRepositoryError>;
   /** Cascade-deletes the orchestrator's cards and their progress history. */
   readonly removeOrchestrator: (threadId: ThreadId) => Effect.Effect<void, BoardRepositoryError>;
-  readonly listCards: () => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
+  /** Every card unless `includeArchived` is `false`, which filters in SQL. */
+  readonly listCards: (input?: {
+    readonly includeArchived?: boolean;
+  }) => Effect.Effect<ReadonlyArray<BoardCard>, BoardRepositoryError>;
+  /** Archived cards per coordinator and column, counted without reading the rows. */
+  readonly countArchivedCards: () => Effect.Effect<
+    ReadonlyArray<BoardArchivedCount>,
+    BoardRepositoryError
+  >;
   /**
    * Sweep candidates for the coordinator idle-nudge pass: unarchived cards in
    * a nudge-relevant status (`orchestrator`, `review`, `todo`, `in_progress`),
@@ -125,7 +160,10 @@ export interface BoardRepositoryShape {
     previous: Option.Option<BoardCard>,
   ) => Effect.Effect<void, BoardRepositoryError>;
   readonly deleteCard: (cardId: BoardCardId) => Effect.Effect<void, BoardRepositoryError>;
-  readonly listEvents: () => Effect.Effect<ReadonlyArray<BoardCardEvent>, BoardRepositoryError>;
+  /** Every entry unless `includeArchived` is `false`, which skips archived cards' history in SQL. */
+  readonly listEvents: (input?: {
+    readonly includeArchived?: boolean;
+  }) => Effect.Effect<ReadonlyArray<BoardCardEvent>, BoardRepositoryError>;
   /** Reads history for one card; a limit returns the newest entries first. */
   readonly listEventsForCard: (input: {
     readonly cardId: BoardCardId;

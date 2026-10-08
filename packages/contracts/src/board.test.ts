@@ -178,6 +178,22 @@ it.effect("decodes a board list result with progress events", () =>
   }),
 );
 
+it.effect("decodes the archive scope of a board list and its optional counts", () =>
+  Effect.gen(function* () {
+    assert.isUndefined((yield* decodeListInput({})).includeArchived);
+    assert.isTrue((yield* decodeListInput({ includeArchived: true })).includeArchived);
+    assert.isTrue(Exit.isFailure(yield* Effect.exit(decodeListInput({ includeArchived: "yes" }))));
+
+    const counted = yield* decodeListResult({
+      cards: [minimalCard],
+      events: [],
+      archivedCounts: [{ orchestratorThreadId: "orch-thread", status: "done", count: 3 }],
+    });
+    assert.strictEqual(counted.archivedCounts?.[0]?.count, 3);
+    assert.isUndefined((yield* decodeListResult({ cards: [], events: [] })).archivedCounts);
+  }),
+);
+
 it.effect("decodes an orchestrator row", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeOrchestrator({

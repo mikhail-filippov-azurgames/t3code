@@ -16,6 +16,7 @@ import {
   type BoardCardStatus,
   type BoardExecutorRole,
   type BoardListResult,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 
@@ -187,6 +188,37 @@ export function countArchivedBoardCardsByStatus(
     if (card.archived) counts[card.status] += 1;
   }
   return counts;
+}
+
+/**
+ * Archived cards the server counted instead of sending, per column. Only a list
+ * that left the archive out carries counts, so this and
+ * `countArchivedBoardCardsByStatus` never see the same card and may be summed.
+ */
+export function countOmittedArchivedByStatus(
+  list: BoardListResult | null,
+  orchestratorThreadId: ThreadId | null,
+): BoardStatusCounts {
+  const counts: Record<BoardCardStatus, number> = { ...ZERO_BOARD_STATUS_COUNTS };
+  for (const entry of list?.archivedCounts ?? []) {
+    if (orchestratorThreadId === null || entry.orchestratorThreadId === orchestratorThreadId) {
+      counts[entry.status] += entry.count;
+    }
+  }
+  return counts;
+}
+
+export function addBoardStatusCounts(
+  left: BoardStatusCounts,
+  right: BoardStatusCounts,
+): BoardStatusCounts {
+  const sum: Record<BoardCardStatus, number> = { ...ZERO_BOARD_STATUS_COUNTS };
+  for (const { status } of BOARD_COLUMNS) sum[status] = left[status] + right[status];
+  return sum;
+}
+
+export function sumBoardStatusCounts(counts: BoardStatusCounts): number {
+  return Object.values(counts).reduce((total, count) => total + count, 0);
 }
 
 /**

@@ -8,7 +8,7 @@
  *
  * @module components/board/BoardPage
  */
-import type { BoardCard, BoardExecutorRole, ThreadId } from "@t3tools/contracts";
+import type { BoardCard, BoardExecutorRole, BoardListResult, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import {
   ArchiveIcon,
@@ -47,6 +47,9 @@ import {
   countArchivedBoardCardsByStatus,
   countBoardCardsByStatus,
   countNeedsHumanCards,
+  addBoardStatusCounts,
+  countOmittedArchivedByStatus,
+  sumBoardStatusCounts,
   BOARD_COLUMNS,
   BOARD_EXECUTOR_ROLES,
   DEFAULT_BOARD_FILTERS,
@@ -75,9 +78,20 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
       ? null
       : boardEnvironment.orchestratorsList({ environmentId, input: {} }),
   );
+  const [filters, setFilters] = useState<BoardFilters>(DEFAULT_BOARD_FILTERS);
+  // The archive is read only while it is shown; otherwise the server sends counts.
   const listQuery = useEnvironmentQuery(
-    environmentId === null ? null : boardEnvironment.list({ environmentId, input: {} }),
+    environmentId === null
+      ? null
+      : boardEnvironment.list({
+          environmentId,
+          input: filters.showArchived ? { includeArchived: true } : {},
+        }),
   );
+  // Switching the archive view changes the query; keep the last board up while the other loads.
+  const [retainedList, setRetainedList] = useState<BoardListResult | null>(null);
+  if (listQuery.data !== null && listQuery.data !== retainedList) setRetainedList(listQuery.data);
+  const listData = listQuery.data ?? retainedList;
 
   const orchestratorThreadKeys = useBoardOrchestratorThreadKeys();
   const shells = useThreadShells();
@@ -90,8 +104,8 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
   }, [shells]);
 
   const orchestrators = orchestratorsQuery.data?.orchestrators ?? [];
-  const cards = listQuery.data?.cards ?? [];
-  const events = boardListEvents(listQuery.data);
+  const cards = listData?.cards ?? [];
+  const events = boardListEvents(listData);
 
   const [selectedOrchestratorId, setSelectedOrchestratorId] = useState<ThreadId | null>(
     initialOrchestratorId,
@@ -101,7 +115,6 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     createOnMount && initialOrchestratorId !== null,
   );
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  const [filters, setFilters] = useState<BoardFilters>(DEFAULT_BOARD_FILTERS);
   const [busy, setBusy] = useState(false);
 
   const createCard = useAtomCommand(boardEnvironment.create, { reportFailure: false });
@@ -146,8 +159,12 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     [filters, scopedCards],
   );
   const archivedCounts = useMemo(
-    () => countArchivedBoardCardsByStatus(archiveMatchable),
-    [archiveMatchable],
+    () =>
+      addBoardStatusCounts(
+        countArchivedBoardCardsByStatus(archiveMatchable),
+        countOmittedArchivedByStatus(listData, selectedOrchestratorId),
+      ),
+    [archiveMatchable, listData, selectedOrchestratorId],
   );
   const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
 
@@ -291,7 +308,9 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     });
   };
 
-  const isLive = orchestratorsQuery.isSuccess && listQuery.isSuccess;
+  const isLive =
+    orchestratorsQuery.isSuccess &&
+    (listQuery.isSuccess || (listQuery.isPending && listData !== null));
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
@@ -461,7 +480,12 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                   // default (archived hidden); archived tasks get their own
                   // number with an archive icon instead of inflating it.
                   const activeCount = orchestratorCards.filter((card) => !card.archived).length;
-                  const archivedCount = orchestratorCards.length - activeCount;
+                  const archivedCount =
+                    orchestratorCards.length -
+                    activeCount +
+                    sumBoardStatusCounts(
+                      countOmittedArchivedByStatus(listData, orchestrator.threadId),
+                    );
                   return (
                     <button
                       key={orchestrator.threadId}

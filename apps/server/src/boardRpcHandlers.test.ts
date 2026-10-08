@@ -7,6 +7,7 @@ import {
   ProjectId,
   ThreadId,
   WS_METHODS,
+  type BoardArchivedCount,
   type BoardCard,
   type BoardCardEvent,
   type BoardOrchestrator,
@@ -122,7 +123,25 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       state.orchestrators = state.orchestrators.filter((row) => row.threadId !== threadId);
       return Effect.void;
     },
-    listCards: () => Effect.succeed(state.cards),
+    listCards: (input) =>
+      Effect.succeed(
+        input?.includeArchived === false
+          ? state.cards.filter((card) => !card.archived)
+          : state.cards,
+      ),
+    countArchivedCards: () => {
+      const counts = new Map<string, BoardArchivedCount>();
+      for (const card of state.cards.filter((row) => row.archived)) {
+        const key = `${card.orchestratorThreadId}/${card.status}`;
+        const current = counts.get(key);
+        counts.set(key, {
+          orchestratorThreadId: card.orchestratorThreadId,
+          status: card.status,
+          count: (current?.count ?? 0) + 1,
+        });
+      }
+      return Effect.succeed([...counts.values()]);
+    },
     listNudgeCandidateCards: () => Effect.succeed(state.cards),
     hasWorkingReadyCard: (orchestratorThreadId) =>
       Effect.succeed(
@@ -168,7 +187,16 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       state.cards = state.cards.filter((card) => card.cardId !== cardId);
       return Effect.void;
     },
-    listEvents: () => Effect.succeed(state.events),
+    listEvents: (input) => {
+      const archivedIds = new Set(
+        state.cards.filter((card) => card.archived).map((card) => card.cardId),
+      );
+      return Effect.succeed(
+        input?.includeArchived === false
+          ? state.events.filter((event) => !archivedIds.has(event.cardId))
+          : state.events,
+      );
+    },
     listEventsForCard: ({ cardId, limit }) => {
       const events = state.events
         .filter((event) => event.cardId === cardId)
@@ -284,6 +312,72 @@ describe("board RPC handlers", () => {
       assert.strictEqual(result.cards.length, 1);
       assert.strictEqual(result.events.length, 1);
       assert.strictEqual(result.events[0]?.cardId, card.cardId);
+    }),
+  );
+
+  it.effect("list leaves the archive out by default and counts it instead", () =>
+    Effect.gen(function* () {
+      const active = makeCard({ cardId: BoardCardId.make("card-active") });
+      const archived = makeCard({
+        cardId: BoardCardId.make("card-archived"),
+        status: "done",
+        archived: true,
+      });
+      const entry = (card: BoardCard, id: string): BoardCardEvent => ({
+        entryId: BoardCardEventId.make(id),
+        cardId: card.cardId,
+        at: AT,
+        status: card.status,
+        executorRole: "general",
+        model: null,
+        effort: null,
+        source: "system",
+      });
+      const { handlers } = makeHarness({
+        cards: [active, archived],
+        events: [entry(active, "entry-active"), entry(archived, "entry-archived")],
+      });
+
+      for (const input of [{}, { includeArchived: false }]) {
+        const result = yield* handlers.list(input);
+        assert.deepStrictEqual(
+          result.cards.map((card) => card.cardId),
+          [active.cardId],
+        );
+        assert.deepStrictEqual(
+          result.events.map((event) => event.cardId),
+          [active.cardId],
+        );
+        assert.deepStrictEqual(result.archivedCounts, [
+          { orchestratorThreadId: ORCHESTRATOR, status: "done", count: 1 },
+        ]);
+      }
+    }),
+  );
+
+  it.effect("list with includeArchived returns the unfiltered result and no counts", () =>
+    Effect.gen(function* () {
+      const active = makeCard({ cardId: BoardCardId.make("card-active") });
+      const archived = makeCard({
+        cardId: BoardCardId.make("card-archived"),
+        status: "done",
+        archived: true,
+      });
+      const event: BoardCardEvent = {
+        entryId: BoardCardEventId.make("entry-archived"),
+        cardId: archived.cardId,
+        at: AT,
+        status: "done",
+        executorRole: "general",
+        model: null,
+        effort: null,
+        source: "system",
+      };
+      const { handlers } = makeHarness({ cards: [active, archived], events: [event] });
+
+      const result = yield* handlers.list({ includeArchived: true });
+
+      assert.deepStrictEqual(result, { cards: [active, archived], events: [event] });
     }),
   );
 
@@ -618,7 +712,7 @@ describe("board RPC handlers", () => {
 
   it.effect("update archives and unarchives a card with an append-only history row", () =>
     Effect.gen(function* () {
-      const card = makeCard({ status: "orchestrator" });
+      const card = makeCard({ status: "done" });
       const { handlers, state } = makeHarness({ cards: [card] });
 
       const updated = yield* handlers.update({ cardId: card.cardId, archived: true });
@@ -655,6 +749,7 @@ describe("board RPC handlers", () => {
   it.effect("board.update preserves legacy unsafe text when archiving", () =>
     Effect.gen(function* () {
       const card = makeCard({
+        status: "done",
         title: `Legacy title ${SECRET}`,
         body: `Legacy body ${SECRET}`,
         lastError: `Legacy error ${SECRET}`,

@@ -117,13 +117,26 @@ export type BoardOrchestratorResendBriefInput = typeof BoardOrchestratorResendBr
 export const BoardOrchestratorResendBriefResult = Schema.Struct({});
 export type BoardOrchestratorResendBriefResult = typeof BoardOrchestratorResendBriefResult.Type;
 
-export const BoardListInput = Schema.Struct({});
+export const BoardListInput = Schema.Struct({
+  /** Archived cards and their history are read only when asked for; absent means `false`. */
+  includeArchived: Schema.optional(Schema.Boolean),
+});
 export type BoardListInput = typeof BoardListInput.Type;
+
+/** How many archived cards one coordinator has in one column. */
+export const BoardArchivedCount = Schema.Struct({
+  orchestratorThreadId: ThreadId,
+  status: BoardCardStatus,
+  count: NonNegativeInt,
+});
+export type BoardArchivedCount = typeof BoardArchivedCount.Type;
 
 export const BoardListResult = Schema.Struct({
   cards: Schema.Array(BoardCard),
   /** Append-only progress history for the listed cards, read by the board UI. */
   events: Schema.Array(BoardCardEvent),
+  /** Present only when archived cards were left out, so the UI can still badge them. */
+  archivedCounts: Schema.optional(Schema.Array(BoardArchivedCount)),
 });
 export type BoardListResult = typeof BoardListResult.Type;
 
