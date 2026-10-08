@@ -94,6 +94,7 @@ patchedDependencies:
   '@react-native-ai/apple@0.12.0': 2d09870c2848d185cb05b53ed823a46e12dba519324d8dd8e584e28731990f9d
   '@react-native-menu/menu@2.0.0': f63d256bf6a97a873b5e628eb595bd6ef0075ddd5bdd890fc920f7a6024290dd
   '@react-navigation/native-stack@7.17.6': e667c3cef8c78bb9ff4882ee5bd23a432247b843060a9499eb5f07e9e2295552
+  '@web-git-graph/web@1.0.7': 6e7c0d013e8c78b5dcb08539c95df58ddd4a7776fb1e1769564fc16c4a8f4cd6
   dbus-next@0.10.2: cfff57561b0ee59b5addb3b2e6c6f20906e967507a530ab67e8db8108e520ba4
   effect@4.0.0-rc.112: 8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2
   expo-audio@57.0.4: fa9a3e0442ed395d4071bb406e08c3a471c9a84700bdfa0b9ad7ff144c96041a
@@ -633,6 +634,12 @@ importers:
       '@tanstack/react-router':
         specifier: ^1.160.2
         version: 1.170.10(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      '@web-git-graph/protocol':
+        specifier: 1.0.7
+        version: 1.0.7
+      '@web-git-graph/web':
+        specifier: 1.0.7
+        version: 1.0.7(patch_hash=6e7c0d013e8c78b5dcb08539c95df58ddd4a7776fb1e1769564fc16c4a8f4cd6)
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -6232,6 +6239,12 @@ packages:
 
   '@vscode/l10n@0.0.18':
     resolution: {integrity: sha512-KYSIHVmslkaCDyw013pphY+d7x1qV8IZupYfeIfzNA+nsaWHbn5uPuQRvdRFsa9zFzGeudPuoGoZ1Op4jrJXIQ==}
+
+  '@web-git-graph/protocol@1.0.7':
+    resolution: {integrity: sha512-S5BDIFdvXCkScasz+P+7SAUNqas+RC96oEiuv+X49KQAaYpVBvXrBjLlxUSGMPDIgFm1jkPXOkmbIBErGv/lwA==}
+
+  '@web-git-graph/web@1.0.7':
+    resolution: {integrity: sha512-U2dqw4HsHNZAIVyMzB+E0PPinvyg/Q4GoSUk5uNnmD4fSlxn/2Gaqp816Bbddsm4wHHBsefXp7phOYjyJ3MioA==}
 
   '@xmldom/xmldom@0.8.13':
     resolution: {integrity: sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw==}
@@ -17615,6 +17628,12 @@ snapshots:
       vscode-uri: 3.1.0
 
   '@vscode/l10n@0.0.18': {}
+
+  '@web-git-graph/protocol@1.0.7': {}
+
+  '@web-git-graph/web@1.0.7(patch_hash=6e7c0d013e8c78b5dcb08539c95df58ddd4a7776fb1e1769564fc16c4a8f4cd6)':
+    dependencies:
+      '@web-git-graph/protocol': 1.0.7
 
   '@xmldom/xmldom@0.8.13': {}
 

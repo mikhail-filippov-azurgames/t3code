@@ -1,0 +1,200 @@
+diff --git a/dist/index.js b/dist/index.js
+index f6d034531e892a0000631ed601461574acf17d6f..19fe55311ba663651d7394958a4dea249fae2b24 100644
+--- a/dist/index.js
++++ b/dist/index.js	
+@@ -111,7 +111,7 @@ function layoutGitGraph(commits, options = {}) {
+ 
+ // src/web-component.ts
+ var ELEMENT_NAME = "web-git-graph";
+-var PALETTE = ["#e3008c", "#007acc", "#00c853", "#ff8c00", "#b180d7", "#00b7c3", "#dcdcaa"];
++var PALETTE = ["#3d9999", "#f2aa61", "#e67381", "#8080ff", "#7db347"];
+ var LANE_COLOURED_REFS = /* @__PURE__ */ new Set(["current", "head"]);
+ var IS_APPLE = typeof navigator !== "undefined" && /mac|iphone|ipad|ipod/i.test(navigator.userAgent ?? "");
+ var PENDING_ROW_WIDTHS = [78, 54, 88, 41, 69, 82, 47, 61];
+@@ -218,8 +218,8 @@ select, .icon-button {
+   /* Description may shrink to zero so the graph column keeps its reserved
+      width; the commit message ellipsises before branch chips are clipped. */
+   grid-template-columns:
+-    var(--wgg-graph-width) minmax(0, 1fr) var(--wgg-date-width)
+-    var(--wgg-author-width) var(--wgg-commit-width);
++    var(--wgg-graph-width) minmax(0, 1fr) var(--wgg-author-width)
++    var(--wgg-date-width) var(--wgg-commit-width);
+   align-items: center;
+ }
+ .header {
+@@ -256,27 +256,17 @@ select, .icon-button {
+ .refs { flex: 0 0 auto; display: flex; gap: 2px; }
+ .ref {
+   flex: 0 0 auto; white-space: nowrap;
+-  font: 600 10px/15px var(--wgg-font, inherit); padding: 0 5px; border-radius: 2px;
+-  border: 1px solid var(--ref-color, var(--wgg-accent));
+-  background: color-mix(in srgb, var(--ref-color, var(--wgg-accent)) 18%, transparent);
+-  color: var(--wgg-ink);
+-}
+-/* Only the checked-out branch is solid, so "you are here" reads at a glance
+-   while every other branch is emphasised by its lane-coloured border. */
+-.ref.current { background: var(--ref-color, var(--wgg-accent)); color: #fff; }
+-/* Remote branches recede by colour rather than by line style: a grey outline
+-   with no tint, so they read as "not here" without a busy dashed border. */
+-.ref.remote {
+-  /* --wgg-faint rather than --wgg-line: the border has to stay legible against
+-     both the dark and the light background. */
+-  border-color: var(--wgg-faint);
+-  background: transparent;
+-  color: var(--wgg-muted);
+-  font-weight: 400;
++  font: 600 10px/15px var(--wgg-font, inherit); padding: 0 6px; border-radius: 3px;
++  border: 1px solid #4a4536;
++  background: #595342;
++  color: #d6d3c4;
+ }
+-.ref.tag, .ref.stash { background: var(--ref-color); color: #fff; }
+-.ref.tag { --ref-color: #0e639c; }
+-.ref.stash { --ref-color: #9b2f86; }
++/* The checked-out branch keeps the same olive, only brighter, so "you are here"
++   reads at a glance without leaving the reference palette. */
++.ref.current { background: #6f6849; border-color: #7d7554; color: #ffffff; }
++/* Remote branches recede with a dimmer olive rather than a grey outline. */
++.ref.remote { background: #454034; border-color: #454034; color: #b9b6a6; font-weight: 400; }
++.ref.tag, .ref.stash { background: #595342; border-color: #4a4536; color: #d6d3c4; }
+ .author, .date, .oid {
+   min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+   color: var(--wgg-ink); position: relative; z-index: 2;
+@@ -499,7 +489,7 @@ function formatDate(value, format = "datetime") {
+     }
+     return relative.format(Math.round(elapsed / 1e3), "second");
+   }
+-  const day = `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
++  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+   return format === "date" ? day : `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+ }
+ var AVATAR_URLS = /* @__PURE__ */ new Map();
+@@ -845,7 +835,7 @@ var WebGitGraphElement = class extends HTMLElementBase {
+         <section class="history">
+           <div class="header" aria-hidden="true">
+             <span class="col-graph">Graph</span><span class="col-description">Description</span
+-            ><span class="col-date">Date</span><span class="col-author">Author</span
++            ><span class="col-author">Author</span><span class="col-date">Date</span
+             ><span class="col-commit">Commit</span>
+           </div>
+           <div class="scroller" role="treegrid" aria-label="Git commit history" tabindex="0">
+@@ -1310,8 +1300,8 @@ var WebGitGraphElement = class extends HTMLElementBase {
+       row.innerHTML = `
+         <div class="graph-cell" role="gridcell"></div>
+         <div class="subject" role="gridcell"><div class="refs"></div><span class="message"></span></div>
+-        <div class="date" role="gridcell"></div>
+         <div class="author" role="gridcell"></div>
++        <div class="date" role="gridcell"></div>
+         <div class="oid" role="gridcell"></div>`;
+       row.querySelector(".message").textContent = commit.message.split("\n", 1)[0] ?? "";
+       const authorCell = row.querySelector(".author");
+@@ -1334,8 +1324,7 @@ var WebGitGraphElement = class extends HTMLElementBase {
+         seenLabels.add(dedupeKey);
+         const badge = document.createElement("span");
+         badge.className = `ref ${ref.kind}`;
+-        const prefix = ref.kind === "tag" ? "\u25C7" : ref.kind === "stash" ? "\u224B" : ref.kind === "remote" ? "\u2197" : "\u2442";
+-        badge.textContent = `${prefix} ${label}`;
++        badge.textContent = label;
+         badge.title = label;
+         const node = nodesByOid.get(commit.oid);
+         if (node && LANE_COLOURED_REFS.has(ref.kind)) {
+diff --git a/dist/register.js b/dist/register.js
+index 7cba2d60bb7db7289866da75f41af65ba630ea31..00b4f3a1d239626e67f6e2dde9e23163e451527b 100644
+--- a/dist/register.js
++++ b/dist/register.js	
+@@ -111,7 +111,7 @@ function layoutGitGraph(commits, options = {}) {
+ 
+ // src/web-component.ts
+ var ELEMENT_NAME = "web-git-graph";
+-var PALETTE = ["#e3008c", "#007acc", "#00c853", "#ff8c00", "#b180d7", "#00b7c3", "#dcdcaa"];
++var PALETTE = ["#3d9999", "#f2aa61", "#e67381", "#8080ff", "#7db347"];
+ var LANE_COLOURED_REFS = /* @__PURE__ */ new Set(["current", "head"]);
+ var IS_APPLE = typeof navigator !== "undefined" && /mac|iphone|ipad|ipod/i.test(navigator.userAgent ?? "");
+ var PENDING_ROW_WIDTHS = [78, 54, 88, 41, 69, 82, 47, 61];
+@@ -218,8 +218,8 @@ select, .icon-button {
+   /* Description may shrink to zero so the graph column keeps its reserved
+      width; the commit message ellipsises before branch chips are clipped. */
+   grid-template-columns:
+-    var(--wgg-graph-width) minmax(0, 1fr) var(--wgg-date-width)
+-    var(--wgg-author-width) var(--wgg-commit-width);
++    var(--wgg-graph-width) minmax(0, 1fr) var(--wgg-author-width)
++    var(--wgg-date-width) var(--wgg-commit-width);
+   align-items: center;
+ }
+ .header {
+@@ -256,27 +256,17 @@ select, .icon-button {
+ .refs { flex: 0 0 auto; display: flex; gap: 2px; }
+ .ref {
+   flex: 0 0 auto; white-space: nowrap;
+-  font: 600 10px/15px var(--wgg-font, inherit); padding: 0 5px; border-radius: 2px;
+-  border: 1px solid var(--ref-color, var(--wgg-accent));
+-  background: color-mix(in srgb, var(--ref-color, var(--wgg-accent)) 18%, transparent);
+-  color: var(--wgg-ink);
+-}
+-/* Only the checked-out branch is solid, so "you are here" reads at a glance
+-   while every other branch is emphasised by its lane-coloured border. */
+-.ref.current { background: var(--ref-color, var(--wgg-accent)); color: #fff; }
+-/* Remote branches recede by colour rather than by line style: a grey outline
+-   with no tint, so they read as "not here" without a busy dashed border. */
+-.ref.remote {
+-  /* --wgg-faint rather than --wgg-line: the border has to stay legible against
+-     both the dark and the light background. */
+-  border-color: var(--wgg-faint);
+-  background: transparent;
+-  color: var(--wgg-muted);
+-  font-weight: 400;
++  font: 600 10px/15px var(--wgg-font, inherit); padding: 0 6px; border-radius: 3px;
++  border: 1px solid #4a4536;
++  background: #595342;
++  color: #d6d3c4;
+ }
+-.ref.tag, .ref.stash { background: var(--ref-color); color: #fff; }
+-.ref.tag { --ref-color: #0e639c; }
+-.ref.stash { --ref-color: #9b2f86; }
++/* The checked-out branch keeps the same olive, only brighter, so "you are here"
++   reads at a glance without leaving the reference palette. */
++.ref.current { background: #6f6849; border-color: #7d7554; color: #ffffff; }
++/* Remote branches recede with a dimmer olive rather than a grey outline. */
++.ref.remote { background: #454034; border-color: #454034; color: #b9b6a6; font-weight: 400; }
++.ref.tag, .ref.stash { background: #595342; border-color: #4a4536; color: #d6d3c4; }
+ .author, .date, .oid {
+   min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+   color: var(--wgg-ink); position: relative; z-index: 2;
+@@ -499,7 +489,7 @@ function formatDate(value, format = "datetime") {
+     }
+     return relative.format(Math.round(elapsed / 1e3), "second");
+   }
+-  const day = `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())}`;
++  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+   return format === "date" ? day : `${day} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+ }
+ var AVATAR_URLS = /* @__PURE__ */ new Map();
+@@ -845,7 +835,7 @@ var WebGitGraphElement = class extends HTMLElementBase {
+         <section class="history">
+           <div class="header" aria-hidden="true">
+             <span class="col-graph">Graph</span><span class="col-description">Description</span
+-            ><span class="col-date">Date</span><span class="col-author">Author</span
++            ><span class="col-author">Author</span><span class="col-date">Date</span
+             ><span class="col-commit">Commit</span>
+           </div>
+           <div class="scroller" role="treegrid" aria-label="Git commit history" tabindex="0">
+@@ -1310,8 +1300,8 @@ var WebGitGraphElement = class extends HTMLElementBase {
+       row.innerHTML = `
+         <div class="graph-cell" role="gridcell"></div>
+         <div class="subject" role="gridcell"><div class="refs"></div><span class="message"></span></div>
+-        <div class="date" role="gridcell"></div>
+         <div class="author" role="gridcell"></div>
++        <div class="date" role="gridcell"></div>
+         <div class="oid" role="gridcell"></div>`;
+       row.querySelector(".message").textContent = commit.message.split("\n", 1)[0] ?? "";
+       const authorCell = row.querySelector(".author");
+@@ -1334,8 +1324,7 @@ var WebGitGraphElement = class extends HTMLElementBase {
+         seenLabels.add(dedupeKey);
+         const badge = document.createElement("span");
+         badge.className = `ref ${ref.kind}`;
+-        const prefix = ref.kind === "tag" ? "\u25C7" : ref.kind === "stash" ? "\u224B" : ref.kind === "remote" ? "\u2197" : "\u2442";
+-        badge.textContent = `${prefix} ${label}`;
++        badge.textContent = label;
+         badge.title = label;
+         const node = nodesByOid.get(commit.oid);
+         if (node && LANE_COLOURED_REFS.has(ref.kind)) {

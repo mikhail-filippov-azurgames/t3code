@@ -15,6 +15,7 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as NoticesRouteImport } from './routes/notices'
 import { Route as ConnectRouteImport } from './routes/connect'
+import { Route as CommitsLabRouteImport } from './routes/commits-lab'
 import { Route as CalendarRouteImport } from './routes/calendar'
 import { Route as BoardRouteImport } from './routes/board'
 import { Route as ChatRouteImport } from './routes/_chat'
@@ -64,6 +65,11 @@ const NoticesRoute = NoticesRouteImport.update({
 const ConnectRoute = ConnectRouteImport.update({
   id: '/connect',
   path: '/connect',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CommitsLabRoute = CommitsLabRouteImport.update({
+  id: '/commits-lab',
+  path: '/commits-lab',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CalendarRoute = CalendarRouteImport.update({
@@ -172,6 +178,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
+  '/commits-lab': typeof CommitsLabRoute
   '/connect': typeof ConnectRoute
   '/notices': typeof NoticesRoute
   '/pair': typeof PairRoute
@@ -198,6 +205,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
+  '/commits-lab': typeof CommitsLabRoute
   '/connect': typeof ConnectRoute
   '/notices': typeof NoticesRoute
   '/pair': typeof PairRoute
@@ -227,6 +235,7 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/board': typeof BoardRoute
   '/calendar': typeof CalendarRoute
+  '/commits-lab': typeof CommitsLabRoute
   '/connect': typeof ConnectRoute
   '/notices': typeof NoticesRoute
   '/pair': typeof PairRoute
@@ -257,6 +266,7 @@ export interface FileRouteTypes {
     | '/'
     | '/board'
     | '/calendar'
+    | '/commits-lab'
     | '/connect'
     | '/notices'
     | '/pair'
@@ -283,6 +293,7 @@ export interface FileRouteTypes {
   to:
     | '/board'
     | '/calendar'
+    | '/commits-lab'
     | '/connect'
     | '/notices'
     | '/pair'
@@ -311,6 +322,7 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/board'
     | '/calendar'
+    | '/commits-lab'
     | '/connect'
     | '/notices'
     | '/pair'
@@ -340,6 +352,7 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   BoardRoute: typeof BoardRoute
   CalendarRoute: typeof CalendarRoute
+  CommitsLabRoute: typeof CommitsLabRoute
   ConnectRoute: typeof ConnectRoute
   NoticesRoute: typeof NoticesRoute
   PairRoute: typeof PairRoute
@@ -391,6 +404,13 @@ declare module '@tanstack/react-router' {
       path: '/connect'
       fullPath: '/connect'
       preLoaderRoute: typeof ConnectRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/commits-lab': {
+      id: '/commits-lab'
+      path: '/commits-lab'
+      fullPath: '/commits-lab'
+      preLoaderRoute: typeof CommitsLabRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/calendar': {
@@ -590,6 +610,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   BoardRoute: BoardRoute,
   CalendarRoute: CalendarRoute,
+  CommitsLabRoute: CommitsLabRoute,
   ConnectRoute: ConnectRoute,
   NoticesRoute: NoticesRoute,
   PairRoute: PairRoute,

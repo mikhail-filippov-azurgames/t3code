@@ -294,6 +294,13 @@ export function createVcsEnvironmentAtoms<R, E>(
           ),
         ),
     }),
+    // Read-only, page-based: the commits graph provider owns the cursor and
+    // asks for the next page on demand, so this stays a plain command instead
+    // of a cached query atom.
+    listCommitHistory: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:list-commit-history",
+      tag: WS_METHODS.vcsListCommitHistory,
+    }),
     pull: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:pull",
       tag: WS_METHODS.vcsPull,
