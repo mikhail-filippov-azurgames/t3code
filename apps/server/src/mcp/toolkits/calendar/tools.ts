@@ -42,7 +42,7 @@ const CalendarListTool = Tool.make("calendar_list", {
   .annotate(Tool.OpenWorld, false);
 
 const CalendarCreateTool = Tool.make("calendar_create", {
-  description: `Create a scheduled calendar event that fires a prepared message into a thread on a local-time cron schedule. ${REGISTER_BANS} cronExpression is five whitespace-separated fields (minute hour day-of-month month day-of-week) in the event's IANA timeZone wall clock; seconds and @macros are unsupported and day-of-week accepts 0 or 7 for Sunday. mode new-thread starts a fresh thread on every fire; continue creates the thread on the first fire and reuses it afterwards. Returns the stored event with its computed nextFireAt.`,
+  description: `Create a scheduled calendar event that fires a prepared message into a thread on a local-time cron schedule. ${REGISTER_BANS} cronExpression is five whitespace-separated fields (minute hour day-of-month month day-of-week) in the event's IANA timeZone wall clock; seconds and @macros are unsupported and day-of-week accepts 0 or 7 for Sunday. mode new-thread starts a fresh thread on every fire; continue creates the thread on the first fire and reuses it afterwards.`,
   parameters: CalendarCreateInput,
   success: CalendarCreateResult,
   failure: CalendarToolError,
