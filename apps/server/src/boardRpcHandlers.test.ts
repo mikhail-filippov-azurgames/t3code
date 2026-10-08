@@ -123,6 +123,19 @@ function makeFakeRepository(state: FakeBoardState): BoardRepositoryShape {
       return Effect.void;
     },
     listCards: () => Effect.succeed(state.cards),
+    listNudgeCandidateCards: () => Effect.succeed(state.cards),
+    hasWorkingReadyCard: (orchestratorThreadId) =>
+      Effect.succeed(
+        state.cards.some(
+          (card) =>
+            card.orchestratorThreadId === orchestratorThreadId &&
+            !card.archived &&
+            card.readiness === "ready" &&
+            ["todo", "orchestrator", "in_progress", "review"].includes(card.status),
+        ),
+      ),
+    hasCardEvent: (entryId) =>
+      Effect.succeed(state.events.some((event) => event.entryId === entryId)),
     findCardsByPrefix: (prefix) => {
       state.prefixQueries.push(prefix);
       return Effect.succeed(

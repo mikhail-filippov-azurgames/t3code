@@ -340,3 +340,131 @@ diff --git a/src/unstable/http/HttpClientResponse.ts b/src/unstable/http/HttpCli
 -    return this.cachedCookies = Cookies.fromSetCookie(this.source.headers.getSetCookie())
 +    return this.cachedCookies = Cookies.fromSetCookie(this.source.headers.getSetCookie?.() ?? [])
    }
+diff --git a/dist/unstable/ai/internal/mcpCore.js b/dist/unstable/ai/internal/mcpCore.js
+index fd0c796035..28bf226cdc 100644
+--- a/dist/unstable/ai/internal/mcpCore.js
++++ b/dist/unstable/ai/internal/mcpCore.js
+@@ -4,8 +4,10 @@
+  * @internal
+  */
+ import * as Arr from "../../../Array.js";
++import * as Context from "../../../Context.js";
+ import * as Data from "../../../Data.js";
+ import * as Effect from "../../../Effect.js";
++import * as Option from "../../../Option.js";
+ import * as McpSchema from "../McpSchema.js";
+ // NOTE: McpInvocation is runtime context, not a wire DTO. It combines the
+ // negotiated profile with the request-scoped service used by handlers.
+@@ -30,6 +32,15 @@ export class PromptNotFound extends /*#__PURE__*/Data.TaggedError("PromptNotFoun
+ export const ClientNotification = /*#__PURE__*/Data.taggedEnum();
+ /** @internal */
+ export const ServerNotification = /*#__PURE__*/Data.taggedEnum();
++/**
++ * Request-scoped MCP tool visibility (t3-code slice 2: "visible = callable").
++ * When provided in the ambient context, `tools.list` omits every tool it
++ * rejects and `tools.call` reports a rejected tool as not found. Absent, the
++ * server keeps the stock behavior and every registered tool stays visible.
++ *
++ * @internal
++ */
++export class ToolVisibility extends /*#__PURE__*/Context.Service()("effect/ai/McpServer/ToolVisibility") {}
+ /** @internal */
+ export const make = /*#__PURE__*/Effect.sync(() => {
+   const registrations = new Map();
+@@ -41,16 +52,21 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+     register: registration => Effect.sync(() => {
+       registrations.set(registration.descriptor.name, registration);
+     }),
+-    list: profile => Effect.sync(() => {
++    list: profile => Effect.gen(function* () {
++      const visibility = yield* Effect.serviceOption(ToolVisibility);
+       const descriptors = [];
+       for (const registration of registrations.values()) {
+-        if (registration.isVisible(profile)) {
+-          descriptors.push(registration.descriptor);
++        if (!registration.isVisible(profile)) {
++          continue;
++        }
++        if (Option.isSome(visibility) && !(yield* visibility.value.allows(registration.descriptor.name))) {
++          continue;
+         }
++        descriptors.push(registration.descriptor);
+       }
+       return descriptors;
+     }),
+-    call: (call, invocation) => Effect.suspend(() => {
++    call: (call, invocation) => Effect.flatMap(Effect.serviceOption(ToolVisibility), visibility => {
+       const registration = registrations.get(call.name);
+       if (registration === undefined) {
+         return new ToolNotFound({
+@@ -62,6 +78,12 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+           name: call.name
+         });
+       }
++      if (Option.isSome(visibility)) {
++        return Effect.flatMap(visibility.value.allows(call.name), allowed =>
++          allowed ? registration.handle(call, invocation) : new ToolNotFound({
++            name: call.name
++          }));
++      }
+       return registration.handle(call, invocation);
+     })
+   };
+diff --git a/dist/unstable/ai/McpServer.js b/dist/unstable/ai/McpServer.js
+index 95c38f262c..3f5f763453 100644
+--- a/dist/unstable/ai/McpServer.js
++++ b/dist/unstable/ai/McpServer.js
+@@ -43,6 +43,9 @@ import * as RpcSerialization from "../rpc/RpcSerialization.js";
+ import * as RpcServer from "../rpc/RpcServer.js";
+ import * as AiError from "./AiError.js";
+ import * as McpCore from "./internal/mcpCore.js";
++// Request-scoped tool visibility lives in the version-neutral core; re-export
++// it here so servers can provide it without reaching into internals.
++export { ToolVisibility } from "./internal/mcpCore.js";
+ import * as McpProtocolInternal from "./internal/mcpProtocol.js";
+ import * as McpProtocolRegistry from "./internal/mcpProtocolRegistry.js";
+ import * as McpSchema from "./McpSchema.js";
+diff --git a/dist/unstable/ai/McpServer.d.ts b/dist/unstable/ai/McpServer.d.ts
+index d9fa504a9c..697442277d 100644
+--- a/dist/unstable/ai/McpServer.d.ts
++++ b/dist/unstable/ai/McpServer.d.ts
+@@ -157,6 +157,20 @@ export declare class McpServer extends McpServer_base {
+      */
+     static readonly layer: Layer.Layer<McpServer | McpServerClient>;
+ }
++declare const ToolVisibility_base: Context.ServiceClass<ToolVisibility, "effect/ai/McpServer/ToolVisibility", {
++    readonly allows: (toolName: string) => Effect.Effect<boolean>;
++}>;
++/**
++ * Request-scoped MCP tool visibility (t3-code slice 2: "visible = callable").
++ * When provided in the ambient context, `tools.list` omits every tool it
++ * rejects and `tools.call` reports a rejected tool as not found. Absent, the
++ * server keeps the stock behavior and every registered tool stays visible.
++ *
++ * @category services
++ * @since 4.0.0
++ */
++export declare class ToolVisibility extends ToolVisibility_base {
++}
+ /**
+  * Runs an MCP server over the current `RpcServer.Protocol`.
+  *
+diff --git a/dist/unstable/ai/internal/mcpCore.d.ts b/dist/unstable/ai/internal/mcpCore.d.ts
+index 30d7b60cb7..71170b83f3 100644
+--- a/dist/unstable/ai/internal/mcpCore.d.ts
++++ b/dist/unstable/ai/internal/mcpCore.d.ts
+@@ -3,5 +3,12 @@
+  *
+  * @internal
+  */
+-export {};
++import * as Context from "../../Context.ts";
++import * as Effect from "../../Effect.ts";
++declare const ToolVisibility_base: Context.ServiceClass<ToolVisibility, "effect/ai/McpServer/ToolVisibility", {
++    readonly allows: (toolName: string) => Effect.Effect<boolean>;
++}>;
++/** @internal */
++export declare class ToolVisibility extends ToolVisibility_base {
++}
+ //# sourceMappingURL=mcpCore.d.ts.map
+\ No newline at end of file

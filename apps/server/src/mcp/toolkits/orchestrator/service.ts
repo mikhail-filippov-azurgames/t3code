@@ -2991,6 +2991,20 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       } satisfies OrchestratorMcpPublishToCoordinatorResult;
     });
 
+  // Coordinator reads that reveal coordinator-owned state (architect
+  // binding/reviews queries) apply the same marked-orchestrator check, but
+  // only when a board repository exists: boardless compositions (and their
+  // tests) keep the legacy thread-identity behavior, while production — where
+  // the board is always present — denies unmarked callers.
+  const requireRegisteredOrchestratorWhenBoardPresent = (
+    scope: McpInvocationScope,
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
+    dependencies.board === undefined
+      ? Effect.void
+      : Effect.flatMap(requireBoardRepository(), (repo) =>
+          requireRegisteredOrchestrator(repo, scope),
+        );
+
   // Creating a card is the one board write a non-orchestrator could otherwise
   // reach, so the caller must be a marked orchestrator before any card exists.
   const requireRegisteredOrchestrator = (
@@ -3034,6 +3048,10 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
   return {
     capabilities: (scope) =>
       Effect.gen(function* () {
+        yield* denyArchitectCaller(
+          yield* resolveControlPlaneCaller(scope),
+          "read orchestration capabilities",
+        );
         const parent = yield* requireActiveParent(scope);
         const providers = yield* dependencies.getProviders;
         const settings = yield* dependencies.getSettings;
@@ -3071,8 +3089,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       ),
     delegateTask: (scope, input) =>
       Effect.gen(function* () {
-        const parent = yield* requireActiveParent(scope);
         yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "delegate tasks");
+        const parent = yield* requireActiveParent(scope);
         yield* ensureAuthorTextAllowed("prompt", input.prompt);
         yield* ensureAuthorTextAllowed("title", input.title);
         yield* ensureHandoffTextAllowed(input.handoff);
@@ -3303,14 +3321,14 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       }),
     sendToTask: (scope, input) =>
       Effect.gen(function* () {
-        const parent = yield* requireActiveParent(scope);
-        if (input.taskId === scope.threadId) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
         yield* denyArchitectCaller(
           yield* resolveControlPlaneCaller(scope),
           "send messages to delegated tasks",
         );
+        const parent = yield* requireActiveParent(scope);
+        if (input.taskId === scope.threadId) {
+          return yield* failure("task_not_found", "The delegated task was not found.");
+        }
         yield* denyArchitectTarget(input.taskId, "send_to_task");
         yield* readOwnedTask(scope, input.taskId);
         const childOption = yield* loadThreadDetail(input.taskId);
@@ -4021,7 +4039,9 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       Effect.gen(function* () {
         yield* requireCapability(scope);
         yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "own boards");
+        yield* denyExecutorCaller(scope, "own boards");
         const repo = yield* requireBoardRepository();
+        yield* requireRegisteredOrchestrator(repo, scope);
         const card = yield* requireOwnedCard(repo, scope, BoardCardId.make(input.cardId));
         if (input.executorThreadId !== undefined && input.executorThreadId !== null) {
           yield* denyArchitectTarget(input.executorThreadId, "board_update_card");
@@ -4137,7 +4157,9 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       Effect.gen(function* () {
         yield* requireCapability(scope);
         yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "own boards");
+        yield* denyExecutorCaller(scope, "own boards");
         const repo = yield* requireBoardRepository();
+        yield* requireRegisteredOrchestrator(repo, scope);
         const cardId = BoardCardId.make(input.cardId);
         yield* requireOwnedCard(repo, scope, cardId);
         yield* repo
@@ -4148,7 +4170,10 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
     boardListCards: (scope, input) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
+        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "read boards");
+        yield* denyExecutorCaller(scope, "read boards");
         const repo = yield* requireBoardRepository();
+        yield* requireRegisteredOrchestrator(repo, scope);
         const includeArchived = input.includeArchived ?? false;
         // Statuses only: per-card history stays out of the list response so a
         // large board does not flood the coordinator's context on every wake.
@@ -4173,6 +4198,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
+        yield* denyExecutorCaller(scope, "create an architect");
+        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "create an architect");
         const parent = yield* requireActiveParent(scope);
         yield* checkCoordinatorIdentity(
           scope,
@@ -4269,6 +4296,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
+        yield* denyExecutorCaller(scope, "replace the architect");
+        yield* denyArchitectCaller(
+          yield* resolveControlPlaneCaller(scope),
+          "replace the architect",
+        );
         const parent = yield* requireActiveParent(scope);
         yield* checkCoordinatorIdentity(
           scope,
@@ -4557,6 +4589,8 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
+        yield* denyExecutorCaller(scope, "detach the architect");
+        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "detach the architect");
         const parent = yield* requireActiveParent(scope);
         yield* checkCoordinatorIdentity(
           scope,
@@ -4630,6 +4664,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
+        yield* denyExecutorCaller(scope, "request an architecture review");
+        yield* denyArchitectCaller(
+          yield* resolveControlPlaneCaller(scope),
+          "request an architecture review",
+        );
         const parent = yield* requireActiveParent(scope);
         yield* checkCoordinatorIdentity(
           scope,
@@ -4826,6 +4865,14 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
+        yield* denyExecutorCaller(scope, "cancel architecture reviews");
+        if ((yield* resolveControlPlaneCaller(scope)).kind === "architect") {
+          return yield* failure(
+            "architect_denied",
+            "Architect threads cannot cancel reviews; cancellation is coordinator/human only.",
+          );
+        }
+        yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
         const at = yield* nowIso();
         const review = yield* store
           .getReviewById(input.reviewId)
@@ -4942,6 +4989,13 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* requireCapability(scope);
         yield* requireSplitEnabled();
         const store = yield* requireArchitectStore();
+        yield* denyExecutorCaller(scope, "publish architecture reviews");
+        // Fail forged architect claims before the review lookup so a hidden
+        // tool always denies; coordinator registration keeps unmarked chats
+        // from publishing.
+        if ((yield* resolveControlPlaneCaller(scope)).kind !== "architect") {
+          yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
+        }
         const at = yield* nowIso();
         const review = yield* store
           .getReviewById(input.reviewId)
@@ -5050,11 +5104,14 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               "Architect threads may only query their own binding.",
             );
           }
-        } else if (scope.threadId !== input.coordinatorThreadId) {
-          return yield* failure(
-            "capability_denied",
-            "Only the coordinator thread itself (or a human on it) may query this binding.",
-          );
+        } else {
+          if (scope.threadId !== input.coordinatorThreadId) {
+            return yield* failure(
+              "capability_denied",
+              "Only the coordinator thread itself (or a human on it) may query this binding.",
+            );
+          }
+          yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
         }
         const binding = yield* store
           .getActiveBindingByCoordinator(input.coordinatorThreadId)
@@ -5075,11 +5132,14 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
               "Architect threads may only query their own reviews.",
             );
           }
-        } else if (scope.threadId !== input.coordinatorThreadId) {
-          return yield* failure(
-            "capability_denied",
-            "Only the coordinator thread itself (or a human on it) may query these reviews.",
-          );
+        } else {
+          if (scope.threadId !== input.coordinatorThreadId) {
+            return yield* failure(
+              "capability_denied",
+              "Only the coordinator thread itself (or a human on it) may query these reviews.",
+            );
+          }
+          yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
         }
         const reviews = yield* store
           .listReviewsByCoordinator({

@@ -21,6 +21,7 @@ import { CalendarEventRepositoryLive } from "../persistence/Services/CalendarEve
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
+import * as McpToolVisibility from "./McpToolVisibility.ts";
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
 import {
   PreviewSnapshotToolkitHandlersLive,
@@ -107,8 +108,21 @@ const makeMcpAuthMiddleware = McpSessionRegistry.McpSessionRegistry.pipe(
         });
         return unauthorized;
       }
+      // Slice 2 ("visible = callable"): resolve this credential's visible
+      // tool set once per request and serve it to the effect-patched
+      // `McpServer`, so `tools/list` omits what the session could not call
+      // and `tools/call` reports a hidden tool as not found (50 probes share
+      // one set). Dynamics are fail-open to the static rule; the call-time
+      // gates stay authoritative.
+      const visible = yield* McpToolVisibility.resolveVisibleTools(invocation);
       return yield* httpEffect.pipe(
         Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
+        Effect.provideService(
+          McpServer.ToolVisibility,
+          McpServer.ToolVisibility.of({
+            allows: (toolName: string) => Effect.succeed(visible.has(toolName)),
+          }),
+        ),
         Effect.map(normalizeMcpHttpResponse),
       );
     }),

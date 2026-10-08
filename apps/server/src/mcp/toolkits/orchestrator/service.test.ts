@@ -1044,6 +1044,19 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
         orchestrators.delete(threadId);
       }),
     listCards: () => Effect.succeed([...cards.values()]),
+    listNudgeCandidateCards: () => Effect.succeed([...cards.values()]),
+    hasWorkingReadyCard: (orchestratorThreadId) =>
+      Effect.succeed(
+        [...cards.values()].some(
+          (card) =>
+            card.orchestratorThreadId === orchestratorThreadId &&
+            !card.archived &&
+            card.readiness === "ready" &&
+            ["todo", "orchestrator", "in_progress", "review"].includes(card.status),
+        ),
+      ),
+    hasCardEvent: (entryId) =>
+      Effect.succeed([...events.values()].flat().some((event) => event.entryId === entryId)),
     findCardsByPrefix: (prefix) =>
       Effect.succeed(
         [...cards.values()]
