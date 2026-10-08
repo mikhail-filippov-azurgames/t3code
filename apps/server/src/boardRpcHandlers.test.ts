@@ -24,7 +24,10 @@ import * as Option from "effect/Option";
 
 import type { BoardRepositoryShape } from "./persistence/Services/Board.ts";
 import type { ProjectionTurn } from "./persistence/Services/ProjectionTurns.ts";
-import { BOARD_ORCHESTRATOR_TURN_TEXT } from "./orchestration/boardWakePrompt.ts";
+import {
+  BOARD_ORCHESTRATOR_CARD_START_TEXT,
+  BOARD_ORCHESTRATOR_TURN_TEXT,
+} from "./orchestration/boardWakePrompt.ts";
 import { makeBoardRpcHandlers, type BoardRpcDependencies } from "./ws.ts";
 
 const ORCHESTRATOR = ThreadId.make("orch-thread");
@@ -454,6 +457,8 @@ describe("board RPC handlers", () => {
       assert.isDefined(wake);
       if (notice?.type === "thread.message.system.append" && wake?.type === "thread.turn.start") {
         assert.strictEqual(wake.message.text, notice.message.text);
+        assert.isTrue(wake.message.text.startsWith(BOARD_ORCHESTRATOR_CARD_START_TEXT));
+        assert.notInclude(wake.message.text, "architect_create_or_get");
         assert.include(wake.message.text, card.title);
         assert.include(wake.message.text, card.body);
       }

@@ -1,5 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
-import { BOARD_ORCHESTRATOR_TURN_TEXT } from "./boardWakePrompt.ts";
+import {
+  BOARD_ORCHESTRATOR_CARD_START_TEXT,
+  BOARD_ORCHESTRATOR_TURN_TEXT,
+} from "./boardWakePrompt.ts";
 
 describe("Coordinator board brief", () => {
   it("identifies the Coordinator and preserves board ownership duties", () => {
@@ -102,6 +105,43 @@ describe("Coordinator board brief", () => {
     ]) {
       assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, statement);
     }
+  });
+
+  it("keeps status, readiness and pointer discipline in the card-start brief", () => {
+    for (const text of [BOARD_ORCHESTRATOR_TURN_TEXT, BOARD_ORCHESTRATOR_CARD_START_TEXT]) {
+      for (const statement of [
+        "You are the Coordinator for this board thread",
+        "todo -> orchestrator -> in_progress -> review -> done",
+        "backlog sits outside that chain",
+        "do not start, delegate, or move a backlog card on your own",
+        "Use readiness separately from status",
+        "Keep ready while work can move",
+        "needs_human with the exact question",
+        "Set blocked with the external cause and what work it waits for",
+        "On any wake, re-check blocked cards whose note names the finished work",
+        "The list is a pointer, not the content",
+        "Before delegating work, before deciding a card already covers the work, and before accepting a review, read the bodies of the relevant cards through board_list_cards with cardIds",
+        "Accept it with done or return it to in_progress/todo",
+        "Do not report a cause as a fact until it is shown by an observable fact",
+        "you decide and remain responsible for board state, executor prompts, communication with the human, and execution supervision",
+      ]) {
+        assert.include(text, statement);
+      }
+    }
+  });
+
+  it("leaves the one-time Architect setup out of the card-start brief", () => {
+    for (const setup of [
+      "architect_create_or_get",
+      "get_coordinator_binding",
+      "oc://doc/",
+      "second Coordinator",
+    ]) {
+      assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, setup);
+      assert.notInclude(BOARD_ORCHESTRATOR_CARD_START_TEXT, setup);
+    }
+    assert.include(BOARD_ORCHESTRATOR_CARD_START_TEXT, "create-orchestrator-architect");
+    assert.isBelow(BOARD_ORCHESTRATOR_CARD_START_TEXT.length, BOARD_ORCHESTRATOR_TURN_TEXT.length);
   });
 
   it("requires causes to be shown by observable facts before being reported", () => {

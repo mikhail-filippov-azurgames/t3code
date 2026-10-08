@@ -63,7 +63,10 @@ import {
   ProviderRuntimeIngestionLive,
   splitBufferedAssistantText,
 } from "./ProviderRuntimeIngestion.ts";
-import { BOARD_ORCHESTRATOR_TURN_TEXT } from "../boardWakePrompt.ts";
+import {
+  BOARD_ORCHESTRATOR_CARD_START_TEXT,
+  BOARD_ORCHESTRATOR_TURN_TEXT,
+} from "../boardWakePrompt.ts";
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -2618,7 +2621,7 @@ describe("ProviderRuntimeIngestion", () => {
     const parentThreadId = asThreadId("thread-1");
     const drainMessageId = asMessageId(`board-start-drain:${parentThreadId}:card-1`);
     const now = "2026-01-01T00:00:00.000Z";
-    const taskText = `${BOARD_ORCHESTRATOR_TURN_TEXT}\n\nCurrent card:\nBoard card "Restore the worker" (card-1) started by the human. Executor role: implementation.\n\nKeep the user request and acceptance conditions.`;
+    const taskText = `${BOARD_ORCHESTRATOR_CARD_START_TEXT}\n\nCurrent card:\nBoard card "Restore the worker" (card-1) started by the human. Executor role: implementation.\n\nKeep the user request and acceptance conditions.`;
 
     await occupyParent(harness, parentThreadId, asTurnId("parent-turn"), now);
     await seedBoardStartNotice(harness, {

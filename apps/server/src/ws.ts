@@ -2,7 +2,10 @@ import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
 } from "@t3tools/shared/usageLimits";
-import { BOARD_ORCHESTRATOR_TURN_TEXT } from "./orchestration/boardWakePrompt.ts";
+import {
+  BOARD_ORCHESTRATOR_CARD_START_TEXT,
+  BOARD_ORCHESTRATOR_TURN_TEXT,
+} from "./orchestration/boardWakePrompt.ts";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -718,7 +721,7 @@ const buildHumanBoardCard = (
 });
 
 const boardStartTaskText = (card: BoardCard): string =>
-  `${BOARD_ORCHESTRATOR_TURN_TEXT}\n\nCurrent card:\nBoard card "${card.title}" (${card.cardId}) started by the human. Executor role: ${card.executorRole}.\n\n${card.body}`;
+  `${BOARD_ORCHESTRATOR_CARD_START_TEXT}\n\nCurrent card:\nBoard card "${card.title}" (${card.cardId}) started by the human. Executor role: ${card.executorRole}.\n\n${card.body}`;
 
 const BOARD_ORCHESTRATOR_MESSAGE_PREFIX = "board-orchestrator:";
 const BOARD_ORCHESTRATOR_TURN_MESSAGE_PREFIX = "board-orchestrator-turn:";
