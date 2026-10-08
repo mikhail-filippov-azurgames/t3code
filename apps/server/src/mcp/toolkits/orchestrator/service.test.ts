@@ -1047,6 +1047,7 @@ function makeFakeBoard(initialOrchestrators: ReadonlyArray<ThreadId> = []): {
         orchestrators.delete(threadId);
       }),
     listCards: () => Effect.succeed([...cards.values()]),
+    countArchivedCards: () => Effect.succeed([]),
     listNudgeCandidateCards: () => Effect.succeed([...cards.values()]),
     hasWorkingReadyCard: (orchestratorThreadId) =>
       Effect.succeed(
