@@ -17,6 +17,8 @@ import {
   DEFAULT_BOARD_FILTERS,
   boardStatusLabel,
   boardReadinessLabel,
+  countArchivedBoardCardsByStatus,
+  countBoardCardsByStatus,
   countNeedsHumanCards,
   filterBoardCards,
   filterChatCandidates,
@@ -207,6 +209,99 @@ describe("groupBoardCardsByStatus", () => {
       ["backlog"],
     );
   });
+});
+
+describe("board status counters", () => {
+  it("matches every per-status headline with its column list length", () => {
+    const cards: BoardCard[] = [];
+    for (const status of BoardCardStatus.literals) {
+      cards.push(makeCard({ id: `active-${status}`, status }));
+      cards.push(makeCard({ id: `active-2-${status}`, status }));
+    }
+    // Archived cards land in every column: the human archive action accepts
+    // any status, so the counters must stay exact with archive present.
+    cards.push(makeCard({ id: "archived-backlog", status: "backlog", archived: true }));
+    cards.push(makeCard({ id: "archived-todo", status: "todo", archived: true }));
+    cards.push(makeCard({ id: "archived-review", status: "review", archived: true }));
+    cards.push(makeCard({ id: "archived-done", status: "done", archived: true }));
+
+    for (const showArchived of [false, true] as const) {
+      const visible = filterBoardCards(cards, { ...DEFAULT_BOARD_FILTERS, showArchived });
+      const counts = countBoardCardsByStatus(visible);
+      const grouped = groupBoardCardsByStatus(visible);
+      for (const status of BoardCardStatus.literals) {
+        assert.strictEqual(
+          counts[status],
+          grouped.get(status)?.length ?? 0,
+          `status ${status} with showArchived=${showArchived}`,
+        );
+      }
+    }
+  });
+
+  it("keeps the reported Done shape: 32 visible plus 12 archived", () => {
+    const cards: BoardCard[] = [];
+    for (let index = 0; index < 32; index += 1) {
+      cards.push(makeCard({ id: `done-${index}`, status: "done" }));
+    }
+    for (let index = 0; index < 12; index += 1) {
+      cards.push(makeCard({ id: `done-archived-${index}`, status: "done", archived: true }));
+    }
+
+    const visible = filterBoardCards(cards, DEFAULT_BOARD_FILTERS);
+    const counts = countBoardCardsByStatus(visible);
+    assert.strictEqual(counts.done, 32);
+    assert.strictEqual(groupedLength(visible, "done"), 32);
+
+    const withArchive = filterBoardCards(cards, { ...DEFAULT_BOARD_FILTERS, showArchived: true });
+    assert.strictEqual(countBoardCardsByStatus(withArchive).done, 44);
+    assert.strictEqual(countArchivedBoardCardsByStatus(withArchive).done, 12);
+  });
+
+  it("breaks the archive out per status with no double counting", () => {
+    const cards = [
+      makeCard({ id: "todo-active", status: "todo" }),
+      makeCard({ id: "todo-archived", status: "todo", archived: true }),
+      makeCard({ id: "done-active", status: "done" }),
+      makeCard({ id: "done-archived-a", status: "done", archived: true }),
+      makeCard({ id: "done-archived-b", status: "done", archived: true }),
+    ];
+    const withArchive = filterBoardCards(cards, { ...DEFAULT_BOARD_FILTERS, showArchived: true });
+    const totals = countBoardCardsByStatus(withArchive);
+    const archived = countArchivedBoardCardsByStatus(withArchive);
+    const hidden = countBoardCardsByStatus(filterBoardCards(cards, DEFAULT_BOARD_FILTERS));
+    for (const status of BoardCardStatus.literals) {
+      assert.strictEqual(totals[status], hidden[status] + archived[status], `status ${status}`);
+    }
+    assert.deepEqual(archived, {
+      backlog: 0,
+      todo: 1,
+      orchestrator: 0,
+      in_progress: 0,
+      review: 0,
+      done: 2,
+    });
+    // The breakout itself matches the archived-only lists, per status.
+    const archivedOnly = groupBoardCardsByStatus(withArchive.filter((card) => card.archived));
+    for (const status of BoardCardStatus.literals) {
+      assert.strictEqual(archived[status], archivedOnly.get(status)?.length ?? 0);
+    }
+  });
+
+  it("reports zero for statuses with no cards", () => {
+    const counts = countBoardCardsByStatus([]);
+    const archived = countArchivedBoardCardsByStatus([]);
+    const grouped = groupBoardCardsByStatus([]);
+    for (const status of BoardCardStatus.literals) {
+      assert.strictEqual(counts[status], 0);
+      assert.strictEqual(archived[status], 0);
+      assert.deepEqual(grouped.get(status), []);
+    }
+  });
+
+  function groupedLength(cards: ReadonlyArray<BoardCard>, status: BoardCardStatus): number {
+    return groupBoardCardsByStatus(cards).get(status)?.length ?? 0;
+  }
 });
 
 describe("card human permissions", () => {

@@ -11,6 +11,7 @@
 import type { BoardCard, BoardExecutorRole, ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import {
+  ArchiveIcon,
   ArrowLeftIcon,
   CircleAlertIcon,
   OctagonAlertIcon,
@@ -43,6 +44,8 @@ import {
   boardFailureText,
   boardListEvents,
   boardReadinessLabel,
+  countArchivedBoardCardsByStatus,
+  countBoardCardsByStatus,
   countNeedsHumanCards,
   BOARD_COLUMNS,
   BOARD_EXECUTOR_ROLES,
@@ -131,6 +134,21 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
   );
 
   const grouped = useMemo(() => groupBoardCardsByStatus(visibleCards), [visibleCards]);
+  // Headlines count the same visible array the columns render, so each
+  // headline equals its column list length. The archive is broken out
+  // separately (matching every filter except the archive toggle itself), so
+  // headline + badge reconstruct the show-archived totals with no double
+  // counting and the headline stays consistent with `board_list_cards`,
+  // which excludes archived cards by default.
+  const statusCounts = useMemo(() => countBoardCardsByStatus(visibleCards), [visibleCards]);
+  const archiveMatchable = useMemo(
+    () => filterBoardCards(scopedCards, { ...filters, showArchived: true }),
+    [filters, scopedCards],
+  );
+  const archivedCounts = useMemo(
+    () => countArchivedBoardCardsByStatus(archiveMatchable),
+    [archiveMatchable],
+  );
   const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
 
   const environmentLabel = (threadId: ThreadId): string =>
@@ -436,9 +454,14 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
             {selectedOrchestratorId === null && orchestrators.length > 0 ? (
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 {orchestrators.map((orchestrator) => {
-                  const cardCount = cards.filter(
+                  const orchestratorCards = cards.filter(
                     (card) => card.orchestratorThreadId === orchestrator.threadId,
-                  ).length;
+                  );
+                  // The headline counts what the drilled-down board shows by
+                  // default (archived hidden); archived tasks get their own
+                  // number with an archive icon instead of inflating it.
+                  const activeCount = orchestratorCards.filter((card) => !card.archived).length;
+                  const archivedCount = orchestratorCards.length - activeCount;
                   return (
                     <button
                       key={orchestrator.threadId}
@@ -450,8 +473,17 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                         {environmentLabel(orchestrator.threadId)}
                       </span>
                       <span className="text-[11px] text-muted-foreground tabular-nums">
-                        {cardCount === 1 ? "1 task" : `${cardCount} tasks`}
+                        {activeCount === 1 ? "1 task" : `${activeCount} tasks`}
                       </span>
+                      {archivedCount > 0 ? (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground tabular-nums"
+                          title={`${archivedCount} archived`}
+                        >
+                          <ArchiveIcon className="size-3" aria-hidden="true" />
+                          {archivedCount}
+                        </span>
+                      ) : null}
                     </button>
                   );
                 })}
@@ -475,6 +507,8 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                     key={column.status}
                     label={column.label}
                     cards={grouped.get(column.status) ?? []}
+                    count={statusCounts[column.status]}
+                    archivedCount={archivedCounts[column.status]}
                     onSelectCard={(card) => setSelectedCardId(card.cardId)}
                   />
                 ))}
@@ -526,17 +560,34 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
 function BoardColumn({
   label,
   cards,
+  count,
+  archivedCount,
   onSelectCard,
 }: {
   readonly label: string;
   readonly cards: ReadonlyArray<BoardCard>;
+  /** Headline: counts the same visible cards rendered below. */
+  readonly count: number;
+  /** Separate archive number with an icon; never mixed into the headline. */
+  readonly archivedCount: number;
   readonly onSelectCard: (card: BoardCard) => void;
 }) {
   return (
     <section className="flex min-w-0 flex-col gap-2 rounded-lg border border-border bg-card/40 p-2">
       <h2 className="flex items-center justify-between px-1 text-xs font-medium text-muted-foreground">
         <span>{label}</span>
-        <span className="tabular-nums">{cards.length}</span>
+        <span className="inline-flex items-center gap-1.5 tabular-nums">
+          <span>{count}</span>
+          {archivedCount > 0 ? (
+            <span
+              className="inline-flex items-center gap-0.5 text-muted-foreground/70"
+              title={`${archivedCount} archived`}
+            >
+              <ArchiveIcon className="size-3" aria-hidden="true" />
+              {archivedCount}
+            </span>
+          ) : null}
+        </span>
       </h2>
       <div className="flex min-w-0 flex-col gap-1.5">
         {cards.map((card) => (

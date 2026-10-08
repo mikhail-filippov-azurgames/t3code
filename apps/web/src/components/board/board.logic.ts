@@ -149,6 +149,46 @@ export function groupBoardCardsByStatus(
   return grouped;
 }
 
+export type BoardStatusCounts = Readonly<Record<BoardCardStatus, number>>;
+
+const ZERO_BOARD_STATUS_COUNTS: Record<BoardCardStatus, number> = {
+  backlog: 0,
+  todo: 0,
+  orchestrator: 0,
+  in_progress: 0,
+  review: 0,
+  done: 0,
+};
+
+/**
+ * Column headlines for exactly the cards passed. No filtering happens here:
+ * callers pass the same visible array they render, so each headline equals
+ * the length of its column list by construction.
+ */
+export function countBoardCardsByStatus(cards: ReadonlyArray<BoardCard>): BoardStatusCounts {
+  const counts: Record<BoardCardStatus, number> = { ...ZERO_BOARD_STATUS_COUNTS };
+  for (const card of cards) {
+    counts[card.status] += 1;
+  }
+  return counts;
+}
+
+/**
+ * Archived breakout for exactly the cards passed, per status. Shown as a
+ * separate number with an archive icon next to the headline, so the archive
+ * stays discoverable without inflating the headline that `board_list_cards`
+ * (which excludes archived by default) and the default list agree on.
+ */
+export function countArchivedBoardCardsByStatus(
+  cards: ReadonlyArray<BoardCard>,
+): BoardStatusCounts {
+  const counts: Record<BoardCardStatus, number> = { ...ZERO_BOARD_STATUS_COUNTS };
+  for (const card of cards) {
+    if (card.archived) counts[card.status] += 1;
+  }
+  return counts;
+}
+
 /**
  * Human card mutations (executor, status, delete) stop at `todo`: after Start
  * the card is orchestrator-owned and read-only for the human (design §5).
