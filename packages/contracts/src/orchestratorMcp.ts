@@ -17,6 +17,7 @@ import {
 import {
   BoardCard,
   BoardCardEvent,
+  BoardCardId,
   BoardCardOutcome,
   BoardCardReadiness,
   BoardCardStatus,
@@ -523,25 +524,72 @@ export type OrchestratorMcpBoardDeleteCardInput = typeof OrchestratorMcpBoardDel
 export const OrchestratorMcpBoardDeleteCardResult = Schema.Struct({});
 export type OrchestratorMcpBoardDeleteCardResult = typeof OrchestratorMcpBoardDeleteCardResult.Type;
 
+export const ORCHESTRATOR_MCP_BOARD_LIST_CARD_IDS_MAX = 10 as const;
+/**
+ * Serialized-response budget for the pointer list branch of
+ * `board_list_cards`. Bodies are ~95% of a full board payload, so the list
+ * carries summaries only; when even the summaries do not fit, the service
+ * returns an order-preserving prefix with `truncated: true`.
+ */
+export const ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES = 64 * 1024;
+
+/**
+ * Pointer-list entry: every `BoardCard` field except `body`, plus a
+ * `bodyChars` size hint so the coordinator can judge which cards are worth
+ * reading through `cardIds`. Derived from `BoardCard.fields` so the summary
+ * cannot drift from the card contract.
+ */
+const { body: _boardCardBodyField, ...boardCardSummaryFields } = BoardCard.fields;
+export const OrchestratorMcpBoardCardSummary = Schema.Struct({
+  ...boardCardSummaryFields,
+  bodyChars: NonNegativeInt,
+});
+export type OrchestratorMcpBoardCardSummary = typeof OrchestratorMcpBoardCardSummary.Type;
+
 export const OrchestratorMcpBoardListCardsInput = Schema.Struct({
   /**
    * Archived cards are excluded by default so the archive does not grow the
    * coordinator's context. Pass `true` to see archived cards, for example
-   * to return one from the archive. The list carries statuses only; read a
-   * single card's history through board.resolve.
+   * to return one from the archive. The archive filter applies to the
+   * pointer list; explicit `cardIds` reads check ownership only.
+   *
+   * The list carries summaries only, never bodies or progress history.
+   * Read the bodies of selected cards through `cardIds`. Single-card
+   * progress history stays available through the WS `board.resolve`
+   * interface; MCP has no other single-card read besides `cardIds`.
    */
   includeArchived: Schema.optional(Schema.Boolean),
+  /**
+   * Read up to `ORCHESTRATOR_MCP_BOARD_LIST_CARD_IDS_MAX` own cards with
+   * their full bodies, in request order. Ids of missing cards and cards
+   * owned by another coordinator land in `notFound` instead of failing the
+   * whole read. The explicit-read branch always returns whole bodies and
+   * never truncates.
+   */
+  cardIds: Schema.optional(
+    boundedArray(BoundedIdempotencyKey, ORCHESTRATOR_MCP_BOARD_LIST_CARD_IDS_MAX),
+  ),
 });
 export type OrchestratorMcpBoardListCardsInput = typeof OrchestratorMcpBoardListCardsInput.Type;
 
-export const OrchestratorMcpBoardCardEntry = Schema.Struct({
-  card: OrchestratorMcpBoardCard,
-  events: Schema.Array(OrchestratorMcpBoardCardEvent),
-});
-export type OrchestratorMcpBoardCardEntry = typeof OrchestratorMcpBoardCardEntry.Type;
-
 export const OrchestratorMcpBoardListCardsResult = Schema.Struct({
-  cards: Schema.Array(OrchestratorMcpBoardCardEntry),
+  /**
+   * Pointer-list branch: `OrchestratorMcpBoardCardSummary` entries ordered by
+   * card order then id. Explicit-read branch (`cardIds`): full
+   * `OrchestratorMcpBoardCard` entries in request order.
+   */
+  cards: Schema.Array(Schema.Union([OrchestratorMcpBoardCardSummary, OrchestratorMcpBoardCard])),
+  /**
+   * Explicit truncation flag for the pointer-list branch: `true` when the
+   * serialized list would exceed `ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES`
+   * and only an order-preserving prefix was returned. Always `false` for
+   * explicit `cardIds` reads.
+   */
+  truncated: Schema.Boolean,
+  /** Pointer-list branch: how many owned cards did not fit the budget. */
+  omittedCount: NonNegativeInt,
+  /** Explicit-read branch: requested ids that are missing or foreign-owned. */
+  notFound: Schema.Array(BoardCardId),
 });
 export type OrchestratorMcpBoardListCardsResult = typeof OrchestratorMcpBoardListCardsResult.Type;
 

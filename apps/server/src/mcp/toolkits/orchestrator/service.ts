@@ -28,6 +28,7 @@ import {
   EventId,
   isProviderDriverKind,
   MessageId,
+  ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES,
   ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
   ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
   ORCHESTRATOR_MCP_PROTOCOL_VERSION,
@@ -80,6 +81,7 @@ import {
   type OrchestratorMcpArchitectCreateOrGetInput,
   type OrchestratorMcpArchitectDetachInput,
   type OrchestratorMcpArchitectReplaceInput,
+  type OrchestratorMcpBoardCardSummary,
   type OrchestratorMcpCapabilitiesResult,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpGetCoordinatorBindingInput,
@@ -3025,6 +3027,21 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       ),
     );
 
+  // Pointer-list entries carry every card field except the body, plus a body
+  // size hint so the coordinator can pick cards worth reading via `cardIds`.
+  const toBoardCardSummary = (card: BoardCard): OrchestratorMcpBoardCardSummary => {
+    const { body, ...rest } = card;
+    return { ...rest, bodyChars: body.length };
+  };
+
+  // Serialized size of the list response, measured through the same JSON
+  // codec the MCP layer encodes with, so the budget guards the wire bytes.
+  const encodeBoardListCards = Schema.encodeSync(
+    Schema.fromJsonString(OrchestratorMcpBoardListCardsResult),
+  );
+  const boardListCardsByteLength = (result: OrchestratorMcpBoardListCardsResult): number =>
+    Buffer.byteLength(encodeBoardListCards(result), "utf8");
+
   // Ownership failure is reported as task_not_found so a card's existence never
   // leaks across orchestrator threads.
   const requireOwnedCard = (
@@ -4174,24 +4191,69 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         yield* denyExecutorCaller(scope, "read boards");
         const repo = yield* requireBoardRepository();
         yield* requireRegisteredOrchestrator(repo, scope);
-        const includeArchived = input.includeArchived ?? false;
-        // Statuses only: per-card history stays out of the list response so a
-        // large board does not flood the coordinator's context on every wake.
-        // Full history for one card remains available through board.resolve.
         const cards = yield* repo
           .listCards()
           .pipe(Effect.mapError(orchestrationFailure("list board cards")));
-        const owned = cards
-          .filter((card) => card.orchestratorThreadId === scope.threadId)
+        const owned = cards.filter((card) => card.orchestratorThreadId === scope.threadId);
+        if (input.cardIds !== undefined) {
+          // Explicit body reads: full cards in request order. The archive
+          // filter does not apply here; ownership is the only gate, and
+          // foreign or missing ids land in `notFound` instead of failing.
+          const ownedById = new Map(owned.map((card) => [card.cardId, card] as const));
+          const seen = new Set<string>();
+          const found: Array<BoardCard> = [];
+          const notFound: Array<BoardCardId> = [];
+          for (const rawId of input.cardIds) {
+            if (seen.has(rawId)) {
+              continue;
+            }
+            seen.add(rawId);
+            const cardId = BoardCardId.make(rawId);
+            const card = ownedById.get(cardId);
+            if (card === undefined) {
+              notFound.push(cardId);
+            } else {
+              found.push(card);
+            }
+          }
+          return {
+            cards: found,
+            truncated: false,
+            omittedCount: 0,
+            notFound,
+          } satisfies OrchestratorMcpBoardListCardsResult;
+        }
+        // Pointer list: summaries without bodies so a large board does not
+        // flood the coordinator's context on every wake. Bodies are read
+        // explicitly through `cardIds`.
+        const includeArchived = input.includeArchived ?? false;
+        const summaries = owned
           .filter((card) => includeArchived || !card.archived)
           .toSorted((left, right) =>
             left.order === right.order
               ? left.cardId.localeCompare(right.cardId)
               : left.order - right.order,
-          );
+          )
+          .map(toBoardCardSummary);
+        const accepted: Array<OrchestratorMcpBoardCardSummary> = [];
+        for (const summary of summaries) {
+          const candidate: OrchestratorMcpBoardListCardsResult = {
+            cards: [...accepted, summary],
+            truncated: false,
+            omittedCount: 0,
+            notFound: [],
+          };
+          if (boardListCardsByteLength(candidate) > ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES) {
+            break;
+          }
+          accepted.push(summary);
+        }
         return {
-          cards: owned.map((card) => ({ card, events: [] })),
-        };
+          cards: accepted,
+          truncated: accepted.length < summaries.length,
+          omittedCount: summaries.length - accepted.length,
+          notFound: [],
+        } satisfies OrchestratorMcpBoardListCardsResult;
       }),
     architectCreateOrGet: (scope, input) =>
       Effect.gen(function* () {

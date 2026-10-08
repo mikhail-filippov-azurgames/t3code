@@ -14,6 +14,7 @@ import {
   EnvironmentId,
   EventId,
   MessageId,
+  ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -23,6 +24,7 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationThread,
   type OrchestrationThreadShell,
+  OrchestratorMcpBoardListCardsResult,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpSendToTaskInput,
   type OrchestratorMcpSwitchProviderInput,
@@ -33,6 +35,7 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
@@ -1179,6 +1182,12 @@ function seedBoardCard(
   board.events.set(card.cardId, []);
   return card;
 }
+
+// Serialized through the same JSON codec the MCP layer encodes with, so the
+// budget assertion measures wire bytes rather than in-memory shape.
+const encodeBoardListCardsResult = Schema.encodeSync(
+  Schema.fromJsonString(OrchestratorMcpBoardListCardsResult),
+);
 
 describe("OrchestratorMcpService", () => {
   it.effect("delegates through a legacy default provider configuration", () =>
@@ -3795,7 +3804,7 @@ describe("OrchestratorMcpService", () => {
       expect(board.cards.get(card.cardId)?.readinessNote).toBe(readinessNote);
 
       const listed = yield* harness.service.boardListCards(makeScope(), {});
-      const listedCard = listed.cards.find((entry) => entry.card.cardId === card.cardId)?.card;
+      const listedCard = listed.cards.find((entry) => entry.cardId === card.cardId);
       expect(listedCard?.readinessNote).toBe(readinessNote);
     }),
   );
@@ -3998,37 +4007,34 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
-  it.effect("lists only the calling orchestrator's cards without their history", () =>
+  it.effect("lists only the calling orchestrator's cards as pointers without bodies", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard([parentThreadId, ThreadId.make("other-orchestrator")]);
       const harness = makeHarness({ board: board.repo });
-      const own = seedBoardCard(board, { order: 2 });
-      const ownFirst = seedBoardCard(board, { order: 1, title: "First" });
+      const own = seedBoardCard(board, { order: 2, body: "plain body" });
+      const ownFirst = seedBoardCard(board, { order: 1, title: "First", body: "тело" });
       seedBoardCard(board, {
         orchestratorThreadId: ThreadId.make("other-orchestrator"),
         title: "Foreign",
       });
-      board.events.set(own.cardId, [
-        {
-          entryId: BoardCardEventId.make("entry-1"),
-          cardId: own.cardId,
-          at: now,
-          status: "orchestrator",
-          executorRole: "general",
-          model: null,
-          effort: null,
-          source: "system",
-        },
-      ]);
 
       const listed = yield* harness.service.boardListCards(makeScope(), {});
-      expect(listed.cards.map((entry) => entry.card.cardId)).toEqual([ownFirst.cardId, own.cardId]);
-      // History stays out of the list response even when it exists; the
-      // entries keep their shape so consumers do not break.
-      expect(listed.cards[1]?.events).toHaveLength(0);
-      expect(
-        listed.cards.every((entry) => entry.card.orchestratorThreadId === parentThreadId),
-      ).toBe(true);
+      expect(listed.cards.map((entry) => entry.cardId)).toEqual([ownFirst.cardId, own.cardId]);
+      expect(listed.truncated).toBe(false);
+      expect(listed.omittedCount).toBe(0);
+      expect(listed.notFound).toEqual([]);
+      // The list is a pointer: no bodies and no history wrapper, only a
+      // body-size hint per card.
+      expect(listed.cards.map((entry) => ("bodyChars" in entry ? entry.bodyChars : null))).toEqual([
+        4, 10,
+      ]);
+      for (const entry of listed.cards) {
+        expect(entry).not.toHaveProperty("body");
+        expect(entry).not.toHaveProperty("events");
+      }
+      expect(listed.cards.every((entry) => entry.orchestratorThreadId === parentThreadId)).toBe(
+        true,
+      );
     }),
   );
 
@@ -4128,21 +4134,98 @@ describe("OrchestratorMcpService", () => {
       ]);
 
       const listed = yield* harness.service.boardListCards(makeScope(), {});
-      expect(listed.cards.map((entry) => entry.card.cardId)).toEqual([active.cardId]);
-      expect(listed.cards.flatMap((entry) => entry.events)).toHaveLength(0);
+      expect(listed.cards.map((entry) => entry.cardId)).toEqual([active.cardId]);
+      expect(listed.truncated).toBe(false);
+      expect(listed.omittedCount).toBe(0);
 
       const withArchive = yield* harness.service.boardListCards(makeScope(), {
         includeArchived: true,
       });
-      expect(withArchive.cards.map((entry) => entry.card.cardId)).toEqual([
+      expect(withArchive.cards.map((entry) => entry.cardId)).toEqual([
         active.cardId,
         archivedDone.cardId,
       ]);
-      // Archived cards come back with statuses only; their history lives on
-      // behind board.resolve.
+      // Archived cards come back as pointers too; their bodies stay out of
+      // the list and are read through cardIds.
       expect(
-        withArchive.cards.find((entry) => entry.card.cardId === archivedDone.cardId)?.events,
-      ).toHaveLength(0);
+        withArchive.cards.find((entry) => entry.cardId === archivedDone.cardId),
+      ).not.toHaveProperty("body");
+    }),
+  );
+
+  it.effect("reads full bodies whole through cardIds, even 5000 cyrillic chars", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const body = "ж".repeat(5000);
+      const card = seedBoardCard(board, { body });
+
+      const read = yield* harness.service.boardListCards(makeScope(), {
+        cardIds: [String(card.cardId)],
+      });
+      expect(read.truncated).toBe(false);
+      expect(read.omittedCount).toBe(0);
+      expect(read.notFound).toEqual([]);
+      expect(read.cards).toHaveLength(1);
+      const entry = read.cards[0];
+      expect(entry && "body" in entry ? entry.body : null).toBe(body);
+      expect(entry && "body" in entry ? entry.body.length : null).toBe(5000);
+    }),
+  );
+
+  it.effect("reports foreign and missing ids in notFound without failing", () =>
+    Effect.gen(function* () {
+      const foreignThread = ThreadId.make("other-orchestrator");
+      const board = makeFakeBoard([parentThreadId, foreignThread]);
+      const harness = makeHarness({ board: board.repo });
+      const own = seedBoardCard(board, { body: "own body" });
+      const foreign = seedBoardCard(board, {
+        orchestratorThreadId: foreignThread,
+        title: "Foreign",
+        body: "foreign body",
+      });
+
+      const read = yield* harness.service.boardListCards(makeScope(), {
+        cardIds: [String(own.cardId), String(foreign.cardId), "card-nope"],
+      });
+      expect(read.cards.map((entry) => entry.cardId)).toEqual([own.cardId]);
+      const entry = read.cards[0];
+      expect(entry && "body" in entry ? entry.body : null).toBe("own body");
+      expect(read.truncated).toBe(false);
+      expect(read.omittedCount).toBe(0);
+      expect(read.notFound.map(String)).toEqual([String(foreign.cardId), "card-nope"]);
+    }),
+  );
+
+  it.effect("truncates the pointer list over budget with an exact omittedCount", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const total = 120;
+      for (let index = 0; index < total; index += 1) {
+        seedBoardCard(board, {
+          order: index,
+          title: `Карточка ${index} ${"Т".repeat(400)}`,
+          body: "тело".repeat(250),
+        });
+      }
+
+      const listed = yield* harness.service.boardListCards(makeScope(), {});
+      expect(listed.truncated).toBe(true);
+      expect(listed.omittedCount).toBe(total - listed.cards.length);
+      expect(listed.omittedCount).toBeGreaterThan(0);
+      expect(listed.notFound).toEqual([]);
+      expect(Buffer.byteLength(encodeBoardListCardsResult(listed), "utf8")).toBeLessThanOrEqual(
+        ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES,
+      );
+      // Order-preserving prefix: orders 0..k-1, bodies still excluded.
+      expect(listed.cards.map((entry) => entry.order)).toEqual(
+        listed.cards.map((_, index) => index),
+      );
+      for (const entry of listed.cards) {
+        expect(entry).not.toHaveProperty("body");
+        expect(entry).toHaveProperty("bodyChars", 1000);
+      }
     }),
   );
 

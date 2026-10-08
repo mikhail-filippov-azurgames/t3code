@@ -126,6 +126,13 @@ describe("orchestrator MCP tools", () => {
       "Do not use Backlog to mark waiting for a human",
     );
     expect(Tool.getDescription(BoardListCardsTool)).toContain("readiness and readinessNote");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("pointer");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("bodyChars");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("cardIds");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("notFound");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("truncated");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("omittedCount");
+    expect(Tool.getDescription(BoardListCardsTool)).toContain("Before delegating work");
     expect(Tool.getDescription(BoardCreateCardTool)).toContain("The status value orchestrator");
     expect(Tool.getDescription(BoardCreateCardTool)).toContain("and is the default");
   });

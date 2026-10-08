@@ -13,6 +13,9 @@ import {
   ORCHESTRATOR_MCP_TASK_SOURCE_TURN_IDS_MAX,
   ORCHESTRATOR_MCP_TASK_TURN_MAX,
   OrchestratorMcpArchitectCreateOrGetInput,
+  OrchestratorMcpBoardCardSummary,
+  OrchestratorMcpBoardListCardsInput,
+  OrchestratorMcpBoardListCardsResult,
   OrchestratorMcpCoordinatorArchitectSidebarSnapshot,
   OrchestratorMcpCapabilitiesResult,
   OrchestratorMcpDelegateTaskInput,
@@ -34,6 +37,7 @@ import {
   TaskPageLimit,
   TaskTranscriptTurnLimit,
 } from "./orchestratorMcp.ts";
+import { BoardCard } from "./boardShared.ts";
 import { OrchestrationThreadActivity } from "./orchestration.ts";
 
 const decodeCapabilities = Schema.decodeUnknownSync(OrchestratorMcpCapabilitiesResult);
@@ -601,6 +605,62 @@ describe("orchestrator MCP contracts", () => {
         code,
       );
     }
+  });
+
+  it("lists board pointers without bodies and reads full cards through cardIds", () => {
+    // The pointer summary tracks the card contract: every field except
+    // `body`, plus a `bodyChars` size hint.
+    const summaryKeys = Object.keys(OrchestratorMcpBoardCardSummary.fields).sort();
+    const cardKeys = Object.keys(BoardCard.fields)
+      .filter((key) => key !== "body")
+      .sort();
+    expect(summaryKeys).toEqual([...cardKeys, "bodyChars"].sort());
+
+    const decodeInput = Schema.decodeUnknownSync(OrchestratorMcpBoardListCardsInput);
+    expect(decodeInput({})).toEqual({});
+    expect(decodeInput({ includeArchived: true, cardIds: ["card-1", "card-2"] }).cardIds).toEqual([
+      "card-1",
+      "card-2",
+    ]);
+
+    const decodeResult = Schema.decodeUnknownSync(OrchestratorMcpBoardListCardsResult);
+    const summary = {
+      cardId: "card-1",
+      orchestratorThreadId: "parent-thread-1",
+      title: "Seeded card",
+      status: "orchestrator",
+      readiness: "ready",
+      readinessNote: null,
+      createdBy: "orchestrator",
+      assignee: null,
+      executorRole: "general",
+      executorThreadId: null,
+      outcome: null,
+      lastError: null,
+      failureStreak: 0,
+      order: 0,
+      archived: false,
+      createdAt: "2026-09-14T10:00:00.000Z",
+      updatedAt: "2026-09-14T10:00:00.000Z",
+      bodyChars: 10,
+    } as const;
+    const decoded = decodeResult({
+      cards: [summary],
+      truncated: false,
+      omittedCount: 0,
+      notFound: [],
+    });
+    expect(decoded.cards).toHaveLength(1);
+    expect(decoded.cards[0]).not.toHaveProperty("body");
+    expect(decoded.truncated).toBe(false);
+    expect(decoded.omittedCount).toBe(0);
+  });
+
+  it("rejects more than 10 board cardIds", () => {
+    const decodeInput = Schema.decodeUnknownSync(OrchestratorMcpBoardListCardsInput);
+    const ten = Array.from({ length: 10 }, (_, index) => `card-${index + 1}`);
+    expect(decodeInput({ cardIds: ten }).cardIds).toHaveLength(10);
+    expect(() => decodeInput({ cardIds: [...ten, "card-11"] })).toThrow();
   });
 });
 

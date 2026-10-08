@@ -91,6 +91,19 @@ describe("Coordinator board brief", () => {
     }
   });
 
+  it("treats the list as a pointer and requires body reads before key decisions", () => {
+    for (const statement of [
+      "The list is a pointer, not the content",
+      "only a bodyChars size hint",
+      "Before delegating work",
+      "already covers the work",
+      "before accepting a review",
+      "through board_list_cards with cardIds",
+    ]) {
+      assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, statement);
+    }
+  });
+
   it("requires causes to be shown by observable facts before being reported", () => {
     for (const requirement of [
       "Do not report a cause as a fact until it is shown by an observable fact",
