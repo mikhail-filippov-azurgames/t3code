@@ -59,6 +59,9 @@ vi.mock("../commits/CommitsGraph", () => ({
     return <div data-commits-graph="true" />;
   },
 }));
+vi.mock("../DiffPanel", () => ({
+  default: (props: { mode: string }) => <div data-commit-diff={props.mode} />,
+}));
 
 import { useExpandCoordinatorHistoryByDefault } from "../board/boardPreferences";
 import { useDiffPanelStore } from "../../diffPanelStore";
@@ -172,7 +175,13 @@ async function mountPanel(options: MountPanelOptions = {}): Promise<ReactTestRen
     renderer = create(panelElement(options), {
       // Host refs resolve to null without this, so the sentinel ref would
       // never arm the observer under test.
-      createNodeMock: () => ({}),
+      createNodeMock: (element) =>
+        (element.props as Record<string, unknown>)["data-chat-side-panel-resize"]
+          ? {
+              parentElement: { getBoundingClientRect: () => ({ width: 352, height: 672 }) },
+              setPointerCapture: vi.fn(),
+            }
+          : {},
     });
     await Promise.resolve();
   });
@@ -370,6 +379,62 @@ describe("BoardCardPinnedPanel", () => {
         className: "h-full min-h-0 flex-1",
         focusCommitId: null,
       });
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("shows the selected commit diff directly from the commits tab and returns to the graph", async () => {
+    mocks.pins = [];
+    window.localStorage.setItem(activeTabStorageKey, JSON.stringify("commits"));
+    const renderer = await mountPanel({ hasGitRepository: true });
+    try {
+      const graph = mocks.commitsGraph.mock.calls.at(-1)?.[0] as {
+        onCommitSelect: (commitId: string) => void;
+      };
+      act(() => graph.onCommitSelect("15978a076b"));
+      await act(async () => Promise.resolve());
+
+      expect(renderer.root.findByProps({ "data-commit-diff": "embedded" })).toBeDefined();
+      expect(renderer.root.findAllByProps({ "data-commits-graph": "true" })).toHaveLength(0);
+      expect(renderer.root.findByProps({ "aria-label": "Панель чата" }).props.style).toMatchObject({
+        width: 352,
+        height: 672,
+      });
+
+      const backButton = renderer.root.findByProps({ "aria-label": "Вернуться к графу коммитов" });
+      await act(async () => {
+        backButton!.props.onClick();
+        await Promise.resolve();
+      });
+      expect(renderer.root.findByProps({ "data-commits-graph": "true" })).toBeDefined();
+      expect(renderer.root.findAllByProps({ "data-commit-diff": "embedded" })).toHaveLength(0);
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("resizes the panel by dragging its corner handle", async () => {
+    const renderer = await mountPanel();
+    try {
+      const handle = renderer.root.findByProps({ "data-chat-side-panel-resize": "true" });
+      const event = {
+        currentTarget: handle.instance,
+        clientX: 100,
+        clientY: 100,
+        pointerId: 1,
+        preventDefault: vi.fn(),
+      };
+      act(() => handle.props.onPointerDown(event));
+      act(() => handle.props.onPointerMove({ ...event, clientX: 180, clientY: 220 }));
+
+      expect(
+        renderer.root.findByProps({ "data-chat-side-panel": "true" }).props.style,
+      ).toMatchObject({
+        width: 432,
+        height: 704,
+      });
+      act(() => handle.props.onPointerUp(event));
     } finally {
       act(() => renderer.unmount());
     }

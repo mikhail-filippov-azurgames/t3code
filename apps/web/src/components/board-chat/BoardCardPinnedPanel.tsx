@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/unstable/reactivity";
 import {
+  ArrowLeftIcon,
   ArchiveIcon,
   ArchiveRestoreIcon,
   CircleAlertIcon,
@@ -24,7 +25,17 @@ import {
   XIcon,
 } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import {
@@ -55,6 +66,8 @@ import type {
 } from "./coordinatorSummaryHistory";
 import { CommitsGraph } from "../commits/CommitsGraph";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../../diffPanelStore";
+
+const DiffPanel = lazy(() => import("../DiffPanel"));
 
 interface BoardCardPinnedPanelProps {
   readonly environmentId: EnvironmentId;
@@ -142,6 +155,7 @@ export function BoardCardPinnedPanel({
     pins.length > 0 ? "cards" : hasGitRepository ? "commits" : "history",
     CHAT_PANEL_TAB_SCHEMA,
   );
+  const [showingCommitDiff, setShowingCommitDiff] = useState(false);
   const loadSequence = useRef(0);
   const historyLoadSequence = useRef(0);
   const historyLoadingMore = useRef(false);
@@ -549,15 +563,45 @@ export function BoardCardPinnedPanel({
             </>
           )}
         </div>
+      ) : selectedCommitId && showingCommitDiff ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex h-9 shrink-0 items-center border-b border-border px-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              aria-label="Вернуться к графу коммитов"
+              onClick={() => setShowingCommitDiff(false)}
+            >
+              <ArrowLeftIcon className="size-4" aria-hidden="true" />
+              Коммиты
+            </Button>
+          </div>
+          <Suspense
+            fallback={
+              <p role="status" className="p-3 text-xs text-muted-foreground">
+                Загрузка diff…
+              </p>
+            }
+          >
+            <DiffPanel
+              mode="embedded"
+              composerDraftTarget={{ environmentId, threadId }}
+              initialGitScope="branch"
+              workspaceMutationId={null}
+            />
+          </Suspense>
+        </div>
       ) : cwd ? (
         <CommitsGraph
           environmentId={environmentId}
           cwd={cwd}
           className="h-full min-h-0 flex-1"
           focusCommitId={selectedCommitId}
-          onCommitSelect={(commitId) =>
-            useDiffPanelStore.getState().selectCommit({ environmentId, threadId }, commitId)
-          }
+          onCommitSelect={(commitId) => {
+            useDiffPanelStore.getState().selectCommit({ environmentId, threadId }, commitId);
+            setShowingCommitDiff(true);
+          }}
         />
       ) : (
         <p className="p-3 text-xs text-muted-foreground">Рабочая папка недоступна.</p>
@@ -635,13 +679,66 @@ function ChatSidePanelShell(props: {
   readonly showRefresh: boolean;
   readonly children: ReactNode;
 }) {
+  const viewportWidth =
+    typeof window !== "undefined" && Number.isFinite(window.innerWidth) ? window.innerWidth : 1280;
+  const viewportHeight =
+    typeof window !== "undefined" && Number.isFinite(window.innerHeight) ? window.innerHeight : 720;
+  const [size, setSize] = useState(() => ({
+    width: Math.min(352, Math.max(280, viewportWidth - 32)),
+    height: Math.min(672, Math.max(240, viewportHeight - 16)),
+  }));
+  const resizeStartRef = useRef<{ x: number; y: number; width: number; height: number } | null>(
+    null,
+  );
+  const resizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const panel = event.currentTarget.parentElement;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    resizeStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      width: rect.width,
+      height: rect.height,
+    };
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const resizePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const start = resizeStartRef.current;
+    if (!start) return;
+    setSize({
+      width: Math.min(viewportWidth - 16, Math.max(280, start.width + event.clientX - start.x)),
+      height: Math.min(viewportHeight - 16, Math.max(240, start.height + event.clientY - start.y)),
+    });
+  };
+  const resizeEnd = () => {
+    resizeStartRef.current = null;
+  };
+
   return (
     <aside
       aria-label="Панель чата"
-      className="absolute inset-y-2 left-2 z-30 flex w-[min(22rem,calc(100%-1rem))] flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
+      className="absolute left-2 top-2 z-30 flex max-h-[calc(100dvh-1rem)] max-w-[calc(100%-1rem)] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
+      style={{ width: size.width, height: size.height }}
       data-board-card-panel="true"
       data-chat-side-panel="true"
     >
+      <div
+        role="separator"
+        aria-label="Изменить размер панели чата"
+        aria-orientation="vertical"
+        className="absolute bottom-0 right-0 z-40 size-5 cursor-nwse-resize touch-none"
+        data-chat-side-panel-resize="true"
+        onPointerCancel={resizeEnd}
+        onPointerDown={resizePointerDown}
+        onPointerMove={resizePointerMove}
+        onPointerUp={resizeEnd}
+      >
+        <span
+          aria-hidden
+          className="absolute bottom-1 right-1 size-2 border-b border-r border-muted-foreground/60"
+        />
+      </div>
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
         <div role="tablist" aria-label="Разделы панели чата" className="flex min-w-0 flex-1 gap-1">
           {(
