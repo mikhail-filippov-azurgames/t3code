@@ -2233,6 +2233,27 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("commit history", () => {
+    it.effect("resolves a batch of unique commit prefixes and omits trees and missing ids", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const commit = yield* git(cwd, ["rev-parse", "HEAD"]);
+        const tree = yield* git(cwd, ["rev-parse", "HEAD^{tree}"]);
+        const resolved = yield* driver.resolveCommitMentions({
+          cwd,
+          candidates: [
+            commit.slice(0, 8),
+            commit.slice(0, 8),
+            commit,
+            tree.slice(0, 9),
+            "0".repeat(9),
+          ],
+        });
+        assert.deepEqual(resolved, [commit]);
+      }).pipe(Effect.provide(TestLayer)),
+    );
+
     const checkpointGlob = "--exclude=refs/t3/checkpoints/*";
     const commit = (cwd: string, message: string) =>
       git(cwd, ["commit", "--allow-empty", "-m", message]).pipe(

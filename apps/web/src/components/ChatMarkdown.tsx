@@ -190,6 +190,7 @@ import { useAssetUrlRefresh, useAssetUrlState } from "../assets/assetUrls";
 import { cn } from "../lib/utils";
 import { useRemoteOpenResolution, type RemoteOpenMode } from "../remoteOpen";
 import { useRightPanelStore } from "../rightPanelStore";
+import { useDiffPanelStore } from "../diffPanelStore";
 import { buildThreadRouteLocation } from "../threadRoutes";
 import { readThreadShell, readThreadShells, useProjects } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -197,11 +198,18 @@ import { shellEnvironment } from "../state/shell";
 import { assetEnvironment } from "../state/assets";
 import { usePreparedConnection } from "../state/session";
 import { previewEnvironment } from "../state/preview";
+import { vcsEnvironment } from "../state/vcs";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { projectEnvironment } from "../state/projects";
 import { filesystemEnvironment } from "../state/filesystem";
 import { openContextEnvironment } from "../state/openContext";
+import {
+  EMPTY_COMMIT_MENTIONS,
+  EMPTY_COMMIT_MENTION_MATCHES,
+  extractCommitMentions,
+  resolveCommitMentions,
+} from "@t3tools/client-runtime/commit-mentions";
 import {
   cacheWorkspaceMatch,
   claimWorkspaceBasenameLookup,
@@ -921,18 +929,52 @@ function boardCardMentionHref(cardId: string): string {
   return `#t3-board-card-${cardId}`;
 }
 
-function remarkLinkifyBoardCardMentions(matches: ReadonlyMap<string, BoardCardLookupMatch>) {
+function remarkLinkifyBoardCardMentions(
+  matches: ReadonlyMap<string, BoardCardLookupMatch>,
+  commits: ReadonlyMap<string, string>,
+) {
   return (tree: MarkdownAstNode) => {
+    const commitPattern = /(^|[^a-z0-9_-])((?:commit:)?[0-9a-f]{7,40})(?=$|[^a-z0-9_-])/giu;
     const mentionNodes = (value: string) =>
-      boardCardMentionTextSegments(value, matches).map((segment) =>
-        segment.match
-          ? {
+      boardCardMentionTextSegments(value, matches).flatMap((segment) => {
+        if (segment.match) {
+          const sha = segment.text.toLowerCase();
+          const commit = commits.get(sha);
+          return [
+            {
               type: "link",
-              url: boardCardMentionHref(String(segment.match.card.cardId)),
+              url: commit
+                ? `#t3-mention-choice-${sha}`
+                : boardCardMentionHref(String(segment.match.card.cardId)),
               children: [{ type: "text", value: segment.text }],
-            }
-          : { type: "text", value: segment.text },
-      );
+            },
+          ];
+        }
+        const nodes: MarkdownAstNode[] = [];
+        let cursor = 0;
+        const pattern = new RegExp(commitPattern.source, commitPattern.flags);
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(segment.text)) !== null) {
+          const token = match[2];
+          if (!token) continue;
+          const explicit = token.toLowerCase().startsWith("commit:");
+          const sha = (explicit ? token.slice(7) : token).toLowerCase();
+          const resolved = commits.get(token.toLowerCase()) ?? commits.get(sha);
+          if (!resolved) continue;
+          const start = match.index + match[1]!.length;
+          if (start > cursor)
+            nodes.push({ type: "text", value: segment.text.slice(cursor, start) });
+          nodes.push({
+            type: "link",
+            url: `#t3-commit-${resolved}`,
+            children: [{ type: "text", value: token }],
+          });
+          cursor = start + token.length;
+        }
+        if (cursor < segment.text.length)
+          nodes.push({ type: "text", value: segment.text.slice(cursor) });
+        return nodes.length ? nodes : [{ type: "text", value: segment.text }];
+      });
     const visit = (node: MarkdownAstNode) => {
       if (!node.children) return;
       node.children = node.children.flatMap((child) => {
@@ -941,7 +983,13 @@ function remarkLinkifyBoardCardMentions(matches: ReadonlyMap<string, BoardCardLo
         }
         if (child.type === "inlineCode" && typeof child.value === "string") {
           const token = boardCardMentionTokenFromInlineCode(child.value);
-          return token && matches.has(token) ? mentionNodes(child.value) : [child];
+          const inlineValue = child.value.trim().toLowerCase();
+          const commit = extractCommitMentions(inlineValue).find(
+            (candidate) => candidate.token === inlineValue,
+          );
+          return (token && matches.has(token)) || (commit && commits.has(commit.token))
+            ? mentionNodes(child.value)
+            : [child];
         }
         if (
           child.type === "link" ||
@@ -2642,6 +2690,9 @@ function useChatMarkdownState({
     reportFailure: false,
     refresh: true,
   });
+  const resolveCommitMentionsCommand = useAtomCommand(vcsEnvironment.resolveCommitMentions, {
+    reportFailure: false,
+  });
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
@@ -2666,6 +2717,16 @@ function useChatMarkdownState({
   const [boardCardMatches, setBoardCardMatches] = useState<
     ReadonlyMap<string, BoardCardLookupMatch>
   >(EMPTY_BOARD_CARD_LOOKUP_MATCHES);
+  const commitLookupText = isStreaming || !cwd || !environmentId ? null : text;
+  const commitMentionCandidates = useMemo(
+    () =>
+      commitLookupText === null ? EMPTY_COMMIT_MENTIONS : extractCommitMentions(commitLookupText),
+    [commitLookupText],
+  );
+  const [commitMentionMatches, setCommitMentionMatches] = useState<ReadonlyMap<string, string>>(
+    EMPTY_COMMIT_MENTION_MATCHES,
+  );
+  const hasCommitMentionResults = useRef(false);
   useEffect(() => {
     let current = true;
     if (!environmentId || !lookupThreadId || boardCardLookupTokens.length === 0) {
@@ -2703,6 +2764,45 @@ function useChatMarkdownState({
     lookupThreadId,
     resolveBoardCardsQuery,
   ]);
+  useEffect(() => {
+    let current = true;
+    if (!environmentId || !cwd || commitMentionCandidates.length === 0) {
+      if (hasCommitMentionResults.current) {
+        hasCommitMentionResults.current = false;
+        setCommitMentionMatches(EMPTY_COMMIT_MENTION_MATCHES);
+      }
+      return () => {
+        current = false;
+      };
+    }
+    const shaCandidates = [...new Set(commitMentionCandidates.map(({ sha }) => sha))];
+    void resolveCommitMentions(String(environmentId), cwd, shaCandidates, async (candidates) => {
+      const result = await resolveCommitMentionsCommand({
+        environmentId,
+        input: { cwd, candidates },
+      });
+      if (!AsyncResult.isSuccess(result)) throw result.cause;
+      return result.value.commits;
+    }).then(
+      (resolved) => {
+        if (!current) return;
+        const byToken = new Map<string, string>();
+        for (const mention of commitMentionCandidates) {
+          const sha = resolved.get(mention.sha);
+          if (sha) {
+            byToken.set(mention.token, sha);
+            byToken.set(mention.sha, sha);
+          }
+        }
+        hasCommitMentionResults.current = byToken.size > 0;
+        setCommitMentionMatches(byToken);
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [commitMentionCandidates, cwd, environmentId, resolveCommitMentionsCommand]);
   const remoteOpen = useRemoteOpenResolution(environmentId);
   const canUseShellActions = canUseMarkdownFileShellActions(
     environmentId,
@@ -2855,6 +2955,14 @@ function useChatMarkdownState({
       addBoardCardPin(environmentId, threadRef.threadId, cardId);
     },
     [environmentId, threadRef],
+  );
+  const openCommit = useCallback(
+    (sha: string) => {
+      if (!threadRef) return;
+      useDiffPanelStore.getState().selectCommit(threadRef, sha);
+      useRightPanelStore.getState().open(threadRef, "diff");
+    },
+    [threadRef],
   );
   // Subscribed rather than read at click time: the anchor has to decide
   // synchronously whether to intercept its `_blank`, and a subscription is what
@@ -3180,6 +3288,7 @@ function useChatMarkdownState({
     () => ({
       cwd,
       boardCardMatches,
+      commitMentionMatches,
       diffThemeName,
       environmentId,
       expandMedia,
@@ -3192,6 +3301,7 @@ function useChatMarkdownState({
       linkTargetPreference,
       markdownFileLinkMetaByHref,
       openBoardCard,
+      openCommit,
       onTaskListChange,
       onUseArtifactTemplate,
       openChangeRequestLink,
@@ -3213,6 +3323,7 @@ function useChatMarkdownState({
     [
       cwd,
       boardCardMatches,
+      commitMentionMatches,
       diffThemeName,
       environmentId,
       expandMedia,
@@ -3225,6 +3336,7 @@ function useChatMarkdownState({
       linkTargetPreference,
       markdownFileLinkMetaByHref,
       openBoardCard,
+      openCommit,
       onTaskListChange,
       onUseArtifactTemplate,
       openChangeRequestLink,
@@ -3334,6 +3446,29 @@ function MarkdownThreadIdLink({
         </span>
       )}
     </>
+  );
+}
+
+function CommitMentionButton({
+  sha,
+  label,
+  onOpen,
+}: {
+  readonly sha: string;
+  readonly label: string;
+  readonly onOpen: (sha: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="inline cursor-pointer rounded-sm font-mono text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80 focus-visible:outline-2 focus-visible:outline-ring"
+      aria-label={`Open commit ${label}`}
+      data-commit-mention={sha}
+      data-markdown-copy={label}
+      onClick={() => onOpen(sha)}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -3495,6 +3630,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
     const {
       cwd,
       boardCardMatches,
+      commitMentionMatches,
       environmentId,
       imageBaseDir,
       markdownFileLinkMetaByHref,
@@ -3513,6 +3649,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       renderContextReference,
       openFileInPanel,
       openBoardCard,
+      openCommit,
       resolveOpenContextDocForLink,
     } = use(ChatMarkdownRendererContext);
     const boardCardMatch = href?.startsWith("#t3-board-card-")
@@ -3520,6 +3657,44 @@ const CHAT_MARKDOWN_COMPONENTS = {
       : undefined;
     if (boardCardMatch && threadRef !== undefined) {
       return <BoardCardMentionButton match={boardCardMatch} onPin={openBoardCard} />;
+    }
+    const commitId = href?.startsWith("#t3-commit-") ? href.slice("#t3-commit-".length) : null;
+    if (commitId && threadRef !== undefined) {
+      return (
+        <CommitMentionButton sha={commitId} label={nodeToPlainText(children)} onOpen={openCommit} />
+      );
+    }
+    const choiceToken = href?.startsWith("#t3-mention-choice-")
+      ? href.slice("#t3-mention-choice-".length).toLowerCase()
+      : null;
+    if (choiceToken && threadRef !== undefined) {
+      const cardMatch = boardCardMatches.get(choiceToken);
+      const resolvedCommit = commitMentionMatches.get(choiceToken);
+      if (cardMatch && resolvedCommit) {
+        return (
+          <span
+            role="group"
+            aria-label={`Choose target for ${choiceToken}`}
+            className="inline-flex items-center gap-1"
+          >
+            <code>{choiceToken}</code>
+            <button
+              type="button"
+              data-mention-choice="card"
+              onClick={() => openBoardCard(String(cardMatch.card.cardId))}
+            >
+              Карточка
+            </button>
+            <button
+              type="button"
+              data-mention-choice="commit"
+              onClick={() => openCommit(resolvedCommit)}
+            >
+              Коммит
+            </button>
+          </span>
+        );
+      }
     }
     const threadId = href ? parseThreadIdHref(href) : null;
     if (threadId !== null && threadRef !== undefined) {
@@ -4016,12 +4191,19 @@ function ChatMarkdown({
       ...(incrementalMarkdownPlugin ? [incrementalMarkdownPlugin] : []),
       // Card links go first: a full card UUID is also a valid thread-id shape, and links are skipped by later plugins.
       ...(linkBoardCards
-        ? [() => remarkLinkifyBoardCardMentions(componentState.boardCardMatches)]
+        ? [
+            () =>
+              remarkLinkifyBoardCardMentions(
+                componentState.boardCardMatches,
+                componentState.commitMentionMatches,
+              ),
+          ]
         : []),
       ...(linkThreadIds ? [remarkLinkifyThreadIds] : []),
     ],
     [
       componentState.boardCardMatches,
+      componentState.commitMentionMatches,
       extraRemarkPlugins,
       incrementalMarkdownPlugin,
       lineBreaks,

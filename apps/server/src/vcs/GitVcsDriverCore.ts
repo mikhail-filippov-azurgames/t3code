@@ -3308,6 +3308,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     };
   });
 
+  const resolveCommitMentions: GitVcsDriver.GitVcsDriver["Service"]["resolveCommitMentions"] =
+    Effect.fn("resolveCommitMentions")(function* (input) {
+      const candidates = [...new Set(input.candidates.map((candidate) => candidate.toLowerCase()))];
+      if (candidates.length === 0) return [];
+      const result = yield* executeGit(
+        "GitVcsDriver.resolveCommitMentions",
+        input.cwd,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        {
+          stdin: `${candidates.join("\n")}\n`,
+          maxOutputBytes: 16_384,
+          fallbackErrorDetail: "git cat-file failed",
+        },
+      );
+      return [
+        ...new Set(
+          result.stdout.split(/\r?\n/u).flatMap((line) => {
+            const [sha, type] = line.trim().split(/\s+/u);
+            return type === "commit" && typeof sha === "string" && /^[0-9a-f]{40}$/i.test(sha)
+              ? [sha.toLowerCase()]
+              : [];
+          }),
+        ),
+      ];
+    });
+
   const createWorktree: GitVcsDriver.GitVcsDriver["Service"]["createWorktree"] = Effect.fn(
     "createWorktree",
   )(function* (input, options) {
@@ -3876,6 +3902,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readConfigValue,
     listRefs,
     listCommitHistory,
+    resolveCommitMentions,
     createWorktree: (input, options) =>
       withListRefsInvalidation(input.cwd, createWorktree(input, options)),
     fetchPullRequestBranch: (input) =>

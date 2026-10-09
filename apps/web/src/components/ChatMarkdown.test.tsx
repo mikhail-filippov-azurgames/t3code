@@ -8,6 +8,7 @@ import {
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { clearBoardCardMentionCache } from "@t3tools/client-runtime/board-card-mentions";
+import { clearCommitMentionCache } from "@t3tools/client-runtime/commit-mentions";
 import * as NodeFS from "node:fs";
 import { act, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -27,7 +28,15 @@ const projectQueryState = vi.hoisted(() => ({
   entries: [] as ReadonlyArray<{ readonly path: string; readonly kind: "file" | "directory" }>,
   failure: false,
   boardCardMatches: [] as ReadonlyArray<unknown>,
+  gitCommits: [] as ReadonlyArray<string>,
 }));
+const mockAtomCommand = vi.hoisted(() =>
+  vi.fn(async (target?: { readonly input?: { readonly candidates?: ReadonlyArray<string> } }) =>
+    Array.isArray(target?.input?.candidates)
+      ? { _tag: "Success" as const, value: { commits: projectQueryState.gitCommits } }
+      : undefined,
+  ),
+);
 const mockAtomQueryRunner = vi.hoisted(() =>
   vi.fn(async (target?: { readonly input?: { readonly tokens?: unknown } }) => {
     if (Array.isArray(target?.input?.tokens)) {
@@ -41,7 +50,11 @@ const mockAtomQueryRunner = vi.hoisted(() =>
         };
   }),
 );
-const rightPanelState = vi.hoisted(() => ({ openFile: vi.fn() }));
+const rightPanelState = vi.hoisted(() => ({
+  openFile: vi.fn(),
+  openPanel: vi.fn(),
+  selectCommit: vi.fn(),
+}));
 const threadLinkState = vi.hoisted(() => ({
   availableThreadRefs: new Set<string>(),
   navigate: vi.fn(),
@@ -80,7 +93,7 @@ vi.mock("./ui/tooltip", async () => {
 vi.mock("../state/use-atom-query-runner", () => ({
   useAtomQueryRunner: () => mockAtomQueryRunner,
 }));
-vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => vi.fn() }));
+vi.mock("../state/use-atom-command", () => ({ useAtomCommand: () => mockAtomCommand }));
 vi.mock("../state/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/session")>()),
   usePreparedConnection: () => ({ _tag: "Loading" }),
@@ -111,7 +124,12 @@ vi.mock("~/lib/openPullRequestLink", () => ({
   useOpenChangeRequestLink: () => vi.fn(),
 }));
 vi.mock("../rightPanelStore", () => ({
-  useRightPanelStore: { getState: () => ({ openFile: rightPanelState.openFile }) },
+  useRightPanelStore: {
+    getState: () => ({ openFile: rightPanelState.openFile, open: rightPanelState.openPanel }),
+  },
+}));
+vi.mock("../diffPanelStore", () => ({
+  useDiffPanelStore: { getState: () => ({ selectCommit: rightPanelState.selectCommit }) },
 }));
 
 import ChatMarkdown, {
@@ -132,10 +150,15 @@ beforeEach(() => {
   projectQueryState.entries = [];
   projectQueryState.failure = false;
   projectQueryState.boardCardMatches = [];
+  projectQueryState.gitCommits = [];
   clearBoardCardMentionCache("env-1");
+  clearCommitMentionCache("env-1");
+  mockAtomCommand.mockClear();
   threadLinkState.availableThreadRefs.clear();
   threadLinkState.navigate.mockClear();
   rightPanelState.openFile.mockClear();
+  rightPanelState.openPanel.mockClear();
+  rightPanelState.selectCommit.mockClear();
   clearWorkspaceMatchCache();
 });
 
@@ -536,6 +559,105 @@ describe("ChatMarkdown board-card mentions", () => {
         "c0ffee42",
         "some code",
       ]);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("links explicit and verified bare SHAs after one batched Git check", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const seven = "abcdef1" + "0".repeat(33);
+    const bareSeven = "bbbbbbb" + "0".repeat(33);
+    const nine = "123456789" + "0".repeat(31);
+    const full = "fedcba9876543210fedcba9876543210fedcba98";
+    projectQueryState.gitCommits = [seven, bareSeven, nine, full];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown
+            cwd="/repo"
+            threadRef={sourceRef}
+            text={
+              `commit:${seven.slice(0, 7)} ${bareSeven.slice(0, 7)} ${nine.slice(0, 9)} ${full} and ` +
+              "`prefix " +
+              bareSeven.slice(0, 7) +
+              "`"
+            }
+          />,
+        );
+      });
+      expect(renderer!.root.findAll((node) => "data-commit-mention" in node.props)).toHaveLength(4);
+      expect(renderer!.root.findAllByType("code").map((node) => node.children.join(""))).toEqual([
+        `prefix ${bareSeven.slice(0, 7)}`,
+      ]);
+      expect(mockAtomCommand).toHaveBeenCalledTimes(1);
+      expect(mockAtomCommand.mock.calls[0]?.[0]?.input?.candidates).toEqual([
+        seven.slice(0, 7),
+        bareSeven.slice(0, 7),
+        nine.slice(0, 9),
+        full,
+      ]);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("offers Card or Commit when a bare eight-character token resolves both ways", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    projectQueryState.boardCardMatches = [boardCardMentionMatch];
+    projectQueryState.gitCommits = ["b71111aa" + "0".repeat(32)];
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/repo" threadRef={sourceRef} text="b71111aa" />);
+      });
+      expect(renderer!.root.findAllByProps({ "data-mention-choice": "card" })).toHaveLength(1);
+      const commitChoice = renderer!.root.findByProps({ "data-mention-choice": "commit" });
+      expect(commitChoice.children).toEqual(["Коммит"]);
+      await act(async () => commitChoice.props.onClick());
+      expect(rightPanelState.selectCommit).toHaveBeenCalledWith(
+        sourceRef,
+        "b71111aa" + "0".repeat(32),
+      );
+      expect(rightPanelState.openPanel).toHaveBeenCalledWith(sourceRef, "diff");
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not query Git while the message is streaming", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown cwd="/repo" threadRef={sourceRef} isStreaming text="abcdef1" />,
+        );
+      });
+      expect(mockAtomCommand).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves a bare eight-character token as ordinary text when Git and the board have no match", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/repo" threadRef={sourceRef} text="c0ffee42" />);
+      });
+      expect(renderer!.root.findAll((node) => "data-commit-mention" in node.props)).toHaveLength(0);
+      expect(
+        renderer!.root.findAll((node) => "data-board-card-mention" in node.props),
+      ).toHaveLength(0);
+      expect(renderer!.root.findAllByType("a")).toHaveLength(0);
+      expect(mockAtomCommand).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => renderer?.unmount());
       vi.unstubAllGlobals();

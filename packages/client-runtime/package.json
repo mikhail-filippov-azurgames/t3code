@@ -111,6 +111,10 @@
       "types": "./src/boardCardMentions.ts",
       "default": "./src/boardCardMentions.ts"
     },
+    "./commit-mentions": {
+      "types": "./src/commitMentions.ts",
+      "default": "./src/commitMentions.ts"
+    },
     "./board/labels": {
       "types": "./src/board/boardLabels.ts",
       "default": "./src/board/boardLabels.ts"

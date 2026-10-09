@@ -13,6 +13,8 @@ import {
   type VcsCreateWorktreeResult,
   type VcsCommitHistoryInput,
   type VcsCommitHistoryResult,
+  type VcsResolveCommitMentionsInput,
+  type VcsResolveCommitMentionsResult,
   type VcsListRefsInput,
   type VcsListRefsResult,
   type GitManagerServiceError,
@@ -72,6 +74,9 @@ export class GitWorkflowService extends Context.Service<
     readonly listCommitHistory: (
       input: VcsCommitHistoryInput,
     ) => Effect.Effect<VcsCommitHistoryResult, GitCommandError>;
+    readonly resolveCommitMentions: (
+      input: VcsResolveCommitMentionsInput,
+    ) => Effect.Effect<VcsResolveCommitMentionsResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,
       options?: GitVcsDriver.CreateWorktreeOptions,
@@ -355,6 +360,14 @@ export const make = Effect.gen(function* () {
           isGitRepository
             ? git.listCommitHistory(input)
             : Effect.succeed(nonRepositoryCommitHistory()),
+        ),
+      ),
+    resolveCommitMentions: (input) =>
+      detectGitRepositoryForCommand("GitWorkflowService.resolveCommitMentions", input.cwd).pipe(
+        Effect.flatMap((isGitRepository) =>
+          isGitRepository
+            ? git.resolveCommitMentions(input).pipe(Effect.map((commits) => ({ commits })))
+            : Effect.succeed({ commits: [] }),
         ),
       ),
     createWorktree: (input, options) =>

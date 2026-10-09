@@ -330,6 +330,10 @@ export class GitVcsDriver extends Context.Service<
     readonly listCommitHistory: (
       input: VcsCommitHistoryInput,
     ) => Effect.Effect<VcsCommitHistoryResult, GitCommandError>;
+    readonly resolveCommitMentions: (input: {
+      readonly cwd: string;
+      readonly candidates: ReadonlyArray<string>;
+    }) => Effect.Effect<ReadonlyArray<string>, GitCommandError>;
     readonly pullCurrentBranch: (cwd: string) => Effect.Effect<VcsPullResult, GitCommandError>;
     readonly createWorktree: (
       input: VcsCreateWorktreeInput,

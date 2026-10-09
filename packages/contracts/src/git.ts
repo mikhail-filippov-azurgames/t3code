@@ -170,6 +170,19 @@ export const VcsCommitHistoryInput = Schema.Struct({
 });
 export type VcsCommitHistoryInput = typeof VcsCommitHistoryInput.Type;
 
+export const VcsResolveCommitMentionsInput = Schema.Struct({
+  cwd: TrimmedNonEmptyStringSchema,
+  candidates: Schema.Array(Schema.String.check(Schema.isPattern(/^[0-9a-f]{7,40}$/i))).check(
+    Schema.isMaxLength(100),
+  ),
+});
+export type VcsResolveCommitMentionsInput = typeof VcsResolveCommitMentionsInput.Type;
+
+export const VcsResolveCommitMentionsResult = Schema.Struct({
+  commits: Schema.Array(VcsCommitId).check(Schema.isMaxLength(100)),
+});
+export type VcsResolveCommitMentionsResult = typeof VcsResolveCommitMentionsResult.Type;
+
 export const VcsCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   refName: TrimmedNonEmptyStringSchema,

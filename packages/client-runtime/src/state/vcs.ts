@@ -301,6 +301,10 @@ export function createVcsEnvironmentAtoms<R, E>(
       label: "environment-data:vcs:list-commit-history",
       tag: WS_METHODS.vcsListCommitHistory,
     }),
+    resolveCommitMentions: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:vcs:resolve-commit-mentions",
+      tag: WS_METHODS.vcsResolveCommitMentions,
+    }),
     pull: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:vcs:pull",
       tag: WS_METHODS.vcsPull,

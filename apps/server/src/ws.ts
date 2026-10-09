@@ -4519,6 +4519,12 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.vcsListCommitHistory, gitWorkflow.listCommitHistory(input), {
             "rpc.aggregate": "vcs",
           }),
+        [WS_METHODS.vcsResolveCommitMentions]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.vcsResolveCommitMentions,
+            gitWorkflow.resolveCommitMentions(input),
+            { "rpc.aggregate": "vcs" },
+          ),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           observeRpcEffect(
             WS_METHODS.vcsCreateWorktree,
