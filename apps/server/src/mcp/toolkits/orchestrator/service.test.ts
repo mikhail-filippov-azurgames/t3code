@@ -3960,6 +3960,36 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("closes an unnecessary card with a reason visible in a full card read", () =>
+    Effect.gen(function* () {
+      const board = makeFakeBoard([parentThreadId]);
+      const harness = makeHarness({ board: board.repo });
+      const card = seedBoardCard(board, { body: "Implement the abandoned experiment." });
+      const reason = "The decision was cancelled by the architect.";
+
+      const closed = yield* harness.service.boardUpdateCard(makeScope(), {
+        cardId: card.cardId,
+        status: "done",
+        outcome: "cancelled",
+        body: `${card.body}\n\nClosure reason: ${reason}`,
+      });
+      const readBack = yield* harness.service.boardListCards(makeScope(), {
+        cardIds: [card.cardId],
+      });
+      const readBackBody =
+        readBack.cards[0] !== undefined && "body" in readBack.cards[0]
+          ? readBack.cards[0].body
+          : undefined;
+
+      expect(closed).toMatchObject({ status: "done", outcome: "cancelled" });
+      expect(board.events.get(card.cardId)?.[0]).toMatchObject({
+        status: "done",
+        body: "status -> done",
+      });
+      expect(readBackBody).toContain(`Closure reason: ${reason}`);
+    }),
+  );
+
   it.effect("requires a linked executor before a card can be in progress", () =>
     Effect.gen(function* () {
       const board = makeFakeBoard([parentThreadId]);

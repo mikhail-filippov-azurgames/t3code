@@ -974,6 +974,8 @@ describe("CoordinatorBoardNudgeReactor", () => {
     assert.ok(
       text.includes("set readiness to needs_human with a readinessNote stating the exact question"),
     );
+    assert.ok(text.includes("close the card as done with outcome cancelled"));
+    assert.ok(text.includes("append `Closure reason: <why>`"));
     assert.ok(text.includes("Do not move it to Backlog for this."));
 
     assert.ok(
@@ -1003,6 +1005,7 @@ describe("CoordinatorBoardNudgeReactor", () => {
     assert.ok(blockedText.includes("This card is blocked and no other card can move:"));
     assert.ok(blockedText.includes("set readiness to ready"));
     assert.ok(blockedText.includes("keep it blocked and end this turn."));
+    assert.ok(blockedText.includes("close the card as done with outcome cancelled"));
     assert.ok(!blockedText.includes(secret));
   });
 });

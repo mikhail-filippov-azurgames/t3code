@@ -134,6 +134,7 @@ export function formatCoordinatorBoardNudgeMessage(
     ...(card.lastError === null ? [] : [`Last error: ${formatLastError(card.lastError)}`]),
     "",
     stateInstruction,
+    "If the work is no longer needed, close the card as done with outcome cancelled. Preserve its existing body and append `Closure reason: <why>` so the reason is visible when the card is read, then end this turn.",
     ...(card.readiness === "blocked"
       ? []
       : [
