@@ -9623,6 +9623,8 @@ export default function ChatView(props: ChatViewProps) {
                 <BoardCardPinnedPanel
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
+                  hasGitRepository={isGitRepo}
+                  cwd={gitStatusCwd}
                   onOpenChange={setChatSidePanelOpen}
                   loadHistory={loadCoordinatorSummaryHistory}
                 />

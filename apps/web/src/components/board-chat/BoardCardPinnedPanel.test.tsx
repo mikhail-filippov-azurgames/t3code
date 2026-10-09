@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   resolveCards: vi.fn(),
   command: vi.fn(),
   navigate: vi.fn(),
+  commitsGraph: vi.fn(),
 }));
 
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
@@ -52,8 +53,15 @@ vi.mock("./boardCardPins", () => ({
   removeBoardCardPin: () => {},
   subscribeBoardCardPins: () => () => {},
 }));
+vi.mock("../commits/CommitsGraph", () => ({
+  CommitsGraph: (props: { cwd: string }) => {
+    mocks.commitsGraph(props);
+    return <div data-commits-graph="true" />;
+  },
+}));
 
 import { useExpandCoordinatorHistoryByDefault } from "../board/boardPreferences";
+import { useDiffPanelStore } from "../../diffPanelStore";
 import { BoardCardPinnedPanel } from "./BoardCardPinnedPanel";
 
 class TestIntersectionObserver {
@@ -141,6 +149,8 @@ type MountPanelOptions = {
   readonly threadId?: ThreadId;
   readonly onOpenChange?: (open: boolean) => void;
   readonly loadHistory?: CoordinatorSummaryHistoryLoader;
+  readonly hasGitRepository?: boolean;
+  readonly cwd?: string;
 };
 
 function panelElement(options: MountPanelOptions = {}) {
@@ -150,6 +160,8 @@ function panelElement(options: MountPanelOptions = {}) {
       threadId={options.threadId ?? threadId}
       {...(options.onOpenChange ? { onOpenChange: options.onOpenChange } : {})}
       {...(options.loadHistory ? { loadHistory: options.loadHistory } : {})}
+      hasGitRepository={options.hasGitRepository ?? false}
+      cwd={options.cwd ?? "/repo"}
     />
   );
 }
@@ -243,6 +255,8 @@ describe("BoardCardPinnedPanel", () => {
     };
     vi.stubGlobal("window", Object.assign(new EventTarget(), { localStorage: storage }));
     mocks.pins = [mocks.cardId];
+    mocks.commitsGraph.mockClear();
+    useDiffPanelStore.setState({ byThreadKey: {}, branchBaseRefByThreadKey: {} });
     mocks.resolveCards.mockResolvedValue({ _tag: "Success", value: { details: [detail] } });
   });
 
@@ -324,6 +338,38 @@ describe("BoardCardPinnedPanel", () => {
       expect(historyTab.props["aria-selected"]).toBe(false);
       expect(renderer.root.findAllByProps({ "data-board-card-id": mocks.cardId })).toHaveLength(1);
       expect(textContent(renderer.root)).not.toContain("Выжимок пока нет");
+    } finally {
+      act(() => renderer.unmount());
+    }
+  });
+
+  it("opens a commits tab for a git thread without cards and mounts its graph only on demand", async () => {
+    mocks.pins = [];
+    window.localStorage.setItem(activeTabStorageKey, JSON.stringify("history"));
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ hasGitRepository: true, loadHistory });
+    try {
+      expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(1);
+      expect(renderer.root.findAllByProps({ "data-commits-graph": "true" })).toHaveLength(0);
+      expect(mocks.commitsGraph).not.toHaveBeenCalled();
+
+      const commitsTab = renderer.root.find(
+        (node) => node.props.role === "tab" && textContent(node) === "Коммиты",
+      );
+      act(() => commitsTab.props.onClick());
+
+      expect(commitsTab.props["aria-selected"]).toBe(true);
+      expect(renderer.root.findByProps({ "data-commits-graph": "true" })).toBeDefined();
+      expect(mocks.commitsGraph).toHaveBeenCalledOnce();
+      expect(mocks.commitsGraph.mock.calls[0]?.[0]).toMatchObject({
+        environmentId,
+        cwd: "/repo",
+        className: "h-full min-h-0 flex-1",
+        focusCommitId: null,
+      });
     } finally {
       act(() => renderer.unmount());
     }
@@ -848,6 +894,24 @@ describe("BoardCardPinnedPanel", () => {
       expect(textContent(withCards.root)).toContain("Выжимок пока нет");
     } finally {
       act(() => withCards.unmount());
+    }
+  });
+
+  it("opens the panel when a git repository has no cards or coordinator history", async () => {
+    mocks.pins = [];
+    window.localStorage.setItem(activeTabStorageKey, JSON.stringify("history"));
+    const onOpenChange = vi.fn();
+    const loadHistory = vi.fn<CoordinatorSummaryHistoryLoader>(async () => ({
+      entries: [],
+      nextCursor: null,
+    }));
+    const renderer = await mountPanel({ onOpenChange, loadHistory, hasGitRepository: true });
+    try {
+      expect(renderer.root.findAllByProps({ "data-chat-side-panel": "true" })).toHaveLength(1);
+      expect(onOpenChange).toHaveBeenLastCalledWith(true);
+      expect(renderer.root.findAllByProps({ "data-commits-graph": "true" })).toHaveLength(0);
+    } finally {
+      act(() => renderer.unmount());
     }
   });
 

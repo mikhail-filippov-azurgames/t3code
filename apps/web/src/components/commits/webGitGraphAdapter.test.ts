@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   COMMITS_PAGE_LIMIT,
   createCommitsGraphProvider,
+  loadHistoryUntilCommit,
   parseCommitCursor,
   serializeCommitCursor,
   toGitGraphPage,
@@ -101,5 +102,35 @@ describe("createCommitsGraphProvider", () => {
 
     await provider.getHistory({ limit: 30, cursor: JSON.stringify([ROOT, 2]) });
     expect(fetcher).toHaveBeenLastCalledWith({ limit: 30, cursor: { id: ROOT, offset: 2 } });
+  });
+});
+
+describe("loadHistoryUntilCommit", () => {
+  it("loads pages beyond the current one, then returns the requested commit", async () => {
+    const firstPage: VcsCommitHistoryResult = {
+      ...RESULT,
+      commits: [RESULT.commits[0]!],
+      nextCursor: { id: HEAD, offset: 1 },
+    };
+    const secondPage: VcsCommitHistoryResult = {
+      ...RESULT,
+      commits: [RESULT.commits[1]!],
+      nextCursor: null,
+    };
+    const fetcher = vi.fn(async ({ cursor }: { cursor?: { id: string; offset: number } }) =>
+      cursor ? secondPage : firstPage,
+    );
+    const pages: string[][] = [];
+
+    await expect(
+      loadHistoryUntilCommit(fetcher, ROOT, (page) => pages.push(page.commits.map((c) => c.oid))),
+    ).resolves.toBe(true);
+
+    expect(fetcher).toHaveBeenNthCalledWith(1, { limit: COMMITS_PAGE_LIMIT });
+    expect(fetcher).toHaveBeenNthCalledWith(2, {
+      limit: COMMITS_PAGE_LIMIT,
+      cursor: { id: HEAD, offset: 1 },
+    });
+    expect(pages).toEqual([[HEAD], [ROOT]]);
   });
 });

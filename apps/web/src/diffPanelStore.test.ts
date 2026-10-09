@@ -59,6 +59,14 @@ describe("diffPanelStore", () => {
     ).toEqual({ kind: "turn", turnId, filePath: "src/app.ts", revealRequestId: 2 });
   });
 
+  it("shares a selected commit between the chat diff and commits graph", () => {
+    useDiffPanelStore.getState().selectCommit(THREAD_REF, "a".repeat(40));
+
+    expect(
+      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, THREAD_REF),
+    ).toEqual({ kind: "commit", commitId: "a".repeat(40) });
+  });
+
   it("restores the selected branch base after visiting another scope", () => {
     useDiffPanelStore.getState().selectBranchBaseRef(THREAD_REF, "origin/main");
     useDiffPanelStore.getState().selectGitScope(THREAD_REF, "unstaged");

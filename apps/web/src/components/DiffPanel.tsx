@@ -128,7 +128,6 @@ export default function DiffPanel({
     Schema.Boolean,
   );
   const [baseRefQuery, setBaseRefQuery] = useState("");
-  const [selectedCommitId, setSelectedCommitId] = useState<string | null>(null);
   const [commitHistory, setCommitHistory] = useState<ReadonlyArray<VcsCommitHistoryEntry>>([]);
   const [commitHistoryCursor, setCommitHistoryCursor] = useState<VcsCommitHistoryCursor | null>(
     null,
@@ -223,8 +222,8 @@ export default function DiffPanel({
     );
   }, [diffSelection, orderedTurnDiffSummaries, routeThreadRef]);
 
-  const selectedTurnId =
-    selectedCommitId === null && diffSelection.kind === "turn" ? diffSelection.turnId : null;
+  const selectedCommitId = diffSelection.kind === "commit" ? diffSelection.commitId : null;
+  const selectedTurnId = diffSelection.kind === "turn" ? diffSelection.turnId : null;
   const selectedGitScope = diffSelection.kind === "unstaged" ? "unstaged" : "branch";
   const selectedBaseRef = diffSelection.kind === "branch" ? diffSelection.baseRef : null;
   const selectedFilePath = selectedCommitId
@@ -770,17 +769,14 @@ export default function DiffPanel({
   }, [collapseScopeKey, defaultCollapsedDiffFileKeys, diffFileKeys]);
 
   const selectTurn = (turnId: TurnId) => {
-    setSelectedCommitId(null);
     if (!routeThreadRef) return;
     useDiffPanelStore.getState().selectTurn(routeThreadRef, turnId);
   };
   const selectGitScope = (scope: "branch" | "unstaged") => {
-    setSelectedCommitId(null);
     if (!routeThreadRef) return;
     useDiffPanelStore.getState().selectGitScope(routeThreadRef, scope);
   };
   const selectBranchBaseRef = (baseRef: string | null) => {
-    setSelectedCommitId(null);
     if (!routeThreadRef) return;
     useDiffPanelStore.getState().selectBranchBaseRef(routeThreadRef, baseRef);
   };
@@ -862,7 +858,9 @@ export default function DiffPanel({
                     key={commit.id}
                     className={selectedCommitId === commit.id ? "bg-foreground/[0.08]" : undefined}
                     onClick={() => {
-                      setSelectedCommitId(commit.id);
+                      if (routeThreadRef) {
+                        useDiffPanelStore.getState().selectCommit(routeThreadRef, commit.id);
+                      }
                       setSelectedCommitFilePath(null);
                       setCommitPatch(null);
                       setFileTreeOpen(true);

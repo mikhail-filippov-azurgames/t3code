@@ -103,6 +103,28 @@ export type CommitHistoryFetcher = (
   input: CommitHistoryFetcherInput,
 ) => Promise<VcsCommitHistoryResult>;
 
+/** Loads pages in order until the requested SHA is present or history ends. */
+export async function loadHistoryUntilCommit(
+  fetcher: CommitHistoryFetcher,
+  commitId: string,
+  onPage: (page: GitGraphPage) => void,
+): Promise<boolean> {
+  let cursor: VcsCommitHistoryCursor | undefined;
+  const visitedCursors = new Set<string>();
+  do {
+    const result = await fetcher({ limit: COMMITS_PAGE_LIMIT, ...(cursor ? { cursor } : {}) });
+    onPage(toGitGraphPage(result));
+    if (result.commits.some((commit) => commit.id === commitId)) return true;
+    cursor = result.nextCursor ?? undefined;
+    if (cursor) {
+      const key = serializeCommitCursor(cursor)!;
+      if (visitedCursors.has(key)) return false;
+      visitedCursors.add(key);
+    }
+  } while (cursor);
+  return false;
+}
+
 /**
  * Adapts our page-based `vcs.listCommitHistory` to the component's provider.
  * `request.refs` is ignored: the server walks all refs and a client-side branch

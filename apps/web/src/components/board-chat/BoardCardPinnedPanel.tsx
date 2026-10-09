@@ -53,6 +53,8 @@ import type {
   CoordinatorSummaryHistoryEntry,
   CoordinatorSummaryHistoryLoader,
 } from "./coordinatorSummaryHistory";
+import { CommitsGraph } from "../commits/CommitsGraph";
+import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../../diffPanelStore";
 
 interface BoardCardPinnedPanelProps {
   readonly environmentId: EnvironmentId;
@@ -60,9 +62,11 @@ interface BoardCardPinnedPanelProps {
   /** Reports whether the full panel (not the collapsed pill) is on screen. */
   readonly onOpenChange?: (open: boolean) => void;
   readonly loadHistory?: CoordinatorSummaryHistoryLoader;
+  readonly hasGitRepository: boolean;
+  readonly cwd: string | null;
 }
 
-type ChatPanelTab = "cards" | "history";
+type ChatPanelTab = "cards" | "history" | "commits";
 
 type SummaryHistoryLoadState = {
   readonly threadId: ThreadId;
@@ -89,7 +93,7 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
   };
 }
 
-const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history"]);
+const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history", "commits"]);
 
 function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] {
   const chunks: string[][] = [];
@@ -104,6 +108,8 @@ export function BoardCardPinnedPanel({
   threadId,
   onOpenChange,
   loadHistory,
+  hasGitRepository,
+  cwd,
 }: BoardCardPinnedPanelProps) {
   const navigate = useNavigate();
   const key = boardCardPinsKey(environmentId, threadId);
@@ -133,7 +139,7 @@ export function BoardCardPinnedPanel({
   );
   const [activeTab, setActiveTab] = useLocalStorage<ChatPanelTab, ChatPanelTab>(
     `t3code:chat-side-panel-tab:${environmentId}:${threadId}`,
-    pins.length > 0 ? "cards" : "history",
+    pins.length > 0 ? "cards" : hasGitRepository ? "commits" : "history",
     CHAT_PANEL_TAB_SCHEMA,
   );
   const loadSequence = useRef(0);
@@ -163,9 +169,16 @@ export function BoardCardPinnedPanel({
   useLayoutEffect(() => {
     historyStateRef.current = currentHistoryState;
   }, [currentHistoryState]);
-  // A failed history load must stay visible; hiding it would look like "no history".
+  // Failed coordinator history remains panel content so its error can be retried.
+  const selection = useDiffPanelStore((state) =>
+    selectThreadDiffPanelSelection(state.byThreadKey, { environmentId, threadId }),
+  );
+  const selectedCommitId = selection.kind === "commit" ? selection.commitId : null;
   const hasPanelContent =
-    pins.length > 0 || currentHistoryState.entries.length > 0 || currentHistoryState.error;
+    hasGitRepository ||
+    pins.length > 0 ||
+    currentHistoryState.entries.length > 0 ||
+    currentHistoryState.error;
   const open = hasPanelContent && !collapsed;
   useLayoutEffect(() => {
     onOpenChange?.(open);
@@ -411,7 +424,8 @@ export function BoardCardPinnedPanel({
 
   const refreshActiveTab = activeTab === "cards" ? refresh : refreshHistory;
   const refreshingActiveTab = activeTab === "cards" ? loading : currentHistoryState.loading;
-  const canRefreshActiveTab = activeTab === "cards" || loadHistory !== undefined;
+  const canRefreshActiveTab =
+    activeTab === "cards" || (activeTab === "history" && loadHistory !== undefined);
 
   if (!hasPanelContent) return null;
 
@@ -434,6 +448,7 @@ export function BoardCardPinnedPanel({
     <ChatSidePanelShell
       activeTab={activeTab}
       onSelectTab={setActiveTab}
+      hasGitRepository={hasGitRepository}
       onCollapse={() => setCollapsed(true)}
       collapseButtonLabel="Свернуть панель чата"
       refreshButtonLabel={
@@ -471,7 +486,7 @@ export function BoardCardPinnedPanel({
             <p className="text-xs text-muted-foreground">Закреплённых карточек пока нет.</p>
           ) : null}
         </div>
-      ) : (
+      ) : activeTab === "history" ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
             <p role="status" className="text-xs text-muted-foreground">
@@ -534,6 +549,18 @@ export function BoardCardPinnedPanel({
             </>
           )}
         </div>
+      ) : cwd ? (
+        <CommitsGraph
+          environmentId={environmentId}
+          cwd={cwd}
+          className="h-full min-h-0 flex-1"
+          focusCommitId={selectedCommitId}
+          onCommitSelect={(commitId) =>
+            useDiffPanelStore.getState().selectCommit({ environmentId, threadId }, commitId)
+          }
+        />
+      ) : (
+        <p className="p-3 text-xs text-muted-foreground">Рабочая папка недоступна.</p>
       )}
     </ChatSidePanelShell>
   );
@@ -599,6 +626,7 @@ function HistoryEntry(props: {
 function ChatSidePanelShell(props: {
   readonly activeTab: ChatPanelTab;
   readonly onSelectTab: (tab: ChatPanelTab) => void;
+  readonly hasGitRepository: boolean;
   readonly onCollapse: () => void;
   readonly collapseButtonLabel: string;
   readonly refreshButtonLabel: string;
@@ -620,6 +648,7 @@ function ChatSidePanelShell(props: {
             [
               ["cards", "Карточки"],
               ["history", "История"],
+              ...(props.hasGitRepository ? ([["commits", "Коммиты"]] as const) : []),
             ] as const
           ).map(([tab, label]) => (
             <button
