@@ -788,12 +788,28 @@ export const make = Effect.gen(function* () {
     Option.match(current, {
       onSome: (token) => Effect.succeed([token, current] as const),
       onNone: () =>
-        crypto.randomBytes(24).pipe(
-          Effect.map((bytes) => {
-            const token = Encoding.encodeHex(bytes);
-            return [token, Option.some(token)] as const;
-          }),
-        ),
+        process.env.FT3_EXTERNAL_SERVER === "1"
+          ? fileSystem
+              .readFileString(
+                environment.path.join(
+                  environment.baseDir,
+                  "userdata",
+                  "secrets",
+                  "desktop-bootstrap-token",
+                ),
+              )
+              .pipe(
+                Effect.map((rawToken) => {
+                  const token = rawToken.trim();
+                  return [token, Option.some(token)] as const;
+                }),
+              )
+          : crypto.randomBytes(24).pipe(
+              Effect.map((bytes) => {
+                const token = Encoding.encodeHex(bytes);
+                return [token, Option.some(token)] as const;
+              }),
+            ),
     }),
   );
 
@@ -862,7 +878,10 @@ export const make = Effect.gen(function* () {
     // looping forever on preflight failures: the Connections backend
     // control is hidden while WSL is unavailable, so a stuck WSL primary
     // would otherwise leave no in-app way back to Windows.
-    const useWsl = wslRequested && (yield* wslEnvironment.isAvailable);
+    const useWsl =
+      process.env.FT3_EXTERNAL_SERVER !== "1" &&
+      wslRequested &&
+      (yield* wslEnvironment.isAvailable);
     return { useWsl, wslRequested, distro: persistedSettings.wslDistro };
   });
 

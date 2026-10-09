@@ -6,6 +6,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as NodePerformance from "node:perf_hooks";
+// @effect-diagnostics nodeBuiltinImport:off -- WMI creates the server process outside the window job.
+import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics nodeBuiltinImport:off -- Persisting health records must not depend on Effect fibers.
 import * as NodeFs from "node:fs";
 
@@ -30,6 +32,7 @@ import {
 } from "../ipc/channels.ts";
 import * as PreviewManager from "../preview/Manager.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
+import * as DesktopExternalBackend from "../backend/DesktopExternalBackend.ts";
 import * as DesktopClientSettings from "../settings/DesktopClientSettings.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import { makeQuitShortcutHandler } from "./QuitHold.ts";
@@ -109,6 +112,7 @@ export class DesktopWindow extends Context.Service<
     // mode), before the WSL backend that acts as the primary is ready. It is
     // dismissed automatically once the real main window reveals.
     readonly showConnectingSplash: Effect.Effect<void>;
+    readonly showExternalServerUnavailable: Effect.Effect<void>;
     // Marks the primary backend as ready so `createMainIfBackendReady` and the
     // macOS "activate without windows" path may open the real main window. The
     // renderer now always loads the local client URL (getDesktopUrl) and connects
@@ -212,6 +216,53 @@ function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
   const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+function buildExternalServerUnavailableDataUrl(
+  shouldUseDarkColors: boolean,
+  lastConnectedAt: number | null,
+): string {
+  const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
+  const foreground = shouldUseDarkColors ? "#f8fafc" : "#111827";
+  const muted = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
+  // @effect-diagnostics globalDate:off -- Format the last successful local server connection.
+  const lastSeen =
+    lastConnectedAt === null
+      ? "Последней удачной связи ещё не было."
+      : `Последняя удачная связь: ${new Date(lastConnectedAt).toLocaleString("ru-RU")}.`;
+  const title = lastConnectedAt === null ? "Сервер ft3 не запущен" : "Сервер ft3 не отвечает";
+  const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${foreground};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;text-align:center}.card{max-width:420px;padding:32px}.muted{color:${muted};font-size:13px;margin:12px 0 24px}.actions{display:flex;justify-content:center;gap:10px}button{border:0;border-radius:7px;padding:10px 16px;font:inherit;cursor:pointer}.primary{background:${shouldUseDarkColors ? "#f8fafc" : "#111827"};color:${shouldUseDarkColors ? "#111827" : "#fff"}}.secondary{background:${shouldUseDarkColors ? "#27272a" : "#e5e7eb"};color:${foreground}}</style></head><body><main class="card"><h2>${title}</h2><p class="muted">${lastSeen}</p><div class="actions"><button class="primary" onclick="location.href='ft3server://launch'">Запустить сервер</button><button class="secondary" onclick="location.href='ft3server://retry'">Повторить</button></div></main></body></html>`;
+  return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+function launchExternalServer(): Promise<void> {
+  const serverNode = process.env.FT3_SERVER_NODE;
+  const serverLauncher = process.env.FT3_SERVER_LAUNCHER;
+  if (!serverNode || !serverLauncher) {
+    return Promise.reject(new Error("The detached ft3 server launcher is not configured."));
+  }
+  const script = [
+    "$commandLine = '\"' + $env:FT3_SERVER_NODE + '\" \"' + $env:FT3_SERVER_LAUNCHER + '\"'",
+    "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $commandLine }",
+    "if ($result.ReturnValue -ne 0) { throw ('Win32_Process.Create returned ' + $result.ReturnValue) }",
+  ].join("; ");
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const powerShell = NodeChildProcess.execFile(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+    { windowsHide: true },
+    (error) => {
+      if (error) return;
+    },
+  );
+  return new Promise((resolve, reject) => {
+    powerShell.once("error", reject);
+    powerShell.once("exit", (code) =>
+      code === 0
+        ? resolve()
+        : reject(new Error(`Win32_Process.Create failed with exit code ${code}.`)),
+    );
+  });
 }
 
 export function isSameOriginRendererNavigation(input: {
@@ -333,6 +384,9 @@ export const make = Effect.gen(function* () {
   // createMainIfBackendReady, which gates the post-readiness window
   // open in development and the macOS "activate without windows" path.
   const backendReadyRef = yield* Ref.make(false);
+  const lastBackendConnectedAtRef = yield* Ref.make<number | null>(null);
+  const externalStatusOnMainRef = yield* Ref.make(false);
+  const externalServerScreenWindows = new WeakSet<Electron.BrowserWindow>();
   // The transient "Connecting to WSL" splash window, tracked separately so it
   // is never mistaken for the real main window.
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
@@ -347,6 +401,33 @@ export const make = Effect.gen(function* () {
       splash.value.close();
     }
   });
+
+  const installExternalServerScreenNavigation = (window: Electron.BrowserWindow) => {
+    if (externalServerScreenWindows.has(window)) return;
+    externalServerScreenWindows.add(window);
+    window.webContents.on("will-navigate", (event, rawUrl) => {
+      let url: URL;
+      try {
+        url = new URL(rawUrl);
+      } catch {
+        return;
+      }
+      if (url.protocol !== "ft3server:") return;
+      event.preventDefault();
+      if (
+        (url.hostname === "launch" || url.hostname === "retry") &&
+        environment.platform === "win32"
+      ) {
+        void launchExternalServer().catch((error: unknown) =>
+          runPromise(
+            logWindowWarning("failed to launch detached ft3 server", {
+              message: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        );
+      }
+    });
+  };
 
   // currentMainOrFirst / focusedMainOrFirst fall back to "any first window",
   // which during WSL-only boot is the connecting splash. The splash is never
@@ -1069,6 +1150,8 @@ export const make = Effect.gen(function* () {
 
   const createMain = Effect.gen(function* () {
     const window = yield* createWindow();
+    if (DesktopExternalBackend.isExternalServerMode())
+      installExternalServerScreenNavigation(window);
     yield* electronWindow.setMain(window);
     yield* logWindowInfo("main window created");
     return window;
@@ -1148,6 +1231,49 @@ export const make = Effect.gen(function* () {
     Effect.withSpan("desktop.window.showConnectingSplash"),
   );
 
+  const showExternalServerUnavailable = Effect.gen(function* () {
+    if (!DesktopExternalBackend.isExternalServerMode()) return;
+    const main = yield* currentMainWindow;
+    const lastConnectedAt = yield* Ref.get(lastBackendConnectedAtRef);
+    const dark = yield* electronTheme.shouldUseDarkColors;
+    const page = buildExternalServerUnavailableDataUrl(dark, lastConnectedAt);
+    if (Option.isSome(main)) {
+      yield* Ref.set(externalStatusOnMainRef, true);
+      void main.value.loadURL(page);
+      yield* electronWindow.reveal(main.value);
+      installExternalServerScreenNavigation(main.value);
+      return;
+    }
+    const existingSplash = yield* Ref.get(splashWindowRef);
+    if (Option.isSome(existingSplash)) {
+      void existingSplash.value.loadURL(page);
+      installExternalServerScreenNavigation(existingSplash.value);
+      return;
+    }
+    const screen = yield* electronWindow.create({
+      width: 520,
+      height: 300,
+      resizable: false,
+      center: true,
+      show: false,
+      skipTaskbar: false,
+      backgroundColor: getInitialWindowBackgroundColor(dark),
+      title: environment.displayName,
+      webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    yield* Ref.set(splashWindowRef, Option.some(screen));
+    installExternalServerScreenNavigation(screen);
+    screen.once("closed", () => void runPromise(Ref.set(splashWindowRef, Option.none())));
+    screen.once("ready-to-show", () => {
+      if (!screen.isDestroyed()) screen.show();
+    });
+    void screen.loadURL(page);
+  }).pipe(
+    Effect.catch((error) =>
+      logWindowWarning("failed to show external server screen", { message: error.message }),
+    ),
+  );
+
   const dispatchRendererEvent = Effect.fn("desktop.window.dispatchRendererEvent")(function* (
     channel: string,
     payload: unknown,
@@ -1205,14 +1331,27 @@ export const make = Effect.gen(function* () {
     }).pipe(Effect.withSpan("desktop.window.activate")),
     createMainIfBackendReady,
     showConnectingSplash,
+    showExternalServerUnavailable,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
       yield* Ref.set(backendReadyRef, true);
+      yield* Ref.set(lastBackendConnectedAtRef, Date.now());
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
+      if (DesktopExternalBackend.isExternalServerMode()) {
+        const main = yield* currentMainWindow;
+        if (Option.isSome(main) && (yield* Ref.get(externalStatusOnMainRef))) {
+          yield* Ref.set(externalStatusOnMainRef, false);
+          void main.value.loadURL(getDesktopUrl(environment.isDevelopment));
+          yield* electronWindow.reveal(main.value);
+          return;
+        }
+      }
       yield* createMainIfBackendReady;
+      yield* dismissConnectingSplash;
     }),
-    handleBackendNotReady: Ref.set(backendReadyRef, false).pipe(
-      Effect.withSpan("desktop.window.handleBackendNotReady"),
-    ),
+    handleBackendNotReady: Effect.gen(function* () {
+      yield* Ref.set(backendReadyRef, false);
+      if (DesktopExternalBackend.isExternalServerMode()) yield* showExternalServerUnavailable;
+    }).pipe(Effect.withSpan("desktop.window.handleBackendNotReady")),
     flushMainWindowBounds: Effect.suspend(() => flushMainWindowBounds).pipe(
       Effect.withSpan("desktop.window.flushMainWindowBounds"),
     ),

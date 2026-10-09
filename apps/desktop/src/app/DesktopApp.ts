@@ -18,6 +18,7 @@ import * as DesktopClerk from "./DesktopClerk.ts";
 import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopExternalBackend from "../backend/DesktopExternalBackend.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
 import * as DesktopLinuxUrlHandler from "./DesktopLinuxUrlHandler.ts";
@@ -195,43 +196,54 @@ const bootstrap = Effect.gen(function* () {
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
 
-  if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
+  if (
+    !DesktopExternalBackend.isExternalServerMode() &&
+    environment.isDevelopment &&
+    Option.isNone(environment.configuredBackendPort)
+  ) {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
   }
 
-  const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
-  const backendPort = backendPortSelection.port;
-  yield* logBootstrapInfo(
-    backendPortSelection.selectedByScan
-      ? "selected backend port via sequential scan"
-      : "using configured backend port",
-    {
-      port: backendPort,
-      ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
-    },
-  );
-
-  if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
-    yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
-      mode: settings.serverExposureMode,
-    });
-  }
-  const serverExposureState = yield* serverExposure.configureFromSettings({ port: backendPort });
-  const backendConfig = yield* serverExposure.backendConfig;
-  yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
-    baseUrl: backendConfig.httpBaseUrl.href,
-  });
-  if (serverExposureState.endpointUrl) {
-    yield* logBootstrapInfo("bootstrap enabled network access", {
-      endpointUrl: serverExposureState.endpointUrl,
-    });
-  } else if (
-    settings.serverExposureMode === "network-accessible" &&
-    serverExposureState.mode === "local-only"
-  ) {
-    yield* logBootstrapWarning(
-      "bootstrap fell back to local-only because no advertised network host was available",
+  if (DesktopExternalBackend.isExternalServerMode()) {
+    yield* logBootstrapInfo("external server mode; waiting for localhost:3773");
+    yield* serverExposure.configureFromSettings({ port: DEFAULT_DESKTOP_BACKEND_PORT });
+  } else {
+    const backendPortSelection = yield* resolveDesktopBackendPort(
+      environment.configuredBackendPort,
     );
+    const backendPort = backendPortSelection.port;
+    yield* logBootstrapInfo(
+      backendPortSelection.selectedByScan
+        ? "selected backend port via sequential scan"
+        : "using configured backend port",
+      {
+        port: backendPort,
+        ...(backendPortSelection.selectedByScan ? { startPort: DEFAULT_DESKTOP_BACKEND_PORT } : {}),
+      },
+    );
+
+    if (settings.serverExposureMode !== environment.defaultDesktopSettings.serverExposureMode) {
+      yield* logBootstrapInfo("bootstrap restoring persisted server exposure mode", {
+        mode: settings.serverExposureMode,
+      });
+    }
+    const serverExposureState = yield* serverExposure.configureFromSettings({ port: backendPort });
+    const backendConfig = yield* serverExposure.backendConfig;
+    yield* logBootstrapInfo("bootstrap resolved backend endpoint", {
+      baseUrl: backendConfig.httpBaseUrl.href,
+    });
+    if (serverExposureState.endpointUrl) {
+      yield* logBootstrapInfo("bootstrap enabled network access", {
+        endpointUrl: serverExposureState.endpointUrl,
+      });
+    } else if (
+      settings.serverExposureMode === "network-accessible" &&
+      serverExposureState.mode === "local-only"
+    ) {
+      yield* logBootstrapWarning(
+        "bootstrap fell back to local-only because no advertised network host was available",
+      );
+    }
   }
 
   if (!(yield* Ref.get(state.quitting))) {
@@ -240,8 +252,15 @@ const bootstrap = Effect.gen(function* () {
     // WSL" splash immediately so the app feels responsive instead of presenting
     // no window until WSL is ready. (Dual mode opens fast off the Windows
     // primary, so no splash there.)
-    if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
+    if (
+      !DesktopExternalBackend.isExternalServerMode() &&
+      settings.wslOnly === true &&
+      settings.wslBackendEnabled === true
+    ) {
       yield* desktopWindow.showConnectingSplash;
+    }
+    if (DesktopExternalBackend.isExternalServerMode()) {
+      yield* desktopWindow.showExternalServerUnavailable;
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
@@ -253,7 +272,9 @@ const bootstrap = Effect.gen(function* () {
     // primary is already starting; reconcile fires off the WSL register
     // in parallel rather than blocking primary readiness on a possibly
     // slow first wsl.exe spawn.
-    yield* Effect.forkScoped(wslBackend.reconcile);
+    if (!DesktopExternalBackend.isExternalServerMode()) {
+      yield* Effect.forkScoped(wslBackend.reconcile);
+    }
   }
 }).pipe(Effect.withSpan("desktop.bootstrap"));
 

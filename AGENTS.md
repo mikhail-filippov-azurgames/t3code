@@ -83,6 +83,12 @@ The most common defect in this repo is a change that works on the path you teste
 - To reuse web dev auth across worktrees, configure one fixed `T3CODE_DEV_AUTH_TOKEN` in the main checkout's gitignored `.env`. The `t3.json` setup links that file into worktrees. Never commit or publish the token or a startup URL. See [Reusable dev credential](docs/operations/development.md#reusable-dev-credential).
 - Stop what you started, by the PID you tracked. See rule 1.
 
+## ft3 split-process workflow
+
+- After an `apps/web` or `apps/desktop` build, restart only the desktop client. After an `apps/server` build, restart only the standalone server.
+- Never restart the live server for a client build or the client for a server build; server restarts can interrupt active agent turns.
+- Run `pnpm dev` only with an explicit `--home-dir` pointing to a temporary data directory.
+
 ## Test data
 
 An empty database is a bad test. Seed your worktree's `.t3` with a copy of real data instead of pointing at live state:

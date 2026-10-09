@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as DesktopLifecycle from "../../app/DesktopLifecycle.ts";
+import * as DesktopExternalBackend from "../../backend/DesktopExternalBackend.ts";
 import * as DesktopServerExposure from "../../backend/DesktopServerExposure.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -34,7 +35,7 @@ export const setServerExposureMode = DesktopIpc.makeIpcMethod({
     const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const change = yield* serverExposure.setMode(mode);
-    if (change.requiresRelaunch) {
+    if (change.requiresRelaunch && !DesktopExternalBackend.isExternalServerMode()) {
       yield* lifecycle.relaunch(`serverExposureMode=${mode}`);
     }
     return change.state;
@@ -49,7 +50,7 @@ export const setTailscaleServeEnabled = DesktopIpc.makeIpcMethod({
     const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
     const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
     const change = yield* serverExposure.setTailscaleServeEnabled(input);
-    if (change.requiresRelaunch) {
+    if (change.requiresRelaunch && !DesktopExternalBackend.isExternalServerMode()) {
       yield* lifecycle.relaunch(
         change.state.tailscaleServeEnabled ? "tailscale-serve-enabled" : "tailscale-serve-disabled",
       );

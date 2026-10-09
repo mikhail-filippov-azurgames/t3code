@@ -249,6 +249,30 @@ describe("DesktopBackendConfiguration", () => {
     ),
   );
 
+  it.effect("external mode reads the token created by the standalone server launcher", () =>
+    Effect.gen(function* () {
+      const previousFlag = process.env.FT3_EXTERNAL_SERVER;
+      process.env.FT3_EXTERNAL_SERVER = "1";
+      yield* withHarness(
+        Effect.gen(function* () {
+          const environment = yield* DesktopEnvironment.DesktopEnvironment;
+          const fileSystem = yield* FileSystem.FileSystem;
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          const tokenPath = environment.path.join(
+            environment.baseDir,
+            "userdata",
+            "secrets",
+            "desktop-bootstrap-token",
+          );
+          yield* fileSystem.makeDirectory(environment.path.dirname(tokenPath), { recursive: true });
+          yield* fileSystem.writeFileString(tokenPath, "a1".repeat(24));
+          const resolved = yield* configuration.resolvePrimary;
+          assert.equal(resolved.bootstrap.desktopBootstrapToken, "a1".repeat(24));
+        }),
+      ).pipe(Effect.ensuring(Effect.sync(() => restoreEnv("FT3_EXTERNAL_SERVER", previousFlag))));
+    }),
+  );
+
   it.effect("resolvePrimary starts from server.asar without materializing the WSL tree", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

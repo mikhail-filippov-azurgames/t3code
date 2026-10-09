@@ -3179,21 +3179,29 @@ export function ConnectionsSettings() {
       title={searchableSetting("network-access").title}
       description={
         isLocalBackendNetworkAccessible ? (
-          <NetworkAccessDescription
-            endpoint={defaultDesktopNetworkAdvertisedEndpoint}
-            hiddenEndpointCount={Math.max(visibleDesktopNetworkAdvertisedEndpoints.length - 1, 0)}
-            expanded={isAdvertisedEndpointListExpanded}
-            onToggleExpanded={() => setIsAdvertisedEndpointListExpanded((expanded) => !expanded)}
-            fallback={
-              desktopServerExposureState?.endpointUrl
-                ? `Reachable at ${desktopServerExposureState.endpointUrl}`
-                : desktopServerExposureState?.advertisedHost
-                  ? `Exposed on all interfaces. Pairing links use ${desktopServerExposureState.advertisedHost}.`
-                  : "Exposed on all interfaces."
-            }
-          />
+          <div className="space-y-1">
+            <NetworkAccessDescription
+              endpoint={defaultDesktopNetworkAdvertisedEndpoint}
+              hiddenEndpointCount={Math.max(visibleDesktopNetworkAdvertisedEndpoints.length - 1, 0)}
+              expanded={isAdvertisedEndpointListExpanded}
+              onToggleExpanded={() => setIsAdvertisedEndpointListExpanded((expanded) => !expanded)}
+              fallback={
+                desktopServerExposureState?.endpointUrl
+                  ? `Reachable at ${desktopServerExposureState.endpointUrl}`
+                  : desktopServerExposureState?.advertisedHost
+                    ? `Exposed on all interfaces. Pairing links use ${desktopServerExposureState.advertisedHost}.`
+                    : "Exposed on all interfaces."
+              }
+            />
+            <span className="block text-xs text-muted-foreground">
+              With the separate ft3 server, network changes apply after restarting the server.
+            </span>
+          </div>
         ) : desktopServerExposureState ? (
-          "Limited to this machine."
+          <span>
+            Limited to this machine. With the separate ft3 server, network changes apply after
+            restarting the server.
+          </span>
         ) : (
           "Loading…"
         )
@@ -3541,7 +3549,8 @@ export function ConnectionsSettings() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Disable Tailscale HTTPS?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  T3 Code will restart the local backend without Tailscale Serve.
+                  T3 Code will restart the local backend without Tailscale Serve. With the separate
+                  ft3 server, restart the server from its icon to apply this change.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -3580,7 +3589,8 @@ export function ConnectionsSettings() {
                 <DialogTitle>Set up Tailscale HTTPS?</DialogTitle>
                 <DialogDescription>
                   T3 Code will restart the local backend with Tailscale Serve enabled and ask
-                  Tailscale to proxy HTTPS traffic to this backend.
+                  Tailscale to proxy HTTPS traffic to this backend. With the separate ft3 server,
+                  restart the server from its icon to apply this change.
                 </DialogDescription>
               </DialogHeader>
               <DialogPanel className="space-y-4">
