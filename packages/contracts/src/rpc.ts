@@ -85,6 +85,10 @@ import {
   VcsStatusStreamEvent,
 } from "./git.ts";
 import {
+  ReviewCommitDiffFilesInput,
+  ReviewCommitDiffFilesResult,
+  ReviewCommitFilePatchInput,
+  ReviewCommitFilePatchResult,
   ReviewDiffFileContentsInput,
   ReviewDiffFileContentsResult,
   ReviewDiffPreviewError,
@@ -386,6 +390,8 @@ export const WS_METHODS = {
   // Review methods
   reviewGetDiffPreview: "review.getDiffPreview",
   reviewGetDiffFileContents: "review.getDiffFileContents",
+  reviewGetCommitDiffFiles: "review.getCommitDiffFiles",
+  reviewGetCommitFilePatch: "review.getCommitFilePatch",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -1193,6 +1199,18 @@ const WsReviewGetDiffFileContentsRpc = Rpc.make(WS_METHODS.reviewGetDiffFileCont
   error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
 });
 
+const WsReviewGetCommitDiffFilesRpc = Rpc.make(WS_METHODS.reviewGetCommitDiffFiles, {
+  payload: ReviewCommitDiffFilesInput,
+  success: ReviewCommitDiffFilesResult,
+  error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
+});
+
+const WsReviewGetCommitFilePatchRpc = Rpc.make(WS_METHODS.reviewGetCommitFilePatch, {
+  payload: ReviewCommitFilePatchInput,
+  success: ReviewCommitFilePatchResult,
+  error: Schema.Union([ReviewDiffPreviewError, EnvironmentAuthorizationError]),
+});
+
 const WsTerminalOpenRpc = Rpc.make(WS_METHODS.terminalOpen, {
   payload: TerminalOpenInput,
   success: TerminalSessionSnapshot,
@@ -1739,6 +1757,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsVcsInitRpc,
   WsReviewGetDiffPreviewRpc,
   WsReviewGetDiffFileContentsRpc,
+  WsReviewGetCommitDiffFilesRpc,
+  WsReviewGetCommitFilePatchRpc,
   WsTerminalOpenRpc,
   WsTerminalAttachRpc,
   WsTerminalWriteRpc,

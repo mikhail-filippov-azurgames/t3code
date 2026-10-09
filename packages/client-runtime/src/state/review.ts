@@ -37,5 +37,24 @@ export function createReviewEnvironmentAtoms<R, E>(
           ]),
       },
     }),
+    commitDiffFiles: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:review:commit-diff-files",
+      tag: WS_METHODS.reviewGetCommitDiffFiles,
+      scheduler: diffFileScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.cwd, input.commit]),
+      },
+    }),
+    commitFilePatch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:review:commit-file-patch",
+      tag: WS_METHODS.reviewGetCommitFilePatch,
+      scheduler: diffFileScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) =>
+          JSON.stringify([environmentId, input.cwd, input.commit, input.path]),
+      },
+    }),
   };
 }

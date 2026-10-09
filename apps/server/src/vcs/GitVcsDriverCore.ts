@@ -22,6 +22,10 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   GitCommandError,
   VCS_COMMIT_HISTORY_DEFAULT_LIMIT,
+  type ReviewCommitDiffFilesInput,
+  type ReviewCommitDiffFilesResult,
+  type ReviewCommitFilePatchInput,
+  type ReviewCommitFilePatchResult,
   type ReviewDiffFileContentsInput,
   type ReviewDiffPreviewInput,
   type ReviewDiffPreviewSource,
@@ -2819,6 +2823,104 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return { oldContents, newContents };
   });
 
+  const getCommitDiffBaseArgs = Effect.fn("getCommitDiffBaseArgs")(function* (
+    cwd: string,
+    commit: string,
+  ) {
+    const args = ["rev-list", "--parents", "-n", "1", commit];
+    const result = yield* executeGit("GitVcsDriver.getCommitDiffBaseArgs.parents", cwd, args, {
+      fallbackErrorDetail: "Could not resolve commit parents.",
+    });
+    const [id, firstParent] = result.stdout.trim().split(/\s+/);
+    if (id !== commit) {
+      return yield* new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.getCommitDiffBaseArgs.parents",
+          cwd,
+          args,
+        }),
+        detail: "Git returned a different commit while resolving the requested commit.",
+      });
+    }
+    return firstParent
+      ? ["diff", "--no-ext-diff", "--no-renames", firstParent, commit]
+      : ["diff-tree", "--root", "-r", "--no-commit-id", "--no-renames", commit];
+  });
+
+  const getReviewCommitDiffFiles = Effect.fn("getReviewCommitDiffFiles")(function* (
+    input: ReviewCommitDiffFilesInput,
+  ): Effect.fn.Return<ReviewCommitDiffFilesResult, GitCommandError> {
+    const commonArgs = yield* getCommitDiffBaseArgs(input.cwd, input.commit);
+    const [numstat, statuses] = yield* Effect.all([
+      executeGit(
+        "GitVcsDriver.getReviewCommitDiffFiles.numstat",
+        input.cwd,
+        [...commonArgs, "--numstat", "-z"],
+        { maxOutputBytes: 64 * 1024 * 1024, fallbackErrorDetail: "Commit numstat failed." },
+      ),
+      executeGit(
+        "GitVcsDriver.getReviewCommitDiffFiles.status",
+        input.cwd,
+        [...commonArgs, "--name-status", "-z"],
+        { maxOutputBytes: 64 * 1024 * 1024, fallbackErrorDetail: "Commit file list failed." },
+      ),
+    ]);
+    const statusByPath = new Map<string, "added" | "deleted" | "modified">();
+    const statusParts = statuses.stdout.split("\0");
+    for (let index = 0; index + 1 < statusParts.length; index += 2) {
+      const status = statusParts[index];
+      const filePath = statusParts[index + 1];
+      if (!filePath) continue;
+      statusByPath.set(
+        filePath,
+        status === "A" ? "added" : status === "D" ? "deleted" : "modified",
+      );
+    }
+    const files: Array<ReviewCommitDiffFilesResult["files"][number]> = [];
+    for (const record of numstat.stdout.split("\0")) {
+      if (!record) continue;
+      const firstTab = record.indexOf("\t");
+      const secondTab = record.indexOf("\t", firstTab + 1);
+      if (firstTab < 0 || secondTab < 0) continue;
+      const additionsText = record.slice(0, firstTab);
+      const deletionsText = record.slice(firstTab + 1, secondTab);
+      const filePath = record.slice(secondTab + 1);
+      if (!filePath) continue;
+      const binary = additionsText === "-" || deletionsText === "-";
+      files.push({
+        path: filePath,
+        status: statusByPath.get(filePath) ?? "modified",
+        additions: binary ? null : Number(additionsText),
+        deletions: binary ? null : Number(deletionsText),
+        binary,
+      });
+    }
+    return { files };
+  });
+
+  const getReviewCommitFilePatch = Effect.fn("getReviewCommitFilePatch")(function* (
+    input: ReviewCommitFilePatchInput,
+  ): Effect.fn.Return<ReviewCommitFilePatchResult, GitCommandError> {
+    const baseArgs = yield* getCommitDiffBaseArgs(input.cwd, input.commit);
+    const result = yield* executeGit(
+      "GitVcsDriver.getReviewCommitFilePatch",
+      input.cwd,
+      [
+        ...baseArgs,
+        "--patch",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--",
+        `:(literal)${input.path}`,
+      ],
+      { maxOutputBytes: 8 * 1024 * 1024, appendTruncationMarker: true },
+    );
+    return result.stdoutTruncated
+      ? { patch: "", tooLarge: true }
+      : { patch: result.stdout, tooLarge: false };
+  });
+
   const readConfigValue: GitVcsDriver.GitVcsDriver["Service"]["readConfigValue"] = (cwd, key) =>
     runGitStdout("GitVcsDriver.readConfigValue", cwd, ["config", "--get", key], true).pipe(
       Effect.map((stdout) => stdout.trim()),
@@ -3769,6 +3871,8 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     readRangeContext,
     getReviewDiffPreview,
     getReviewDiffFileContents,
+    getReviewCommitDiffFiles,
+    getReviewCommitFilePatch,
     readConfigValue,
     listRefs,
     listCommitHistory,

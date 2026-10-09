@@ -8,6 +8,10 @@ import * as Path from "effect/Path";
 import {
   VcsRepositoryDetectionError,
   VcsUnsupportedOperationError,
+  type ReviewCommitDiffFilesInput,
+  type ReviewCommitDiffFilesResult,
+  type ReviewCommitFilePatchInput,
+  type ReviewCommitFilePatchResult,
   type ReviewDiffFileContentsInput,
   type ReviewDiffFileContentsResult,
   type ReviewDiffPreviewError,
@@ -28,6 +32,12 @@ export class ReviewService extends Context.Service<
     readonly getDiffFileContents: (
       input: ReviewDiffFileContentsInput,
     ) => Effect.Effect<ReviewDiffFileContentsResult, ReviewDiffPreviewError>;
+    readonly getCommitDiffFiles: (
+      input: ReviewCommitDiffFilesInput,
+    ) => Effect.Effect<ReviewCommitDiffFilesResult, ReviewDiffPreviewError>;
+    readonly getCommitFilePatch: (
+      input: ReviewCommitFilePatchInput,
+    ) => Effect.Effect<ReviewCommitFilePatchResult, ReviewDiffPreviewError>;
   }
 >()("t3/review/ReviewService") {}
 
@@ -64,7 +74,11 @@ export const make = Effect.gen(function* () {
   };
 
   const assertWorkspaceBoundCwd = Effect.fn("ReviewService.assertWorkspaceBoundCwd")(function* (
-    operation: "ReviewService.getDiffPreview" | "ReviewService.getDiffFileContents",
+    operation:
+      | "ReviewService.getDiffPreview"
+      | "ReviewService.getDiffFileContents"
+      | "ReviewService.getCommitDiffFiles"
+      | "ReviewService.getCommitFilePatch",
     cwd: string,
   ) {
     const [candidate, workspaceRoot, worktreesRoot] = yield* Effect.all([
@@ -83,7 +97,7 @@ export const make = Effect.gen(function* () {
       detail:
         operation === "ReviewService.getDiffPreview"
           ? "Review diff preview cwd must stay within the configured workspace root."
-          : "Review diff file contents cwd must stay within the configured workspace root.",
+          : "Review diff cwd must stay within the configured workspace root.",
     });
   });
 
@@ -133,9 +147,29 @@ export const make = Effect.gen(function* () {
     return yield* git.getReviewDiffFileContents(input);
   });
 
+  const getCommitDiffFiles: ReviewService["Service"]["getCommitDiffFiles"] = Effect.fn(
+    "ReviewService.getCommitDiffFiles",
+  )(function* (input) {
+    yield* assertWorkspaceBoundCwd("ReviewService.getCommitDiffFiles", input.cwd);
+    const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "git" });
+    if (!handle) return { files: [] };
+    return yield* git.getReviewCommitDiffFiles(input);
+  });
+
+  const getCommitFilePatch: ReviewService["Service"]["getCommitFilePatch"] = Effect.fn(
+    "ReviewService.getCommitFilePatch",
+  )(function* (input) {
+    yield* assertWorkspaceBoundCwd("ReviewService.getCommitFilePatch", input.cwd);
+    const handle = yield* vcsRegistry.detect({ cwd: input.cwd, requestedKind: "git" });
+    if (!handle) return { patch: "", tooLarge: false };
+    return yield* git.getReviewCommitFilePatch(input);
+  });
+
   return ReviewService.of({
     getDiffPreview,
     getDiffFileContents,
+    getCommitDiffFiles,
+    getCommitFilePatch,
   });
 });
 

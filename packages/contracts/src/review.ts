@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
-import { TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { GitCommandError } from "./git.ts";
+import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { GitCommandError, VcsCommitId } from "./git.ts";
 import { VcsError } from "./vcs.ts";
 
 export const ReviewDiffPreviewInput = Schema.Struct({
@@ -51,3 +51,36 @@ export type ReviewDiffPreviewResult = typeof ReviewDiffPreviewResult.Type;
 
 export const ReviewDiffPreviewError = Schema.Union([VcsError, GitCommandError]);
 export type ReviewDiffPreviewError = typeof ReviewDiffPreviewError.Type;
+
+export const ReviewCommitDiffFilesInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  commit: VcsCommitId,
+});
+export type ReviewCommitDiffFilesInput = typeof ReviewCommitDiffFilesInput.Type;
+
+export const ReviewCommitDiffFile = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  status: Schema.Literals(["added", "deleted", "modified"]),
+  additions: Schema.NullOr(NonNegativeInt),
+  deletions: Schema.NullOr(NonNegativeInt),
+  binary: Schema.Boolean,
+});
+export type ReviewCommitDiffFile = typeof ReviewCommitDiffFile.Type;
+
+export const ReviewCommitDiffFilesResult = Schema.Struct({
+  files: Schema.Array(ReviewCommitDiffFile),
+});
+export type ReviewCommitDiffFilesResult = typeof ReviewCommitDiffFilesResult.Type;
+
+export const ReviewCommitFilePatchInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  commit: VcsCommitId,
+  path: TrimmedNonEmptyString,
+});
+export type ReviewCommitFilePatchInput = typeof ReviewCommitFilePatchInput.Type;
+
+export const ReviewCommitFilePatchResult = Schema.Struct({
+  patch: Schema.String,
+  tooLarge: Schema.Boolean,
+});
+export type ReviewCommitFilePatchResult = typeof ReviewCommitFilePatchResult.Type;

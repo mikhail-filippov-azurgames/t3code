@@ -959,6 +959,82 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   });
 
   describe("review diff previews", () => {
+    it.effect(
+      "lists commit numstat against its first parent and treats root commits as empty-tree diffs",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          const rootCommit = yield* git(cwd, ["rev-list", "--max-parents=0", "HEAD"]);
+          const rootFiles = yield* driver.getReviewCommitDiffFiles({ cwd, commit: rootCommit });
+          assert.deepStrictEqual(rootFiles.files, [
+            { path: "README.md", status: "added", additions: 1, deletions: 0, binary: false },
+          ]);
+          yield* writeTextFile(cwd, "binary.bin", "\0\x01\x02");
+          yield* git(cwd, ["add", "binary.bin"]);
+          yield* git(cwd, ["commit", "-m", "binary file"]);
+          const binaryCommit = yield* git(cwd, ["rev-parse", "HEAD"]);
+          const binaryFiles = yield* driver.getReviewCommitDiffFiles({ cwd, commit: binaryCommit });
+          assert.deepStrictEqual(binaryFiles.files, [
+            { path: "binary.bin", status: "added", additions: null, deletions: null, binary: true },
+          ]);
+
+          yield* git(cwd, ["checkout", "-b", "side"]);
+          yield* writeTextFile(cwd, "side.txt", "side\n");
+          const sidePaths = Array.from({ length: 101 }, (_, index) => `side/${index}.txt`);
+          yield* Effect.forEach(sidePaths, (filePath) => writeTextFile(cwd, filePath, "side\n"), {
+            discard: true,
+          });
+          yield* git(cwd, ["add", "side.txt"]);
+          yield* git(cwd, ["add", "side"]);
+          yield* git(cwd, ["commit", "-m", "side"]);
+          yield* git(cwd, ["checkout", initialBranch]);
+          yield* writeTextFile(cwd, "main.txt", "main\n");
+          yield* git(cwd, ["add", "main.txt"]);
+          yield* git(cwd, ["commit", "-m", "main"]);
+          yield* git(cwd, ["merge", "--no-ff", "--no-edit", "side"]);
+          const mergeCommit = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+          const firstParentFiles = yield* driver.getReviewCommitDiffFiles({
+            cwd,
+            commit: mergeCommit,
+          });
+          assert.lengthOf(firstParentFiles.files, 102);
+          assert.includeDeepMembers(firstParentFiles.files, [
+            { path: "side.txt", status: "added", additions: 1, deletions: 0, binary: false },
+            { path: "side/100.txt", status: "added", additions: 1, deletions: 0, binary: false },
+          ]);
+        }),
+    );
+
+    it.effect("returns tooLarge without a partial patch for an oversized file", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        yield* writeTextFile(cwd, "medium.txt", `${"line\n".repeat(30_000)}last line\n`);
+        yield* writeTextFile(cwd, "large.txt", "large line\n".repeat(800_000));
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "large file"]);
+        const commit = yield* git(cwd, ["rev-parse", "HEAD"]);
+
+        const mediumPatch = yield* driver.getReviewCommitFilePatch({
+          cwd,
+          commit,
+          path: "medium.txt",
+        });
+        assert.isFalse(mediumPatch.tooLarge);
+        assert.isAbove(mediumPatch.patch.length, 120_000);
+        assert.include(mediumPatch.patch, "+last line");
+
+        const patch = yield* driver.getReviewCommitFilePatch({ cwd, commit, path: "large.txt" });
+
+        assert.isTrue(patch.tooLarge);
+        assert.strictEqual(patch.patch, "");
+      }),
+    );
+
     it.effect("drops an unterminated path from truncated NUL-separated git output", () =>
       Effect.sync(() => {
         const paths = splitNullSeparatedGitStdoutPaths({
