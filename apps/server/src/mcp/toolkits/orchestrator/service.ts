@@ -1911,10 +1911,12 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
                   : ("orchestration_error" as const),
               message: projectDerivedText(
                 "read",
-                (Predicate.isObject(startFailure?.payload) &&
-                typeof startFailure.payload.detail === "string"
-                  ? startFailure.payload.detail
-                  : undefined) ?? "The delegated provider turn failed.",
+                thread.session?.lastError ??
+                  (Predicate.isObject(startFailure?.payload) &&
+                  typeof startFailure.payload.detail === "string"
+                    ? startFailure.payload.detail
+                    : undefined) ??
+                  "The delegated provider turn failed.",
               ),
             }
           : null;

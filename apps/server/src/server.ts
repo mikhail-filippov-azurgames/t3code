@@ -23,6 +23,7 @@ import * as CalendarNotices from "./background/CalendarNotices.ts";
 import * as CalendarReactor from "./background/CalendarReactor.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
+import * as ServerHomeLock from "./serverHomeLock.ts";
 import {
   otlpTracesProxyRouteLayer,
   assetRouteLayer,
@@ -621,6 +622,7 @@ export const makeRoutesLayer = Layer.mergeAll(
 const makeServerLayer = Layer.unwrap(
   Effect.gen(function* () {
     const config = yield* ServerConfig.ServerConfig;
+    yield* ServerHomeLock.acquireServerHomeLock(config.stateDir);
     const activation = yield* Deferred.make<void>();
     const awaitActivation = Deferred.await(activation);
     const activationLayer = Layer.succeed(ServerActivation, awaitActivation);

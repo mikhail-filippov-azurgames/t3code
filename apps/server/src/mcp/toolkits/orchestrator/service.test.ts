@@ -2172,6 +2172,25 @@ describe("OrchestratorMcpService", () => {
     }),
   );
 
+  it.effect("returns the delegated session lastError from task status", () =>
+    Effect.gen(function* () {
+      const harness = makeHarness();
+      const scope = makeScope();
+      const delegated = yield* harness.service.delegateTask(scope, delegateInput());
+      bindDelegatedTurn(harness, delegated.taskId, delegated.lineage.delegatedMessageId, "error");
+      const child = harness.children.get(delegated.taskId)!;
+      harness.children.set(delegated.taskId, {
+        ...child,
+        session: { ...child.session!, lastError: "Provider returned HTTP 503." },
+      });
+
+      const status = yield* harness.service.taskStatus(scope, delegated.taskId);
+
+      expect(status.status).toBe("failed");
+      expect(status.terminalError?.message).toBe("Provider returned HTTP 503.");
+    }),
+  );
+
   it.effect("binds status and result to the delegated turn after a later ordinary turn", () =>
     Effect.gen(function* () {
       const harness = makeHarness();
