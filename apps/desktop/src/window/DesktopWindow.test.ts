@@ -17,23 +17,42 @@ import * as Electron from "electron";
 import * as NodeEvents from "node:events";
 import { vi } from "vite-plus/test";
 
-vi.mock("electron", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("electron")>()),
-  session: {
-    fromPartition: vi.fn(() => ({
-      getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/1.2.3"),
-      setPermissionRequestHandler: vi.fn(),
-      setUserAgent: vi.fn(),
-    })),
-  },
-  screen: {
-    getAllDisplays: vi.fn(() => [
-      {
-        bounds: { x: 0, y: 0, width: 1920, height: 1080 },
-      },
-    ]),
-  },
-}));
+vi.mock("electron", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("electron")>();
+  const { EventEmitter } = await import("node:events");
+  const app = Object.assign(new EventEmitter(), {
+    getGPUFeatureStatus: vi.fn(() => ({})),
+    getAppMetrics: vi.fn(() => []),
+  });
+  app.setMaxListeners(0);
+  const ipcMain = new EventEmitter();
+  ipcMain.setMaxListeners(0);
+  const powerMonitor = new EventEmitter();
+  powerMonitor.setMaxListeners(0);
+  return {
+    ...actual,
+    app,
+    ipcMain,
+    powerMonitor,
+    session: {
+      fromPartition: vi.fn(() => ({
+        getUserAgent: vi.fn(() => "Mozilla/5.0 Electron/41.5.0 t3code/1.2.3"),
+        setPermissionRequestHandler: vi.fn(),
+        setUserAgent: vi.fn(),
+      })),
+    },
+    screen: {
+      ...actual.screen,
+      on: vi.fn(),
+      removeListener: vi.fn(),
+      getAllDisplays: vi.fn(() => [
+        {
+          bounds: { x: 0, y: 0, width: 1920, height: 1080 },
+        },
+      ]),
+    },
+  };
+});
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";

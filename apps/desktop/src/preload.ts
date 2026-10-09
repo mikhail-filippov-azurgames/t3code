@@ -1,3 +1,4 @@
+// @effect-diagnostics globalTimers:off -- The isolated preload has no Effect runtime.
 import type {
   DesktopBridge,
   DesktopPreviewPointerEvent,
@@ -7,7 +8,6 @@ import type {
 } from "@t3tools/contracts";
 import { exposeClerkBridge } from "@clerk/electron/preload";
 import { contextBridge, ipcRenderer, webFrame } from "electron";
-
 import * as IpcChannels from "./ipc/channels.ts";
 
 const SNAP_SHOT_EVENT_TYPES = new Set([
@@ -28,6 +28,10 @@ function isSnapShotEvent(value: unknown): value is DesktopSnapShotEvent {
 }
 
 exposeClerkBridge({ passkeys: true });
+
+const rendererHeartbeat = () => ipcRenderer.send(IpcChannels.RENDERER_HEARTBEAT_CHANNEL);
+rendererHeartbeat();
+setInterval(rendererHeartbeat, 5_000);
 
 // oxlint-disable-next-line t3code/no-global-process-runtime -- Electron exposes the client platform in its sandboxed preload process.
 const clientPlatform = process.platform;

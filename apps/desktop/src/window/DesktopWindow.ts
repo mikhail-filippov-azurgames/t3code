@@ -5,6 +5,9 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as NodePerformance from "node:perf_hooks";
+// @effect-diagnostics nodeBuiltinImport:off -- Persisting health records must not depend on Effect fibers.
+import * as NodeFs from "node:fs";
 
 import * as Electron from "electron";
 
@@ -21,6 +24,7 @@ import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import {
   MENU_ACTION_CHANNEL,
   QUIT_SHORTCUT_CHANNEL,
+  RENDERER_HEARTBEAT_CHANNEL,
   SNAP_SHOT_EVENT_CHANNEL,
   WINDOW_FULLSCREEN_STATE_CHANNEL,
 } from "../ipc/channels.ts";
@@ -58,6 +62,8 @@ const DEVELOPMENT_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 const RENDERER_RECOVERY_RELOAD_DELAY_MS = 500;
 const RENDERER_RECOVERY_MAX_ATTEMPTS = 3;
 const RENDERER_RECOVERY_WINDOW_MS = 60_000;
+const WINDOW_HEALTH_LOG_MAX_BYTES = 5 * 1024 * 1024;
+const WINDOW_HEALTH_LOG_BACKUP_COUNT = 3;
 const DEVELOPMENT_RETRYABLE_LOAD_ERROR_CODES = new Set([
   -2, // ERR_FAILED
   -7, // ERR_TIMED_OUT
@@ -510,6 +516,56 @@ export const make = Effect.gen(function* () {
     flushMainWindowBounds = flushBoundsPersist;
 
     yield* previewManager.setMainWindow(window);
+    const windowHealthLogPath = environment.path.join(
+      environment.logDir,
+      "desktop-window-health.ndjson",
+    );
+    // @effect-diagnostics globalDateInEffect:off preferSchemaOverJson:off -- Write timestamped JSONL synchronously before logging.
+    const persistWindowDiagnostic = (
+      level: "INFO" | "WARN",
+      message: string,
+      annotations: Record<string, unknown> = {},
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const timestamp = new Date().toISOString();
+        const line = `${JSON.stringify({ timestamp, level, message, pid: process.pid, ...annotations })}\n`;
+        const saved = yield* Effect.sync(() => {
+          try {
+            NodeFs.mkdirSync(environment.logDir, { recursive: true });
+            if (
+              NodeFs.existsSync(windowHealthLogPath) &&
+              NodeFs.statSync(windowHealthLogPath).size + Buffer.byteLength(line) >
+                WINDOW_HEALTH_LOG_MAX_BYTES
+            ) {
+              NodeFs.rmSync(`${windowHealthLogPath}.${WINDOW_HEALTH_LOG_BACKUP_COUNT}`, {
+                force: true,
+              });
+              for (let index = WINDOW_HEALTH_LOG_BACKUP_COUNT - 1; index >= 1; index -= 1) {
+                const source = `${windowHealthLogPath}.${index}`;
+                if (NodeFs.existsSync(source)) {
+                  NodeFs.renameSync(source, `${windowHealthLogPath}.${index + 1}`);
+                }
+              }
+              NodeFs.renameSync(windowHealthLogPath, `${windowHealthLogPath}.1`);
+            }
+            NodeFs.appendFileSync(windowHealthLogPath, line, "utf8");
+            return true;
+          } catch {
+            return false;
+          }
+        });
+        if (!saved) {
+          yield* logWindowWarning("failed to persist desktop window diagnostic", {
+            message,
+            logPath: windowHealthLogPath,
+          });
+          return;
+        }
+        yield* (level === "WARN" ? logWindowWarning : logWindowInfo)(message, {
+          ...annotations,
+          timestamp,
+        });
+      });
     window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
       if (
         typeof params.partition !== "string" ||
@@ -600,6 +656,168 @@ export const make = Effect.gen(function* () {
     window.webContents.on("did-attach-webview", (_event, contents) => {
       installContextMenu(window, contents);
     });
+
+    yield* persistWindowDiagnostic("INFO", "GPU feature status", {
+      ...Electron.app.getGPUFeatureStatus(),
+    });
+    let lastHeartbeatAt = NodePerformance.performance.now();
+    let heartbeatMissStartedAt: number | undefined;
+    let unresponsiveStartedAt: number | undefined;
+    const onHeartbeat = (event: Electron.IpcMainEvent) => {
+      if (event.sender !== window.webContents) return;
+      const now = NodePerformance.performance.now();
+      if (heartbeatMissStartedAt !== undefined) {
+        void runPromise(
+          persistWindowDiagnostic("INFO", "renderer heartbeat resumed", {
+            missedForMs: now - heartbeatMissStartedAt,
+          }),
+        );
+        heartbeatMissStartedAt = undefined;
+      }
+      lastHeartbeatAt = now;
+    };
+    const heartbeatFiber = runFork(
+      Effect.forever(
+        Effect.sleep(5_000).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              const missedForMs = Math.round(NodePerformance.performance.now() - lastHeartbeatAt);
+              if (heartbeatMissStartedAt !== undefined || missedForMs <= 10_000) return;
+              heartbeatMissStartedAt = lastHeartbeatAt;
+              void runPromise(
+                persistWindowDiagnostic("WARN", "renderer heartbeat missed", {
+                  missedForMs,
+                  thresholdMs: 10_000,
+                }),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+    Electron.ipcMain.on(RENDERER_HEARTBEAT_CHANNEL, onHeartbeat);
+    const onChildProcessGone = (_event: Electron.Event, details: Electron.Details) => {
+      void runPromise(
+        persistWindowDiagnostic("WARN", "application child process gone", {
+          type: details.type,
+          reason: details.reason,
+          exitCode: details.exitCode,
+          gpuPriority: details.type === "GPU",
+        }),
+      );
+    };
+    const onSuspend = () =>
+      void runPromise(persistWindowDiagnostic("INFO", "power state changed", { state: "suspend" }));
+    const onResume = () =>
+      void runPromise(persistWindowDiagnostic("INFO", "power state changed", { state: "resume" }));
+    const onLock = () =>
+      void runPromise(persistWindowDiagnostic("INFO", "power state changed", { state: "lock" }));
+    const onUnlock = () =>
+      void runPromise(persistWindowDiagnostic("INFO", "power state changed", { state: "unlock" }));
+    const onDisplayAdded = (_event: Electron.Event, display: Electron.Display) =>
+      void runPromise(
+        persistWindowDiagnostic("INFO", "display changed", {
+          change: "added",
+          displayId: display.id,
+        }),
+      );
+    const onDisplayRemoved = (_event: Electron.Event, display: Electron.Display) =>
+      void runPromise(
+        persistWindowDiagnostic("INFO", "display changed", {
+          change: "removed",
+          displayId: display.id,
+        }),
+      );
+    const onDisplayMetricsChanged = (
+      _event: Electron.Event,
+      display: Electron.Display,
+      changedMetrics: string[],
+    ) =>
+      void runPromise(
+        persistWindowDiagnostic("INFO", "display changed", {
+          change: "metrics",
+          displayId: display.id,
+          changedMetrics,
+        }),
+      );
+    Electron.app.on("child-process-gone", onChildProcessGone);
+    Electron.powerMonitor.on("suspend", onSuspend);
+    Electron.powerMonitor.on("resume", onResume);
+    Electron.powerMonitor.on("lock-screen", onLock);
+    Electron.powerMonitor.on("unlock-screen", onUnlock);
+    Electron.screen.on("display-added", onDisplayAdded);
+    Electron.screen.on("display-removed", onDisplayRemoved);
+    Electron.screen.on("display-metrics-changed", onDisplayMetricsChanged);
+    const resourceSnapshotFiber = runFork(
+      Effect.forever(
+        Effect.sleep(60_000).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (window.isDestroyed()) return;
+              const processMetrics = Electron.app.getAppMetrics().map((metric) => ({
+                type: metric.type,
+                pid: metric.pid,
+                cpuPercent: metric.cpu.percentCPUUsage,
+                workingSetSizeKb: metric.memory.workingSetSize,
+              }));
+              void runPromise(
+                persistWindowDiagnostic("INFO", "desktop resource snapshot", {
+                  mainMemoryBytes: process.memoryUsage().rss,
+                  rendererMemory: processMetrics.filter((metric) => metric.type === "Tab"),
+                  gpuMemory: processMetrics.filter((metric) => metric.type === "GPU"),
+                  processes: processMetrics,
+                }),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+
+    window.webContents.on("unresponsive", () => {
+      unresponsiveStartedAt ??= NodePerformance.performance.now();
+      void runPromise(persistWindowDiagnostic("WARN", "renderer became unresponsive"));
+    });
+    window.webContents.on("responsive", () => {
+      const startedAt = unresponsiveStartedAt;
+      unresponsiveStartedAt = undefined;
+      void runPromise(
+        persistWindowDiagnostic("INFO", "renderer became responsive", {
+          durationMs:
+            startedAt === undefined
+              ? null
+              : Math.round(NodePerformance.performance.now() - startedAt),
+        }),
+      );
+    });
+    window.on(
+      "show",
+      () =>
+        void runPromise(
+          persistWindowDiagnostic("INFO", "main window visibility", { state: "show" }),
+        ),
+    );
+    window.on(
+      "hide",
+      () =>
+        void runPromise(
+          persistWindowDiagnostic("INFO", "main window visibility", { state: "hide" }),
+        ),
+    );
+    window.on(
+      "minimize",
+      () =>
+        void runPromise(
+          persistWindowDiagnostic("INFO", "main window visibility", { state: "minimize" }),
+        ),
+    );
+    window.on(
+      "restore",
+      () =>
+        void runPromise(
+          persistWindowDiagnostic("INFO", "main window visibility", { state: "restore" }),
+        ),
+    );
 
     window.webContents.setWindowOpenHandler(({ url }) => {
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
@@ -759,7 +977,7 @@ export const make = Effect.gen(function* () {
             ? scheduleDevelopmentLoadRetry()
             : undefined;
         void runPromise(
-          logWindowWarning("main window failed to load", {
+          persistWindowDiagnostic("WARN", "main window failed to load", {
             errorCode,
             errorDescription,
             url: validatedURL,
@@ -789,7 +1007,7 @@ export const make = Effect.gen(function* () {
             recoverable &&
             !window.isDestroyed() &&
             rendererRecoveryTimestamps.length < RENDERER_RECOVERY_MAX_ATTEMPTS;
-          yield* logWindowWarning("main window render process gone", {
+          yield* persistWindowDiagnostic("WARN", "main window render process gone", {
             reason: details.reason,
             exitCode: details.exitCode,
             recovering: shouldRecover,
@@ -830,6 +1048,17 @@ export const make = Effect.gen(function* () {
     }
 
     window.on("closed", () => {
+      runFork(Fiber.interrupt(heartbeatFiber));
+      runFork(Fiber.interrupt(resourceSnapshotFiber));
+      Electron.ipcMain.removeListener(RENDERER_HEARTBEAT_CHANNEL, onHeartbeat);
+      Electron.app.removeListener("child-process-gone", onChildProcessGone);
+      Electron.powerMonitor.removeListener("suspend", onSuspend);
+      Electron.powerMonitor.removeListener("resume", onResume);
+      Electron.powerMonitor.removeListener("lock-screen", onLock);
+      Electron.powerMonitor.removeListener("unlock-screen", onUnlock);
+      Electron.screen.removeListener("display-added", onDisplayAdded);
+      Electron.screen.removeListener("display-removed", onDisplayRemoved);
+      Electron.screen.removeListener("display-metrics-changed", onDisplayMetricsChanged);
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
       void runPromise(electronWindow.clearMain(Option.some(window)));
