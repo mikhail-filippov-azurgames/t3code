@@ -16,6 +16,7 @@ import {
   CircleAlertIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  EllipsisIcon,
   MessageCircleIcon,
   OctagonAlertIcon,
   PanelLeftOpenIcon,
@@ -55,6 +56,13 @@ import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useExpandCoordinatorHistoryByDefault } from "../board/boardPreferences";
 import {
+  COMMIT_GRAPH_PREFERENCES_KEY,
+  CommitGraphPreferencesSchema,
+  DEFAULT_COMMIT_GRAPH_PREFERENCES,
+  type CommitGraphColumn,
+  type CommitGraphPreferences,
+} from "../commits/commitsGraphPreferences";
+import {
   boardCardPinsKey,
   readBoardCardPins,
   removeBoardCardPin,
@@ -66,6 +74,17 @@ import type {
 } from "./coordinatorSummaryHistory";
 import { CommitsGraph } from "../commits/CommitsGraph";
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "../../diffPanelStore";
+import {
+  Menu,
+  MenuCheckboxItem,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "../ui/menu";
 
 const DiffPanel = lazy(() => import("../DiffPanel"));
 
@@ -108,6 +127,18 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
 
 const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history", "commits"]);
 
+function toggleCommitGraphColumn(
+  columns: ReadonlyArray<CommitGraphColumn>,
+  column: CommitGraphColumn,
+  checked: boolean,
+): CommitGraphColumn[] {
+  return checked
+    ? columns.includes(column)
+      ? [...columns]
+      : [...columns, column]
+    : columns.filter((entry) => entry !== column);
+}
+
 function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] {
   const chunks: string[][] = [];
   for (let index = 0; index < cardIds.length; index += size) {
@@ -139,6 +170,10 @@ export function BoardCardPinnedPanel({
   const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const [expandHistoryByDefault] = useExpandCoordinatorHistoryByDefault();
+  const [commitGraphPreferences, setCommitGraphPreferences] = useLocalStorage<
+    CommitGraphPreferences,
+    CommitGraphPreferences
+  >(COMMIT_GRAPH_PREFERENCES_KEY, DEFAULT_COMMIT_GRAPH_PREFERENCES, CommitGraphPreferencesSchema);
   const [historyEntryOverrides, setHistoryEntryOverrides] = useLocalStorage<
     Record<string, boolean>,
     Record<string, boolean>
@@ -462,6 +497,8 @@ export function BoardCardPinnedPanel({
     <ChatSidePanelShell
       activeTab={activeTab}
       onSelectTab={setActiveTab}
+      commitGraphPreferences={commitGraphPreferences}
+      onCommitGraphPreferencesChange={setCommitGraphPreferences}
       hasGitRepository={hasGitRepository}
       onCollapse={() => setCollapsed(true)}
       collapseButtonLabel="Свернуть панель чата"
@@ -597,6 +634,8 @@ export function BoardCardPinnedPanel({
           environmentId={environmentId}
           cwd={cwd}
           className="h-full min-h-0 flex-1"
+          columns={commitGraphPreferences.columns}
+          dateFormat={commitGraphPreferences.dateFormat}
           focusCommitId={selectedCommitId}
           onCommitSelect={(commitId) => {
             useDiffPanelStore.getState().selectCommit({ environmentId, threadId }, commitId);
@@ -670,6 +709,10 @@ function HistoryEntry(props: {
 function ChatSidePanelShell(props: {
   readonly activeTab: ChatPanelTab;
   readonly onSelectTab: (tab: ChatPanelTab) => void;
+  readonly commitGraphPreferences: CommitGraphPreferences;
+  readonly onCommitGraphPreferencesChange: (
+    update: (current: CommitGraphPreferences) => CommitGraphPreferences,
+  ) => void;
   readonly hasGitRepository: boolean;
   readonly onCollapse: () => void;
   readonly collapseButtonLabel: string;
@@ -767,6 +810,12 @@ function ChatSidePanelShell(props: {
             </button>
           ))}
         </div>
+        {props.activeTab === "commits" && props.hasGitRepository ? (
+          <CommitGraphPreferencesMenu
+            preferences={props.commitGraphPreferences}
+            onChange={props.onCommitGraphPreferencesChange}
+          />
+        ) : null}
         <div className="flex shrink-0 items-center gap-1">
           {props.showRefresh ? (
             <Button
@@ -800,6 +849,81 @@ function ChatSidePanelShell(props: {
         {props.children}
       </div>
     </aside>
+  );
+}
+
+function CommitGraphPreferencesMenu(props: {
+  readonly preferences: CommitGraphPreferences;
+  readonly onChange: (update: (current: CommitGraphPreferences) => CommitGraphPreferences) => void;
+}) {
+  return (
+    <Menu>
+      <MenuTrigger
+        render={<Button variant="ghost" size="icon-xs" />}
+        aria-label="Настройки списка коммитов"
+        title="Настройки списка коммитов"
+      >
+        <EllipsisIcon className="size-3.5" aria-hidden="true" />
+      </MenuTrigger>
+      <MenuPopup align="start" className="w-56">
+        <MenuGroup>
+          <MenuGroupLabel>Поля списка</MenuGroupLabel>
+          <MenuCheckboxItem
+            checked={props.preferences.columns.includes("commit")}
+            closeOnClick={false}
+            onCheckedChange={(checked) =>
+              props.onChange((current) => ({
+                ...current,
+                columns: toggleCommitGraphColumn(current.columns, "commit", checked),
+              }))
+            }
+          >
+            Короткий SHA
+          </MenuCheckboxItem>
+          <MenuCheckboxItem
+            checked={props.preferences.columns.includes("author")}
+            closeOnClick={false}
+            onCheckedChange={(checked) =>
+              props.onChange((current) => ({
+                ...current,
+                columns: toggleCommitGraphColumn(current.columns, "author", checked),
+              }))
+            }
+          >
+            Автор
+          </MenuCheckboxItem>
+          <MenuCheckboxItem
+            checked={props.preferences.columns.includes("date")}
+            closeOnClick={false}
+            onCheckedChange={(checked) =>
+              props.onChange((current) => ({
+                ...current,
+                columns: toggleCommitGraphColumn(current.columns, "date", checked),
+              }))
+            }
+          >
+            Время
+          </MenuCheckboxItem>
+        </MenuGroup>
+        <MenuSeparator />
+        <MenuGroup>
+          <MenuGroupLabel>Формат времени</MenuGroupLabel>
+          <MenuRadioGroup
+            value={props.preferences.dateFormat}
+            onValueChange={(value) =>
+              props.onChange((current) => ({
+                ...current,
+                dateFormat: value as CommitGraphPreferences["dateFormat"],
+              }))
+            }
+          >
+            <MenuRadioItem value="datetime">Дата и время</MenuRadioItem>
+            <MenuRadioItem value="date">Только дата</MenuRadioItem>
+            <MenuRadioItem value="relative">Относительно</MenuRadioItem>
+          </MenuRadioGroup>
+        </MenuGroup>
+      </MenuPopup>
+    </Menu>
   );
 }
 

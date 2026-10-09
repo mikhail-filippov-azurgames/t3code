@@ -8,12 +8,33 @@ import { useTheme } from "~/hooks/useTheme";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsEnvironment } from "~/state/vcs";
 
+import type { CommitGraphColumn, CommitGraphDateFormat } from "./commitsGraphPreferences";
+import { DEFAULT_COMMIT_GRAPH_COLUMNS } from "./commitsGraphPreferences";
 import {
   COMMITS_PAGE_LIMIT,
   createCommitsGraphProvider,
   loadHistoryUntilCommit,
   type CommitHistoryFetcher,
 } from "./webGitGraphAdapter";
+
+const TWO_LINE_COMMIT_LIST_STYLE = `
+  .header, .row {
+    grid-template-columns: var(--wgg-graph-width) minmax(0, 1fr) max-content;
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+  }
+  .header { height: 44px; }
+  .header .col-graph { grid-column: 1; grid-row: 1 / span 2; }
+  .header .col-description { grid-column: 2; grid-row: 1; }
+  .header .col-commit { grid-column: 3; grid-row: 1; }
+  .header .col-author { display: flex; grid-column: 2; grid-row: 2; }
+  .header .col-date { display: flex; grid-column: 3; grid-row: 2; }
+  .row { height: 44px; }
+  .graph-cell { grid-column: 1; grid-row: 1 / span 2; }
+  .subject { grid-column: 2; grid-row: 1; }
+  .oid { grid-column: 3; grid-row: 1; }
+  .row .author { display: flex; grid-column: 2; grid-row: 2; justify-content: flex-start; }
+  .date { display: block; grid-column: 3; grid-row: 2; }
+`;
 
 export interface CommitsGraphProps {
   readonly environmentId: EnvironmentId;
@@ -23,6 +44,8 @@ export interface CommitsGraphProps {
   readonly onError?: (error: unknown) => void;
   readonly focusCommitId?: string | null;
   readonly onCommitSelect?: (commitId: string) => void;
+  readonly columns?: ReadonlyArray<CommitGraphColumn>;
+  readonly dateFormat?: CommitGraphDateFormat;
 }
 
 /**
@@ -37,6 +60,8 @@ export function CommitsGraph({
   onError,
   focusCommitId = null,
   onCommitSelect,
+  columns = DEFAULT_COMMIT_GRAPH_COLUMNS,
+  dateFormat = "datetime",
 }: CommitsGraphProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const elementRef = useRef<WebGitGraphElement | null>(null);
@@ -89,8 +114,6 @@ export function CommitsGraph({
     const host = hostRef.current;
     if (!host) return;
     const element = document.createElement("web-git-graph");
-    element.setAttribute("columns", "author,date");
-    element.setAttribute("date-format", "datetime");
     element.style.height = "100%";
     elementRef.current = element;
     const handleError = (event: Event) => {
@@ -104,6 +127,9 @@ export function CommitsGraph({
     element.addEventListener("gitgraph-error", handleError);
     element.addEventListener("gitgraph-commit-select", handleCommitSelect);
     host.append(element);
+    const twoLineStyle = document.createElement("style");
+    twoLineStyle.textContent = TWO_LINE_COMMIT_LIST_STYLE;
+    element.shadowRoot?.append(twoLineStyle);
     return () => {
       element.removeEventListener("gitgraph-error", handleError);
       element.removeEventListener("gitgraph-commit-select", handleCommitSelect);
@@ -111,6 +137,13 @@ export function CommitsGraph({
       elementRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const element = elementRef.current;
+    if (!element) return;
+    element.columns = columns.join(",");
+    element.dateFormat = dateFormat;
+  }, [columns, dateFormat]);
 
   useEffect(() => {
     const element = elementRef.current;

@@ -377,6 +377,8 @@ describe("BoardCardPinnedPanel", () => {
         environmentId,
         cwd: "/repo",
         className: "h-full min-h-0 flex-1",
+        columns: ["commit", "author", "date"],
+        dateFormat: "datetime",
         focusCommitId: null,
       });
     } finally {
