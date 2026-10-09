@@ -793,6 +793,8 @@ describe("ProviderCommandReactor", () => {
     readonly beforeReadySessionDispatch?: () => Effect.Effect<void>;
     readonly beforeTurnStartDispatch?: () => Effect.Effect<void>;
     readonly afterTurnStartDispatch?: () => Effect.Effect<void>;
+    readonly afterTurnSendClaimDispatch?: () => Effect.Effect<void>;
+    readonly stopSessionOnThreadDelete?: boolean;
     readonly compactThreadEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly interruptTurnEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
     readonly stopSessionEffect?: () => Effect.Effect<void, ProviderAdapterRequestError>;
@@ -1094,6 +1096,9 @@ describe("ProviderCommandReactor", () => {
             const isReplay =
               command.type === "thread.turn.start" &&
               command.commandId.startsWith("server:after-compaction:");
+            const isTurnSendClaim =
+              command.type === "thread.activity.append" &&
+              command.activity.kind === "provider.turn.send.claimed";
             const before =
               command.type === "thread.session.set" && command.session.status === "ready"
                 ? input?.beforeReadySessionDispatch
@@ -1102,6 +1107,18 @@ describe("ProviderCommandReactor", () => {
                   : undefined;
             return (before?.() ?? Effect.void).pipe(
               Effect.andThen(engine.dispatch(command)),
+              Effect.tap(() =>
+                command.type === "thread.delete" && input?.stopSessionOnThreadDelete
+                  ? stopSession({ threadId: command.threadId }).pipe(
+                      Effect.catchCause(() => Effect.void),
+                    )
+                  : Effect.void,
+              ),
+              Effect.tap(() =>
+                isTurnSendClaim
+                  ? (input?.afterTurnSendClaimDispatch?.() ?? Effect.void)
+                  : Effect.void,
+              ),
               Effect.tap(() =>
                 isReplay ? (input?.afterTurnStartDispatch?.() ?? Effect.void) : Effect.void,
               ),
@@ -3359,6 +3376,78 @@ describe("ProviderCommandReactor", () => {
     expect(harness.createWorktree.mock.invocationCallOrder[0]).toBeLessThan(
       harness.startSession.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("does not send a delegated turn after its thread is deleted after session start", async () => {
+    const claimRecorded = Deferred.makeUnsafe<void>();
+    const releaseSend = Deferred.makeUnsafe<void>();
+    const harness = await createHarness({
+      stopSessionOnThreadDelete: true,
+      afterTurnSendClaimDispatch: () =>
+        Deferred.succeed(claimRecorded, undefined).pipe(
+          Effect.andThen(Deferred.await(releaseSend)),
+        ),
+    });
+    const now = "2026-01-01T00:00:00.000Z";
+    const threadId = ThreadId.make("thread-1");
+    const settings = await Effect.runPromise(harness.serverSettings.getSettings);
+    const effectiveInstanceConfig =
+      deriveProviderInstanceConfigMap(settings)[ProviderInstanceId.make("codex")];
+    expect(effectiveInstanceConfig).toBeDefined();
+    if (effectiveInstanceConfig === undefined) return;
+    const capabilities = new Set<string>(["pull-requests", "orchestration"]);
+    if (settings.enableAgentBrowserAccess) capabilities.add("preview");
+    if (settings.enableAgentDeviceAccess) capabilities.add("device");
+    const permissionEnvelope = await Effect.runPromise(
+      loadDelegationPermissionEnvelope({
+        driverKind: effectiveInstanceConfig.driver,
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        instanceConfig: effectiveInstanceConfig,
+        environment: process.env,
+        workspaceRoot: "/tmp/provider-project",
+        worktreePath: "/tmp/provider-project",
+        branch: null,
+        t3McpCapabilities: capabilities,
+      }).pipe(Effect.provide(NodeServices.layer)),
+    );
+    expect(permissionEnvelope.status).toBe("verified");
+    if (permissionEnvelope.status !== "verified") return;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.make("cmd-delete-thread-after-session-start"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-message-delete-thread-after-session-start"),
+          role: "user",
+          text: "Do not send this after the thread is deleted.",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        delegationConfigFingerprint: permissionEnvelope.fingerprint,
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(Deferred.await(claimRecorded));
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.sendTurn).not.toHaveBeenCalled();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make("cmd-delete-thread-before-provider-send"),
+        threadId,
+      }),
+    );
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId });
+    await Effect.runPromise(Deferred.succeed(releaseSend, undefined));
+    await harness.drain();
+
+    expect(harness.sendTurn).not.toHaveBeenCalled();
   });
 
   it("forwards codex model options through session start and turn send", async () => {

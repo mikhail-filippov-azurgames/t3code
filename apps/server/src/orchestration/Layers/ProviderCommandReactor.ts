@@ -2459,6 +2459,8 @@ const make = Effect.gen(function* () {
       if (!sendClaimed) return;
     }
 
+    if (!(yield* resolveThreadShell(event.payload.threadId))) return;
+
     const send = providerService
       .sendTurn(sendTurnRequest.value.request)
       .pipe(
