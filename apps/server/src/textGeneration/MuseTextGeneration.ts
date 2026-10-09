@@ -90,10 +90,16 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     const promptPath = yield* fileSystem
       .makeTempFileScoped({ prefix: `t3code-muse-text-${process.pid}-` })
       .pipe(
-        Effect.tap((filePath) => fileSystem.writeFileString(filePath, `${prompt}${JSON_ONLY_SUFFIX}`)),
+        Effect.tap((filePath) =>
+          fileSystem.writeFileString(filePath, `${prompt}${JSON_ONLY_SUFFIX}`),
+        ),
         Effect.mapError(
           (cause) =>
-            new TextGenerationError({ operation, detail: "Failed to write Muse prompt file.", cause }),
+            new TextGenerationError({
+              operation,
+              detail: "Failed to write Muse prompt file.",
+              cause,
+            }),
         ),
       );
     const reasoningEffort =
@@ -109,41 +115,52 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
         modelSelection.model,
         "--reasoning-effort",
         reasoningEffort,
+        "--disable-write",
+        "--disable-shell",
       ],
       { env: resolvedEnvironment },
     ).pipe(
-      Effect.mapError((cause) => normalizeCliError("muse", operation, cause, "Failed to resolve Muse spawn.")),
+      Effect.mapError((cause) =>
+        normalizeCliError("muse", operation, cause, "Failed to resolve Muse spawn."),
+      ),
     );
     const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
       env: resolvedEnvironment,
       cwd,
       shell: spawnCommand.shell,
     });
-    const child = yield* commandSpawner.spawn(command).pipe(
-      Effect.mapError((cause) =>
-        normalizeCliError("muse", operation, cause, "Failed to spawn Muse CLI process"),
-      ),
-    );
+    const child = yield* commandSpawner
+      .spawn(command)
+      .pipe(
+        Effect.mapError((cause) =>
+          normalizeCliError("muse", operation, cause, "Failed to spawn Muse CLI process"),
+        ),
+      );
     const collected = yield* Effect.gen(function* () {
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
           child.stdout.pipe(
             Stream.decodeText(),
-            Stream.runFold(() => "", (acc, chunk) => acc + chunk),
+            Stream.runFold(
+              () => "",
+              (acc, chunk) => acc + chunk,
+            ),
             Effect.mapError((cause) =>
               normalizeCliError("muse", operation, cause, "Failed to collect Muse output"),
             ),
           ),
           child.stderr.pipe(
             Stream.decodeText(),
-            Stream.runFold(() => "", (acc, chunk) => acc + chunk),
+            Stream.runFold(
+              () => "",
+              (acc, chunk) => acc + chunk,
+            ),
             Effect.mapError((cause) =>
               normalizeCliError("muse", operation, cause, "Failed to collect Muse error output"),
             ),
           ),
-          Effect.mapError(
-            child.exitCode,
-            (cause) => normalizeCliError("muse", operation, cause, "Muse text generation failed."),
+          Effect.mapError(child.exitCode, (cause) =>
+            normalizeCliError("muse", operation, cause, "Muse text generation failed."),
           ),
         ],
         { concurrency: "unbounded" },
