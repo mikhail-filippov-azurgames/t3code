@@ -105,7 +105,7 @@ export function usePaginatedBranches(target: VcsRefTarget) {
   const query = target.query?.trim() ?? "";
   const targetKey =
     target.environmentId !== null && target.cwd !== null
-      ? JSON.stringify([target.environmentId, target.cwd, query])
+      ? JSON.stringify([target.environmentId, target.cwd, query, target.includeMatchingRemoteRefs])
       : null;
   const [pagination, setPagination] = useState<{
     readonly targetKey: string | null;
@@ -124,6 +124,9 @@ export function usePaginatedBranches(target: VcsRefTarget) {
               input: {
                 cwd: target.cwd!,
                 ...(query.length > 0 ? { query } : {}),
+                ...(target.includeMatchingRemoteRefs === true
+                  ? { includeMatchingRemoteRefs: true }
+                  : {}),
                 ...(cursor === undefined ? {} : { cursor }),
                 limit: VCS_REF_LIST_LIMIT,
               },

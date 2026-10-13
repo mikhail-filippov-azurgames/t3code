@@ -82,6 +82,7 @@ export type GitRunStackedActionToast = typeof GitRunStackedActionToast.Type;
 
 export const VcsRef = Schema.Struct({
   name: TrimmedNonEmptyStringSchema,
+  target: Schema.optional(Schema.String.check(Schema.isPattern(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/))),
   isRemote: Schema.optional(Schema.Boolean),
   remoteName: Schema.optional(TrimmedNonEmptyStringSchema),
   current: Schema.Boolean,

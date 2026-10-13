@@ -1749,9 +1749,14 @@ it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
         assert.equal(yield* git(cwd, ["branch", "--show-current"]), "feature/renamed");
 
         const refs = yield* driver.listRefs({ cwd });
+        const target = yield* git(cwd, ["rev-parse", "feature/renamed"]);
         assert.equal(
           refs.refs.find((refName) => refName.name === "feature/renamed")?.current,
           true,
+        );
+        assert.equal(
+          refs.refs.find((refName) => refName.name === "feature/renamed")?.target,
+          target,
         );
       }),
     );

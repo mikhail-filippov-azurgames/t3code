@@ -2939,7 +2939,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           [
             ...gitDirArgs,
             "for-each-ref",
-            "--format=%(refname)%09%(committerdate:unix)%09%(symref)",
+            "--format=%(refname)%09%(objectname)%09%(committerdate:unix)%09%(symref)",
             "refs/heads",
             "refs/remotes",
           ],
@@ -3009,7 +3009,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
 
     for (const line of refsResult.stdout.split("\n")) {
       if (line.length === 0) continue;
-      const [fullRefName, lastCommitRaw, symbolicTarget] = line.split("\t");
+      const [fullRefName, target, lastCommitRaw, symbolicTarget] = line.split("\t");
       if (!fullRefName || symbolicTarget) continue;
       const parsedLastCommit = Number.parseInt(lastCommitRaw ?? "0", 10);
       const lastCommit = Number.isFinite(parsedLastCommit) ? parsedLastCommit : 0;
@@ -3019,6 +3019,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         localBranches.push({
           ref: {
             name,
+            ...(target ? { target } : {}),
             current: false,
             isRemote: false,
             isDefault: name === defaultBranch,
@@ -3034,6 +3035,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const parsedRemoteRef = parseRemoteRefWithRemoteNames(name, remoteNames);
       const remoteBranch: VcsRef = {
         name,
+        ...(target ? { target } : {}),
         current: false,
         isRemote: true,
         isDefault:
