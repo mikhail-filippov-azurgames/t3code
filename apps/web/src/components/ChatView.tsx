@@ -8,6 +8,7 @@ import {
 } from "@t3tools/shared/usageLimits";
 import { feedbackBannerItem } from "./chat/ComposerFeedback";
 import { usageLimitsBannerItem } from "./chat/ComposerUsageLimits";
+import { resolveCommitRepositoryCwd } from "./commits/webGitGraphAdapter";
 import { derivePendingRequests } from "@t3tools/client-runtime/pending-requests";
 import {
   questionAttachmentDraftId,
@@ -9624,7 +9625,15 @@ export default function ChatView(props: ChatViewProps) {
                   environmentId={activeThread.environmentId}
                   threadId={activeThread.id}
                   hasGitRepository={isGitRepo}
-                  cwd={gitStatusCwd}
+                  cwd={
+                    gitStatusCwd === null
+                      ? null
+                      : resolveCommitRepositoryCwd({
+                          cwd: gitStatusCwd,
+                          repositoryRoot: activeProject?.repositoryIdentity?.rootPath,
+                          worktreePath: activeThread?.worktreePath,
+                        })
+                  }
                   onOpenChange={setChatSidePanelOpen}
                   loadHistory={loadCoordinatorSummaryHistory}
                 />

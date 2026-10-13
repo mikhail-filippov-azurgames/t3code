@@ -1,4 +1,4 @@
-import type { VcsCommitHistoryResult } from "@t3tools/contracts";
+import type { VcsCommitHistoryResult, VcsRef } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -6,6 +6,7 @@ import {
   createCommitsGraphProvider,
   loadHistoryUntilCommit,
   parseCommitCursor,
+  resolveCommitRepositoryCwd,
   serializeCommitCursor,
   toGitGraphPage,
 } from "./webGitGraphAdapter";
@@ -42,6 +43,31 @@ const RESULT: VcsCommitHistoryResult = {
     },
   ],
 };
+
+describe("resolveCommitRepositoryCwd", () => {
+  it("shows project X's repository instead of the server process repository", () => {
+    expect(
+      resolveCommitRepositoryCwd({
+        cwd: "C:/server-process/t3code",
+        repositoryRoot: "D:/projects/X",
+      }),
+    ).toBe("D:/projects/X");
+  });
+
+  it("keeps the thread worktree as the commit scope", () => {
+    expect(
+      resolveCommitRepositoryCwd({
+        cwd: "C:/projects/server",
+        repositoryRoot: "C:/workspace/project-repo",
+        worktreePath: "C:/worktrees/task-1",
+      }),
+    ).toBe("C:/worktrees/task-1");
+  });
+
+  it("falls back to the project workspace root when its repository root is unavailable", () => {
+    expect(resolveCommitRepositoryCwd({ cwd: "D:/projects/server" })).toBe("D:/projects/server");
+  });
+});
 
 describe("toGitGraphPage", () => {
   it("maps commits, refs and cursor to the component shape", () => {
@@ -89,6 +115,53 @@ describe("commit cursor", () => {
 });
 
 describe("createCommitsGraphProvider", () => {
+  it("uses repository refs for the branch menu independently of the history page", async () => {
+    const firstPage: VcsCommitHistoryResult = {
+      ...RESULT,
+      commits: [
+        {
+          ...RESULT.commits[0]!,
+          refs: [
+            { kind: "head", name: "HEAD" },
+            { kind: "remote", name: "origin/main" },
+          ],
+        },
+      ],
+      nextCursor: { id: HEAD, offset: 1 },
+    };
+    const repositoryRefs: VcsRef[] = [
+      {
+        name: "feature/local-only",
+        target: ROOT,
+        current: false,
+        isRemote: false,
+        isDefault: false,
+        worktreePath: null,
+      },
+      {
+        name: "origin/main",
+        target: HEAD,
+        current: false,
+        isRemote: true,
+        isDefault: true,
+        worktreePath: null,
+      },
+    ];
+    const fetcher = vi.fn(async () => firstPage);
+    const provider = createCommitsGraphProvider(fetcher, repositoryRefs);
+
+    const page = await provider.getHistory({ limit: COMMITS_PAGE_LIMIT });
+
+    expect(page.refs).toEqual(
+      expect.arrayContaining([
+        { name: "feature/local-only", target: ROOT, kind: "head" },
+        { name: "origin/main", target: HEAD, kind: "remote" },
+      ]),
+    );
+    expect(page.refs.some((ref) => ref.name === "feature/local-only")).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("clamps the requested limit and forwards the decoded cursor", async () => {
     const fetcher = vi.fn(async () => RESULT);
     const provider = createCommitsGraphProvider(fetcher);

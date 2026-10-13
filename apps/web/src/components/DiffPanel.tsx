@@ -90,6 +90,7 @@ import { reviewEnvironment } from "../state/review";
 import { vcsEnvironment } from "../state/vcs";
 import { buildBaseRefChoices, filterBaseRefChoices } from "../lib/baseRefChoices";
 import { createGitDiffFileContentsLoader } from "../lib/diffFileContents";
+import { resolveCommitRepositoryCwd } from "./commits/webGitGraphAdapter";
 
 type DiffThemeType = "light" | "dark";
 const AUTOMATIC_BASE_REF = "__automatic_base_ref__";
@@ -173,6 +174,13 @@ export default function DiffPanel({
   const serverConfig = useAtomValue(
     serverEnvironment.configValueAtom(activeThread?.environmentId ?? null),
   );
+  const commitRepositoryCwd = activeCwd
+    ? resolveCommitRepositoryCwd({
+        cwd: activeCwd,
+        repositoryRoot: activeRepositoryRoot,
+        worktreePath: activeThread?.worktreePath,
+      })
+    : null;
   const openInPreferredEditor = useOpenInPreferredEditor(
     activeThread?.environmentId ?? null,
     serverConfig?.availableEditors ?? [],
@@ -253,7 +261,7 @@ export default function DiffPanel({
       const result = await runListCommitHistory({
         environmentId: activeThread.environmentId,
         input: {
-          cwd: activeCwd,
+          cwd: commitRepositoryCwd ?? activeCwd,
           limit: 100,
           ...(commitHistoryCursor ? { cursor: commitHistoryCursor } : {}),
         },
@@ -268,6 +276,7 @@ export default function DiffPanel({
     }
   }, [
     activeCwd,
+    commitRepositoryCwd,
     activeThread,
     commitHistory.length,
     commitHistoryCursor,
@@ -276,7 +285,7 @@ export default function DiffPanel({
   ]);
 
   useEffect(() => {
-    if (!selectedCommitId || !activeThread || !activeCwd) {
+    if (!selectedCommitId || !activeThread || !commitRepositoryCwd) {
       setCommitFiles([]);
       setLoadingCommitFiles(false);
       return;
@@ -286,7 +295,7 @@ export default function DiffPanel({
     setLoadingCommitFiles(true);
     void getCommitDiffFiles({
       environmentId: activeThread.environmentId,
-      input: { cwd: activeCwd, commit: selectedCommitId },
+      input: { cwd: commitRepositoryCwd, commit: selectedCommitId },
     }).then((result) => {
       if (cancelled) return;
       if (result._tag === "Success") {
@@ -312,10 +321,10 @@ export default function DiffPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeCwd, activeThread, getCommitDiffFiles, selectedCommitId]);
+  }, [activeThread, commitRepositoryCwd, getCommitDiffFiles, selectedCommitId]);
 
   useEffect(() => {
-    if (!selectedCommitId || !selectedCommitFilePath || !activeThread || !activeCwd) {
+    if (!selectedCommitId || !selectedCommitFilePath || !activeThread || !commitRepositoryCwd) {
       setCommitPatch(null);
       return;
     }
@@ -333,7 +342,7 @@ export default function DiffPanel({
     });
     void getCommitFilePatch({
       environmentId: activeThread.environmentId,
-      input: { cwd: activeCwd, commit: selectedCommitId, path: selectedCommitFilePath },
+      input: { cwd: commitRepositoryCwd, commit: selectedCommitId, path: selectedCommitFilePath },
     }).then((result) => {
       if (cancelled) return;
       if (result._tag === "Success") {
@@ -357,8 +366,8 @@ export default function DiffPanel({
       cancelled = true;
     };
   }, [
-    activeCwd,
     activeThread,
+    commitRepositoryCwd,
     commitFiles,
     getCommitFilePatch,
     selectedCommitFilePath,

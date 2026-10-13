@@ -9,6 +9,7 @@ import type {
   VcsCommitHistoryEntry,
   VcsCommitHistoryRef,
   VcsCommitHistoryResult,
+  VcsRef,
 } from "@t3tools/contracts";
 import type { GitGraphProvider } from "@web-git-graph/web";
 
@@ -17,6 +18,15 @@ import type { GitGraphProvider } from "@web-git-graph/web";
  * history at 100, so every request is clamped to that.
  */
 export const COMMITS_PAGE_LIMIT = 100;
+
+/** Uses the project repository root while keeping worktrees isolated. */
+export function resolveCommitRepositoryCwd(input: {
+  readonly cwd: string;
+  readonly repositoryRoot?: string | null | undefined;
+  readonly worktreePath?: string | null | undefined;
+}): string {
+  return input.worktreePath ?? input.repositoryRoot ?? input.cwd;
+}
 
 /** Opaque page token: the component only ever hands back what we gave it. */
 export function serializeCommitCursor(
@@ -94,6 +104,20 @@ export function toGitGraphPage(result: VcsCommitHistoryResult): GitGraphPage {
   };
 }
 
+/** Maps repository refs independently from the currently loaded history page. */
+export function toGitGraphRefs(refs: ReadonlyArray<VcsRef>): GitGraphRef[] {
+  return refs.flatMap((ref) => {
+    if (ref.target === undefined) return [];
+    return [
+      {
+        name: ref.name,
+        target: ref.target,
+        kind: ref.isRemote ? "remote" : ref.current ? "current" : "head",
+      } satisfies GitGraphRef,
+    ];
+  });
+}
+
 export interface CommitHistoryFetcherInput {
   readonly cursor?: VcsCommitHistoryCursor;
   readonly limit: number;
@@ -130,7 +154,11 @@ export async function loadHistoryUntilCommit(
  * `request.refs` is ignored: the server walks all refs and a client-side branch
  * filter would not narrow what it returns.
  */
-export function createCommitsGraphProvider(fetcher: CommitHistoryFetcher): GitGraphProvider {
+export function createCommitsGraphProvider(
+  fetcher: CommitHistoryFetcher,
+  refs: ReadonlyArray<VcsRef> | Promise<ReadonlyArray<VcsRef>> = [],
+): GitGraphProvider {
+  const repositoryRefs = Promise.resolve(refs);
   return {
     async getCapabilities() {
       return {
@@ -147,8 +175,16 @@ export function createCommitsGraphProvider(fetcher: CommitHistoryFetcher): GitGr
     async getHistory(request) {
       const limit = Math.max(1, Math.min(request?.limit ?? COMMITS_PAGE_LIMIT, COMMITS_PAGE_LIMIT));
       const cursor = parseCommitCursor(request?.cursor);
-      const result = await fetcher({ limit, ...(cursor === undefined ? {} : { cursor }) });
-      return toGitGraphPage(result);
+      const [result, allRefs] = await Promise.all([
+        fetcher({ limit, ...(cursor === undefined ? {} : { cursor }) }),
+        repositoryRefs,
+      ]);
+      const page = toGitGraphPage(result);
+      const refsByName = new Map(page.refs.map((ref) => [`${ref.kind}:${ref.name}`, ref]));
+      for (const ref of toGitGraphRefs(allRefs)) {
+        refsByName.set(`${ref.kind}:${ref.name}`, ref);
+      }
+      return { ...page, refs: [...refsByName.values()] };
     },
   };
 }

@@ -1,15 +1,17 @@
 import "@web-git-graph/web/register";
 import type { WebGitGraphElement } from "@web-git-graph/web";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import type { EnvironmentId, VcsRef } from "@t3tools/contracts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
+import { usePaginatedBranches } from "~/state/queries";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { vcsEnvironment } from "~/state/vcs";
 
 import type { CommitGraphColumn, CommitGraphDateFormat } from "./commitsGraphPreferences";
 import { DEFAULT_COMMIT_GRAPH_COLUMNS } from "./commitsGraphPreferences";
+import { createCommitSelectionBridge } from "./commitsGraphSelection";
 import {
   COMMITS_PAGE_LIMIT,
   createCommitsGraphProvider,
@@ -17,23 +19,27 @@ import {
   type CommitHistoryFetcher,
 } from "./webGitGraphAdapter";
 
-const TWO_LINE_COMMIT_LIST_STYLE = `
-  .header, .row {
-    grid-template-columns: var(--wgg-graph-width) minmax(0, 1fr) max-content;
-    grid-template-rows: repeat(2, minmax(0, 1fr));
+const NARROW_COMMIT_LIST_STYLE = `
+  @container wgg (max-width: 760px) {
+    .refs { max-width: 45%; overflow: hidden; }
+    .ref {
+      display: block;
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
   }
-  .header { height: 44px; }
-  .header .col-graph { grid-column: 1; grid-row: 1 / span 2; }
-  .header .col-description { grid-column: 2; grid-row: 1; }
-  .header .col-commit { grid-column: 3; grid-row: 1; }
-  .header .col-author { display: flex; grid-column: 2; grid-row: 2; }
-  .header .col-date { display: flex; grid-column: 3; grid-row: 2; }
-  .row { height: 44px; }
-  .graph-cell { grid-column: 1; grid-row: 1 / span 2; }
-  .subject { grid-column: 2; grid-row: 1; }
-  .oid { grid-column: 3; grid-row: 1; }
-  .row .author { display: flex; grid-column: 2; grid-row: 2; justify-content: flex-start; }
-  .date { display: block; grid-column: 3; grid-row: 2; }
+  @container wgg (max-width: 420px) {
+    .header, .row {
+      grid-template-columns: var(--wgg-graph-width) minmax(0, 1fr);
+    }
+    .col-commit, .oid { display: none; }
+    .spacer {
+      min-width: max(100%, calc(var(--wgg-graph-width) + 160px));
+    }
+  }
 `;
 
 export interface CommitsGraphProps {
@@ -67,8 +73,34 @@ export function CommitsGraph({
   const elementRef = useRef<WebGitGraphElement | null>(null);
   const errorHandlerRef = useRef(onError);
   const commitSelectHandlerRef = useRef(onCommitSelect);
+  const commitSelectionBridgeRef = useRef(
+    createCommitSelectionBridge((commitId) => commitSelectHandlerRef.current?.(commitId)),
+  );
+  const [repositoryRefs] = useState(() => {
+    let resolve!: (refs: ReadonlyArray<VcsRef>) => void;
+    const promise = new Promise<ReadonlyArray<VcsRef>>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    return { promise, resolve };
+  });
   const { resolvedTheme } = useTheme();
   const runListCommitHistory = useAtomCommand(vcsEnvironment.listCommitHistory);
+  const listedRefs = usePaginatedBranches({
+    environmentId,
+    cwd,
+    includeMatchingRemoteRefs: true,
+  });
+  const serializedRefs = JSON.stringify(listedRefs.refs);
+  const refsForGraph = useMemo(
+    () => JSON.parse(serializedRefs) as typeof listedRefs.refs,
+    [serializedRefs],
+  );
+
+  useEffect(() => {
+    if (listedRefs.data?.nextCursor !== null && listedRefs.data?.nextCursor !== undefined) {
+      listedRefs.loadNext();
+    }
+  }, [listedRefs.data?.nextCursor, listedRefs.loadNext]);
 
   useEffect(() => {
     errorHandlerRef.current = onError;
@@ -108,7 +140,10 @@ export function CommitsGraph({
     },
     [fetchPage, pageRequests],
   );
-  const provider = useMemo(() => createCommitsGraphProvider(fetcher), [fetcher]);
+  const provider = useMemo(
+    () => createCommitsGraphProvider(fetcher, repositoryRefs.promise),
+    [fetcher, repositoryRefs.promise],
+  );
 
   useEffect(() => {
     const host = hostRef.current;
@@ -122,14 +157,14 @@ export function CommitsGraph({
     };
     const handleCommitSelect = (event: Event) => {
       const detail = (event as CustomEvent<{ commit?: { oid?: string } }>).detail;
-      if (detail?.commit?.oid) commitSelectHandlerRef.current?.(detail.commit.oid);
+      if (detail?.commit?.oid) commitSelectionBridgeRef.current.handleSelect(detail.commit.oid);
     };
     element.addEventListener("gitgraph-error", handleError);
     element.addEventListener("gitgraph-commit-select", handleCommitSelect);
     host.append(element);
-    const twoLineStyle = document.createElement("style");
-    twoLineStyle.textContent = TWO_LINE_COMMIT_LIST_STYLE;
-    element.shadowRoot?.append(twoLineStyle);
+    const narrowStyle = document.createElement("style");
+    narrowStyle.textContent = NARROW_COMMIT_LIST_STYLE;
+    element.shadowRoot?.append(narrowStyle);
     return () => {
       element.removeEventListener("gitgraph-error", handleError);
       element.removeEventListener("gitgraph-commit-select", handleCommitSelect);
@@ -150,7 +185,9 @@ export function CommitsGraph({
     if (!element || !focusCommitId) return;
     let cancelled = false;
     if (element.data.commits.some((commit) => commit.oid === focusCommitId)) {
-      element.selectCommit(focusCommitId);
+      commitSelectionBridgeRef.current.selectForFocus(focusCommitId, (commitId) =>
+        element.selectCommit(commitId),
+      );
       element.focusCommit(focusCommitId);
       return;
     }
@@ -159,7 +196,9 @@ export function CommitsGraph({
     })
       .then((found) => {
         if (!found || cancelled) return;
-        element.selectCommit(focusCommitId);
+        commitSelectionBridgeRef.current.selectForFocus(focusCommitId, (commitId) =>
+          element.selectCommit(commitId),
+        );
         element.focusCommit(focusCommitId);
       })
       .catch((error: unknown) => {
@@ -179,6 +218,15 @@ export function CommitsGraph({
     const element = elementRef.current;
     if (element) element.provider = provider;
   }, [provider]);
+
+  useEffect(() => {
+    if (listedRefs.data?.nextCursor !== null && listedRefs.error === null) return;
+    repositoryRefs.resolve(refsForGraph);
+  }, [listedRefs.data?.nextCursor, listedRefs.error, refsForGraph, repositoryRefs]);
+
+  useEffect(() => {
+    if (listedRefs.error) errorHandlerRef.current?.(new Error(listedRefs.error));
+  }, [listedRefs.error]);
 
   return <div ref={hostRef} className={className} />;
 }
