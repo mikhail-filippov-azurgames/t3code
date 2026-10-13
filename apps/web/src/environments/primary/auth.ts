@@ -139,6 +139,7 @@ type ServerAuthGateState =
     };
 
 let bootstrapPromise: Promise<ServerAuthGateState> | null = null;
+let sessionStatePromise: Promise<AuthSessionState> | null = null;
 let resolvedAuthenticatedGateState: ServerAuthGateState | null = null;
 const AUTH_SESSION_ESTABLISH_TIMEOUT_MS = 2_000;
 const AUTH_SESSION_ESTABLISH_STEP_MS = 100;
@@ -176,8 +177,12 @@ function getDesktopBootstrapCredential(): string | null {
     : null;
 }
 
-export async function fetchSessionState(): Promise<AuthSessionState> {
-  return retryTransientBootstrap(async () => {
+export function fetchSessionState(): Promise<AuthSessionState> {
+  if (sessionStatePromise) {
+    return sessionStatePromise;
+  }
+
+  const nextPromise = retryTransientBootstrap(async () => {
     try {
       return await runPrimaryHttp(
         PrimaryEnvironmentHttpClient.pipe(
@@ -191,6 +196,14 @@ export async function fetchSessionState(): Promise<AuthSessionState> {
       });
     }
   });
+
+  const sharedPromise = nextPromise.finally(() => {
+    if (sessionStatePromise === sharedPromise) {
+      sessionStatePromise = null;
+    }
+  });
+  sessionStatePromise = sharedPromise;
+  return sharedPromise;
 }
 
 function readHttpApiStatus(error: unknown): number | null {
@@ -268,10 +281,12 @@ async function waitForAuthenticatedSessionAfterBootstrap(): Promise<AuthSessionS
 
 const TRANSIENT_BOOTSTRAP_STATUS_CODES = new Set([502, 503, 504]);
 const BOOTSTRAP_RETRY_TIMEOUT_MS = 15_000;
-const BOOTSTRAP_RETRY_STEP_MS = 500;
+const BOOTSTRAP_RETRY_BASE_DELAY_MS = 500;
+const BOOTSTRAP_RETRY_MAX_DELAY_MS = 4_000;
 
 export async function retryTransientBootstrap<T>(operation: () => Promise<T>): Promise<T> {
   const startedAt = Date.now();
+  let attempt = 0;
   while (true) {
     try {
       return await operation();
@@ -280,11 +295,22 @@ export async function retryTransientBootstrap<T>(operation: () => Promise<T>): P
         throw error;
       }
 
-      if (Date.now() - startedAt >= BOOTSTRAP_RETRY_TIMEOUT_MS) {
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs >= BOOTSTRAP_RETRY_TIMEOUT_MS) {
         throw error;
       }
 
-      await waitForBootstrapRetry(BOOTSTRAP_RETRY_STEP_MS);
+      const delayLimit = Math.min(
+        BOOTSTRAP_RETRY_MAX_DELAY_MS,
+        BOOTSTRAP_RETRY_BASE_DELAY_MS * 2 ** attempt,
+      );
+      const remainingTime = BOOTSTRAP_RETRY_TIMEOUT_MS - elapsedMs;
+      const jitteredDelay = Math.floor(delayLimit / 2 + Math.random() * (delayLimit / 2));
+      if (jitteredDelay >= remainingTime) {
+        throw error;
+      }
+      attempt += 1;
+      await waitForBootstrapRetry(jitteredDelay);
     }
   }
 }
@@ -467,5 +493,6 @@ export async function resolveInitialServerAuthGateState(): Promise<ServerAuthGat
 
 export function __resetServerAuthBootstrapForTests() {
   bootstrapPromise = null;
+  sessionStatePromise = null;
   resolvedAuthenticatedGateState = null;
 }

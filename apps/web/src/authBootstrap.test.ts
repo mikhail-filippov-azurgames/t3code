@@ -136,6 +136,51 @@ describe("resolveInitialServerAuthGateState", () => {
     vi.restoreAllMocks();
   });
 
+  it("shares concurrent primary session requests", async () => {
+    const testApi = await installAuthApi({ session: () => authenticatedSession(LOOPBACK_AUTH) });
+    const { fetchSessionState } = await import("./environments/primary/auth");
+
+    await Promise.all([fetchSessionState(), fetchSessionState()]);
+
+    expect(testApi.calls.session).toBe(1);
+  });
+
+  it("backs off transient bootstrap retries with jitter and runs them sequentially", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const { retryTransientBootstrap } = await import("./environments/primary/auth");
+    let attempts = 0;
+    let activeAttempts = 0;
+    let maxActiveAttempts = 0;
+
+    const result = retryTransientBootstrap(async () => {
+      attempts += 1;
+      activeAttempts += 1;
+      maxActiveAttempts = Math.max(maxActiveAttempts, activeAttempts);
+      try {
+        await Promise.resolve();
+        if (attempts < 3) {
+          throw new TypeError("temporary network failure");
+        }
+        return "ready";
+      } finally {
+        activeAttempts -= 1;
+      }
+    });
+
+    await vi.advanceTimersByTimeAsync(374);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(attempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await expect(result).resolves.toBe("ready");
+    expect(attempts).toBe(3);
+    expect(maxActiveAttempts).toBe(1);
+  });
+
   it("reuses an in-flight silent bootstrap attempt", async () => {
     const nextSession = sequence(
       unauthenticatedSession(DESKTOP_AUTH),
@@ -240,6 +285,7 @@ describe("resolveInitialServerAuthGateState", () => {
 
   it("retries transient auth session bootstrap failures after restart", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
     let attempts = 0;
     const request = HttpClientRequest.get("http://localhost/api/auth/session");
     const response = HttpClientResponse.fromWeb(

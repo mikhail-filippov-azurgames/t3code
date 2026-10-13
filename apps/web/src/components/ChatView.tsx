@@ -2638,6 +2638,12 @@ export default function ChatView(props: ChatViewProps) {
   const serverUpdateFailureDismissed =
     serverUpdateState === dismissedServerUpdateState ||
     isServerUpdateFailureDismissed(serverUpdateState);
+  const [externalBackendUnavailable, setExternalBackendUnavailable] = useState(false);
+  useEffect(() => {
+    const subscribe = window.desktopBridge?.onExternalBackendAvailability;
+    if (typeof subscribe !== "function") return;
+    return subscribe(setExternalBackendUnavailable);
+  }, []);
   const systemComposerBannerItems = useMemo<ComposerBannerStackItem[]>(() => {
     const items: ComposerBannerStackItem[] = [];
     const updateRunning = serverUpdateState.status === "running";
@@ -9514,6 +9520,18 @@ export default function ChatView(props: ChatViewProps) {
             ) : null}
             {/* Banners overlay the timeline without changing its content height. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-col">
+              {externalBackendUnavailable ? (
+                <div
+                  role="status"
+                  className="pointer-events-auto flex items-center justify-center gap-3 border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-sm text-foreground backdrop-blur"
+                >
+                  <WifiOffIcon className="size-4 shrink-0 text-amber-600" aria-hidden="true" />
+                  <span>Сервер временно не отвечает. Работа сохранена.</span>
+                  <Button size="xs" variant="ghost" onClick={() => window.location.reload()}>
+                    Перезагрузить
+                  </Button>
+                </div>
+              ) : null}
               <ProviderStatusBanner
                 status={visibleProviderStatus}
                 onDismiss={() => {

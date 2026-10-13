@@ -162,6 +162,37 @@ describe("createCommitsGraphProvider", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("drops malformed ref targets but keeps valid tips outside the loaded page", async () => {
+    const fetcher = vi.fn(async () => RESULT);
+    const provider = createCommitsGraphProvider(fetcher, [
+      {
+        name: "feature/deep",
+        target: "c".repeat(40),
+        current: false,
+        isRemote: false,
+        isDefault: false,
+        worktreePath: null,
+      },
+      {
+        name: "broken",
+        target: "not-a-commit-id",
+        current: false,
+        isRemote: false,
+        isDefault: false,
+        worktreePath: null,
+      },
+    ]);
+
+    const page = await provider.getHistory({ limit: COMMITS_PAGE_LIMIT });
+
+    expect(page.refs).toContainEqual({
+      name: "feature/deep",
+      target: "c".repeat(40),
+      kind: "head",
+    });
+    expect(page.refs.some((ref) => ref.name === "broken")).toBe(false);
+  });
+
   it("clamps the requested limit and forwards the decoded cursor", async () => {
     const fetcher = vi.fn(async () => RESULT);
     const provider = createCommitsGraphProvider(fetcher);

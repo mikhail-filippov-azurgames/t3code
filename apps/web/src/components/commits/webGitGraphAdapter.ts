@@ -107,7 +107,9 @@ export function toGitGraphPage(result: VcsCommitHistoryResult): GitGraphPage {
 /** Maps repository refs independently from the currently loaded history page. */
 export function toGitGraphRefs(refs: ReadonlyArray<VcsRef>): GitGraphRef[] {
   return refs.flatMap((ref) => {
-    if (ref.target === undefined) return [];
+    if (ref.target === undefined || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(ref.target)) {
+      return [];
+    }
     return [
       {
         name: ref.name,
