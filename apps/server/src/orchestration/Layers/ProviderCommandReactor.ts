@@ -2149,17 +2149,25 @@ const make = Effect.gen(function* () {
     }
     // Resolve how a follow-up sent while a turn is still running is
     // delivered. The adapter executes the steer (interrupt first, then send);
-    // the reactor only resolves and forwards the behavior. Muse sessions
-    // cannot overlap turns on one MSP session at all, so an explicit "queue"
-    // would wedge the thread in "thinking" — default those to "steer".
+    // the reactor only resolves and forwards the behavior. Adapters whose
+    // capabilities report they cannot overlap turns on one provider session
+    // would otherwise wedge the thread in "thinking", so an explicit "queue"
+    // is downgraded to "steer" for them.
     const requestedFollowUp = event.payload.followUpBehavior ?? DEFAULT_FOLLOW_UP_BEHAVIOR;
-    const effectiveFollowUp: FollowUpBehavior =
+    const queueWhileRunning =
       requestedFollowUp === "queue" &&
       thread.session?.status === "running" &&
-      thread.session?.activeTurnId != null &&
-      thread.session?.providerName === ProviderDriverKind.make("museCode")
-        ? "steer"
-        : requestedFollowUp;
+      thread.session?.activeTurnId != null;
+    const overlapsRunningTurns = queueWhileRunning
+      ? yield* providerService
+          .getCapabilities(thread.session?.providerInstanceId ?? thread.modelSelection.instanceId)
+          .pipe(
+            Effect.map((capabilities) => capabilities.overlapsRunningTurns ?? true),
+            Effect.orElseSucceed(() => true),
+          )
+      : true;
+    const effectiveFollowUp: FollowUpBehavior =
+      queueWhileRunning && !overlapsRunningTurns ? "steer" : requestedFollowUp;
 
     const handleTurnStartFailure = (cause: Cause.Cause<unknown>) => {
       if (Cause.hasInterruptsOnly(cause)) {

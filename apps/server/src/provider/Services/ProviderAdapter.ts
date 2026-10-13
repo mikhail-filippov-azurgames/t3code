@@ -52,6 +52,9 @@ export interface ProviderAdapterCapabilities {
   readonly promptlessTurnContinuation?: boolean;
   /** False when native conversation history cannot be rewound. */
   readonly supportsConversationRollback?: boolean;
+  /** False when a queued follow-up cannot be layered as a second running turn
+      on one provider session. Omitted means the adapter can overlap turns. */
+  readonly overlapsRunningTurns?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

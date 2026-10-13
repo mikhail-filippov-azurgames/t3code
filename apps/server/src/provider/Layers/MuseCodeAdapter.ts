@@ -2728,7 +2728,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
 
     return {
       provider: PROVIDER,
-      capabilities: { sessionModelSwitch: "unsupported" },
+      capabilities: { sessionModelSwitch: "unsupported", overlapsRunningTurns: false },
       startSession,
       sendTurn,
       interruptTurn,

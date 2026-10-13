@@ -784,6 +784,7 @@ describe("ProviderCommandReactor", () => {
     readonly deferReactorStart?: boolean;
     readonly threadModelSelection?: ModelSelection;
     readonly sessionModelSwitch?: "unsupported" | "in-session";
+    readonly overlapsRunningTurns?: boolean;
     readonly requiresNewThreadForModelChange?: boolean;
     readonly unreadableHistory?: boolean;
     readonly titleRegenerationCompletionDispatchFailures?: number;
@@ -999,6 +1000,9 @@ describe("ProviderCommandReactor", () => {
       getCapabilities: (_provider) =>
         Effect.succeed({
           sessionModelSwitch: input?.sessionModelSwitch ?? "in-session",
+          ...(input?.overlapsRunningTurns === undefined
+            ? {}
+            : { overlapsRunningTurns: input.overlapsRunningTurns }),
         }),
       assertConversationRollbackSupported: () => unsupported(),
       getInstanceInfo: (instanceId) => {
@@ -4080,8 +4084,14 @@ describe("ProviderCommandReactor", () => {
     expect(harness.interruptTurn).not.toHaveBeenCalled();
   });
 
-  it("defaults a running muse session to steer because muse cannot overlap turns", async () => {
-    const harness = await createHarness();
+  it("defaults a running session to steer for a provider that cannot overlap turns", async () => {
+    const harness = await createHarness({
+      overlapsRunningTurns: false,
+      threadModelSelection: {
+        instanceId: ProviderInstanceId.make("muse"),
+        model: "muse-spark-1.3",
+      },
+    });
     const now = "2026-01-01T00:00:00.000Z";
 
     await Effect.runPromise(
@@ -4093,6 +4103,7 @@ describe("ProviderCommandReactor", () => {
           threadId: ThreadId.make("thread-1"),
           status: "running",
           providerName: "museCode",
+          providerInstanceId: ProviderInstanceId.make("muse"),
           runtimeMode: "approval-required",
           activeTurnId: asTurnId("turn-running"),
           lastError: null,
