@@ -7,9 +7,8 @@
  * dedicated host with a scoped t3-code MCP config, since the credential is
  * per-thread but a host reads a single settings file. Sandbox and trust are
  * fixed for a host's lifetime, so sessions route by mode while the approval
- * mode itself travels over the wire. Anything the 0.1.1 facade cannot
- * observe (live user-input prompts, thread rewind) fails with an explicit
- * unsupported error instead of a fabricated event.
+ * mode itself travels over the wire. Thread rewind remains unsupported rather
+ * than being represented by a fabricated event.
  *
  * @module provider/Layers/MuseCodeAdapter
  */
@@ -22,15 +21,23 @@ import {
   type ProviderSession,
   type ProviderSessionStartInput,
   type ProviderTurnStartResult,
+  type UserInputQuestion as ProviderUserInputQuestion,
   type ProviderUserInputAnswers,
   type RuntimeMode,
+  RuntimeItemId,
   RuntimeRequestId,
   type ThreadId,
   TurnId,
   ProviderInstanceId,
 } from "@t3tools/contracts";
 import type { ApprovalDecisionInput, Session, Turn, TurnOutcome } from "@muse-code/sdk";
-import type { ApprovalMode, ApprovalRequestParams, TodoItem } from "@muse-code/sdk/dist/src/msp.js";
+import type {
+  ApprovalMode,
+  ApprovalRequestParams,
+  TodoItem,
+  UserInputRequestParams,
+  UserInputSettledParams,
+} from "@muse-code/sdk/dist/src/msp.js";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as NodeOS from "node:os";
 import * as Clock from "effect/Clock";
@@ -175,6 +182,64 @@ export interface MuseCodeAdapterOptions {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readUserInputQuestions(value: unknown): Array<ProviderUserInputQuestion> | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const questions: Array<ProviderUserInputQuestion> = [];
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== "string" ||
+      entry.id.trim().length === 0 ||
+      typeof entry.header !== "string" ||
+      entry.header.trim().length === 0 ||
+      typeof entry.question !== "string" ||
+      entry.question.trim().length === 0 ||
+      !Array.isArray(entry.options) ||
+      !isRecord(entry.selection) ||
+      (entry.selection.mode !== "single" && entry.selection.mode !== "multiple")
+    ) {
+      return undefined;
+    }
+    const options: Array<ProviderUserInputQuestion["options"][number]> = [];
+    for (const option of entry.options) {
+      if (!isRecord(option) || typeof option.label !== "string" || option.label.trim() === "") {
+        return undefined;
+      }
+      options.push({
+        label: option.label,
+        description: typeof option.description === "string" ? option.description : "",
+      });
+    }
+    questions.push({
+      id: entry.id,
+      header: entry.header,
+      question: entry.question,
+      options,
+      multiSelect: entry.selection.mode === "multiple",
+    });
+  }
+  return questions;
+}
+
+function readUserInputAnswers(value: unknown): ProviderUserInputAnswers {
+  const answers: Record<string, unknown> = {};
+  if (!Array.isArray(value)) return answers;
+  for (const entry of value) {
+    if (!isRecord(entry) || typeof entry.questionId !== "string") continue;
+    if (typeof entry.freeText === "string") {
+      answers[entry.questionId] = entry.freeText;
+    } else if (typeof entry.selectedLabel === "string") {
+      answers[entry.questionId] = entry.selectedLabel;
+    } else if (
+      Array.isArray(entry.selectedLabels) &&
+      entry.selectedLabels.every((label): label is string => typeof label === "string")
+    ) {
+      answers[entry.questionId] = entry.selectedLabels;
+    }
+  }
+  return answers;
 }
 
 export function mspErrorText(cause: unknown): string {
@@ -329,7 +394,7 @@ export function museItemLifecycle(
     readonly visibleOutput?: string | undefined;
     readonly status?: string | undefined;
   },
-  lifecycle: "item.started" | "item.completed",
+  lifecycle: "item.started" | "item.updated" | "item.completed",
 ): MuseItemLifecycle | undefined {
   const terminalStatus = item.status === "failed" ? "failed" : "completed";
   if (item.kind === "toolCall" && item.tool?.trim()) {
@@ -338,6 +403,14 @@ export function museItemLifecycle(
       return { itemType: "dynamic_tool_call", status: "inProgress", title };
     }
     const output = item.visibleOutput?.trim();
+    if (lifecycle === "item.updated") {
+      return {
+        itemType: "dynamic_tool_call",
+        status: "inProgress",
+        title,
+        ...(output ? { detail: output } : {}),
+      };
+    }
     return {
       itemType: "dynamic_tool_call",
       status: terminalStatus,
@@ -359,7 +432,7 @@ export function museItemLifecycle(
     const detail = output ?? command;
     return {
       itemType: "command_execution",
-      status: terminalStatus,
+      status: lifecycle === "item.updated" ? "inProgress" : terminalStatus,
       title: "Ran command",
       ...(detail ? { detail } : {}),
     };
@@ -1088,6 +1161,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     /** Consecutive host respawns per thread; cleared by a turn that settles on its own. */
     const respawnCountsRef = yield* Ref.make(new Map<ThreadId, number>());
     const approvalsRef = yield* Ref.make(new Map<string, PendingMuseApproval>());
+    const userInputStatesRef = yield* Ref.make(new Map<string, "pending" | "resolved">());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
     const nativeEventLogger = options.nativeEventLogger;
 
@@ -1107,10 +1181,25 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
     const offerRuntimeEvent = (event: ProviderRuntimeEvent) =>
       PubSub.publish(runtimeEventPubSub, event).pipe(Effect.asVoid);
+    const markUserInputRequested = (userInputId: string) =>
+      Ref.modify(userInputStatesRef, (states) => {
+        if (states.has(userInputId)) return [false, states] as const;
+        const next = new Map(states);
+        next.set(userInputId, "pending");
+        return [true, next] as const;
+      });
+    const markUserInputResolved = (userInputId: string, emitIfUntracked: boolean) =>
+      Ref.modify(userInputStatesRef, (states) => {
+        const current = states.get(userInputId);
+        if (current === "resolved") return [false, states] as const;
+        const next = new Map(states);
+        next.set(userInputId, "resolved");
+        return [current === "pending" || emitIfUntracked, next] as const;
+      });
 
     // Bridges host view notifications onto the shared timeline: todo snapshots
     // become turn.plan.updated (the Tasks badge), toolCall/userShell items
-    // become item.started/item.completed (the foldable tool cards). Chat text
+    // become item.started/item.updated/item.completed (the foldable tool cards). Chat text
     // keeps flowing through turn deltas untouched.
     const emitPlanBridge = (record: MuseSessionRecord, items: ReadonlyArray<TodoItem>) =>
       Effect.gen(function* () {
@@ -1136,7 +1225,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
     const emitItemBridge = (
       record: MuseSessionRecord,
       item: MuseRecoveredBridgeItem,
-      lifecycle: "item.started" | "item.completed",
+      lifecycle: "item.started" | "item.updated" | "item.completed",
       method: string,
       eventTurnId?: TurnId,
     ) =>
@@ -1145,12 +1234,27 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         if (mapped === undefined) return;
         if (item.itemId.length > 0) {
           const claimed = yield* Ref.modify(itemLifecycleRef, (entries) => {
-            const key = `${item.itemId}:${lifecycle}`;
             const known = entries.get(record.mspSessionId) ?? new Set<string>();
+            const signaturePrefix = `${item.itemId}:signature:`;
+            const previousSignature = [...known].find((key) => key.startsWith(signaturePrefix));
+            const nextSignature = `${signaturePrefix}${JSON.stringify(mapped)}`;
+            if (lifecycle === "item.updated") {
+              if (known.has(`${item.itemId}:item.completed`)) return [false, entries] as const;
+              if (previousSignature === nextSignature) return [false, entries] as const;
+              const next = new Map(entries);
+              const updated = new Set(known);
+              if (previousSignature !== undefined) updated.delete(previousSignature);
+              updated.add(nextSignature);
+              next.set(record.mspSessionId, updated);
+              return [true, next] as const;
+            }
+            const key = `${item.itemId}:${lifecycle}`;
             if (known.has(key)) return [false, entries] as const;
             const next = new Map(entries);
             const updated = new Set(known);
             updated.add(key);
+            if (previousSignature !== undefined) updated.delete(previousSignature);
+            updated.add(nextSignature);
             next.set(record.mspSessionId, updated);
             return [true, next] as const;
           });
@@ -1164,6 +1268,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
           provider: PROVIDER,
           providerInstanceId: boundInstanceId,
           threadId: record.threadId,
+          itemId: RuntimeItemId.make(item.itemId),
           ...(eventTurnId
             ? { turnId: eventTurnId }
             : record.activeTurnId
@@ -1274,15 +1379,24 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
         const isBridged =
           notification.method === "session/todoListChanged" ||
           notification.method === "item/started" ||
+          notification.method === "item/updated" ||
           notification.method === "item/completed";
         const isUsageChanged = notification.method === "usage/changed";
+        const isUserInputNotification =
+          notification.method === "userInput/requested" ||
+          notification.method === "userInput/settled";
         // Delta frames are the high-frequency tail; skip them synchronously so
         // the notification path stays allocation-light, and only pay for the
         // rest when the bridge or the native log actually wants them.
         if (notification.method.endsWith("/delta")) {
           return;
         }
-        if (!isBridged && !isUsageChanged && nativeEventLogger === undefined) {
+        if (
+          !isBridged &&
+          !isUsageChanged &&
+          !isUserInputNotification &&
+          nativeEventLogger === undefined
+        ) {
           return;
         }
         runPromise(
@@ -1312,6 +1426,49 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
               }
               return;
             }
+            if (isUserInputNotification) {
+              if (record === undefined || params === undefined) return;
+              if (notification.method === "userInput/requested") {
+                const request = params as unknown as UserInputRequestParams;
+                const questions = readUserInputQuestions(request.questions);
+                if (
+                  typeof request.userInputId !== "string" ||
+                  typeof request.turnId !== "string" ||
+                  questions === undefined
+                ) {
+                  return;
+                }
+                if (!(yield* markUserInputRequested(request.userInputId))) return;
+                const stamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "user-input.requested",
+                  ...stamp,
+                  provider: PROVIDER,
+                  providerInstanceId: boundInstanceId,
+                  threadId: record.threadId,
+                  turnId: TurnId.make(request.turnId),
+                  requestId: RuntimeRequestId.make(request.userInputId),
+                  payload: { questions },
+                  raw: { source: RAW_SOURCE, method: notification.method, payload: params },
+                });
+                return;
+              }
+              const settled = params as unknown as UserInputSettledParams;
+              if (typeof settled.userInputId !== "string") return;
+              if (!(yield* markUserInputResolved(settled.userInputId, false))) return;
+              const stamp = yield* makeEventStamp();
+              yield* offerRuntimeEvent({
+                type: "user-input.resolved",
+                ...stamp,
+                provider: PROVIDER,
+                providerInstanceId: boundInstanceId,
+                threadId: record.threadId,
+                requestId: RuntimeRequestId.make(settled.userInputId),
+                payload: { answers: readUserInputAnswers(settled.answers) },
+                raw: { source: RAW_SOURCE, method: notification.method, payload: params },
+              });
+              return;
+            }
             if (!isBridged || record === undefined) return;
             if (notification.method === "session/todoListChanged") {
               const items = readTodoItems(params?.items);
@@ -1323,7 +1480,11 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
             yield* emitItemBridge(
               record,
               item,
-              notification.method === "item/started" ? "item.started" : "item.completed",
+              notification.method === "item/started"
+                ? "item.started"
+                : notification.method === "item/updated"
+                  ? "item.updated"
+                  : "item.completed",
               notification.method,
             );
           }).pipe(Effect.ignore),
@@ -2633,6 +2794,7 @@ export function makeMuseCodeAdapter(options: MuseCodeAdapterOptions) {
               ...(cause instanceof Error ? { cause } : {}),
             }),
         });
+        if (!(yield* markUserInputResolved(String(requestId), true))) return;
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
           type: "user-input.resolved",

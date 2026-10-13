@@ -1,13 +1,29 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import { setTimeout as delay } from "node:timers/promises";
+import { vi } from "vite-plus/test";
 
 import type { TurnOutcome } from "@muse-code/sdk";
-import { EventId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  EventId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ProviderRuntimeEvent,
+  ThreadId,
+} from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 
 import { ProviderAdapterRequestError } from "../Errors.ts";
+import type { MuseHost } from "../muse/MuseMspRuntime.ts";
 import {
   MUSE_LIVENESS_PROBE_METHOD,
   MUSE_LIVENESS_PROBE_TIMEOUT_MS,
@@ -32,7 +48,88 @@ import {
   parseMuseEffort,
   reconcileMuseTurnOutput,
   shouldFoldDelta,
+  makeMuseCodeAdapter,
 } from "./MuseCodeAdapter.ts";
+
+const museMspMocks = vi.hoisted(() => ({ spawnMuseHost: vi.fn() }));
+
+vi.mock("../muse/MuseMspRuntime.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../muse/MuseMspRuntime.ts")>()),
+  ...museMspMocks,
+}));
+
+const makeMuseNotificationHarness = () => {
+  type Notification = { readonly method: string; readonly params?: unknown };
+  const handlers: Array<(notification: Notification) => void> = [];
+  const command = vi.fn(async () => ({}));
+  const session = {
+    sessionId: "msp-session-user-input",
+    onApproval: () => undefined,
+    onGapError: () => undefined,
+  };
+  const host = {
+    client: { startSession: async () => session },
+    connection: { onProtocolError: () => undefined, command },
+    addNotificationHandler: (handler: (notification: Notification) => void) => {
+      handlers.push(handler);
+    },
+    close: async () => undefined,
+  } as unknown as MuseHost;
+
+  museMspMocks.spawnMuseHost.mockReturnValue(Effect.succeed(host));
+
+  return {
+    command,
+    makeAdapter: () =>
+      makeMuseCodeAdapter({
+        museBin: "muse-test",
+        env: {},
+        instanceId: ProviderInstanceId.make("muse-user-input-test"),
+      }),
+    notify: (notification: Notification) => {
+      for (const handler of handlers) handler(notification);
+    },
+  };
+};
+
+const userInputRequest = (userInputId: string, turnId = "msp-turn-user-input") => ({
+  autoResolutionMs: 30_000,
+  itemId: "msp-item-user-input",
+  questions: [
+    {
+      id: "msp-question-framework",
+      header: "Framework",
+      question: "Which framework should I use?",
+      options: [{ label: "React", description: "React.js" }, { label: "Vue" }],
+      selection: { mode: "single" },
+    },
+    {
+      id: "msp-question-features",
+      header: "Features",
+      question: "Which features should I include?",
+      options: [{ label: "Routing", description: "Client routing" }],
+      selection: { mode: "multiple", minSelections: 1, maxSelections: 1 },
+    },
+  ],
+  sessionId: "msp-session-user-input",
+  toolCallId: "msp-tool-call-user-input",
+  toolName: "AskUserQuestion",
+  turnId,
+  userInputId,
+  viewCursor: "cursor-user-input-requested",
+});
+
+const runWithMuseNotificationHarness = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.scoped(effect).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+
+const nextRuntimeEvent = (
+  events: Stream.Stream<ProviderRuntimeEvent>,
+  timeoutMs = 250,
+): Effect.Effect<Option.Option<ProviderRuntimeEvent>> =>
+  Effect.race(
+    Stream.runHead(events),
+    Effect.promise(() => delay(timeoutMs, Option.none())),
+  );
 
 describe("museUsageChangedEvent", () => {
   const eventBase = {
@@ -1293,4 +1390,342 @@ describe("awaitMuseTurn", () => {
       });
     }),
   );
+});
+
+describe("Muse host user-input notifications", () => {
+  const threadId = ThreadId.make("muse-user-input-thread");
+  const sessionInput = {
+    threadId,
+    provider: ProviderDriverKind.make("museCode"),
+    runtimeMode: "auto" as const,
+  };
+
+  it.effect("bridges questions with MSP ids that respondToUserInput sends back", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+
+        const requestedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        harness.notify({
+          method: "userInput/requested",
+          params: userInputRequest("msp-user-input-request-1", "msp-turn-request-1"),
+        });
+
+        const requested = yield* Fiber.join(requestedFiber);
+        expect(requested._tag).toBe("Some");
+        if (requested._tag !== "Some" || requested.value.type !== "user-input.requested") return;
+        expect(requested.value.threadId).toBe(threadId);
+        expect(requested.value.turnId).toBe("msp-turn-request-1");
+        expect(requested.value.requestId).toBe("msp-user-input-request-1");
+        expect(requested.value.payload.questions).toEqual([
+          {
+            id: "msp-question-framework",
+            header: "Framework",
+            question: "Which framework should I use?",
+            options: [
+              { label: "React", description: "React.js" },
+              { label: "Vue", description: "" },
+            ],
+            multiSelect: false,
+          },
+          {
+            id: "msp-question-features",
+            header: "Features",
+            question: "Which features should I include?",
+            options: [{ label: "Routing", description: "Client routing" }],
+            multiSelect: true,
+          },
+        ]);
+        expect(requested.value.raw).toMatchObject({
+          source: "muse.msp.notification",
+          method: "userInput/requested",
+          payload: { autoResolutionMs: 30_000 },
+        });
+
+        const answers = {
+          "msp-question-framework": ["React"],
+          "msp-question-features": "Routing only",
+        };
+        const resolvedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* adapter.respondToUserInput(
+          threadId,
+          ApprovalRequestId.make("msp-user-input-request-1"),
+          answers,
+        );
+        const resolved = yield* Fiber.join(resolvedFiber);
+
+        expect(harness.command).toHaveBeenCalledWith("userInput/answer", {
+          sessionId: "msp-session-user-input",
+          userInputId: "msp-user-input-request-1",
+          answers: [
+            { questionId: "msp-question-framework", selectedLabels: ["React"] },
+            { questionId: "msp-question-features", freeText: "Routing only" },
+          ],
+        });
+        expect(resolved._tag).toBe("Some");
+        if (resolved._tag === "Some") {
+          expect(resolved.value.type).toBe("user-input.resolved");
+          expect(resolved.value.requestId).toBe("msp-user-input-request-1");
+        }
+      }),
+    );
+  });
+
+  it.effect("bridges host settlements for timedOut and answered requests", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+
+        for (const [index, outcome] of (["timedOut", "answered"] as const).entries()) {
+          const userInputId = `msp-user-input-settled-${index}`;
+          const requestedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          harness.notify({
+            method: "userInput/requested",
+            params: userInputRequest(userInputId),
+          });
+          const requested = yield* Fiber.join(requestedFiber);
+          expect(requested._tag).toBe("Some");
+          if (requested._tag !== "Some" || requested.value.type !== "user-input.requested") return;
+
+          const resolvedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(
+            Effect.forkChild,
+          );
+          yield* Effect.yieldNow;
+          harness.notify({
+            method: "userInput/settled",
+            params: {
+              answers:
+                outcome === "answered"
+                  ? [{ questionId: "msp-question-framework", selectedLabel: "React" }]
+                  : [],
+              clarification: null,
+              decidedByCommandId: null,
+              outcome,
+              reason: null,
+              sessionId: "msp-session-user-input",
+              sourceRange: {},
+              userInputId,
+              viewCursor: `cursor-${outcome}`,
+            },
+          });
+          const resolved = yield* Fiber.join(resolvedFiber);
+
+          expect(resolved._tag).toBe("Some");
+          if (resolved._tag === "Some") {
+            expect(resolved.value.type).toBe("user-input.resolved");
+            expect(resolved.value.requestId).toBe(requested.value.requestId);
+            if (resolved.value.type === "user-input.resolved") {
+              expect(resolved.value.payload.answers).toEqual(
+                outcome === "answered" ? { "msp-question-framework": "React" } : {},
+              );
+            }
+          }
+        }
+      }),
+    );
+  });
+
+  it.effect("does not emit a second request for a repeated userInputId", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+        const params = userInputRequest("msp-user-input-duplicate");
+
+        const requestedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        harness.notify({ method: "userInput/requested", params });
+        const requested = yield* Fiber.join(requestedFiber);
+        expect(requested._tag).toBe("Some");
+        if (requested._tag !== "Some" || requested.value.type !== "user-input.requested") return;
+
+        const duplicateFiber = yield* nextRuntimeEvent(adapter.streamEvents, 25).pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        harness.notify({ method: "userInput/requested", params });
+        const duplicate = yield* Fiber.join(duplicateFiber);
+        expect(duplicate._tag).toBe("None");
+      }),
+    );
+  });
+});
+
+describe("Muse host item notifications", () => {
+  const threadId = ThreadId.make("muse-item-thread");
+  const sessionInput = {
+    threadId,
+    provider: ProviderDriverKind.make("museCode"),
+    runtimeMode: "auto" as const,
+  };
+  const toolItem = (
+    itemId: string,
+    visibleOutput: string,
+    revision: number,
+    status = "inProgress",
+  ) => ({
+    itemId,
+    kind: "toolCall",
+    revision,
+    status,
+    tool: "read_file",
+    turnId: "msp-turn-items",
+    visibleOutput,
+  });
+  const notifyItem = (
+    notify: ReturnType<typeof makeMuseNotificationHarness>["notify"],
+    method: "item/started" | "item/updated" | "item/completed",
+    item:
+      | ReturnType<typeof toolItem>
+      | { itemId: string; kind: string; revision: number; status: string },
+  ) =>
+    notify({
+      method,
+      params: {
+        item,
+        sessionId: "msp-session-user-input",
+        sourceRange: {},
+        viewCursor: `cursor-${method}-${item.itemId}-${item.revision}`,
+      },
+    });
+
+  it.effect("bridges updated tool output as one item.updated event with the same item id", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+        const itemId = "msp-item-tool-updated";
+
+        const startedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/started", toolItem(itemId, "", 1));
+        const started = yield* Fiber.join(startedFiber);
+        expect(started._tag).toBe("Some");
+        if (started._tag !== "Some" || started.value.type !== "item.started") return;
+
+        const updatedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/updated", toolItem(itemId, "first line\nsecond line", 2));
+        const updated = yield* Fiber.join(updatedFiber);
+
+        expect(updated._tag).toBe("Some");
+        if (updated._tag === "Some" && updated.value.type === "item.updated") {
+          expect(started.value.itemId).toBe(itemId);
+          expect(updated.value.itemId).toBe(started.value.itemId);
+          expect(updated.value.threadId).toBe(threadId);
+          expect(updated.value.payload).toMatchObject({
+            itemType: "dynamic_tool_call",
+            status: "inProgress",
+            title: "read_file",
+            detail: "first line\nsecond line",
+          });
+        }
+      }),
+    );
+  });
+
+  it.effect("suppresses an unchanged mapped item.updated repeat", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+        const itemId = "msp-item-tool-duplicate-update";
+        const startedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/started", toolItem(itemId, "", 1));
+        yield* Fiber.join(startedFiber);
+
+        const firstUpdateFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/updated", toolItem(itemId, "partial output", 2));
+        const firstUpdate = yield* Fiber.join(firstUpdateFiber);
+        expect(firstUpdate._tag).toBe("Some");
+        if (firstUpdate._tag !== "Some" || firstUpdate.value.type !== "item.updated") return;
+
+        const duplicateFiber = yield* nextRuntimeEvent(adapter.streamEvents, 25).pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/updated", toolItem(itemId, "partial output", 3));
+        const duplicate = yield* Fiber.join(duplicateFiber);
+        expect(duplicate._tag).toBe("None");
+      }),
+    );
+  });
+
+  it.effect("does not resurrect an item.updated card after item.completed", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+        const itemId = "msp-item-tool-terminal-update";
+        const startedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/started", toolItem(itemId, "", 1));
+        yield* Fiber.join(startedFiber);
+
+        const completedFiber = yield* nextRuntimeEvent(adapter.streamEvents).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        notifyItem(
+          harness.notify,
+          "item/completed",
+          toolItem(itemId, "final output", 2, "completed"),
+        );
+        const completed = yield* Fiber.join(completedFiber);
+        expect(completed._tag).toBe("Some");
+        if (completed._tag !== "Some" || completed.value.type !== "item.completed") return;
+
+        const updatedFiber = yield* nextRuntimeEvent(adapter.streamEvents, 25).pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/updated", toolItem(itemId, "late output", 3));
+        const updated = yield* Fiber.join(updatedFiber);
+        expect(updated._tag).toBe("None");
+      }),
+    );
+  });
+
+  it.effect("ignores item.updated for kinds without a tool card", () => {
+    const harness = makeMuseNotificationHarness();
+    return runWithMuseNotificationHarness(
+      Effect.gen(function* () {
+        const adapter = yield* harness.makeAdapter();
+        yield* adapter.startSession(sessionInput);
+        const updatedFiber = yield* nextRuntimeEvent(adapter.streamEvents, 25).pipe(
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        notifyItem(harness.notify, "item/updated", {
+          itemId: "msp-item-agent-message",
+          kind: "agentMessage",
+          revision: 2,
+          status: "inProgress",
+        });
+        notifyItem(harness.notify, "item/updated", {
+          itemId: "msp-item-reasoning",
+          kind: "reasoning",
+          revision: 2,
+          status: "inProgress",
+        });
+        const updated = yield* Fiber.join(updatedFiber);
+        expect(updated._tag).toBe("None");
+      }),
+    );
+  });
 });
