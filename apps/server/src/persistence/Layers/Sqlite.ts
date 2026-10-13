@@ -6,6 +6,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
 import { runMigrations } from "../Migrations.ts";
+import * as SqliteBackgroundReader from "../SqliteBackgroundReader.ts";
 import { ServerConfig } from "../../config.ts";
 
 const setup = Layer.effectDiscard(
@@ -35,13 +36,13 @@ export const makeSqlitePersistenceLive = Effect.fn("makeSqlitePersistenceLive")(
         "service.name": "t3-server",
       },
     }),
-  );
+  ).pipe(Layer.merge(SqliteBackgroundReader.layerWorker(dbPath)));
 }, Layer.unwrap);
 
 export const SqlitePersistenceMemory = Layer.provideMerge(
   setup,
   NodeSqliteClient.layer({ filename: ":memory:" }),
-);
+).pipe(Layer.merge(SqliteBackgroundReader.layerSameConnection));
 
 export const layerConfig = Layer.unwrap(
   Effect.gen(function* () {

@@ -14,7 +14,6 @@ import {
   type OrchestrationCheckpointSummary,
   type OrchestrationThreadActivity,
   type DelegationCompletedActivityPayload,
-  type IsoDateTime,
   type ProjectId,
   type ProviderRuntimeEvent,
   type ResponseStreamingMode,
@@ -30,7 +29,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
-import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { formatTokens } from "@t3tools/shared/usageFormat";
@@ -48,7 +46,10 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ThreadBackgroundLivenessService } from "../ThreadBackgroundLiveness.ts";
 import { ThreadPlanProgressService } from "../ThreadPlanProgress.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type DelegatedTaskSummaryRecoveryCandidate,
+} from "../Services/ProjectionSnapshotQuery.ts";
 import {
   ProviderRuntimeIngestionService,
   type ProviderRuntimeIngestionShape,
@@ -1349,53 +1350,49 @@ const make = Effect.gen(function* () {
     });
   });
 
-  let recoveryCursor:
-    | {
-        readonly completedAt: IsoDateTime;
-        readonly childThreadId: ThreadId;
-        readonly sourceTurnId: TurnId;
-      }
-    | undefined;
-  const recoverDelegationCompletions = Effect.fn(
-    "ProviderRuntimeIngestion.recoverDelegationCompletions",
-  )(function* () {
-    const page = yield* projectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates({
-      ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
-      limit: 100,
+  const recoverDelegationCompletion = Effect.fnUntraced(function* (
+    candidate: DelegatedTaskSummaryRecoveryCandidate,
+  ) {
+    const summaryInput = yield* projectionSnapshotQuery.getDelegatedTaskSummaryInput({
+      childThreadId: candidate.childThreadId,
+      sourceTurnId: candidate.sourceTurnId,
     });
-    for (const candidate of page.rows) {
-      const summaryInput = yield* projectionSnapshotQuery.getDelegatedTaskSummaryInput({
+    if (
+      Option.isSome(summaryInput) &&
+      summaryInput.value.parentThreadId === candidate.parentThreadId
+    ) {
+      yield* persistDelegationCompletedWake({
+        parentThreadId: candidate.parentThreadId,
         childThreadId: candidate.childThreadId,
-        sourceTurnId: candidate.sourceTurnId,
+        turnId: candidate.sourceTurnId,
+        status: candidate.status,
+        ...(candidate.outputStatus === null ? {} : { outputStatus: candidate.outputStatus }),
+        completedAt: candidate.completedAt,
+        assistantText: summaryInput.value.assistantText,
+        ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
       });
-      if (
-        Option.isSome(summaryInput) &&
-        summaryInput.value.parentThreadId === candidate.parentThreadId
-      ) {
-        yield* persistDelegationCompletedWake({
-          parentThreadId: candidate.parentThreadId,
-          childThreadId: candidate.childThreadId,
-          turnId: candidate.sourceTurnId,
-          status: candidate.status,
-          ...(candidate.outputStatus === null ? {} : { outputStatus: candidate.outputStatus }),
-          completedAt: candidate.completedAt,
-          assistantText: summaryInput.value.assistantText,
-          ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
-        });
-      }
     }
-    recoveryCursor = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
   });
 
-  const recoverDelegationCompletionsSafely = recoverDelegationCompletions().pipe(
-    Effect.catchCause((cause) =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.failCause(cause)
-        : Effect.logWarning("delegated child parent callback recovery failed; it will retry", {
-            cause: Cause.pretty(cause),
-          }),
-    ),
-  );
+  const recoverDelegationCompletions: ProviderRuntimeIngestionShape["recoverDelegationCompletions"] =
+    Effect.fn("ProviderRuntimeIngestion.recoverDelegationCompletions")(function* (candidates) {
+      for (const candidate of candidates) {
+        yield* recoverDelegationCompletion(candidate).pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logWarning(
+                  "delegated child parent callback recovery failed; a later sweep retries it",
+                  {
+                    childThreadId: candidate.childThreadId,
+                    sourceTurnId: candidate.sourceTurnId,
+                    cause: Cause.pretty(cause),
+                  },
+                ),
+          ),
+        );
+      }
+    });
 
   // A wake that arrived while its thread was busy waits for the busy turn to
   // settle, then starts here instead of a later natural turn. A board-start
@@ -2872,16 +2869,11 @@ const make = Effect.gen(function* () {
           return worker.enqueue({ source: "domain", event });
         }),
       );
-      yield* forkParked(
-        recoverDelegationCompletionsSafely.pipe(
-          Effect.repeat(Schedule.spaced("1 minute")),
-          Effect.asVoid,
-        ),
-      );
     });
 
   return {
     start,
+    recoverDelegationCompletions,
     drain: worker.drain,
   } satisfies ProviderRuntimeIngestionShape;
 });

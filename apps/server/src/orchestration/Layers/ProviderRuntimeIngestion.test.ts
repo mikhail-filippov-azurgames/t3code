@@ -70,7 +70,10 @@ import {
 import { DEFAULT_THREAD_TITLE } from "../threadTitles.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
-import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import {
+  ProjectionSnapshotQuery,
+  type DelegatedTaskSummaryRecoveryCursor,
+} from "../Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -388,8 +391,21 @@ describe("ProviderRuntimeIngestion", () => {
     scope = await Effect.runPromise(Scope.make("sequential"));
     await testRuntime.runPromise(ingestion.start().pipe(Scope.provide(scope)));
     const drain = () => testRuntime.runPromise(ingestion.drain);
+    // One full pass of the shared delegation recovery sweep, as after a restart.
     const restartIngestionRecovery = () =>
-      testRuntime.runPromise(ingestion.start().pipe(Scope.provide(scope!)));
+      testRuntime.runPromise(
+        Effect.gen(function* () {
+          let after: DelegatedTaskSummaryRecoveryCursor | undefined;
+          do {
+            const page = yield* snapshotQuery.listDelegatedTaskSummaryRecoveryCandidates({
+              ...(after === undefined ? {} : { after }),
+              limit: 100,
+            });
+            yield* ingestion.recoverDelegationCompletions(page.rows);
+            after = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
+          } while (after !== undefined);
+        }),
+      );
     const readPendingTurnStart = (threadId: ThreadId) =>
       testRuntime.runPromise(
         Effect.service(ProjectionTurnRepository).pipe(

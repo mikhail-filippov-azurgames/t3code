@@ -10,6 +10,8 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 
+import type { DelegatedTaskSummaryRecoveryCandidate } from "./ProjectionSnapshotQuery.ts";
+
 /**
  * ProviderRuntimeIngestionShape - Service API for runtime ingestion lifecycle.
  */
@@ -24,6 +26,15 @@ export interface ProviderRuntimeIngestionShape {
    * logging warnings.
    */
   readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+
+  /**
+   * Re-deliver parent callbacks for terminal delegated turns found by the
+   * delegation recovery sweep. A failed candidate is logged and left for a
+   * later sweep, so it never blocks the rest of the page.
+   */
+  readonly recoverDelegationCompletions: (
+    candidates: ReadonlyArray<DelegatedTaskSummaryRecoveryCandidate>,
+  ) => Effect.Effect<void>;
 
   /**
    * Resolves when the internal processing queue is empty and idle.

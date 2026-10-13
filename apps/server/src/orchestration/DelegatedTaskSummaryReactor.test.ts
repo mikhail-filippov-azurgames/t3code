@@ -40,7 +40,6 @@ import {
   MAX_DELEGATED_SUMMARY_ATTEMPTS,
   type DelegatedTaskSummaryRecord,
 } from "../persistence/Services/DelegatedTaskSummaries.ts";
-import { PersistenceSqlError } from "../persistence/Errors.ts";
 
 it("bounds delegated summary inputs and preserves the configured text generation selection", () => {
   const cleanReport = "Final report preserves punctuation: caf\u00e9; checks passed.";
@@ -251,47 +250,23 @@ it.effect(
           getDelegatedTaskSummaryInput: ({ childThreadId }) =>
             Effect.succeed(Option.fromNullishOr(childSnapshots.get(childThreadId))),
           listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
-          listDelegatedTaskSummaryRecoveryCandidates: ({ after }) =>
-            Effect.succeed(
-              after === undefined
-                ? {
-                    rows: [
-                      {
-                        parentThreadId,
-                        childThreadId: childA,
-                        sourceTurnId: turnA,
-                        status: "completed" as const,
-                        outputStatus: "available" as const,
-                        completedAt: "2026-09-20T10:00:00.000Z" as const,
-                        resultExcerpt: null,
-                        terminalError: null,
-                      },
-                      {
-                        parentThreadId,
-                        childThreadId: childC,
-                        sourceTurnId: turnC,
-                        status: "completed" as const,
-                        outputStatus: "available" as const,
-                        completedAt: "2026-09-20T10:00:00.000Z" as const,
-                        resultExcerpt: null,
-                        terminalError: null,
-                      },
-                      {
-                        parentThreadId,
-                        childThreadId: childD,
-                        sourceTurnId: turnD,
-                        status: "completed" as const,
-                        outputStatus: "available" as const,
-                        completedAt: "2026-09-20T10:00:00.000Z" as const,
-                        resultExcerpt: null,
-                        terminalError: null,
-                      },
-                    ],
-                    hasMore: false,
-                  }
-                : { rows: [], hasMore: false },
-            ),
         });
+        const recoveryCandidates = (
+          [
+            [childA, turnA],
+            [childC, turnC],
+            [childD, turnD],
+          ] as const
+        ).map(([childThreadId, sourceTurnId]) => ({
+          parentThreadId,
+          childThreadId,
+          sourceTurnId,
+          status: "completed" as const,
+          outputStatus: "available" as const,
+          completedAt: "2026-09-20T10:00:00.000Z" as const,
+          resultExcerpt: null,
+          terminalError: null,
+        }));
         let generatorCalls = 0;
         const generator = Layer.mock(TextGeneration.TextGeneration)({
           generateCommitMessage: (input) =>
@@ -329,6 +304,7 @@ it.effect(
         yield* Effect.gen(function* () {
           const reactor = yield* DelegatedTaskSummaryReactor;
           yield* reactor.start();
+          yield* reactor.recover(recoveryCandidates);
 
           const eventFor = (childThreadId: ThreadId, delegatedTurnId: TurnId, suffix: string) =>
             ({
@@ -1113,61 +1089,6 @@ it.effect("never flies two generations for one turn at once", () =>
         yield* reactor.drain;
         assert.equal(generatorCalls, 1);
         assert.equal((yield* Ref.get(records)).get(key)?.state, "ready");
-      }).pipe(Effect.provide(layer));
-    }),
-  ),
-);
-
-it.effect("retries delegated summary recovery after a transient query failure", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const attempts = yield* Ref.make(0);
-      const firstAttempt = yield* Deferred.make<void>();
-      const secondAttempt = yield* Deferred.make<void>();
-      const repository = Layer.mock(DelegatedTaskSummaryRepository)({});
-      const engine = Layer.mock(OrchestrationEngine.OrchestrationEngineService)({
-        subscribeDomainEvents: Effect.succeed(Stream.empty),
-      });
-      const snapshots = Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
-        listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
-        listDelegatedTaskSummaryRecoveryCandidates: () =>
-          Effect.gen(function* () {
-            const attempt = yield* Ref.modify(attempts, (count) => [count, count + 1] as const);
-            if (attempt === 0) {
-              yield* Deferred.succeed(firstAttempt, undefined);
-              return yield* Effect.fail(
-                new PersistenceSqlError({
-                  operation: "test.recovery",
-                  detail: "temporary SQLite read failure",
-                }),
-              );
-            }
-            yield* Deferred.succeed(secondAttempt, undefined);
-            return { rows: [], hasMore: false };
-          }),
-      });
-      const generator = Layer.mock(TextGeneration.TextGeneration)({
-        generateCommitMessage: () => Effect.die(new Error("No generation expected")),
-      });
-      const layer = delegatedTaskSummaryReactorLayer.pipe(
-        Layer.provideMerge(
-          Layer.mergeAll(
-            repository,
-            engine,
-            snapshots,
-            generator,
-            ServerSettings.ServerSettingsService.layerTest(),
-          ),
-        ),
-      );
-
-      yield* Effect.gen(function* () {
-        const reactor = yield* DelegatedTaskSummaryReactor;
-        yield* reactor.start();
-        yield* Deferred.await(firstAttempt);
-        yield* TestClock.adjust("1 minute");
-        yield* Deferred.await(secondAttempt);
-        assert.equal(yield* Ref.get(attempts), 2);
       }).pipe(Effect.provide(layer));
     }),
   ),

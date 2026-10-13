@@ -80,6 +80,7 @@ import Migration0065 from "./Migrations/065_BoardExecutorIndex.ts";
 import Migration0066 from "./Migrations/066_DelegationFollowUpLookupIndex.ts";
 import Migration0067 from "./Migrations/067_BoardNudgeIndexes.ts";
 import Migration0068 from "./Migrations/068_DelegationRecoveryCursorIndex.ts";
+import Migration0069 from "./Migrations/069_DelegationLineageLookupIndex.ts";
 
 /**
  * Migration loader with all migrations defined inline.
@@ -160,6 +161,7 @@ const migrationEntries = [
   [66, "DelegationFollowUpLookupIndex", Migration0066],
   [67, "BoardNudgeIndexes", Migration0067],
   [68, "DelegationRecoveryCursorIndex", Migration0068],
+  [69, "DelegationLineageLookupIndex", Migration0069],
 ] as const;
 
 export const migrationManifest = migrationEntries.map(([id, name]) => [id, name] as const);

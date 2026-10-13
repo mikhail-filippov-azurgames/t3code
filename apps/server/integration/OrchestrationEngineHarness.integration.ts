@@ -444,6 +444,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(
         Layer.succeed(DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor, {
           start: () => Effect.void,
+          recover: () => Effect.void,
           drain: Effect.void,
         }),
       ),

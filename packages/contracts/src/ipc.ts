@@ -1319,6 +1319,7 @@ export interface DesktopBridge {
   restartApp?: () => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   onSnapShotEvent?: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
+  onExternalBackendAvailability?: (listener: (available: boolean) => void) => () => void;
   /**
    * Quit-confirmation hint pushes. Optional: older desktop builds never emit
    * them.

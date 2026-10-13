@@ -76,6 +76,7 @@ import {
 } from "../threadDetailCursor.ts";
 import { projectActivityPayload } from "../ActivityPayloadProjection.ts";
 import * as RepositoryIdentityResolver from "../../project/RepositoryIdentityResolver.ts";
+import * as SqliteBackgroundReader from "../../persistence/SqliteBackgroundReader.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import {
   ProjectionSnapshotQuery,
@@ -622,6 +623,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const threadBackgroundLiveness = yield* ThreadBackgroundLivenessService;
   const threadPlanProgress = yield* ThreadPlanProgressService;
   const sql = yield* SqlClient.SqlClient;
+  const backgroundReader = yield* SqliteBackgroundReader.SqliteBackgroundReader;
   const repositoryIdentityResolver = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const repositoryIdentityResolutionConcurrency = 4;
   const resolveRepositoryIdentitiesForProjects = Effect.fn(
@@ -1650,10 +1652,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     `,
   });
 
+  // The once-a-minute recovery sweep reads off the event loop so a slow plan cannot freeze the server.
   const listDelegatedSummaryRecoveryRows = SqlSchema.findAll({
     Request: DelegatedSummaryRecoveryRequest,
     Result: DelegatedSummaryRecoveryRowSchema,
-    execute: ({ afterCompletedAt, afterChildThreadId, afterSourceTurnId, limit }) => sql`
+    execute: ({ afterCompletedAt, afterChildThreadId, afterSourceTurnId, limit }) =>
+      backgroundReader.all(sql`
       WITH terminal_turn_page AS MATERIALIZED (
         SELECT turns.thread_id, turns.turn_id, turns.completed_at
         FROM projection_turns turns
@@ -1715,8 +1719,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turns.state AS turn_state,
           turns.completed_at,
           json_extract(lineage.payload_json, '$.parentThreadId') AS parent_thread_id
+        -- CROSS JOIN keeps the page as the outer loop; otherwise SQLite walks every terminal turn.
         FROM bounded_terminal_turn_page page
-        JOIN projection_turns turns
+        CROSS JOIN projection_turns turns
           ON turns.thread_id = page.thread_id AND turns.turn_id = page.turn_id
         JOIN projection_threads child ON child.thread_id = turns.thread_id
         JOIN projection_thread_activities lineage
@@ -1836,7 +1841,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             )
           )
       )
-      , recovery_rows AS (
+      , recovery_rows AS MATERIALIZED (
       SELECT
         terminal.parent_thread_id AS "parentThreadId",
         terminal.child_thread_id AS "childThreadId",
@@ -1895,7 +1900,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       LEFT JOIN scan_state ON 1 = 1
       WHERE NOT EXISTS (SELECT 1 FROM recovery_rows)
       ORDER BY "completedAt" DESC, "childThreadId" DESC, "sourceTurnId" DESC
-    `,
+    `),
   });
 
   const delegatedSummaryThreadRow = SqlSchema.findOneOption({

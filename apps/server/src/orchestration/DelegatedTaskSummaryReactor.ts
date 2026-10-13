@@ -20,7 +20,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
@@ -43,7 +42,6 @@ const MAX_REPORT_CHARS = 5_000;
 const MAX_EVENT_CHARS = 1_800;
 const MAX_SUMMARY_CHARS = 600;
 const MAX_SOURCE_TURNS = 32;
-const RECOVERY_PAGE_SIZE = 100;
 /**
  * Claim lease: how long one paid generation may hold its turn before another
  * claimant may take it. Longer than the 180s provider timeouts so a slow but
@@ -101,6 +99,10 @@ export class DelegatedTaskSummaryReactor extends Context.Service<
   DelegatedTaskSummaryReactor,
   {
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+    /** Summarize terminal turns found by the delegation recovery sweep, then drain them. */
+    readonly recover: (
+      candidates: ReadonlyArray<ProjectionSnapshotQuery.DelegatedTaskSummaryRecoveryCandidate>,
+    ) => Effect.Effect<void>;
     readonly drain: Effect.Effect<void>;
   }
 >()("t3/orchestration/DelegatedTaskSummaryReactor") {}
@@ -455,13 +457,10 @@ export const make = Effect.gen(function* () {
     );
   const worker = yield* makeDrainableWorker(processSafely);
 
-  let recoveryCursor: ProjectionSnapshotQuery.DelegatedTaskSummaryRecoveryCursor | undefined;
-  const recover = Effect.fn("DelegatedTaskSummaryReactor.recover")(function* () {
-    const page = yield* snapshots.listDelegatedTaskSummaryRecoveryCandidates({
-      ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
-      limit: RECOVERY_PAGE_SIZE,
-    });
-    for (const candidate of page.rows) {
+  const recover: DelegatedTaskSummaryReactor["Service"]["recover"] = Effect.fn(
+    "DelegatedTaskSummaryReactor.recover",
+  )(function* (candidates) {
+    for (const candidate of candidates) {
       const payload: DelegationCompletedActivityPayload = {
         version: 1,
         childThreadId: candidate.childThreadId,
@@ -489,18 +488,7 @@ export const make = Effect.gen(function* () {
     }
     // Drain one bounded page per sweep so a durable backlog cannot monopolize the server.
     yield* worker.drain;
-    recoveryCursor = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
   });
-
-  const recoverSafely = recover().pipe(
-    Effect.catchCause((cause) =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.failCause(cause)
-        : Effect.logWarning("delegated task summary recovery scan failed; it will retry", {
-            cause: Cause.pretty(cause),
-          }),
-    ),
-  );
 
   const start: DelegatedTaskSummaryReactor["Service"]["start"] = Effect.fn(
     "DelegatedTaskSummaryReactor.start",
@@ -516,12 +504,9 @@ export const make = Effect.gen(function* () {
           : Effect.void,
       ),
     );
-    yield* forkParked(
-      recoverSafely.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.asVoid),
-    );
   });
 
-  return { start, drain: worker.drain } satisfies DelegatedTaskSummaryReactor["Service"];
+  return { start, recover, drain: worker.drain } satisfies DelegatedTaskSummaryReactor["Service"];
 });
 
 export const layer = Layer.effect(DelegatedTaskSummaryReactor, make);

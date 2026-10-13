@@ -1,10 +1,17 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
 
 import {
   OrchestrationReactor,
   type OrchestrationReactorShape,
 } from "../Services/OrchestrationReactor.ts";
+import {
+  ProjectionSnapshotQuery,
+  type DelegatedTaskSummaryRecoveryCursor,
+} from "../Services/ProjectionSnapshotQuery.ts";
+import { forkParked } from "../../serverActivation.ts";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -18,6 +25,8 @@ import * as BoardReactor from "../BoardReactor.ts";
 import * as BoardRetentionReactor from "../BoardRetentionReactor.ts";
 import * as CoordinatorBoardNudgeReactor from "../CoordinatorBoardNudgeReactor.ts";
 import * as DelegatedTaskSummaryReactor from "../DelegatedTaskSummaryReactor.ts";
+
+const DELEGATION_RECOVERY_PAGE_SIZE = 100;
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -35,6 +44,28 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* CoordinatorBoardNudgeReactor.CoordinatorBoardNudgeReactor;
   const delegatedTaskSummaryReactor =
     yield* DelegatedTaskSummaryReactor.DelegatedTaskSummaryReactor;
+  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+
+  // One read per page feeds both recoveries; a failed read retries the same page next tick.
+  let delegationRecoveryCursor: DelegatedTaskSummaryRecoveryCursor | undefined;
+  const recoverDelegations = Effect.fn("OrchestrationReactor.recoverDelegations")(function* () {
+    const page = yield* projectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates({
+      ...(delegationRecoveryCursor === undefined ? {} : { after: delegationRecoveryCursor }),
+      limit: DELEGATION_RECOVERY_PAGE_SIZE,
+    });
+    yield* providerRuntimeIngestion.recoverDelegationCompletions(page.rows);
+    yield* delegatedTaskSummaryReactor.recover(page.rows);
+    delegationRecoveryCursor = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
+  });
+  const recoverDelegationsSafely = recoverDelegations().pipe(
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : Effect.logWarning("delegation recovery sweep failed; it will retry", {
+            cause: Cause.pretty(cause),
+          }),
+    ),
+  );
 
   const start: OrchestrationReactorShape["start"] = Effect.fn("start")(function* () {
     yield* providerRuntimeIngestion.start();
@@ -50,6 +81,9 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* boardRetentionReactor.start();
     yield* coordinatorBoardNudgeReactor.start();
     yield* delegatedTaskSummaryReactor.start();
+    yield* forkParked(
+      recoverDelegationsSafely.pipe(Effect.repeat(Schedule.spaced("1 minute")), Effect.asVoid),
+    );
   });
 
   return {
