@@ -5,6 +5,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 
+import type { OrchestrationProjectShell } from "@t3tools/contracts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { ServerConfig } from "../config.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
@@ -13,6 +15,7 @@ import * as ReviewService from "./ReviewService.ts";
 function makeLayer(input: {
   readonly workspaceRoot: string;
   readonly baseDir: string;
+  readonly projects?: ReadonlyArray<OrchestrationProjectShell>;
   readonly detectCalls?: Array<{ readonly cwd: string }>;
 }) {
   return ReviewService.layer.pipe(
@@ -28,9 +31,41 @@ function makeLayer(input: {
       }),
     ),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+    Layer.provide(
+      Layer.mock(ProjectionSnapshotQuery.ProjectionSnapshotQuery)({
+        getProjectShells: () => Effect.succeed(input.projects ?? []),
+      }),
+    ),
     Layer.provide(ServerConfig.layerTest(input.workspaceRoot, input.baseDir)),
     Layer.provideMerge(NodeServices.layer),
   );
+}
+
+function makeProjectShell(
+  workspaceRoot: string,
+  repositoryRoot?: string,
+): OrchestrationProjectShell {
+  return {
+    id: "project-test" as OrchestrationProjectShell["id"],
+    title: "Test project",
+    workspaceRoot,
+    repositoryIdentity: repositoryRoot
+      ? {
+          canonicalKey: "git:test",
+          locator: {
+            source: "git-remote",
+            remoteName: "origin",
+            remoteUrl: "https://example.test/repo.git",
+          },
+          rootPath: repositoryRoot,
+        }
+      : null,
+    defaultModelSelection: null,
+    autoPull: false,
+    scripts: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
 }
 
 describe("ReviewService", () => {
@@ -51,7 +86,7 @@ describe("ReviewService", () => {
       assert.strictEqual(error.operation, "ReviewService.getDiffPreview");
       assert.match(
         "detail" in error ? error.detail : "",
-        /must stay within the configured workspace root/,
+        /must stay within a configured workspace, worktree, or active project root/,
       );
       assert.deepStrictEqual(detectCalls, []);
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -84,7 +119,7 @@ describe("ReviewService", () => {
       assert.strictEqual(error.operation, "ReviewService.getDiffFileContents");
       assert.match(
         "detail" in error ? error.detail : "",
-        /must stay within the configured workspace root/,
+        /must stay within a configured workspace, worktree, or active project root/,
       );
       assert.deepStrictEqual(detectCalls, []);
     }).pipe(Effect.provide(NodeServices.layer)),
@@ -105,6 +140,53 @@ describe("ReviewService", () => {
       assert.strictEqual(result.cwd, workspaceRoot);
       assert.deepStrictEqual(result.sources, []);
       assert.deepStrictEqual(detectCalls, [{ cwd: workspaceRoot }]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("allows cwd inside a registered project repository on another drive", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const projectRoot = "D:/projects/server/apps/api";
+      const repositoryRoot = "D:/projects/server";
+      const cwd = "D:/projects/server/packages/shared";
+      const detectCalls: Array<{ readonly cwd: string }> = [];
+
+      const result = yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        return yield* review.getDiffPreview({ cwd });
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            workspaceRoot,
+            baseDir,
+            projects: [makeProjectShell(projectRoot, repositoryRoot)],
+            detectCalls,
+          }),
+        ),
+      );
+
+      assert.strictEqual(result.cwd, cwd);
+      assert.deepStrictEqual(detectCalls, [{ cwd }]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("rejects cwd under a removed project", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const workspaceRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-workspace-" });
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-review-base-" });
+      const removedProjectRoot = "D:/removed-project";
+      const detectCalls: Array<{ readonly cwd: string }> = [];
+
+      const error = yield* Effect.gen(function* () {
+        const review = yield* ReviewService.ReviewService;
+        return yield* review.getDiffPreview({ cwd: `${removedProjectRoot}/src` }).pipe(Effect.flip);
+      }).pipe(Effect.provide(makeLayer({ workspaceRoot, baseDir, detectCalls })));
+
+      assert.strictEqual(error._tag, "VcsRepositoryDetectionError");
+      assert.deepStrictEqual(detectCalls, []);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 

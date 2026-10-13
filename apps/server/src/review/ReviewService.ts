@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 
 import * as ServerConfig from "../config.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 
@@ -46,6 +47,7 @@ export const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const projects = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const vcsRegistry = yield* VcsDriverRegistry.VcsDriverRegistry;
   const git = yield* GitVcsDriver.GitVcsDriver;
 
@@ -81,13 +83,24 @@ export const make = Effect.gen(function* () {
       | "ReviewService.getCommitFilePatch",
     cwd: string,
   ) {
-    const [candidate, workspaceRoot, worktreesRoot] = yield* Effect.all([
+    const [candidate, workspaceRoot, worktreesRoot, projectShells] = yield* Effect.all([
       canonicalizePath(cwd),
       canonicalizePath(config.cwd),
       canonicalizePath(config.worktreesDir),
+      projects.getProjectShells(),
     ]);
 
-    if (isWithinRoot(candidate, workspaceRoot) || isWithinRoot(candidate, worktreesRoot)) {
+    const projectRoots = yield* Effect.forEach(projectShells, (project) =>
+      Effect.all([
+        canonicalizePath(project.workspaceRoot),
+        ...(project.repositoryIdentity?.rootPath
+          ? [canonicalizePath(project.repositoryIdentity.rootPath)]
+          : []),
+      ]),
+    );
+    const allowedRoots = [workspaceRoot, worktreesRoot, ...projectRoots.flat()];
+
+    if (allowedRoots.some((root) => isWithinRoot(candidate, root))) {
       return;
     }
 
@@ -96,8 +109,8 @@ export const make = Effect.gen(function* () {
       cwd,
       detail:
         operation === "ReviewService.getDiffPreview"
-          ? "Review diff preview cwd must stay within the configured workspace root."
-          : "Review diff cwd must stay within the configured workspace root.",
+          ? "Review diff preview cwd must stay within a configured workspace, worktree, or active project root."
+          : "Review diff cwd must stay within a configured workspace, worktree, or active project root.",
     });
   });
 
