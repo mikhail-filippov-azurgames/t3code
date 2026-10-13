@@ -17,6 +17,14 @@ const SNAP_SHOT_EVENT_TYPES = new Set([
   "failed",
   "shortcut-changed",
 ]);
+let externalBackendAvailability: boolean | undefined;
+const externalBackendAvailabilityListeners = new Set<(available: boolean) => void>();
+ipcRenderer.on(IpcChannels.EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, (_event, available) => {
+  if (typeof available !== "boolean") return;
+  externalBackendAvailability = available;
+  for (const listener of externalBackendAvailabilityListeners) listener(available);
+});
+
 function isSnapShotEvent(value: unknown): value is DesktopSnapShotEvent {
   if (typeof value !== "object" || value === null) return false;
   const { type, id } = value as { type?: unknown; id?: unknown };
@@ -209,6 +217,13 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on(IpcChannels.SNAP_SHOT_EVENT_CHANNEL, wrappedListener);
     return () => {
       ipcRenderer.removeListener(IpcChannels.SNAP_SHOT_EVENT_CHANNEL, wrappedListener);
+    };
+  },
+  onExternalBackendAvailability: (listener) => {
+    externalBackendAvailabilityListeners.add(listener);
+    if (externalBackendAvailability !== undefined) listener(externalBackendAvailability);
+    return () => {
+      externalBackendAvailabilityListeners.delete(listener);
     };
   },
   onQuitShortcut: (listener) => {

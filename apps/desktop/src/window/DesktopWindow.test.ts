@@ -66,6 +66,7 @@ import * as ElectronShell from "../electron/ElectronShell.ts";
 import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import {
+  EXTERNAL_BACKEND_AVAILABILITY_CHANNEL,
   MENU_ACTION_CHANNEL,
   SNAP_SHOT_EVENT_CHANNEL,
   WINDOW_FULLSCREEN_STATE_CHANNEL,
@@ -448,6 +449,66 @@ const captureOne = DesktopSnapShotId.make("11111111-1111-4111-8111-111111111111"
 const captureTwo = DesktopSnapShotId.make("22222222-2222-4222-8222-222222222222");
 
 describe("DesktopWindow", () => {
+  it.effect("keeps a previously connected renderer open and reports recovery", () =>
+    Effect.gen(function* () {
+      const originalMode = process.env.FT3_EXTERNAL_SERVER;
+      process.env.FT3_EXTERNAL_SERVER = "1";
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+
+      try {
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          const initialLoads = fakeWindow.loadURL.mock.calls.length;
+
+          yield* desktopWindow.handleBackendNotReady;
+          assert.equal(fakeWindow.loadURL.mock.calls.length, initialLoads);
+          assert.deepEqual(fakeWindow.send.mock.calls, [
+            [EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, false],
+          ]);
+
+          yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
+          assert.equal(fakeWindow.loadURL.mock.calls.length, initialLoads);
+          assert.deepEqual(fakeWindow.send.mock.calls, [
+            [EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, false],
+            [EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, true],
+          ]);
+        }).pipe(Effect.provide(layer));
+      } finally {
+        if (originalMode === undefined) delete process.env.FT3_EXTERNAL_SERVER;
+        else process.env.FT3_EXTERNAL_SERVER = originalMode;
+      }
+    }),
+  );
+
+  it.effect("shows the unavailable screen before the first successful connection", () =>
+    Effect.gen(function* () {
+      const originalMode = process.env.FT3_EXTERNAL_SERVER;
+      process.env.FT3_EXTERNAL_SERVER = "1";
+      const fakeWindow = makeFakeBrowserWindow();
+      const createCount = yield* Ref.make(0);
+      const mainWindow = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(
+        Option.some(fakeWindow.window),
+      );
+      const layer = makeTestLayer({ window: fakeWindow.window, createCount, mainWindow });
+
+      try {
+        yield* Effect.gen(function* () {
+          const desktopWindow = yield* DesktopWindow.DesktopWindow;
+          yield* desktopWindow.handleBackendNotReady;
+          assert.equal(fakeWindow.loadURL.mock.calls.length, 1);
+          assert.deepEqual(fakeWindow.send.mock.calls, []);
+        }).pipe(Effect.provide(layer));
+      } finally {
+        if (originalMode === undefined) delete process.env.FT3_EXTERNAL_SERVER;
+        else process.env.FT3_EXTERNAL_SERVER = originalMode;
+      }
+    }),
+  );
+
   it.effect("shows native context menus for browser guests and sign-in popups", () =>
     Effect.gen(function* () {
       const host = makeFakeBrowserWindow();

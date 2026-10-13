@@ -1,4 +1,4 @@
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, it, vi } from "@effect/vitest";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -16,6 +16,7 @@ import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopBackendConfiguration from "./DesktopBackendConfiguration.ts";
+import * as DesktopExternalBackend from "./DesktopExternalBackend.ts";
 import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import type { DesktopBackendSnapshot, DesktopBackendStartConfig } from "./DesktopBackendManager.ts";
 
@@ -43,6 +44,7 @@ function makeStubInstance(
 
 function makePoolLayer(
   labelRef: Ref.Ref<string>,
+  onBackendNotReady: Effect.Effect<void> = Effect.void,
 ): Layer.Layer<DesktopBackendPool.DesktopBackendPool> {
   return DesktopBackendPool.layer.pipe(
     Layer.provideMerge(
@@ -95,7 +97,7 @@ function makePoolLayer(
           showConnectingSplash: Effect.void,
           showExternalServerUnavailable: Effect.void,
           handleBackendReady: () => Effect.void,
-          handleBackendNotReady: Effect.void,
+          handleBackendNotReady: onBackendNotReady,
           flushMainWindowBounds: Effect.void,
           prepareCaptureReveal: Effect.void,
           dispatchMenuAction: () => Effect.die("unexpected menu action"),
@@ -109,6 +111,43 @@ function makePoolLayer(
 }
 
 describe("DesktopBackendPool", () => {
+  it.effect("routes external backend shutdowns to the window without restarting it", () =>
+    Effect.gen(function* () {
+      const originalMode = process.env.FT3_EXTERNAL_SERVER;
+      process.env.FT3_EXTERNAL_SERVER = "1";
+      const shutdowns = yield* Ref.make(0);
+      const label = yield* Ref.make("Windows");
+      let onShutdown: (() => Effect.Effect<void>) | undefined;
+      const factory = vi
+        .spyOn(DesktopExternalBackend, "makeExternalBackendInstance")
+        .mockImplementation((spec) => {
+          onShutdown = spec.onShutdown;
+          return Effect.succeed(makeStubInstance(DesktopBackendPool.PRIMARY_INSTANCE_ID, "ft3"));
+        });
+
+      try {
+        yield* Effect.gen(function* () {
+          const pool = yield* DesktopBackendPool.DesktopBackendPool;
+          assert.isDefined(yield* pool.primary);
+          assert.isDefined(onShutdown);
+          yield* onShutdown();
+          assert.equal(yield* Ref.get(shutdowns), 1);
+        }).pipe(
+          Effect.provide(
+            makePoolLayer(
+              label,
+              Ref.update(shutdowns, (count) => count + 1),
+            ),
+          ),
+        );
+      } finally {
+        factory.mockRestore();
+        if (originalMode === undefined) delete process.env.FT3_EXTERNAL_SERVER;
+        else process.env.FT3_EXTERNAL_SERVER = originalMode;
+      }
+    }),
+  );
+
   it.effect("layerTest exposes registered instances by id", () =>
     Effect.gen(function* () {
       const pool = yield* DesktopBackendPool.DesktopBackendPool;

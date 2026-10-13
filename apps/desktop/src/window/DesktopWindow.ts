@@ -25,6 +25,7 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import {
   MENU_ACTION_CHANNEL,
+  EXTERNAL_BACKEND_AVAILABILITY_CHANNEL,
   QUIT_SHORTCUT_CHANNEL,
   RENDERER_HEARTBEAT_CHANNEL,
   SNAP_SHOT_EVENT_CHANNEL,
@@ -1027,6 +1028,19 @@ export const make = Effect.gen(function* () {
     };
 
     window.webContents.on("did-finish-load", () => {
+      if (DesktopExternalBackend.isExternalServerMode()) {
+        runPromise(
+          Effect.gen(function* () {
+            if (
+              !(yield* Ref.get(backendReadyRef)) &&
+              (yield* Ref.get(lastBackendConnectedAtRef)) !== null &&
+              !window.isDestroyed()
+            ) {
+              window.webContents.send(EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, false);
+            }
+          }),
+        );
+      }
       if (
         environment.isDevelopment &&
         !isSameOriginRendererNavigation({
@@ -1333,6 +1347,7 @@ export const make = Effect.gen(function* () {
     showConnectingSplash,
     showExternalServerUnavailable,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
+      const wasPreviouslyConnected = (yield* Ref.get(lastBackendConnectedAtRef)) !== null;
       yield* Ref.set(backendReadyRef, true);
       yield* Ref.set(lastBackendConnectedAtRef, Date.now());
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
@@ -1344,13 +1359,24 @@ export const make = Effect.gen(function* () {
           yield* electronWindow.reveal(main.value);
           return;
         }
+        if (wasPreviouslyConnected && Option.isSome(main) && !main.value.isDestroyed()) {
+          main.value.webContents.send(EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, true);
+        }
       }
       yield* createMainIfBackendReady;
       yield* dismissConnectingSplash;
     }),
     handleBackendNotReady: Effect.gen(function* () {
       yield* Ref.set(backendReadyRef, false);
-      if (DesktopExternalBackend.isExternalServerMode()) yield* showExternalServerUnavailable;
+      if (!DesktopExternalBackend.isExternalServerMode()) return;
+      if ((yield* Ref.get(lastBackendConnectedAtRef)) === null) {
+        yield* showExternalServerUnavailable;
+        return;
+      }
+      const main = yield* currentMainWindow;
+      if (Option.isSome(main) && !main.value.isDestroyed()) {
+        main.value.webContents.send(EXTERNAL_BACKEND_AVAILABILITY_CHANNEL, false);
+      }
     }).pipe(Effect.withSpan("desktop.window.handleBackendNotReady")),
     flushMainWindowBounds: Effect.suspend(() => flushMainWindowBounds).pipe(
       Effect.withSpan("desktop.window.flushMainWindowBounds"),

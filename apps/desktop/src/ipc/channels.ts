@@ -11,6 +11,7 @@ export const PROBE_REMOTE_EDITORS_CHANNEL = "desktop:probe-remote-editors";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";
 export const PASTE_AS_TEXT_CHANNEL = "desktop:paste-as-text";
 export const SNAP_SHOT_EVENT_CHANNEL = "desktop:snap-shot-event";
+export const EXTERNAL_BACKEND_AVAILABILITY_CHANNEL = "desktop:external-backend-availability";
 export const QUIT_SHORTCUT_CHANNEL = "desktop:quit-shortcut";
 export const RESTART_APP_CHANNEL = "desktop:restart-app";
 export const GET_WINDOW_FULLSCREEN_STATE_CHANNEL = "desktop:get-window-fullscreen-state";
