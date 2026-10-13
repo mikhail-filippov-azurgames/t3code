@@ -15,16 +15,18 @@ import type {
 } from "./DesktopBackendManager.ts";
 
 const POLL_INTERVAL = Duration.seconds(2);
-const REQUEST_TIMEOUT = Duration.seconds(1);
+const REQUEST_TIMEOUT = Duration.seconds(3);
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 export type ExternalBackendAvailabilityTransition = "ready" | "shutdown" | "none";
 
 export function resolveAvailabilityTransition(
   wasReady: boolean,
   isHealthy: boolean,
+  consecutiveFailures = 0,
 ): ExternalBackendAvailabilityTransition {
   if (isHealthy && !wasReady) return "ready";
-  if (!isHealthy && wasReady) return "shutdown";
+  if (!isHealthy && wasReady && consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) return "shutdown";
   return "none";
 }
 
@@ -42,6 +44,7 @@ export const makeExternalBackendInstance = Effect.fn("desktop.externalBackend.ma
   const state = yield* Ref.make({
     desiredRunning: false,
     ready: false,
+    consecutiveFailures: 0,
     config: Option.none<DesktopBackendStartConfig>(),
     fiber: Option.none<Fiber.Fiber<void, never>>(),
   });
@@ -61,8 +64,10 @@ export const makeExternalBackendInstance = Effect.fn("desktop.externalBackend.ma
   const probe = () =>
     options.healthCheck
       ? options.healthCheck()
-      : httpClient.get("http://127.0.0.1:3773/health").pipe(
-          Effect.map((response) => response.status >= 200 && response.status < 300),
+      : httpClient.get("http://127.0.0.1:3773/.well-known/t3/environment").pipe(
+          Effect.flatMap((response) =>
+            response.text.pipe(Effect.as(response.status >= 200 && response.status < 300)),
+          ),
           Effect.timeoutOption(REQUEST_TIMEOUT),
           Effect.map(Option.getOrElse(() => false)),
           Effect.orElseSucceed(() => false),
@@ -71,7 +76,12 @@ export const makeExternalBackendInstance = Effect.fn("desktop.externalBackend.ma
   const poll = Effect.fn("desktop.externalBackend.poll")(function* () {
     const healthy = yield* probe();
     const current = yield* Ref.get(state);
-    const transition = resolveAvailabilityTransition(current.ready, healthy);
+    const consecutiveFailures = current.ready && !healthy ? current.consecutiveFailures + 1 : 0;
+    const transition = resolveAvailabilityTransition(current.ready, healthy, consecutiveFailures);
+    yield* Ref.update(state, (value) => ({
+      ...value,
+      consecutiveFailures: transition === "shutdown" ? 0 : consecutiveFailures,
+    }));
     if (transition === "ready") {
       const config = yield* spec.configResolve.pipe(Effect.option);
       if (Option.isSome(config)) {
