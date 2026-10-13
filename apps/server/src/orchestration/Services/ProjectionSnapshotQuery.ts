@@ -89,6 +89,12 @@ export interface DelegatedTaskSummaryRecoveryCandidate {
   readonly terminalError: string | null;
 }
 
+export interface DelegatedTaskSummaryRecoveryCursor {
+  readonly completedAt: IsoDateTime;
+  readonly childThreadId: ThreadId;
+  readonly sourceTurnId: TurnId;
+}
+
 export interface ProjectionSnapshotCounts {
   readonly projectCount: number;
   readonly threadCount: number;
@@ -171,13 +177,13 @@ export interface ProjectionSnapshotQueryShape {
 
   /** Bounded keyset scan of terminal delegated child turns needing a summary or parent notification recovery. */
   readonly listDelegatedTaskSummaryRecoveryCandidates: (input: {
-    readonly afterChildThreadId?: ThreadId;
-    readonly afterSourceTurnId?: TurnId;
+    readonly after?: DelegatedTaskSummaryRecoveryCursor;
     readonly limit: number;
   }) => Effect.Effect<
     {
       readonly rows: ReadonlyArray<DelegatedTaskSummaryRecoveryCandidate>;
       readonly hasMore: boolean;
+      readonly nextCursor?: DelegatedTaskSummaryRecoveryCursor | null;
     },
     ProjectionRepositoryError
   >;

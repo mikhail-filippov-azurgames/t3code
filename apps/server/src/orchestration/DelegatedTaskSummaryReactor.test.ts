@@ -251,9 +251,9 @@ it.effect(
           getDelegatedTaskSummaryInput: ({ childThreadId }) =>
             Effect.succeed(Option.fromNullishOr(childSnapshots.get(childThreadId))),
           listDelegatedTaskSummaryHistory: () => Effect.succeed({ records: [], nextCursor: null }),
-          listDelegatedTaskSummaryRecoveryCandidates: ({ afterChildThreadId }) =>
+          listDelegatedTaskSummaryRecoveryCandidates: ({ after }) =>
             Effect.succeed(
-              afterChildThreadId === undefined
+              after === undefined
                 ? {
                     rows: [
                       {

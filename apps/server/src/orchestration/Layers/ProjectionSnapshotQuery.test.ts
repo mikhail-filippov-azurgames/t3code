@@ -3959,31 +3959,28 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
       // A terminal child turn remains discoverable after restart even when the
       // parent callback was never appended. Archived children participate, and
       // already-projected summaries do not consume recovery pages.
-      const recoveryPageOne = yield* query.listDelegatedTaskSummaryRecoveryCandidates({ limit: 1 });
+      const recoveryCandidates = [];
+      let recoveryCursor;
+      while (true) {
+        const page = yield* query.listDelegatedTaskSummaryRecoveryCandidates({
+          ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
+          limit: 1,
+        });
+        recoveryCandidates.push(...page.rows);
+        if (!page.hasMore) break;
+        assert.ok(page.nextCursor, "each non-final bounded scan page advances its cursor");
+        recoveryCursor = page.nextCursor;
+      }
       assert.deepStrictEqual(
-        recoveryPageOne.rows.map(({ childThreadId, sourceTurnId }) => [
-          childThreadId,
-          sourceTurnId,
-        ]),
-        [[ThreadId.make("memory-child-b"), TurnId.make("memory-turn-b")]],
+        recoveryCandidates.map(({ childThreadId, sourceTurnId }) => [childThreadId, sourceTurnId]),
+        [
+          [ThreadId.make("memory-child-b"), TurnId.make("memory-turn-c")],
+          [ThreadId.make("memory-child-b"), TurnId.make("memory-turn-b")],
+        ],
       );
-      assert.equal(recoveryPageOne.rows[0]?.status, "completed");
-      assert.equal(recoveryPageOne.rows[0]?.parentThreadId, ThreadId.make("parent-memory"));
-      assert.equal(recoveryPageOne.hasMore, true);
-      const recoveryPageTwo = yield* query.listDelegatedTaskSummaryRecoveryCandidates({
-        afterChildThreadId: ThreadId.make("memory-child-b"),
-        afterSourceTurnId: TurnId.make("memory-turn-b"),
-        limit: 1,
-      });
-      assert.deepStrictEqual(
-        recoveryPageTwo.rows.map(({ childThreadId, sourceTurnId }) => [
-          childThreadId,
-          sourceTurnId,
-        ]),
-        [[ThreadId.make("memory-child-b"), TurnId.make("memory-turn-c")]],
-      );
-      assert.equal(recoveryPageTwo.rows[0]?.status, "failed");
-      assert.equal(recoveryPageTwo.hasMore, false);
+      assert.equal(recoveryCandidates[0]?.status, "failed");
+      assert.equal(recoveryCandidates[0]?.parentThreadId, ThreadId.make("parent-memory"));
+      assert.equal(recoveryCandidates[1]?.status, "completed");
     }),
   );
 
@@ -4152,7 +4149,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery delegated task memory", (it) =>
             ([leftChild, leftTurn], [rightChild, rightTurn]) =>
               String(leftChild).localeCompare(String(rightChild)) ||
               String(leftTurn).localeCompare(String(rightTurn)),
-          ),
+          )
+          .reverse(),
       );
     }),
   );

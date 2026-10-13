@@ -242,19 +242,24 @@ const DelegatedTaskSummaryHistoryRequest = Schema.Struct({
   limit: NonNegativeInt,
 });
 const DelegatedSummaryRecoveryRequest = Schema.Struct({
+  afterCompletedAt: Schema.NullOr(IsoDateTime),
   afterChildThreadId: Schema.NullOr(ThreadId),
   afterSourceTurnId: Schema.NullOr(TurnId),
   limit: NonNegativeInt,
 });
 const DelegatedSummaryRecoveryRowSchema = Schema.Struct({
-  parentThreadId: ThreadId,
-  childThreadId: ThreadId,
-  sourceTurnId: TurnId,
-  status: DelegationCompletedActivityPayload.fields.status,
+  parentThreadId: Schema.NullOr(ThreadId),
+  childThreadId: Schema.NullOr(ThreadId),
+  sourceTurnId: Schema.NullOr(TurnId),
+  status: Schema.NullOr(DelegationCompletedActivityPayload.fields.status),
   outputStatus: Schema.NullOr(DelegationCompletedActivityPayload.fields.outputStatus),
-  completedAt: IsoDateTime,
+  completedAt: Schema.NullOr(IsoDateTime),
   resultExcerpt: Schema.NullOr(Schema.String),
   terminalError: Schema.NullOr(Schema.String),
+  cursorCompletedAt: Schema.NullOr(IsoDateTime),
+  cursorChildThreadId: Schema.NullOr(ThreadId),
+  cursorSourceTurnId: Schema.NullOr(TurnId),
+  hasMore: Schema.Number,
 });
 const DelegatedTaskMemoryDbRowSchema = Schema.Struct({
   taskId: ThreadId,
@@ -1648,8 +1653,33 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listDelegatedSummaryRecoveryRows = SqlSchema.findAll({
     Request: DelegatedSummaryRecoveryRequest,
     Result: DelegatedSummaryRecoveryRowSchema,
-    execute: ({ afterChildThreadId, afterSourceTurnId, limit }) => sql`
-      WITH terminal_turn_aliases AS MATERIALIZED (
+    execute: ({ afterCompletedAt, afterChildThreadId, afterSourceTurnId, limit }) => sql`
+      WITH terminal_turn_page AS MATERIALIZED (
+        SELECT turns.thread_id, turns.turn_id, turns.completed_at
+        FROM projection_turns turns
+        WHERE turns.turn_id IS NOT NULL
+          AND turns.completed_at IS NOT NULL
+          AND turns.state IN ('completed', 'interrupted', 'error')
+          AND (
+            ${afterCompletedAt} IS NULL
+            OR turns.completed_at < ${afterCompletedAt}
+            OR (turns.completed_at = ${afterCompletedAt} AND turns.thread_id < ${afterChildThreadId})
+            OR (turns.completed_at = ${afterCompletedAt} AND turns.thread_id = ${afterChildThreadId}
+              AND turns.turn_id < ${afterSourceTurnId})
+          )
+        ORDER BY turns.completed_at DESC, turns.thread_id DESC, turns.turn_id DESC
+        LIMIT ${Math.min(101, limit + 1)}
+      ), bounded_terminal_turn_page AS MATERIALIZED (
+        SELECT thread_id, turn_id, completed_at
+        FROM terminal_turn_page
+        ORDER BY completed_at DESC, thread_id DESC, turn_id DESC
+        LIMIT ${limit}
+      ), scan_state AS (
+        SELECT completed_at, thread_id, turn_id
+        FROM bounded_terminal_turn_page
+        ORDER BY completed_at ASC, thread_id ASC, turn_id ASC
+        LIMIT 1
+      ), terminal_turn_aliases AS MATERIALIZED (
         SELECT
           turns.thread_id AS child_thread_id,
           turns.turn_id AS source_turn_id,
@@ -1669,7 +1699,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ORDER BY latest.sequence DESC, latest.created_at DESC, latest.activity_id DESC
             LIMIT 1
           )
-        WHERE turns.turn_id IS NOT NULL
+        WHERE turns.turn_id IN (SELECT turn_id FROM bounded_terminal_turn_page)
+          AND turns.turn_id IS NOT NULL
           AND turns.completed_at IS NOT NULL
           AND turns.state IN ('completed', 'interrupted', 'error')
           AND child.deleted_at IS NULL
@@ -1684,7 +1715,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           turns.state AS turn_state,
           turns.completed_at,
           json_extract(lineage.payload_json, '$.parentThreadId') AS parent_thread_id
-        FROM projection_turns turns
+        FROM bounded_terminal_turn_page page
+        JOIN projection_turns turns
+          ON turns.thread_id = page.thread_id AND turns.turn_id = page.turn_id
         JOIN projection_threads child ON child.thread_id = turns.thread_id
         JOIN projection_thread_activities lineage
           ON lineage.activity_id = (
@@ -1802,17 +1835,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 )
             )
           )
-          AND (
-            ${afterChildThreadId} IS NULL
-            OR turns.thread_id > ${afterChildThreadId}
-            OR (
-              turns.thread_id = ${afterChildThreadId}
-              AND turns.turn_id > COALESCE(${afterSourceTurnId}, '')
-            )
-          )
-        ORDER BY turns.thread_id ASC, turns.turn_id ASC
-        LIMIT ${Math.min(101, limit + 1)}
       )
+      , recovery_rows AS (
       SELECT
         terminal.parent_thread_id AS "parentThreadId",
         terminal.child_thread_id AS "childThreadId",
@@ -1853,6 +1877,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           LIMIT 1
         )
       ORDER BY terminal.child_thread_id ASC, terminal.source_turn_id ASC
+      )
+      SELECT
+        recovery_rows.*,
+        scan_state.completed_at AS "cursorCompletedAt",
+        scan_state.thread_id AS "cursorChildThreadId",
+        scan_state.turn_id AS "cursorSourceTurnId",
+        CASE WHEN (SELECT COUNT(*) FROM terminal_turn_page) > ${limit} THEN 1 ELSE 0 END AS "hasMore"
+      FROM recovery_rows
+      CROSS JOIN scan_state
+      UNION ALL
+      SELECT
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+        scan_state.completed_at, scan_state.thread_id, scan_state.turn_id,
+        CASE WHEN (SELECT COUNT(*) FROM terminal_turn_page) > ${limit} THEN 1 ELSE 0 END
+      FROM (SELECT 1) empty_page
+      LEFT JOIN scan_state ON 1 = 1
+      WHERE NOT EXISTS (SELECT 1 FROM recovery_rows)
+      ORDER BY "completedAt" DESC, "childThreadId" DESC, "sourceTurnId" DESC
     `,
   });
 
@@ -4604,14 +4646,49 @@ pending_approval_requests AS (
     (input) => {
       const limit = Math.max(1, Math.min(100, Math.trunc(input.limit)));
       return listDelegatedSummaryRecoveryRows({
-        afterChildThreadId: input.afterChildThreadId ?? null,
-        afterSourceTurnId: input.afterSourceTurnId ?? null,
+        afterCompletedAt: input.after?.completedAt ?? null,
+        afterChildThreadId: input.after?.childThreadId ?? null,
+        afterSourceTurnId: input.after?.sourceTurnId ?? null,
         limit,
       }).pipe(
-        Effect.map((rows) => ({
-          rows: rows.slice(0, limit),
-          hasMore: rows.length > limit,
-        })),
+        Effect.map((rows) => {
+          const first = rows[0];
+          const nextCursor =
+            first?.cursorCompletedAt !== null &&
+            first?.cursorCompletedAt !== undefined &&
+            first.cursorChildThreadId !== null &&
+            first.cursorSourceTurnId !== null
+              ? {
+                  completedAt: first.cursorCompletedAt,
+                  childThreadId: first.cursorChildThreadId,
+                  sourceTurnId: first.cursorSourceTurnId,
+                }
+              : null;
+          return {
+            rows: rows.flatMap((row) =>
+              row.parentThreadId === null ||
+              row.childThreadId === null ||
+              row.sourceTurnId === null ||
+              row.status === null ||
+              row.completedAt === null
+                ? []
+                : [
+                    {
+                      parentThreadId: row.parentThreadId,
+                      childThreadId: row.childThreadId,
+                      sourceTurnId: row.sourceTurnId,
+                      status: row.status,
+                      outputStatus: row.outputStatus,
+                      completedAt: row.completedAt,
+                      resultExcerpt: row.resultExcerpt,
+                      terminalError: row.terminalError,
+                    },
+                  ],
+            ),
+            hasMore: first?.hasMore === 1,
+            nextCursor,
+          };
+        }),
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "ProjectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates:query",

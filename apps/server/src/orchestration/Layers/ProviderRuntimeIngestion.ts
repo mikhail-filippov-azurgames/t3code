@@ -14,6 +14,7 @@ import {
   type OrchestrationCheckpointSummary,
   type OrchestrationThreadActivity,
   type DelegationCompletedActivityPayload,
+  type IsoDateTime,
   type ProjectId,
   type ProviderRuntimeEvent,
   type ResponseStreamingMode,
@@ -1348,44 +1349,42 @@ const make = Effect.gen(function* () {
     });
   });
 
+  let recoveryCursor:
+    | {
+        readonly completedAt: IsoDateTime;
+        readonly childThreadId: ThreadId;
+        readonly sourceTurnId: TurnId;
+      }
+    | undefined;
   const recoverDelegationCompletions = Effect.fn(
     "ProviderRuntimeIngestion.recoverDelegationCompletions",
   )(function* () {
-    let afterChildThreadId: ThreadId | undefined;
-    let afterSourceTurnId: TurnId | undefined;
-    while (true) {
-      const page = yield* projectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates({
-        ...(afterChildThreadId === undefined ? {} : { afterChildThreadId }),
-        ...(afterSourceTurnId === undefined ? {} : { afterSourceTurnId }),
-        limit: 100,
+    const page = yield* projectionSnapshotQuery.listDelegatedTaskSummaryRecoveryCandidates({
+      ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
+      limit: 100,
+    });
+    for (const candidate of page.rows) {
+      const summaryInput = yield* projectionSnapshotQuery.getDelegatedTaskSummaryInput({
+        childThreadId: candidate.childThreadId,
+        sourceTurnId: candidate.sourceTurnId,
       });
-      for (const candidate of page.rows) {
-        const summaryInput = yield* projectionSnapshotQuery.getDelegatedTaskSummaryInput({
+      if (
+        Option.isSome(summaryInput) &&
+        summaryInput.value.parentThreadId === candidate.parentThreadId
+      ) {
+        yield* persistDelegationCompletedWake({
+          parentThreadId: candidate.parentThreadId,
           childThreadId: candidate.childThreadId,
-          sourceTurnId: candidate.sourceTurnId,
+          turnId: candidate.sourceTurnId,
+          status: candidate.status,
+          ...(candidate.outputStatus === null ? {} : { outputStatus: candidate.outputStatus }),
+          completedAt: candidate.completedAt,
+          assistantText: summaryInput.value.assistantText,
+          ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
         });
-        if (
-          Option.isSome(summaryInput) &&
-          summaryInput.value.parentThreadId === candidate.parentThreadId
-        ) {
-          yield* persistDelegationCompletedWake({
-            parentThreadId: candidate.parentThreadId,
-            childThreadId: candidate.childThreadId,
-            turnId: candidate.sourceTurnId,
-            status: candidate.status,
-            ...(candidate.outputStatus === null ? {} : { outputStatus: candidate.outputStatus }),
-            completedAt: candidate.completedAt,
-            assistantText: summaryInput.value.assistantText,
-            ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
-          });
-        }
       }
-      if (!page.hasMore) return;
-      const last = page.rows.at(-1);
-      if (last === undefined) return;
-      afterChildThreadId = last.childThreadId;
-      afterSourceTurnId = last.sourceTurnId;
     }
+    recoveryCursor = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
   });
 
   const recoverDelegationCompletionsSafely = recoverDelegationCompletions().pipe(

@@ -455,50 +455,41 @@ export const make = Effect.gen(function* () {
     );
   const worker = yield* makeDrainableWorker(processSafely);
 
+  let recoveryCursor: ProjectionSnapshotQuery.DelegatedTaskSummaryRecoveryCursor | undefined;
   const recover = Effect.fn("DelegatedTaskSummaryReactor.recover")(function* () {
-    let afterChildThreadId: ThreadId | undefined;
-    let afterSourceTurnId: TurnId | undefined;
-    while (true) {
-      const page = yield* snapshots.listDelegatedTaskSummaryRecoveryCandidates({
-        ...(afterChildThreadId === undefined ? {} : { afterChildThreadId }),
-        ...(afterSourceTurnId === undefined ? {} : { afterSourceTurnId }),
-        limit: RECOVERY_PAGE_SIZE,
+    const page = yield* snapshots.listDelegatedTaskSummaryRecoveryCandidates({
+      ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
+      limit: RECOVERY_PAGE_SIZE,
+    });
+    for (const candidate of page.rows) {
+      const payload: DelegationCompletedActivityPayload = {
+        version: 1,
+        childThreadId: candidate.childThreadId,
+        delegatedTurnId: candidate.sourceTurnId,
+        status: candidate.status,
+        ...(candidate.outputStatus == null ? {} : { outputStatus: candidate.outputStatus }),
+        completedAt: candidate.completedAt,
+        ...(candidate.resultExcerpt === null ? {} : { resultExcerpt: candidate.resultExcerpt }),
+        ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
+      };
+      yield* worker.enqueue({
+        parentThreadId: candidate.parentThreadId,
+        activity: {
+          id: EventId.make(
+            `delegation-summary-recovery:${candidate.childThreadId}:${candidate.sourceTurnId}`,
+          ),
+          tone: candidate.status === "completed" ? "info" : "error",
+          kind: DELEGATION_COMPLETED,
+          summary: `Recovered delegated child ${candidate.status}`,
+          payload,
+          turnId: null,
+          createdAt: candidate.completedAt,
+        },
       });
-      for (const candidate of page.rows) {
-        const payload: DelegationCompletedActivityPayload = {
-          version: 1,
-          childThreadId: candidate.childThreadId,
-          delegatedTurnId: candidate.sourceTurnId,
-          status: candidate.status,
-          ...(candidate.outputStatus == null ? {} : { outputStatus: candidate.outputStatus }),
-          completedAt: candidate.completedAt,
-          ...(candidate.resultExcerpt === null ? {} : { resultExcerpt: candidate.resultExcerpt }),
-          ...(candidate.terminalError === null ? {} : { terminalError: candidate.terminalError }),
-        };
-        yield* worker.enqueue({
-          parentThreadId: candidate.parentThreadId,
-          activity: {
-            id: EventId.make(
-              `delegation-summary-recovery:${candidate.childThreadId}:${candidate.sourceTurnId}`,
-            ),
-            tone: candidate.status === "completed" ? "info" : "error",
-            kind: DELEGATION_COMPLETED,
-            summary: `Recovered delegated child ${candidate.status}`,
-            payload,
-            turnId: null,
-            createdAt: candidate.completedAt,
-          },
-        });
-      }
-      // Drain each bounded page before reading another one so recovery does not
-      // turn a large durable backlog into an unbounded in-memory queue.
-      yield* worker.drain;
-      if (!page.hasMore) return;
-      const last = page.rows.at(-1);
-      if (last === undefined) return;
-      afterChildThreadId = last.childThreadId;
-      afterSourceTurnId = last.sourceTurnId;
     }
+    // Drain one bounded page per sweep so a durable backlog cannot monopolize the server.
+    yield* worker.drain;
+    recoveryCursor = page.hasMore ? (page.nextCursor ?? undefined) : undefined;
   });
 
   const recoverSafely = recover().pipe(
