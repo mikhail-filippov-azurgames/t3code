@@ -1,0 +1,49 @@
+name: Fork gate
+
+on:
+  push:
+    branches:
+      - feat/ocl-cross-provider-delegation
+  pull_request:
+    branches:
+      - feat/ocl-cross-provider-delegation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-gate-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test_server:
+    name: Test Server ${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    # Upstream shards this suite on a larger runner; this hosted runner needs a longer budget.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Test
+        env:
+          T3CODE_TRANSFER_BUDGET_REPORT_PATH: ${{ runner.temp }}/t3code-transfer-budget.md
+          T3CODE_TRANSFER_BUDGET_RESULT_PATH: ${{ runner.temp }}/thread-transfer-result.json
+        run: vp run --filter t3 test --shard ${{ matrix.shard }}/${{ strategy.job-total }}
