@@ -1,40 +1,14 @@
 import * as NodeCrypto from "node:crypto";
 
 import {
-  ARCHITECT_BOUND_ACTIVITY,
-  ARCHITECT_UNBOUND_ACTIVITY,
   COORDINATOR_ARCHITECT_ACTIVITY_KINDS,
-  REVIEW_ANSWERED_ACTIVITY,
-  REVIEW_CANCELLED_ACTIVITY,
-  REVIEW_PUBLISHED_ACTIVITY,
-  REVIEW_REQUESTED_ACTIVITY,
-  REVIEW_REQUESTED_REF_ACTIVITY,
   assertNotArchitectThread,
-  hasPublishWakeDelivered,
-  hasReviewWakeDelivered,
-  needsPublishWakeReplay,
-  needsReviewWakeReplay,
-  publishWakeMessageId,
-  publishWakeTurnCommandId,
-  reviewRefCommandId,
-  reviewWakeMessageId,
-  reviewWakeTurnCommandId,
 } from "../../../orchestration/coordinatorArchitect.ts";
 import {
-  ArchitectureReviewRefs,
-  BoardCard,
-  BoardCardId,
   CommandId,
   EventId,
-  isProviderDriverKind,
   MessageId,
-  ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES,
-  ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
-  ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
-  ORCHESTRATOR_MCP_PROTOCOL_VERSION,
   ORCHESTRATOR_MCP_TASK_PAGE_MAX,
-  ORCHESTRATOR_MCP_TASK_SOURCE_TURN_IDS_MAX,
-  EXECUTOR_ROLES,
   OrchestratorMcpArchitectCreateOrGetResult,
   OrchestratorMcpArchitectDetachResult,
   OrchestratorMcpArchitectReplaceResult,
@@ -58,7 +32,6 @@ import {
   OrchestratorMcpSendToTaskResult,
   OrchestratorMcpTaskListInput,
   OrchestratorMcpTaskListResult,
-  OrchestratorMcpTaskMemoryEntry,
   OrchestratorMcpTaskReadInput,
   OrchestratorMcpTaskReadResult,
   OrchestratorMcpTaskSearchInput,
@@ -69,10 +42,6 @@ import {
   ProviderDriverKind,
   ThreadId,
   type AgentRunOrigin,
-  type ArchitectureReviewRecord,
-  type ArchitectureReviewPublishedBy,
-  type CoordinatorArchitectBinding,
-  type CoordinatorArchitectRoutingEvidence,
   type ModelSelection,
   type OrchestrationProjectShell,
   type OrchestrationThread,
@@ -81,7 +50,6 @@ import {
   type OrchestratorMcpArchitectCreateOrGetInput,
   type OrchestratorMcpArchitectDetachInput,
   type OrchestratorMcpArchitectReplaceInput,
-  type OrchestratorMcpBoardCardSummary,
   type OrchestratorMcpCapabilitiesResult,
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpGetCoordinatorBindingInput,
@@ -103,7 +71,6 @@ import {
   type OrchestratorMcpSwitchProviderResult,
   type OrchestratorMcpSwitchedProvider,
   type OrchestratorMcpTaskCancelResult,
-  type OrchestratorMcpTaskStatus,
   type OrchestratorMcpTaskResult,
   type OrchestratorMcpTaskWaitResult,
   type ProviderInstanceConfig,
@@ -125,7 +92,6 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import {
@@ -139,11 +105,7 @@ import { deriveProviderInstanceConfigMap } from "../../../provider/Layers/Provid
 import type { ProjectionTurn } from "../../../persistence/Services/ProjectionTurns.ts";
 import * as ProjectionTurns from "../../../persistence/Services/ProjectionTurns.ts";
 import { scrubDelegatedTaskText } from "../../../DelegatedTaskMemoryText.ts";
-import {
-  BoardRepository,
-  buildBoardCardEvent,
-  type BoardRepositoryShape,
-} from "../../../persistence/Services/Board.ts";
+import { BoardRepository, type BoardRepositoryShape } from "../../../persistence/Services/Board.ts";
 import * as ProviderRegistry from "../../../provider/Services/ProviderRegistry.ts";
 import * as ServerSettingsService from "../../../serverSettings.ts";
 import {
@@ -156,6 +118,20 @@ import { McpSessionRegistry } from "../../McpSessionRegistry.ts";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { McpInvocationScope } from "../../McpInvocationContext.ts";
+import { makeCapabilitiesService } from "./capabilitiesService.ts";
+import { makeArchitectService } from "./architectService.ts";
+import {
+  makeDelegationService,
+  type ControlPlaneCaller,
+  type DelegationCreatedPayload,
+  type ParentContext,
+  type ResolvedTarget,
+  type TargetParentContext,
+  type TargetResolutionRequest,
+} from "./delegationService.ts";
+import { makeBoardService } from "./boardService.ts";
+import { makeSwitchSupport, switchCommitLockCount, withSwitchCommitLock } from "./switchSupport.ts";
+import { makeTaskQueryService } from "./taskQueryService.ts";
 import {
   applyAuthorTextPolicy,
   projectDerivedText,
@@ -172,7 +148,6 @@ const DELEGATION_PROVIDER_SWITCHED_ACTIVITY = "delegation.provider-switched";
 const DELEGATION_FOLLOW_UP_QUEUED_ACTIVITY = "delegation.follow-up-queued";
 const DELEGATION_ACTIVITY_VERSION = 1 as const;
 const TASK_SEARCH_BATCH_SIZE = ORCHESTRATOR_MCP_TASK_PAGE_MAX;
-const TASK_SEARCH_MAX_SCAN = 500;
 const TASK_ACTIVITY_KINDS = [
   DELEGATION_CREATED_ACTIVITY,
   DELEGATION_CANCEL_REQUESTED_ACTIVITY,
@@ -191,69 +166,11 @@ const TASK_ACTIVITY_KINDS = [
   ...COORDINATOR_ARCHITECT_ACTIVITY_KINDS,
 ] as const;
 
-function projectReadTextValue<T>(value: T): T {
-  if (typeof value === "string") return projectDerivedText("read", value) as T;
-  if (Array.isArray(value)) return value.map(projectReadTextValue) as T;
-  if (Predicate.isObject(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, nested]) => [key, projectReadTextValue(nested)]),
-    ) as T;
-  }
-  return value;
-}
-
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 const isCoordinatorArchitectIdempotencyConflict = Schema.is(
   CoordinatorArchitectIdempotencyConflict,
 );
 const isOrchestratorMcpRequestedIdentity = Schema.is(OrchestratorMcpRequestedIdentity);
-const isOrchestratorMcpSendToTaskResult = Schema.is(OrchestratorMcpSendToTaskResult);
-
-interface DelegationCreatedPayload {
-  readonly version: typeof DELEGATION_ACTIVITY_VERSION;
-  readonly taskId: ThreadId;
-  readonly parentEnvironmentId: string;
-  readonly parentThreadId: ThreadId;
-  readonly parentTurnId: TurnId;
-  readonly projectId: ProjectId;
-  readonly childThreadId: ThreadId;
-  readonly delegatedMessageId: MessageId;
-  readonly callerRequestFingerprint: string;
-  readonly requestFingerprint: string;
-  readonly requested: OrchestratorMcpRequestedIdentity;
-  readonly requestedAt: string;
-  readonly role: OrchestratorMcpDelegateTaskInput["role"];
-  readonly handoff?: OrchestratorMcpHandoff;
-  readonly stage: string | null;
-  readonly evidenceRefs: ReadonlyArray<string>;
-  readonly ocl: null | {
-    readonly contractRef: string;
-    readonly requiredRevision: number;
-    readonly implementsRevision: number;
-  };
-  readonly branch: string | null;
-  readonly workspaceRoot: string;
-  readonly worktreePath: string;
-  // Additive snapshot of the canonical frozen child caps used for the
-  // delegation fingerprint. Legacy lineage omits it and is recovered by
-  // exact-subset search instead.
-  readonly childCaps?: ReadonlyArray<string>;
-}
-
-interface TargetParentContext {
-  readonly thread: OrchestrationThreadShell;
-  readonly project: OrchestrationProjectShell;
-  readonly scope: NonNullable<McpInvocationScope["orchestration"]>;
-}
-
-interface ParentContext extends TargetParentContext {
-  readonly activeTurnId: TurnId;
-}
-
-type TargetResolutionRequest = Pick<
-  OrchestratorMcpDelegateTaskInput,
-  "target" | "runtimeMode" | "interactionMode"
->;
 
 interface DelegationProviderBoundPayload {
   readonly version: typeof DELEGATION_ACTIVITY_VERSION;
@@ -299,24 +216,6 @@ interface DelegationProviderSwitchedPayload {
   // history and even an exact A→B→A→B cycle mints distinct IDs.
   // Pre-chain records omit it and read back as genesis (null prev).
   readonly prevTransition: string | null;
-}
-
-interface DelegationFollowUpQueuedPayload {
-  readonly version: typeof DELEGATION_ACTIVITY_VERSION;
-  readonly taskId: ThreadId;
-  readonly parentEnvironmentId: string;
-  readonly parentThreadId: ThreadId;
-  readonly idempotencyKeyFingerprint: string;
-  readonly requestFingerprint: string;
-  readonly result: OrchestratorMcpSendToTaskResult;
-}
-
-interface ResolvedTarget {
-  readonly provider: ServerProvider;
-  readonly instanceConfig: ProviderInstanceConfig;
-  readonly modelSelection: ModelSelection;
-  readonly requested: OrchestratorMcpRequestedIdentity;
-  readonly permissionEnvelope: OrchestratorMcpPermissionEnvelopeSummary;
 }
 
 export interface OrchestratorMcpDependencies {
@@ -471,15 +370,6 @@ function failure(code: OrchestratorMcpFailureCode, message: string): Orchestrato
   return new OrchestratorMcpFailure({ code, message });
 }
 
-function rejectedAuthorTextField(field: AuthorTextField, text: string): AuthorTextField | null {
-  try {
-    return applyAuthorTextPolicy(field, text)._tag === "Accepted" ? null : field;
-  } catch {
-    // A failed check must reject authored text just like a detected secret.
-    return field;
-  }
-}
-
 function ensureAuthorTextAllowed(field: AuthorTextField, text: string) {
   try {
     if (applyAuthorTextPolicy(field, text)._tag === "Accepted") return Effect.void;
@@ -601,41 +491,6 @@ function findLineage(thread: OrchestrationThread): DelegationCreatedPayload | nu
   return null;
 }
 
-function parseFollowUpQueuedPayload(
-  activity: OrchestrationThreadActivity,
-): DelegationFollowUpQueuedPayload | null {
-  if (
-    activity.kind !== DELEGATION_FOLLOW_UP_QUEUED_ACTIVITY ||
-    !Predicate.isObject(activity.payload)
-  ) {
-    return null;
-  }
-  const payload = activity.payload;
-  if (
-    payload.version !== DELEGATION_ACTIVITY_VERSION ||
-    typeof payload.taskId !== "string" ||
-    typeof payload.parentEnvironmentId !== "string" ||
-    typeof payload.parentThreadId !== "string" ||
-    typeof payload.idempotencyKeyFingerprint !== "string" ||
-    typeof payload.requestFingerprint !== "string" ||
-    !isOrchestratorMcpSendToTaskResult(payload.result)
-  ) {
-    return null;
-  }
-  return payload as unknown as DelegationFollowUpQueuedPayload;
-}
-
-function findFollowUpReceipt(
-  thread: OrchestrationThread,
-  idempotencyKeyFingerprint: string,
-): DelegationFollowUpQueuedPayload | null {
-  for (let index = thread.activities.length - 1; index >= 0; index--) {
-    const payload = parseFollowUpQueuedPayload(thread.activities[index]!);
-    if (payload?.idempotencyKeyFingerprint === idempotencyKeyFingerprint) return payload;
-  }
-  return null;
-}
-
 function findCurrentTaskIdentity(
   thread: OrchestrationThread,
   lineage: DelegationCreatedPayload,
@@ -657,186 +512,6 @@ function findCurrentTaskIdentity(
   return switched !== undefined && Predicate.isObject(switched.payload)
     ? (switched.payload.requested as OrchestratorMcpRequestedIdentity)
     : lineage.requested;
-}
-
-function findLastProviderSwitch(
-  thread: OrchestrationThread,
-  lineage: DelegationCreatedPayload,
-): DelegationProviderSwitchedPayload | null {
-  for (let index = thread.activities.length - 1; index >= 0; index--) {
-    const activity = thread.activities[index]!;
-    if (
-      activity.kind !== DELEGATION_PROVIDER_SWITCHED_ACTIVITY ||
-      !Predicate.isObject(activity.payload)
-    ) {
-      continue;
-    }
-    const payload = activity.payload;
-    if (
-      payload.version === DELEGATION_ACTIVITY_VERSION &&
-      payload.taskId === lineage.taskId &&
-      payload.delegatedMessageId === lineage.delegatedMessageId &&
-      isOrchestratorMcpRequestedIdentity(payload.requested) &&
-      typeof payload.switchedAt === "string" &&
-      Predicate.isObject(payload.oldProvider)
-    ) {
-      return payload as unknown as DelegationProviderSwitchedPayload;
-    }
-  }
-  return null;
-}
-
-function findLastOrdinarySwitch(
-  thread: OrchestrationThread,
-  taskId: ThreadId,
-): DelegationProviderSwitchedPayload | null {
-  for (let index = thread.activities.length - 1; index >= 0; index--) {
-    const activity = thread.activities[index]!;
-    if (
-      activity.kind !== DELEGATION_PROVIDER_SWITCHED_ACTIVITY ||
-      !Predicate.isObject(activity.payload)
-    ) {
-      continue;
-    }
-    const payload = activity.payload;
-    if (
-      payload.version === DELEGATION_ACTIVITY_VERSION &&
-      payload.taskId === taskId &&
-      (payload.delegatedMessageId === null || payload.delegatedMessageId === undefined) &&
-      isOrchestratorMcpRequestedIdentity(payload.requested) &&
-      typeof payload.switchedAt === "string" &&
-      Predicate.isObject(payload.oldProvider)
-    ) {
-      return payload as unknown as DelegationProviderSwitchedPayload;
-    }
-  }
-  return null;
-}
-
-function hasCurrentTaskProviderSwitch(
-  thread: OrchestrationThread,
-  lineage: DelegationCreatedPayload,
-): boolean {
-  return thread.activities.some((activity) => {
-    if (
-      activity.kind !== DELEGATION_PROVIDER_SWITCHED_ACTIVITY ||
-      !Predicate.isObject(activity.payload)
-    ) {
-      return false;
-    }
-    return (
-      activity.payload.version === DELEGATION_ACTIVITY_VERSION &&
-      activity.payload.taskId === lineage.taskId &&
-      activity.payload.delegatedMessageId === lineage.delegatedMessageId &&
-      isOrchestratorMcpRequestedIdentity(activity.payload.requested)
-    );
-  });
-}
-
-// Stale-session allowance shared by the follow-up admission path and the
-// follow-up resume path: after a sanctioned provider switch the runtime
-// session still names the old provider (only provider events rebind it), so
-// a session that is idle and bound to no live turn may keep the queued
-// follow-up. Anything else fails closed.
-function sessionAllowsFollowUpStart(
-  thread: OrchestrationThread,
-  lineage: DelegationCreatedPayload,
-  currentIdentity: OrchestratorMcpRequestedIdentity,
-  rows: ReadonlyArray<ProjectionTurn>,
-): boolean {
-  const session = thread.session;
-  if (session === null) return true;
-  if (session.providerInstanceId === undefined) return false;
-  if (session.runtimeMode !== lineage.requested.runtimeMode) return false;
-  if (session.providerInstanceId === currentIdentity.providerInstanceId) return true;
-  return (
-    hasCurrentTaskProviderSwitch(thread, lineage) &&
-    session.activeTurnId === null &&
-    session.status !== "running" &&
-    session.status !== "starting" &&
-    thread.latestTurn?.state !== "running" &&
-    !rows.some((row) => row.turnId === null)
-  );
-}
-
-function modelSelectionMatchesRequested(
-  modelSelection: ModelSelection,
-  requested: OrchestratorMcpRequestedIdentity,
-): boolean {
-  return (
-    modelSelection.instanceId === requested.providerInstanceId &&
-    modelSelection.model === requested.model &&
-    hash(modelSelection.options ?? []) === hash(requested.options)
-  );
-}
-
-// Command IDs for a provider switch distinguish the full transition chain,
-// not just the config fingerprint: the fingerprint excludes model and
-// options, so an A→B→A→B cycle or parallel switches to different models
-// would otherwise collide and yield false receipts. Every ID folds in the
-// previous record's transition hash, so each committed switch advances a
-// unique chain even when from/to repeat exactly. All inputs are
-// activity-derived, so an exact retry after a partial crash reuses the same
-// IDs.
-//
-// Concurrent switches against the same child/thread are serialized by a
-// per-task commit lock: the chain head is re-read inside the lock, so a
-// racing loser chains after the winner instead of forking the transition
-// history with a stale head. The lock is module-scoped so the MCP service
-// and per-request UI services share it within this process.
-//
-// Lifecycle: entries are refcounted and evicted once the last holder
-// settles, so the map stays bounded by in-flight switches instead of every
-// thread ever switched. Lookup, refcounting, and eviction each run in one
-// synchronous block, which is atomic for Effect fibers: a newcomer either
-// joins a live entry (and is counted before anyone can evict it) or creates
-// a fresh one after eviction (when by definition nobody references the old
-// semaphore). The release runs under `ensuring`, so interruption while
-// queued or inside the commit still releases the holder.
-interface SwitchCommitEntry {
-  readonly semaphore: Semaphore.Semaphore;
-  holders: number;
-}
-const switchCommitEntries = new Map<string, SwitchCommitEntry>();
-const withSwitchCommitLock = <A, E, R>(
-  taskId: ThreadId,
-  effect: Effect.Effect<A, E, R>,
-): Effect.Effect<A, E, R> => {
-  const key = String(taskId);
-  let entry = switchCommitEntries.get(key);
-  if (entry === undefined) {
-    entry = { semaphore: Semaphore.makeUnsafe(1), holders: 0 };
-    switchCommitEntries.set(key, entry);
-  }
-  entry.holders += 1;
-  const captured = entry;
-  return captured.semaphore.withPermit(effect).pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        captured.holders -= 1;
-        if (captured.holders === 0 && switchCommitEntries.get(key) === captured) {
-          switchCommitEntries.delete(key);
-        }
-      }),
-    ),
-  );
-};
-function switchTransitionHash(
-  from: DelegationProviderSwitchedPayload["oldProvider"],
-  to: OrchestratorMcpRequestedIdentity,
-  prev: string | null,
-): string {
-  return hash({ from, to, prev });
-}
-
-function switchTransitionId(
-  prefix: string,
-  taskId: ThreadId,
-  from: DelegationProviderSwitchedPayload["oldProvider"],
-  to: OrchestratorMcpRequestedIdentity,
-  prev: string | null,
-): string {
-  return deterministicId(prefix, taskId, switchTransitionHash(from, to, prev));
 }
 
 function requestedIdentityMatches(
@@ -879,18 +554,6 @@ function cancellationCompletedAt(
       activity.payload.delegatedMessageId === lineage.delegatedMessageId,
   );
   return completed?.createdAt ?? null;
-}
-
-function failedCancellationRequestIds(thread: OrchestrationThread): ReadonlySet<string> {
-  return new Set(
-    thread.activities.flatMap((activity) =>
-      activity.kind === "provider.turn.interrupt.failed" &&
-      Predicate.isObject(activity.payload) &&
-      typeof activity.payload.requestId === "string"
-        ? [activity.payload.requestId]
-        : [],
-    ),
-  );
 }
 
 function findObservedProvider(
@@ -1024,78 +687,17 @@ function requestedModelSelection(input: TargetResolutionRequest): ModelSelection
   };
 }
 
-function toTaskMemoryEntry(
-  row: ProjectionSnapshotQuery.DelegatedTaskMemoryRow,
-): OrchestratorMcpTaskMemoryEntry {
-  const role = scrubDelegatedTaskText(row.role).slice(0, 100);
-  const title = scrubDelegatedTaskText(row.title).slice(0, 500);
-  const latestStatus: OrchestratorMcpTaskStatus =
-    row.hasPendingApprovals || row.hasPendingUserInput
-      ? "waiting"
-      : row.hasPendingFollowUp
-        ? "queued"
-        : row.latestTurnId === null
-          ? "queued"
-          : row.latestTurnState === "error"
-            ? "failed"
-            : row.latestTurnState === "pending"
-              ? "queued"
-              : (row.latestTurnState ?? "queued");
-  const summary = row.summary;
-  return {
-    taskId: row.taskId,
-    childThreadId: row.taskId,
-    role,
-    title,
-    latestStatus,
-    latestTurnId: row.latestTurnId,
-    updatedAt: row.updatedAt,
-    worktreePath:
-      row.worktreePath === null ? null : scrubDelegatedTaskText(row.worktreePath).slice(0, 1_024),
-    summary:
-      summary === null
-        ? {
-            text: projectDerivedText(
-              "summary",
-              scrubDelegatedTaskText(`${role || "Task"}: ${title}`),
-            ).slice(0, 240),
-            source: "deterministic",
-            sourceTurnIds: row.latestTurnId === null ? [] : [row.latestTurnId],
-            watermark: 0,
-            stale: true,
-            state: "pending",
-            error: null,
-          }
-        : {
-            text: projectDerivedText("summary", scrubDelegatedTaskText(summary.text)).slice(0, 600),
-            source: summary.source,
-            sourceTurnIds: summary.sourceTurnIds.slice(-ORCHESTRATOR_MCP_TASK_SOURCE_TURN_IDS_MAX),
-            watermark: summary.watermark,
-            stale:
-              summary.state !== "ready" ||
-              summary.sourceTurnId !== row.latestTurnId ||
-              summary.watermark < row.threadWatermark ||
-              row.hasPendingFollowUp,
-            state: summary.state,
-            error:
-              summary.error === null
-                ? null
-                : projectDerivedText("summary", scrubDelegatedTaskText(summary.error)),
-          },
-  };
-}
-
-function toTaskSummaryHistoryRecord(
-  row: ProjectionSnapshotQuery.DelegatedTaskSummaryHistoryRecord,
-): OrchestratorMcpTaskSummaryHistoryResult["records"][number] {
-  return {
-    ...row,
-    summaryText: projectDerivedText("summary", scrubDelegatedTaskText(row.summaryText)),
-    executorRole: scrubDelegatedTaskText(row.executorRole).slice(0, 100),
-  };
-}
-
 function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcpServiceShape {
+  const switchSupport = makeSwitchSupport({
+    activityKind: DELEGATION_PROVIDER_SWITCHED_ACTIVITY,
+    activityVersion: DELEGATION_ACTIVITY_VERSION,
+    isRequestedIdentity: isOrchestratorMcpRequestedIdentity,
+    getProviders: dependencies.getProviders,
+    failure,
+    hash,
+    deterministicId,
+  });
+
   const loadThreadShell = (threadId: ThreadId) =>
     dependencies
       .getThreadShellById(threadId)
@@ -1111,13 +713,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
         activityHistory: "complete",
       })
       .pipe(Effect.mapError(orchestrationFailure(`read thread detail ${threadId}`)));
-  const loadArchitectActivityDetail = (threadId: ThreadId) =>
-    dependencies
-      .getThreadDetailById(threadId, {
-        activityKinds: [...COORDINATOR_ARCHITECT_ACTIVITY_KINDS],
-        activityHistory: "complete",
-      })
-      .pipe(Effect.mapError(orchestrationFailure(`read architect activity history ${threadId}`)));
   const listTurns = (threadId: ThreadId) =>
     dependencies
       .listTurnsByThreadId({ threadId })
@@ -1132,50 +727,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "This MCP credential does not grant orchestration capabilities.",
           ),
         );
-
-  const loadTaskMemoryRows = (
-    scope: McpInvocationScope,
-    input: {
-      readonly afterTaskId?: ThreadId;
-      readonly taskId?: ThreadId;
-      readonly limit: number;
-    },
-  ) =>
-    Effect.gen(function* () {
-      yield* requireCapability(scope);
-      if (dependencies.listDelegatedTaskMemoryRows === undefined) {
-        return yield* failure("orchestration_error", "Delegated task memory is unavailable.");
-      }
-      return yield* dependencies
-        .listDelegatedTaskMemoryRows({
-          parentEnvironmentId: scope.environmentId,
-          parentThreadId: scope.threadId,
-          ...input,
-        })
-        .pipe(Effect.mapError(orchestrationFailure("read delegated task memory")));
-    });
-
-  const loadTaskSummaryHistoryPage = (
-    scope: McpInvocationScope,
-    input: OrchestratorMcpTaskSummaryHistoryInput,
-  ) =>
-    Effect.gen(function* () {
-      yield* requireCapability(scope);
-      if (dependencies.listDelegatedTaskSummaryHistory === undefined) {
-        return yield* failure(
-          "orchestration_error",
-          "Delegated task summary history is unavailable.",
-        );
-      }
-      return yield* dependencies
-        .listDelegatedTaskSummaryHistory({
-          parentEnvironmentId: scope.environmentId,
-          parentThreadId: scope.threadId,
-          ...input,
-          limit: input.limit ?? 50,
-        })
-        .pipe(Effect.mapError(orchestrationFailure("read delegated task summary history")));
-    });
 
   // Every parent_not_active refusal carries a stable [reason=...] token.
   // The code stays a single literal for contract compatibility, but agents
@@ -1265,117 +816,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       }
       return { ...base, activeTurnId };
     });
-
-  const resolveTarget = (
-    scope: McpInvocationScope,
-    parent: TargetParentContext,
-    input: TargetResolutionRequest,
-    // Canonical frozen child caps for an existing delegation. New delegations
-    // keep the caller surface set; switch/send must pass the recovered S.
-    t3McpCapabilities: ReadonlySet<string> = scope.capabilities,
-  ): Effect.Effect<ResolvedTarget, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const providers = yield* dependencies.getProviders;
-      const provider = providers.find(
-        (candidate) => candidate.instanceId === input.target.providerInstanceId,
-      );
-      if (provider === undefined) {
-        return yield* failure(
-          "provider_unavailable",
-          `Provider instance ${input.target.providerInstanceId} is not registered.`,
-        );
-      }
-      if (provider.driver !== input.target.driverKind) {
-        return yield* failure(
-          "provider_unavailable",
-          `Provider instance ${provider.instanceId} uses driver ${provider.driver}, not ${input.target.driverKind}.`,
-        );
-      }
-      const unavailableReason = providerUnavailableReason(provider);
-      if (unavailableReason !== null) {
-        return yield* failure("provider_unavailable", unavailableReason);
-      }
-      const model = provider.models.find((candidate) => candidate.slug === input.target.model);
-      if (model === undefined) {
-        return yield* failure(
-          "model_unavailable",
-          `Model ${input.target.model} is not advertised by provider ${provider.instanceId}.`,
-        );
-      }
-      const invalidOptions = validateOptions(
-        input.target.options ?? [],
-        model.capabilities?.optionDescriptors,
-      );
-      if (invalidOptions.length > 0) {
-        return yield* failure("invalid_model_options", invalidOptions.join(" "));
-      }
-      const settings = yield* dependencies.getSettings;
-      const instanceConfig =
-        deriveProviderInstanceConfigMap(settings)[input.target.providerInstanceId];
-      if (instanceConfig === undefined || instanceConfig.driver !== input.target.driverKind) {
-        return yield* failure(
-          "provider_unavailable",
-          `Provider instance ${input.target.providerInstanceId} has no matching effective configuration.`,
-        );
-      }
-      const runtimeMode = input.runtimeMode ?? parent.thread.runtimeMode;
-      const interactionMode = input.interactionMode ?? parent.thread.interactionMode;
-      const childCapabilities = provider.driver === "pi" ? new Set<string>() : t3McpCapabilities;
-      const permissionEnvelope = yield* dependencies.loadPermissionEnvelope({
-        driverKind: input.target.driverKind,
-        runtimeMode,
-        interactionMode,
-        instanceConfig,
-        environment: process.env,
-        workspaceRoot: parent.project.workspaceRoot,
-        worktreePath: parent.scope.worktreePath,
-        branch: parent.thread.branch,
-        t3McpCapabilities: childCapabilities,
-      });
-      const comparison = compareDelegationPermissionEnvelopes({
-        parent: parent.scope.permissionEnvelope,
-        target: permissionEnvelope,
-        parentInteractionMode: parent.thread.interactionMode,
-        targetInteractionMode: interactionMode,
-        parentWorkspace: {
-          projectId: parent.thread.projectId,
-          workspaceRoot: parent.project.workspaceRoot,
-          worktreePath: parent.scope.worktreePath,
-          branch: parent.thread.branch,
-        },
-        targetWorkspace: {
-          projectId: parent.thread.projectId,
-          workspaceRoot: parent.project.workspaceRoot,
-          worktreePath: parent.scope.worktreePath,
-          branch: parent.thread.branch,
-        },
-      });
-      if (!comparison.allowed) return yield* failure(comparison.code, comparison.reason);
-      if (permissionEnvelope.status !== "verified") {
-        return yield* failure("permission_envelope_unverifiable", permissionEnvelope.reason);
-      }
-      return {
-        provider,
-        instanceConfig,
-        modelSelection: requestedModelSelection(input),
-        requested: {
-          providerInstanceId: input.target.providerInstanceId,
-          driverKind: input.target.driverKind,
-          model: input.target.model,
-          options: input.target.options ?? [],
-          runtimeMode,
-          interactionMode,
-          providerConfigFingerprint: permissionEnvelope.fingerprint,
-        },
-        permissionEnvelope,
-      };
-    }).pipe(
-      Effect.mapError((error) =>
-        isOrchestratorMcpFailure(error)
-          ? error
-          : orchestrationFailure("resolve provider target")(error),
-      ),
-    );
 
   // Capability gate for a provider switch. Unlike resolveTarget (which keeps
   // delegateTask's historical codes), an existing-but-unusable target is an
@@ -1596,35 +1036,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       );
     });
 
-  // Identity of the provider an ordinary thread runs on, for the switch
-  // record. The session owns it; the stored model selection is the fallback
-  // when the session predates the instance id. Unlike the target, the old
-  // provider is never availability-gated — an exhausted provider is the
-  // reason to switch.
-  const resolveOrdinaryOldProvider = Effect.fn("OrchestratorMcpService.resolveOrdinaryOldProvider")(
-    function* (
-      thread: OrchestrationThread,
-      session: NonNullable<OrchestrationThreadShell["session"]>,
-    ) {
-      const providers = yield* dependencies.getProviders;
-      const instanceId = session.providerInstanceId ?? thread.modelSelection.instanceId;
-      const driverKind =
-        providers.find((candidate) => candidate.instanceId === instanceId)?.driver ??
-        (isProviderDriverKind(session.providerName) ? session.providerName : undefined);
-      if (driverKind === undefined) {
-        return yield* failure(
-          "orchestration_error",
-          `Could not determine the thread's current provider for instance ${instanceId}.`,
-        );
-      }
-      return {
-        providerInstanceId: instanceId,
-        driverKind,
-        model: thread.modelSelection.model,
-      };
-    },
-  );
-
   // Provider switch for an ordinary (non-delegated) thread: the scope is the
   // thread itself, so no delegation lineage is required. Message history and
   // the pending queue are preserved by construction — the switch only
@@ -1667,12 +1078,18 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             "The thread has no message history to hand off. Send a message first, then switch providers.",
           );
         }
-        const oldProvider = yield* resolveOrdinaryOldProvider(committed, session);
+        const oldProvider = yield* switchSupport.resolveOrdinaryOldProvider(committed, session);
         const switchedAt = yield* dependencies.now;
         const ordinaryPrev =
-          findLastOrdinarySwitch(committed, input.taskId)?.prevTransition ?? null;
+          switchSupport.findLastOrdinarySwitch(committed, input.taskId)?.prevTransition ?? null;
         const ordinaryTransition = (prefix: string) =>
-          switchTransitionId(prefix, input.taskId, oldProvider, target.requested, ordinaryPrev);
+          switchSupport.switchTransitionId(
+            prefix,
+            input.taskId,
+            oldProvider,
+            target.requested,
+            ordinaryPrev,
+          );
         yield* dependencies
           .dispatch({
             type: "thread.meta.update",
@@ -1697,7 +1114,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           reason: input.reason,
           scope: switchScope,
           switchedAt,
-          prevTransition: switchTransitionHash(oldProvider, target.requested, ordinaryPrev),
+          prevTransition: switchSupport.switchTransitionHash(
+            oldProvider,
+            target.requested,
+            ordinaryPrev,
+          ),
         };
         const ordinaryLineageCommandId = ordinaryTransition("mcp-provider-switch-lineage");
         yield* dependencies
@@ -2070,82 +1491,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
     } satisfies OrchestratorMcpProviderCapability;
   });
 
-  const validateArchitectSelection = Effect.fn("OrchestratorMcpService.validateArchitectSelection")(
-    function* (input: {
-      readonly scope: McpInvocationScope;
-      readonly parent: ParentContext;
-      readonly taskEffort: OrchestratorMcpArchitectCreateOrGetInput["taskEffort"];
-      readonly modelSelection: ModelSelection;
-      readonly routingEvidence: CoordinatorArchitectRoutingEvidence;
-    }) {
-      const evidence = input.routingEvidence;
-      const selected = evidence.consideredCandidates[evidence.consideredCandidates.length - 1];
-      if (
-        evidence.role !== "architecture" ||
-        evidence.taskEffort !== input.taskEffort ||
-        selected === undefined ||
-        selected.disposition !== "selected" ||
-        selected.providerInstanceId !== input.modelSelection.instanceId ||
-        selected.model !== input.modelSelection.model ||
-        hash(selected.options) !== hash(input.modelSelection.options ?? [])
-      ) {
-        return yield* failure(
-          "routing_evidence_mismatch",
-          "The selected model does not match the accepted architecture routing evidence.",
-        );
-      }
-      const providers = yield* dependencies.getProviders;
-      const provider = providers.find(
-        (candidate) => candidate.instanceId === input.modelSelection.instanceId,
-      );
-      if (provider === undefined || provider.driver !== selected.driverKind) {
-        return yield* failure(
-          "provider_unavailable",
-          `Selected architecture provider ${input.modelSelection.instanceId} is not live under the recorded driver.`,
-        );
-      }
-      const unavailable = providerUnavailableReason(provider);
-      if (unavailable !== null) return yield* failure("provider_unavailable", unavailable);
-      const model = provider.models.find(
-        (candidate) => candidate.slug === input.modelSelection.model,
-      );
-      if (model === undefined) {
-        return yield* failure(
-          "model_unavailable",
-          `Selected architecture model ${input.modelSelection.model} is not in the live provider catalog.`,
-        );
-      }
-      const invalidOptions = validateOptions(
-        input.modelSelection.options ?? [],
-        model.capabilities?.optionDescriptors,
-      );
-      if (invalidOptions.length > 0) {
-        return yield* failure("invalid_model_options", invalidOptions.join(" "));
-      }
-      const settings = yield* dependencies.getSettings;
-      const permission = yield* providerCapability(
-        input.scope,
-        input.parent,
-        deriveProviderInstanceConfigMap(settings),
-        provider,
-        {
-          interactionMode: "plan",
-          t3McpCapabilities: new Set(["orchestration"]),
-        },
-      );
-      if (!permission.delegatable) {
-        return yield* failure(
-          permission.permissionEnvelope.status === "unverifiable"
-            ? "permission_envelope_unverifiable"
-            : "permission_escalation_denied",
-          permission.unavailableReason ??
-            "The selected architecture provider is not read-only eligible.",
-        );
-      }
-      return input.modelSelection;
-    },
-  );
-
   const dispatchDelegatedTurnStart = Effect.fn("OrchestratorMcpService.dispatchDelegatedTurnStart")(
     function* (input: {
       readonly taskId: ThreadId;
@@ -2243,152 +1588,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
     },
   );
 
-  const resumeFollowUpTurn = Effect.fn("OrchestratorMcpService.resumeFollowUpTurn")(
-    function* (input: {
-      readonly taskId: ThreadId;
-      readonly message: string;
-      readonly receipt: DelegationFollowUpQueuedPayload;
-      readonly child: OrchestrationThread;
-    }) {
-      const rows = yield* listTurns(input.taskId);
-      const hasTurnRequest = rows.some(
-        (row) => row.pendingMessageId === input.receipt.result.messageId,
-      );
-      const startFailed = input.child.activities.some(
-        (activity) =>
-          activity.kind === "provider.turn.start.failed" &&
-          Predicate.isObject(activity.payload) &&
-          activity.payload.requestId === input.receipt.result.messageId,
-      );
-      if (!hasTurnRequest && !startFailed) {
-        const lineage = findLineage(input.child);
-        const currentIdentity =
-          lineage === null ? null : findCurrentTaskIdentity(input.child, lineage);
-        // A sanctioned provider switch repoints the child at the current task
-        // identity while a receipt queued before the switch still names the
-        // previous one. Validate the child against the current identity so
-        // the follow-up continues on the new provider; a child matching
-        // neither still fails closed.
-        const receiptMatchesCurrent =
-          currentIdentity !== null &&
-          requestedIdentityMatches(input.receipt.result.requested, currentIdentity);
-        if (
-          lineage === null ||
-          currentIdentity === null ||
-          (!receiptMatchesCurrent && !hasCurrentTaskProviderSwitch(input.child, lineage)) ||
-          !modelSelectionMatchesRequested(input.child.modelSelection, currentIdentity) ||
-          input.child.runtimeMode !== lineage.requested.runtimeMode ||
-          input.child.interactionMode !== lineage.requested.interactionMode ||
-          currentIdentity.runtimeMode !== lineage.requested.runtimeMode ||
-          currentIdentity.interactionMode !== lineage.requested.interactionMode ||
-          !sessionAllowsFollowUpStart(input.child, lineage, currentIdentity, rows)
-        ) {
-          return yield* failure(
-            "provider_configuration_changed",
-            "The child identity changed before the accepted follow-up could start.",
-          );
-        }
-        const result = receiptMatchesCurrent
-          ? input.receipt.result
-          : { ...input.receipt.result, requested: currentIdentity };
-        yield* dispatchFollowUpTurn({
-          taskId: input.taskId,
-          message: input.message,
-          result,
-        });
-        return result;
-      }
-      return input.receipt.result;
-    },
-  );
-
-  // Frozen-identity admission shared by fresh follow-ups and exact retries: the
-  // child shell must still name the current task identity, and a runtime
-  // session bound to a previous provider is accepted only under the
-  // post-switch conditions of sessionAllowsFollowUpStart.
-  const requireFollowUpIdentity = Effect.fn("OrchestratorMcpService.requireFollowUpIdentity")(
-    function* (input: {
-      readonly taskId: ThreadId;
-      readonly child: OrchestrationThread;
-      readonly lineage: DelegationCreatedPayload;
-    }) {
-      const rows = yield* listTurns(input.taskId);
-      const currentIdentity = findCurrentTaskIdentity(input.child, input.lineage);
-      if (
-        !modelSelectionMatchesRequested(input.child.modelSelection, currentIdentity) ||
-        input.child.runtimeMode !== input.lineage.requested.runtimeMode ||
-        input.child.interactionMode !== input.lineage.requested.interactionMode ||
-        currentIdentity.runtimeMode !== input.lineage.requested.runtimeMode ||
-        currentIdentity.interactionMode !== input.lineage.requested.interactionMode
-      ) {
-        return yield* failure(
-          "permission_escalation_denied",
-          "The child no longer matches its frozen provider and permission identity.",
-        );
-      }
-      if (input.child.session !== null) {
-        if (input.child.session.providerInstanceId === undefined) {
-          return yield* failure(
-            "permission_envelope_unverifiable",
-            "The child's active provider session has no verifiable provider instance.",
-          );
-        }
-        if (!sessionAllowsFollowUpStart(input.child, input.lineage, currentIdentity, rows)) {
-          return yield* failure(
-            "provider_configuration_changed",
-            "The child's active session no longer matches its delegated provider configuration.",
-          );
-        }
-      }
-      return currentIdentity;
-    },
-  );
-
-  const recordCancellationCompleted = Effect.fn(
-    "OrchestratorMcpService.recordCancellationCompleted",
-  )(function* (input: {
-    readonly taskId: ThreadId;
-    readonly lineage: DelegationCreatedPayload;
-    readonly turnId: TurnId | null;
-    readonly createdAt: string;
-    readonly reason: "provider-interrupted" | "provider-not-active" | "start-suppressed";
-  }) {
-    yield* dependencies
-      .dispatch({
-        type: "thread.activity.append",
-        commandId: CommandId.make(
-          deterministicId(
-            "mcp-delegation-cancelled",
-            input.taskId,
-            input.lineage.requestFingerprint,
-          ),
-        ),
-        threadId: input.taskId,
-        activity: {
-          id: EventId.make(
-            deterministicId(
-              "mcp-delegation-cancelled",
-              input.taskId,
-              input.lineage.requestFingerprint,
-            ),
-          ),
-          tone: "info",
-          kind: DELEGATION_CANCELLED_ACTIVITY,
-          summary: "Delegated task cancelled",
-          payload: {
-            taskId: input.taskId,
-            delegatedMessageId: input.lineage.delegatedMessageId,
-            delegatedTurnId: input.turnId,
-            reason: input.reason,
-          },
-          turnId: input.turnId,
-          createdAt: input.createdAt,
-        },
-        createdAt: input.createdAt,
-      })
-      .pipe(Effect.mapError(orchestrationFailure("record delegated-task cancellation")));
-  });
-
   const requireBoardRepository = (): Effect.Effect<BoardRepositoryShape, OrchestratorMcpFailure> =>
     dependencies.board === undefined
       ? Effect.fail(
@@ -2404,19 +1603,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
   // deny on every architect path; credential revocation follows as
   // defense-in-depth and never reverts a committed transition.
 
-  const requireArchitectStore = (): Effect.Effect<
-    CoordinatorArchitectRepositoryShape,
-    OrchestratorMcpFailure
-  > =>
-    dependencies.coordinatorArchitect === undefined
-      ? Effect.fail(
-          failure(
-            "orchestration_error",
-            "The coordinator/architect store is unavailable in this server composition.",
-          ),
-        )
-      : Effect.succeed(dependencies.coordinatorArchitect);
-
   const requireSplitEnabled = (): Effect.Effect<void, OrchestratorMcpFailure> =>
     dependencies.getSettings.pipe(
       Effect.flatMap((settings) =>
@@ -2430,10 +1616,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           : Effect.void,
       ),
     );
-
-  type ControlPlaneCaller =
-    | { readonly kind: "architect"; readonly binding: CoordinatorArchitectBinding }
-    | { readonly kind: "other" };
 
   const mapStoreError = (operation: string) => (error: unknown) =>
     isOrchestratorMcpFailure(error)
@@ -2504,31 +1686,6 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       }),
     );
 
-  const checkCoordinatorIdentity = (
-    scope: McpInvocationScope,
-    coordinatorThreadId: ThreadId,
-    thread: OrchestrationThreadShell,
-    operation: string,
-  ): Effect.Effect<ControlPlaneCaller, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const caller = yield* resolveControlPlaneCaller(scope);
-      yield* denyArchitectCaller(caller, operation);
-      if (scope.threadId !== coordinatorThreadId) {
-        return yield* failure(
-          "capability_denied",
-          "Only the coordinator thread itself (or a human on it) may perform this operation.",
-        );
-      }
-      if (thread.delegationParent !== null && thread.delegationParent !== undefined) {
-        // Delegated executors may not act as coordinators on any lineage.
-        return yield* failure(
-          "delegated_executor_denied",
-          "Delegated executor threads cannot perform coordinator control-plane operations.",
-        );
-      }
-      return caller;
-    });
-
   const denyExecutorCaller = (
     scope: McpInvocationScope,
     operation: string,
@@ -2561,53 +1718,94 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
       return { ...scope, threadId: caller.binding.coordinatorThreadId };
     });
 
-  const appendPhase1Activity = (input: {
-    readonly threadId: ThreadId;
-    readonly commandId: string;
-    readonly fallbackCommandId?: string;
-    readonly activityId: string;
-    readonly kind: string;
-    readonly summary: string;
-    readonly payload: unknown;
-    readonly createdAt: string;
-  }) =>
-    Effect.gen(function* () {
-      const detail = yield* loadThreadDetail(input.threadId);
-      if (
-        Option.isSome(detail) &&
-        detail.value.activities.some((activity) => activity.id === input.activityId)
-      ) {
-        return;
-      }
-      const dispatchActivity = (commandId: string) =>
-        dependencies.dispatch({
-          type: "thread.activity.append",
-          commandId: CommandId.make(commandId),
-          threadId: input.threadId,
-          activity: {
-            id: EventId.make(input.activityId),
-            tone: "info",
-            kind: input.kind,
-            summary: input.summary,
-            payload: input.payload,
-            turnId: null,
-            createdAt: input.createdAt,
-          },
-          createdAt: input.createdAt,
-        });
-      yield* dispatchActivity(input.commandId).pipe(
-        Effect.catchTag("OrchestrationCommandIdConflictError", (error) =>
-          input.fallbackCommandId !== undefined &&
-          error.receiptAggregateKind === "thread" &&
-          error.receiptAggregateId !== input.threadId &&
-          error.commandAggregateKind === "thread" &&
-          error.commandAggregateId === input.threadId
-            ? dispatchActivity(input.fallbackCommandId)
-            : Effect.fail(error),
-        ),
-        Effect.mapError(orchestrationFailure("append coordinator/architect activity")),
-      );
-    });
+  // Coordinator reads that reveal coordinator-owned state (architect
+  // binding/reviews queries) apply the same marked-orchestrator check, but
+  // only when a board repository exists: boardless compositions (and their
+  // tests) keep the legacy thread-identity behavior, while production — where
+  // the board is always present — denies unmarked callers.
+  const requireRegisteredOrchestratorWhenBoardPresent = (
+    scope: McpInvocationScope,
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
+    dependencies.board === undefined
+      ? Effect.void
+      : Effect.flatMap(requireBoardRepository(), (repo) =>
+          requireRegisteredOrchestrator(repo, scope),
+        );
+
+  // Creating a card is the one board write a non-orchestrator could otherwise
+  // reach, so the caller must be a marked orchestrator before any card exists.
+  const requireRegisteredOrchestrator = (
+    repo: BoardRepositoryShape,
+    scope: McpInvocationScope,
+  ): Effect.Effect<void, OrchestratorMcpFailure> =>
+    repo.listOrchestrators().pipe(
+      Effect.mapError(orchestrationFailure("list board orchestrators")),
+      Effect.flatMap((orchestrators) =>
+        orchestrators.some((orchestrator) => orchestrator.threadId === scope.threadId)
+          ? Effect.void
+          : Effect.fail(
+              failure(
+                "capability_denied",
+                "This thread is not a registered board Coordinator, so it has no board.",
+              ),
+            ),
+      ),
+    );
+
+  const nowIso = () => dependencies.now;
+
+  const boardService = makeBoardService({
+    requireCapability,
+    denyArchitectCaller: (scope, operation) =>
+      Effect.flatMap(resolveControlPlaneCaller(scope), (caller) =>
+        denyArchitectCaller(caller, operation),
+      ),
+    denyExecutorCaller,
+    denyArchitectTarget,
+    ensureAuthorTextAllowed,
+    requireBoardRepository,
+    requireRegisteredOrchestrator,
+    nowIso,
+    failure,
+    orchestrationFailure,
+  });
+
+  const taskQueryService = makeTaskQueryService({
+    dispatch: dependencies.dispatch,
+    now: dependencies.now,
+    ...(dependencies.listDelegatedTaskMemoryRows === undefined
+      ? {}
+      : { listDelegatedTaskMemoryRows: dependencies.listDelegatedTaskMemoryRows }),
+    ...(dependencies.listDelegatedTaskSummaryHistory === undefined
+      ? {}
+      : { listDelegatedTaskSummaryHistory: dependencies.listDelegatedTaskSummaryHistory }),
+    ...(dependencies.getThreadDetailSnapshotIncludingArchived === undefined
+      ? {}
+      : {
+          getThreadDetailSnapshotIncludingArchived:
+            dependencies.getThreadDetailSnapshotIncludingArchived,
+        }),
+    taskSearchBatchSize: TASK_SEARCH_BATCH_SIZE,
+    cancelRequestedActivity: DELEGATION_CANCEL_REQUESTED_ACTIVITY,
+    cancelledActivity: DELEGATION_CANCELLED_ACTIVITY,
+    failure,
+    orchestrationFailure,
+    deterministicId,
+    requireCapability,
+    resolveReadScope,
+    denyArchitectCaller: (scope, operation) =>
+      Effect.flatMap(resolveControlPlaneCaller(scope), (caller) =>
+        denyArchitectCaller(caller, operation),
+      ),
+    denyArchitectTarget,
+    loadThreadDetail,
+    listTurns,
+    findLineage,
+    wasCancelRequested,
+    readOwnedTask,
+    waitForTask,
+    isTerminalStatus,
+  });
 
   const dispatchWakeTurn = (input: {
     readonly threadId: ThreadId;
@@ -2686,1127 +1884,111 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
     return attempt(3, 0);
   };
 
-  const softDeleteArchitectThread = (
-    threadId: ThreadId,
-  ): Effect.Effect<void, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const shell = yield* loadThreadShell(threadId);
-      // The ordinary shell query already excludes deleted threads; if the
-      // shell is absent there is nothing left to delete.
-      if (Option.isNone(shell)) return;
-      yield* dependencies
-        .dispatch({
-          type: "thread.delete",
-          commandId: CommandId.make(`architect-delete:${threadId}`),
-          threadId,
-        })
-        .pipe(
-          Effect.catchTags({ OrchestrationCommandIdConflictError: () => Effect.void }),
-          Effect.mapError((error) =>
-            isOrchestratorMcpFailure(error)
-              ? error
-              : orchestrationFailure("soft-delete architect thread")(error),
-          ),
-        );
-    });
-
-  const createArchitectThread = (
-    binding: CoordinatorArchitectBinding,
-    coordinator: OrchestrationThreadShell,
-  ): Effect.Effect<void, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const evidence = binding.routingEvidence;
-      const selected = evidence?.consideredCandidates.at(-1);
-      if (selected === undefined || selected.disposition !== "selected") {
-        return yield* failure(
-          "routing_evidence_mismatch",
-          "The active Architect binding has no selected routing evidence for deterministic recovery.",
-        );
-      }
-      const modelSelection: ModelSelection = {
-        instanceId: selected.providerInstanceId,
-        model: selected.model,
-        options: selected.options,
-      };
-      yield* dependencies
-        .dispatch({
-          type: "thread.create",
-          commandId: CommandId.make(`architect-create:${binding.bindingId}`),
-          threadId: binding.architectThreadId,
-          projectId: binding.projectId,
-          title: "Architect",
-          modelSelection,
-          runtimeMode: coordinator.runtimeMode,
-          // The architect never runs in plan mode: in plan it cannot use
-          // its own MCP surface, and any later plan/default toggle would
-          // invalidate its frozen credential at the drift gate below.
-          interactionMode: "default",
-          branch: coordinator.branch,
-          worktreePath: coordinator.worktreePath,
-          createdAt: binding.createdAt,
-        })
-        .pipe(
-          Effect.catchTags({
-            OrchestrationCommandIdConflictError: () => Effect.void,
-            OrchestrationCommandInvariantError: (error) =>
-              Effect.fail(
-                failure(
-                  "idempotency_conflict",
-                  `The deterministic Architect create command conflicts with an existing thread: ${errorMessage(error)}`,
-                ),
-              ),
-            OrchestrationCommandPreviouslyRejectedError: (error) =>
-              Effect.fail(orchestrationFailure("create architect thread")(error)),
-          }),
-          Effect.mapError((error) =>
-            isOrchestratorMcpFailure(error)
-              ? error
-              : orchestrationFailure("create architect thread")(error),
-          ),
-        );
-    });
-
-  const wakeArchitectForReview = (
-    review: ArchitectureReviewRecord,
-    binding: CoordinatorArchitectBinding,
-    at: string,
-  ): Effect.Effect<void, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const detailOption = yield* loadArchitectActivityDetail(binding.architectThreadId);
-      if (Option.isNone(detailOption)) {
-        return yield* failure(
-          "orchestration_error",
-          "The bound architect thread no longer exists.",
-        );
-      }
-      if (
-        hasReviewWakeDelivered(
-          detailOption.value.activities,
-          binding.architectThreadId,
-          review.reviewId,
-        )
-      ) {
-        return;
-      }
-      const shellOption = yield* loadThreadShell(binding.architectThreadId);
-      if (Option.isNone(shellOption)) {
-        return yield* failure(
-          "orchestration_error",
-          "The bound architect thread no longer exists.",
-        );
-      }
-      const shell = shellOption.value;
-      yield* dispatchWakeTurn({
-        threadId: binding.architectThreadId,
-        runOrigin: { _tag: "architect-review-request-wake" },
-        turnCommandId: reviewWakeTurnCommandId(review.reviewId),
-        messageId: reviewWakeMessageId(review.reviewId),
-        fallbackTurnCommandId: `arch:review-wake-turn:${binding.architectThreadId}:${review.reviewId}`,
-        fallbackMessageId: `arch:review-wake:${binding.architectThreadId}:${review.reviewId}`,
-        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator. Call publish_to_coordinator only if this answer should wake the Coordinator.`,
-        modelSelection: shell.modelSelection,
-        runtimeMode: shell.runtimeMode,
-        interactionMode: shell.interactionMode,
-        createdAt: at,
-      });
-    });
-
-  const wakeCoordinatorForPublish = (
-    review: ArchitectureReviewRecord,
-    binding: CoordinatorArchitectBinding,
-    at: string,
-  ): Effect.Effect<void, OrchestratorMcpFailure> =>
-    Effect.gen(function* () {
-      const detailOption = yield* loadArchitectActivityDetail(binding.coordinatorThreadId);
-      if (Option.isNone(detailOption)) {
-        return yield* failure("orchestration_error", "The coordinator thread no longer exists.");
-      }
-      if (
-        hasPublishWakeDelivered(
-          detailOption.value.activities,
-          binding.coordinatorThreadId,
-          review.reviewId,
-        )
-      ) {
-        return;
-      }
-      const shellOption = yield* loadThreadShell(binding.coordinatorThreadId);
-      if (Option.isNone(shellOption)) {
-        return yield* failure("orchestration_error", "The coordinator thread no longer exists.");
-      }
-      const shell = shellOption.value;
-      const disposition = review.answerDisposition;
-      if (disposition === null) {
-        return yield* failure(
-          "review_state_conflict",
-          "An answered review must have a stored answer disposition before it can be published.",
-        );
-      }
-      const summary = review.answerSummary ?? "";
-      const refs = review.refs;
-      const text =
-        review.publishedBy === "human"
-          ? `Published by the human via the Publish button\n${
-              review.origin === "coordinator-request"
-                ? `Coordinator question:\n${review.question}\n\n`
-                : ""
-            }Disposition: ${disposition}\nSummary: ${summary}\nStable references: ${reviewRefsJson(refs)}`
-          : `Architecture review published [${disposition}]:\n${summary}\nStable references: ${reviewRefsJson(refs)}`;
-      // The delivered marker is written by the provider reactor only after
-      // `sendTurn` is confirmed, so a failed send cannot leave a marker here.
-      yield* dispatchWakeTurn({
-        threadId: binding.coordinatorThreadId,
-        runOrigin: { _tag: "coordinator-publication-wake" },
-        turnCommandId: publishWakeTurnCommandId(review.reviewId),
-        messageId: publishWakeMessageId(review.reviewId),
-        text,
-        modelSelection: shell.modelSelection,
-        runtimeMode: shell.runtimeMode,
-        interactionMode: shell.interactionMode,
-        createdAt: at,
-      });
-    });
-
-  const recordPublishFailure = (
-    store: CoordinatorArchitectRepositoryShape,
-    reviewId: string,
-    attemptedAt: string,
-    error: unknown,
-  ) =>
-    store
-      .recordPublishFailure({
-        reviewId,
-        reason: publishFailureReasonToken(error),
-        message: (isOrchestratorMcpFailure(error) ? error.message : errorMessage(error)).slice(
-          0,
-          2_000,
-        ),
-        attemptedAt,
-      })
-      .pipe(Effect.mapError(mapStoreError("record publish failure")), Effect.ignore);
-
-  const refusePublish = (
-    store: CoordinatorArchitectRepositoryShape,
-    reviewId: string,
-    attemptedAt: string,
-    code: OrchestratorMcpFailureCode,
-    message: string,
-  ) =>
-    Effect.gen(function* () {
-      const error = failure(code, message);
-      yield* recordPublishFailure(store, reviewId, attemptedAt, error);
-      return yield* error;
-    });
-
-  const publishAnsweredReview = (
-    store: CoordinatorArchitectRepositoryShape,
-    review: ArchitectureReviewRecord,
-    binding: CoordinatorArchitectBinding,
-    input: {
-      readonly idempotencyKey: string;
-      readonly publishedBy: ArchitectureReviewPublishedBy;
-      readonly publishedAt: string;
+  const architectService = makeArchitectService({
+    dependencies: {
+      dispatch: dependencies.dispatch,
+      getThreadDetailById: dependencies.getThreadDetailById,
+      getProviders: dependencies.getProviders,
+      getSettings: dependencies.getSettings,
+      ...(dependencies.getShellSnapshot === undefined
+        ? {}
+        : { getShellSnapshot: dependencies.getShellSnapshot }),
+      ...(dependencies.coordinatorArchitect === undefined
+        ? {}
+        : { coordinatorArchitect: dependencies.coordinatorArchitect }),
+      ...(dependencies.getArchitectCreateReceiptStatus === undefined
+        ? {}
+        : { getArchitectCreateReceiptStatus: dependencies.getArchitectCreateReceiptStatus }),
     },
-  ) =>
-    Effect.gen(function* () {
-      const unsafeField =
-        rejectedAuthorTextField("question", review.question) ??
-        (review.answerSummary === null
-          ? null
-          : rejectedAuthorTextField("summary", review.answerSummary));
-      if (unsafeField !== null) {
-        return yield* refusePublish(
-          store,
-          review.reviewId,
-          input.publishedAt,
-          "author_text_rejected",
-          `The authored ${unsafeField} could not be confirmed secret-free. Remove sensitive values and try again.`,
-        );
-      }
+    requireCapability,
+    requireSplitEnabled,
+    resolveControlPlaneCaller,
+    dispatchWakeTurn,
+    revokeArchitectCredential,
+    denyArchitectCaller,
+    denyExecutorCaller,
+    requireActiveParent,
+    loadSwitchParent,
+    loadThreadShell,
+    loadThreadDetail,
+    requireRegisteredOrchestratorWhenBoardPresent,
+    ensureAuthorTextAllowed,
+    nowIso,
+    failure,
+    mapStoreError,
+    orchestrationFailure,
+    errorMessage,
+    hash,
+    deterministicId,
+    validateOptions,
+    providerUnavailableReason,
+    providerCapability,
+    publishFailureReasonToken,
+  });
 
-      const transition = yield* store
-        .publishReview({
-          reviewId: review.reviewId,
-          publishIdempotencyKey: input.idempotencyKey,
-          publishedAt: input.publishedAt,
-          publishedBy: input.publishedBy,
-        })
-        .pipe(Effect.mapError(mapStoreError("publish architecture review")));
-      if (transition._tag === "conflict") {
-        return yield* refusePublish(
-          store,
-          review.reviewId,
-          input.publishedAt,
-          "idempotency_conflict",
-          "This publish key was already used for this review.",
-        );
-      }
-      if (transition._tag === "state") {
-        return yield* refusePublish(
-          store,
-          review.reviewId,
-          input.publishedAt,
-          "review_state_conflict",
-          "Only answered reviews can be published.",
-        );
-      }
-      if (transition._tag === "unsafe_text") {
-        return yield* refusePublish(
-          store,
-          review.reviewId,
-          input.publishedAt,
-          "author_text_rejected",
-          "The stored review contains sensitive text and cannot be published. Remove sensitive values and try again.",
-        );
-      }
+  const delegationService = makeDelegationService({
+    dependencies: {
+      dispatch: dependencies.dispatch,
+      getProviders: dependencies.getProviders,
+      getSettings: dependencies.getSettings,
+      loadPermissionEnvelope: dependencies.loadPermissionEnvelope,
+      now: dependencies.now,
+    },
+    dispatchDelegatedTurnStart,
+    dispatchFollowUpTurn,
+    activityVersion: DELEGATION_ACTIVITY_VERSION,
+    delegationCreatedActivity: DELEGATION_CREATED_ACTIVITY,
+    followUpQueuedActivity: DELEGATION_FOLLOW_UP_QUEUED_ACTIVITY,
+    providerSwitchedActivity: DELEGATION_PROVIDER_SWITCHED_ACTIVITY,
+    failure,
+    orchestrationFailure,
+    resolveControlPlaneCaller,
+    denyArchitectCaller,
+    denyArchitectTarget,
+    requireActiveParent,
+    ensureAuthorTextAllowed,
+    ensureHandoffTextAllowed,
+    loadThreadDetail,
+    listTurns,
+    findLineage,
+    findCurrentTaskIdentity,
+    requestedIdentityMatches,
+    wasCancelRequested,
+    readOwnedTask,
+    waitForTask,
+    isTerminalStatus,
+    resolveCanonicalChildCaps,
+    hash,
+    deterministicId,
+    validateOptions,
+    providerUnavailableReason,
+    requestedModelSelection,
+    isOrchestratorMcpFailure,
+    isOrchestratorMcpRequestedIdentity,
+  });
 
-      const stored =
-        (yield* store
-          .getReviewById(review.reviewId)
-          .pipe(Effect.mapError(mapStoreError("read architecture review")))) ?? review;
-      const deliver = Effect.gen(function* () {
-        if (transition._tag === "applied" || transition._tag === "replay") {
-          yield* appendPhase1Activity({
-            threadId: binding.coordinatorThreadId,
-            commandId: `arch:review-published:${review.reviewId}`,
-            activityId: `arch:review-published:${review.reviewId}`,
-            kind: REVIEW_PUBLISHED_ACTIVITY,
-            summary: "Architecture review published",
-            payload: {
-              reviewId: stored.reviewId,
-              disposition: stored.answerDisposition,
-              summary: stored.answerSummary,
-              refs: stored.refs,
-              publishedBy: stored.publishedBy,
-            },
-            createdAt: input.publishedAt,
-          });
-        }
-        yield* wakeCoordinatorForPublish(stored, binding, input.publishedAt);
-      }).pipe(
-        Effect.tapError((error) =>
-          recordPublishFailure(store, review.reviewId, input.publishedAt, error),
-        ),
-      );
-      yield* deliver;
-      return {
-        reviewId: review.reviewId,
-        status: "published",
-      } satisfies OrchestratorMcpPublishToCoordinatorResult;
-    });
-
-  // Coordinator reads that reveal coordinator-owned state (architect
-  // binding/reviews queries) apply the same marked-orchestrator check, but
-  // only when a board repository exists: boardless compositions (and their
-  // tests) keep the legacy thread-identity behavior, while production — where
-  // the board is always present — denies unmarked callers.
-  const requireRegisteredOrchestratorWhenBoardPresent = (
-    scope: McpInvocationScope,
-  ): Effect.Effect<void, OrchestratorMcpFailure> =>
-    dependencies.board === undefined
-      ? Effect.void
-      : Effect.flatMap(requireBoardRepository(), (repo) =>
-          requireRegisteredOrchestrator(repo, scope),
-        );
-
-  // Creating a card is the one board write a non-orchestrator could otherwise
-  // reach, so the caller must be a marked orchestrator before any card exists.
-  const requireRegisteredOrchestrator = (
-    repo: BoardRepositoryShape,
-    scope: McpInvocationScope,
-  ): Effect.Effect<void, OrchestratorMcpFailure> =>
-    repo.listOrchestrators().pipe(
-      Effect.mapError(orchestrationFailure("list board orchestrators")),
-      Effect.flatMap((orchestrators) =>
-        orchestrators.some((orchestrator) => orchestrator.threadId === scope.threadId)
-          ? Effect.void
-          : Effect.fail(
-              failure(
-                "capability_denied",
-                "This thread is not a registered board Coordinator, so it has no board.",
-              ),
-            ),
-      ),
-    );
-
-  // Pointer-list entries carry every card field except the body, plus a body
-  // size hint so the coordinator can pick cards worth reading via `cardIds`.
-  const toBoardCardSummary = (card: BoardCard): OrchestratorMcpBoardCardSummary => {
-    const { body, ...rest } = card;
-    return { ...rest, bodyChars: body.length };
-  };
-
-  // Serialized size of the list response, measured through the same JSON
-  // codec the MCP layer encodes with, so the budget guards the wire bytes.
-  const encodeBoardListCards = Schema.encodeSync(
-    Schema.fromJsonString(OrchestratorMcpBoardListCardsResult),
-  );
-  const boardListCardsByteLength = (result: OrchestratorMcpBoardListCardsResult): number =>
-    Buffer.byteLength(encodeBoardListCards(result), "utf8");
-
-  // Ownership failure is reported as task_not_found so a card's existence never
-  // leaks across orchestrator threads.
-  const requireOwnedCard = (
-    repo: BoardRepositoryShape,
-    scope: McpInvocationScope,
-    cardId: BoardCardId,
-  ): Effect.Effect<BoardCard, OrchestratorMcpFailure> =>
-    repo.getCard(cardId).pipe(
-      Effect.mapError(orchestrationFailure(`read board card ${cardId}`)),
-      Effect.flatMap((option) => {
-        if (Option.isNone(option) || option.value.orchestratorThreadId !== scope.threadId) {
-          return Effect.fail(failure("task_not_found", "The board card was not found."));
-        }
-        return Effect.succeed(option.value);
-      }),
-    );
-
-  const nowIso = () => dependencies.now;
-  const reviewRefsJson = Schema.encodeSync(Schema.fromJsonString(ArchitectureReviewRefs));
+  const capabilitiesService = makeCapabilitiesService({
+    getProviders: dependencies.getProviders,
+    getSettings: dependencies.getSettings,
+    requireActiveParent,
+    resolveControlPlaneCaller,
+    denyArchitectCaller,
+    providerCapability,
+    isOrchestratorMcpFailure,
+    orchestrationFailure,
+  });
 
   return {
-    capabilities: (scope) =>
-      Effect.gen(function* () {
-        yield* denyArchitectCaller(
-          yield* resolveControlPlaneCaller(scope),
-          "read orchestration capabilities",
-        );
-        const parent = yield* requireActiveParent(scope);
-        const providers = yield* dependencies.getProviders;
-        const settings = yield* dependencies.getSettings;
-        const providerInstances = deriveProviderInstanceConfigMap(settings);
-        return {
-          protocolVersion: ORCHESTRATOR_MCP_PROTOCOL_VERSION,
-          parent: {
-            environmentId: scope.environmentId,
-            threadId: scope.threadId,
-            turnId: parent.activeTurnId,
-            projectId: parent.thread.projectId,
-            runtimeMode: parent.thread.runtimeMode,
-            interactionMode: parent.thread.interactionMode,
-            branch: parent.thread.branch,
-            worktreePath: parent.scope.worktreePath,
-            permissionEnvelope: parent.scope.permissionEnvelope,
-          },
-          roles: EXECUTOR_ROLES,
-          wait: {
-            defaultTimeoutMs: ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
-            maxTimeoutMs: ORCHESTRATOR_MCP_MAX_WAIT_TIMEOUT_MS,
-          },
-          providers: yield* Effect.forEach(providers, (provider) =>
-            providerCapability(scope, parent, providerInstances, provider),
-          ),
-          workspacePolicy: "inherit-only",
-          oclPolicy: "optional-stable-ref-plus-durable-handoff",
-        } satisfies OrchestratorMcpCapabilitiesResult;
-      }).pipe(
-        Effect.mapError((error) =>
-          isOrchestratorMcpFailure(error)
-            ? error
-            : orchestrationFailure("read orchestration capabilities")(error),
-        ),
-      ),
-    delegateTask: (scope, input) =>
-      Effect.gen(function* () {
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "delegate tasks");
-        const parent = yield* requireActiveParent(scope);
-        yield* ensureAuthorTextAllowed("prompt", input.prompt);
-        yield* ensureAuthorTextAllowed("title", input.title);
-        yield* ensureHandoffTextAllowed(input.handoff);
-        if (
-          input.handoff !== undefined &&
-          input.handoff.requiredRevision !== input.handoff.implementsRevision
-        ) {
-          return yield* failure(
-            "ocl_handoff_invalid",
-            "The supplied OCL handoff revisions do not match.",
-          );
-        }
-        const target = yield* resolveTarget(scope, parent, input);
-        const taskId = ThreadId.make(
-          deterministicId(
-            "delegated-task",
-            scope.threadId,
-            parent.activeTurnId,
-            input.idempotencyKey,
-          ),
-        );
-        const callerRequestFingerprint = hash({
-          title: input.title,
-          prompt: input.prompt,
-          role: input.role,
-          target: input.target,
-          runtimeMode: target.requested.runtimeMode,
-          interactionMode: target.requested.interactionMode,
-          workspace: {
-            projectId: parent.thread.projectId,
-            branch: parent.thread.branch,
-            workspaceRoot: parent.project.workspaceRoot,
-            worktreePath: parent.scope.worktreePath,
-          },
-          handoff: input.handoff ?? null,
-        });
-        const requestFingerprint = hash({
-          callerRequestFingerprint,
-          providerConfigFingerprint: target.requested.providerConfigFingerprint,
-        });
-        const existingOption = yield* loadThreadDetail(taskId);
-        if (Option.isSome(existingOption)) {
-          const existingLineage = findLineage(existingOption.value);
-          if (existingLineage !== null) {
-            if (
-              existingLineage.parentThreadId !== scope.threadId ||
-              existingLineage.parentTurnId !== parent.activeTurnId ||
-              existingLineage.callerRequestFingerprint !== callerRequestFingerprint
-            ) {
-              return yield* failure(
-                "idempotency_conflict",
-                "This idempotency key already belongs to a different delegation request.",
-              );
-            }
-            if (
-              existingLineage.requested.providerConfigFingerprint !==
-              target.requested.providerConfigFingerprint
-            ) {
-              return yield* failure(
-                "provider_configuration_changed",
-                "The target provider configuration changed after this delegation was accepted.",
-              );
-            }
-            const existingRows = yield* listTurns(taskId);
-            const hasDelegatedTurnRequest = existingRows.some(
-              (row) => row.pendingMessageId === existingLineage.delegatedMessageId,
-            );
-            const startFailed = existingOption.value.activities.some(
-              (activity) =>
-                activity.kind === "provider.turn.start.failed" &&
-                Predicate.isObject(activity.payload) &&
-                activity.payload.requestId === existingLineage.delegatedMessageId,
-            );
-            if (
-              !hasDelegatedTurnRequest &&
-              !startFailed &&
-              !wasCancelRequested(existingOption.value, existingLineage)
-            ) {
-              yield* dispatchDelegatedTurnStart({
-                taskId,
-                request: input,
-                lineage: existingLineage,
-                target,
-                runOrigin: { _tag: "delegation-retry" },
-              });
-            }
-            const existing = yield* readOwnedTask(scope, taskId);
-            const mode = input.execution?.mode ?? "async";
-            return mode === "wait" && !isTerminalStatus(existing.status)
-              ? yield* waitForTask(
-                  scope,
-                  taskId,
-                  input.execution?.timeoutMs ?? ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
-                )
-              : existing;
-          }
-        }
-        const requestedAt = yield* dependencies.now;
-        const delegatedMessageId = MessageId.make(
-          deterministicId("delegated-message", taskId, requestFingerprint),
-        );
-        const createCommandId = CommandId.make(
-          deterministicId("mcp-delegation-create", taskId, requestFingerprint),
-        );
-        yield* dependencies
-          .dispatch({
-            type: "thread.create",
-            commandId: createCommandId,
-            threadId: taskId,
-            projectId: parent.thread.projectId,
-            title: input.title,
-            modelSelection: target.modelSelection,
-            runtimeMode: target.requested.runtimeMode,
-            interactionMode: target.requested.interactionMode,
-            branch: parent.thread.branch,
-            worktreePath: parent.thread.worktreePath,
-            createdAt: requestedAt,
-          })
-          .pipe(
-            Effect.catchTags({
-              OrchestrationCommandIdConflictError: () =>
-                Effect.fail(
-                  failure(
-                    "idempotency_conflict",
-                    "This idempotency key collides with a different orchestration command.",
-                  ),
-                ),
-              OrchestrationCommandInvariantError: () =>
-                Effect.fail(
-                  failure(
-                    "idempotency_conflict",
-                    "This idempotency key already belongs to a different delegation request.",
-                  ),
-                ),
-              OrchestrationCommandPreviouslyRejectedError: () =>
-                Effect.fail(
-                  failure(
-                    "idempotency_conflict",
-                    "The original create command for this idempotency key was rejected.",
-                  ),
-                ),
-            }),
-            Effect.mapError((error) =>
-              isOrchestratorMcpFailure(error)
-                ? error
-                : orchestrationFailure("create delegated task thread")(error),
-            ),
-          );
-        const lineage: DelegationCreatedPayload = {
-          version: DELEGATION_ACTIVITY_VERSION,
-          taskId,
-          parentEnvironmentId: scope.environmentId,
-          parentThreadId: scope.threadId,
-          parentTurnId: parent.activeTurnId,
-          projectId: parent.thread.projectId,
-          childThreadId: taskId,
-          delegatedMessageId,
-          callerRequestFingerprint,
-          requestFingerprint,
-          requested: target.requested,
-          requestedAt,
-          role: input.role,
-          ...(input.handoff === undefined ? {} : { handoff: input.handoff }),
-          stage: input.handoff?.stage ?? null,
-          evidenceRefs: input.handoff?.evidence ?? [],
-          ocl:
-            input.handoff === undefined
-              ? null
-              : {
-                  contractRef: input.handoff.contractRef,
-                  requiredRevision: input.handoff.requiredRevision,
-                  implementsRevision: input.handoff.implementsRevision,
-                },
-          branch: parent.thread.branch,
-          workspaceRoot: parent.project.workspaceRoot,
-          worktreePath: parent.scope.worktreePath,
-          childCaps:
-            target.permissionEnvelope.status === "verified"
-              ? [...target.permissionEnvelope.t3McpCapabilities].toSorted()
-              : [],
-        };
-        yield* dependencies
-          .dispatch({
-            type: "thread.activity.append",
-            commandId: CommandId.make(
-              deterministicId("mcp-delegation-lineage", taskId, requestFingerprint),
-            ),
-            threadId: taskId,
-            activity: {
-              id: EventId.make(
-                deterministicId("mcp-delegation-lineage", taskId, requestFingerprint),
-              ),
-              tone: "info",
-              kind: DELEGATION_CREATED_ACTIVITY,
-              summary: "Delegated task created",
-              payload: lineage,
-              turnId: null,
-              createdAt: requestedAt,
-            },
-            createdAt: requestedAt,
-          })
-          .pipe(Effect.mapError(orchestrationFailure("persist delegated-task lineage")));
-        const currentTarget = yield* resolveTarget(scope, parent, input);
-        if (
-          currentTarget.requested.providerConfigFingerprint !==
-          target.requested.providerConfigFingerprint
-        ) {
-          return yield* failure(
-            "provider_configuration_changed",
-            "The target provider configuration changed before its turn could start.",
-          );
-        }
-        yield* dispatchDelegatedTurnStart({
-          taskId,
-          request: input,
-          lineage,
-          target: currentTarget,
-          runOrigin: { _tag: "delegation-start" },
-        });
-        const mode = input.execution?.mode ?? "async";
-        return mode === "wait"
-          ? yield* waitForTask(
-              scope,
-              taskId,
-              input.execution?.timeoutMs ?? ORCHESTRATOR_MCP_DEFAULT_WAIT_TIMEOUT_MS,
-            )
-          : yield* readOwnedTask(scope, taskId);
-      }),
-    sendToTask: (scope, input) =>
-      Effect.gen(function* () {
-        yield* denyArchitectCaller(
-          yield* resolveControlPlaneCaller(scope),
-          "send messages to delegated tasks",
-        );
-        const parent = yield* requireActiveParent(scope);
-        if (input.taskId === scope.threadId) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        yield* denyArchitectTarget(input.taskId, "send_to_task");
-        yield* readOwnedTask(scope, input.taskId);
-        const childOption = yield* loadThreadDetail(input.taskId);
-        if (Option.isNone(childOption)) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        const child = childOption.value;
-        const lineage = findLineage(child);
-        if (
-          lineage === null ||
-          lineage.taskId !== input.taskId ||
-          lineage.childThreadId !== input.taskId ||
-          lineage.parentThreadId !== scope.threadId ||
-          lineage.parentEnvironmentId !== scope.environmentId
-        ) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        yield* ensureAuthorTextAllowed("message", input.message);
-        const childWorktreePath = child.worktreePath ?? parent.scope.worktreePath;
-        if (
-          child.projectId !== lineage.projectId ||
-          lineage.projectId !== parent.thread.projectId ||
-          child.branch !== lineage.branch ||
-          lineage.workspaceRoot !== parent.project.workspaceRoot ||
-          childWorktreePath !== lineage.worktreePath
-        ) {
-          return yield* failure(
-            "permission_escalation_denied",
-            "The child no longer matches its delegated project and worktree scope.",
-          );
-        }
-
-        const idempotencyKeyFingerprint = hash(input.idempotencyKey);
-        const requestFingerprint = hash({ taskId: input.taskId, message: input.message });
-        const existing = findFollowUpReceipt(child, idempotencyKeyFingerprint);
-        if (existing !== null) {
-          if (
-            existing.taskId !== input.taskId ||
-            existing.parentEnvironmentId !== scope.environmentId ||
-            existing.parentThreadId !== scope.threadId ||
-            existing.requestFingerprint !== requestFingerprint
-          ) {
-            return yield* failure(
-              "idempotency_conflict",
-              "This idempotency key already belongs to a different follow-up message.",
-            );
-          }
-          // An exact retry replays the accepted follow-up, but the child may
-          // have been repointed — or tampered with — since it was queued, so
-          // it runs the same frozen-identity admission as a fresh follow-up.
-          yield* requireFollowUpIdentity({ taskId: input.taskId, child, lineage });
-          return yield* resumeFollowUpTurn({
-            taskId: input.taskId,
-            message: input.message,
-            receipt: existing,
-            child,
-          });
-        }
-
-        const currentIdentity = yield* requireFollowUpIdentity({
-          taskId: input.taskId,
-          child,
-          lineage,
-        });
-
-        // The target envelope is rebuilt with the canonical frozen child caps,
-        // never the caller surface set, so a broader caller cannot smuggle in
-        // rights the delegation never had.
-        const canonical = yield* resolveCanonicalChildCaps(lineage);
-        const target = yield* resolveTarget(
-          scope,
-          parent,
-          {
-            target: {
-              providerInstanceId: currentIdentity.providerInstanceId,
-              driverKind: currentIdentity.driverKind,
-              model: currentIdentity.model,
-              options: currentIdentity.options,
-            },
-            runtimeMode: lineage.requested.runtimeMode,
-            interactionMode: lineage.requested.interactionMode,
-          },
-          canonical.caps,
-        );
-        if (!requestedIdentityMatches(target.requested, currentIdentity)) {
-          return yield* failure(
-            "provider_configuration_changed",
-            "The child's provider configuration changed after its current identity was recorded.",
-          );
-        }
-
-        const queuedAt = yield* dependencies.now;
-        const messageId = MessageId.make(
-          deterministicId("mcp-send-to-task-message", input.taskId, idempotencyKeyFingerprint),
-        );
-        const commandId = CommandId.make(
-          deterministicId("mcp-send-to-task-start", input.taskId, idempotencyKeyFingerprint),
-        );
-        const session = child.session;
-        const observed = {
-          provider:
-            session?.providerInstanceId === undefined
-              ? null
-              : {
-                  providerInstanceId: session.providerInstanceId,
-                  driverKind: currentIdentity.driverKind,
-                  evidence: "runtime-session-bound" as const,
-                  observedAt: session.updatedAt,
-                },
-          model: null,
-        };
-        const result: OrchestratorMcpSendToTaskResult = {
-          taskId: input.taskId,
-          messageId,
-          commandId,
-          status: "queued",
-          requested: target.requested,
-          observed,
-          queuedAt,
-        };
-        const receipt: DelegationFollowUpQueuedPayload = {
-          version: DELEGATION_ACTIVITY_VERSION,
-          taskId: input.taskId,
-          parentEnvironmentId: scope.environmentId,
-          parentThreadId: scope.threadId,
-          idempotencyKeyFingerprint,
-          requestFingerprint,
-          result,
-        };
-        yield* dependencies
-          .dispatch({
-            type: "thread.activity.append",
-            commandId: CommandId.make(
-              deterministicId("mcp-send-to-task-receipt", input.taskId, idempotencyKeyFingerprint),
-            ),
-            threadId: input.taskId,
-            activity: {
-              id: EventId.make(
-                deterministicId(
-                  "mcp-send-to-task-receipt",
-                  input.taskId,
-                  idempotencyKeyFingerprint,
-                ),
-              ),
-              tone: "info",
-              kind: DELEGATION_FOLLOW_UP_QUEUED_ACTIVITY,
-              summary: "Follow-up message queued",
-              payload: receipt,
-              turnId: null,
-              createdAt: queuedAt,
-            },
-            createdAt: queuedAt,
-          })
-          .pipe(
-            Effect.catchTags({
-              OrchestrationCommandIdConflictError: () =>
-                Effect.fail(
-                  failure(
-                    "idempotency_conflict",
-                    "This idempotency key collides with a different follow-up request.",
-                  ),
-                ),
-              OrchestrationCommandInvariantError: () =>
-                Effect.fail(
-                  failure(
-                    "idempotency_conflict",
-                    "This idempotency key already belongs to a different follow-up message.",
-                  ),
-                ),
-              OrchestrationCommandPreviouslyRejectedError: () =>
-                Effect.fail(
-                  failure(
-                    "idempotency_conflict",
-                    "The original receipt command for this idempotency key was rejected.",
-                  ),
-                ),
-            }),
-            Effect.mapError((error) =>
-              isOrchestratorMcpFailure(error)
-                ? error
-                : orchestrationFailure("persist follow-up receipt")(error),
-            ),
-          );
-        // Command-id dedupe preserves the first payload, so use its persisted receipt.
-        const reservedChild = yield* loadThreadDetail(input.taskId);
-        if (Option.isNone(reservedChild)) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        const reservedReceipt = findFollowUpReceipt(reservedChild.value, idempotencyKeyFingerprint);
-        if (
-          reservedReceipt === null ||
-          reservedReceipt.taskId !== input.taskId ||
-          reservedReceipt.parentEnvironmentId !== scope.environmentId ||
-          reservedReceipt.parentThreadId !== scope.threadId ||
-          reservedReceipt.requestFingerprint !== requestFingerprint
-        ) {
-          return yield* failure(
-            "idempotency_conflict",
-            "This idempotency key already belongs to a different follow-up message.",
-          );
-        }
-        return yield* resumeFollowUpTurn({
-          taskId: input.taskId,
-          message: input.message,
-          receipt: reservedReceipt,
-          child: reservedChild.value,
-        });
-      }),
-    taskList: (scope, input) =>
-      Effect.gen(function* () {
-        const readScope = yield* resolveReadScope(scope);
-        const limit = input.limit ?? 50;
-        const page = yield* loadTaskMemoryRows(readScope, {
-          limit,
-          ...(input.afterTaskId === undefined ? {} : { afterTaskId: input.afterTaskId }),
-        });
-        const tasks = page.rows.map(toTaskMemoryEntry);
-        return {
-          tasks,
-          nextCursor: page.hasMore ? (tasks.at(-1)?.taskId ?? null) : null,
-        };
-      }),
-    taskSearch: (scope, input) =>
-      Effect.gen(function* () {
-        const readScope = yield* resolveReadScope(scope);
-        const limit = input.limit ?? 50;
-        const query = scrubDelegatedTaskText(input.query).trim().slice(0, 256);
-        const foldedQuery = query.toLocaleLowerCase();
-        const matches: Array<OrchestratorMcpTaskMemoryEntry> = [];
-        let cursor = input.afterTaskId;
-        let scanned = 0;
-        let hasMoreCandidates = true;
-        while (scanned < TASK_SEARCH_MAX_SCAN && hasMoreCandidates && matches.length <= limit) {
-          const batchLimit = Math.min(TASK_SEARCH_BATCH_SIZE, TASK_SEARCH_MAX_SCAN - scanned);
-          const page = yield* loadTaskMemoryRows(readScope, {
-            limit: batchLimit,
-            ...(cursor === undefined ? {} : { afterTaskId: cursor }),
-          });
-          const tasks = page.rows.map(toTaskMemoryEntry);
-          scanned += tasks.length;
-          for (const task of tasks) {
-            const searchable = [
-              task.role,
-              task.title,
-              task.worktreePath ?? "",
-              task.summary?.text ?? "",
-            ]
-              .join("\n")
-              .toLocaleLowerCase();
-            const exactIdMatch =
-              task.taskId === query ||
-              task.childThreadId === query ||
-              task.latestTurnId === query ||
-              task.summary?.sourceTurnIds.some((turnId) => turnId === query) === true;
-            if (
-              exactIdMatch ||
-              task.worktreePath === query ||
-              task.latestStatus === query ||
-              searchable.includes(foldedQuery)
-            ) {
-              matches.push(task);
-              if (matches.length > limit) break;
-            }
-          }
-          cursor = tasks.at(-1)?.taskId ?? cursor;
-          hasMoreCandidates = page.hasMore;
-          if (tasks.length === 0 || matches.length > limit) break;
-        }
-        const tasks = matches.slice(0, limit);
-        const nextCursor =
-          matches.length > limit
-            ? (tasks.at(-1)?.taskId ?? null)
-            : hasMoreCandidates
-              ? (cursor ?? null)
-              : null;
-        return {
-          query,
-          tasks,
-          nextCursor,
-        };
-      }),
-    taskSummaryHistory: (scope, input) =>
-      Effect.gen(function* () {
-        const readScope = yield* resolveReadScope(scope);
-        const page = yield* loadTaskSummaryHistoryPage(readScope, input);
-        return {
-          records: page.records.map(toTaskSummaryHistoryRecord),
-          nextCursor: page.nextCursor,
-        };
-      }),
-    taskRead: (scope, input) =>
-      Effect.gen(function* () {
-        const readScope = yield* resolveReadScope(scope);
-        const ownership = yield* loadTaskMemoryRows(readScope, { taskId: input.taskId, limit: 1 });
-        const child = ownership.rows[0];
-        if (child === undefined) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        if (dependencies.getThreadDetailSnapshotIncludingArchived === undefined) {
-          return yield* failure(
-            "orchestration_error",
-            "Delegated task transcript reads are unavailable.",
-          );
-        }
-        const snapshot = yield* dependencies
-          .getThreadDetailSnapshotIncludingArchived(input.taskId, {
-            turnLimit: input.turnLimit ?? 8,
-            ...(input.beforeCursor === undefined ? {} : { beforeCursor: input.beforeCursor }),
-          })
-          .pipe(Effect.mapError(orchestrationFailure("read delegated task transcript")));
-        if (Option.isNone(snapshot)) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        const detail = snapshot.value;
-        const page = detail.page;
-        if (page === undefined) {
-          return yield* failure(
-            "orchestration_error",
-            "Transcript pagination metadata is unavailable.",
-          );
-        }
-        return {
-          taskId: child.taskId,
-          title: toTaskMemoryEntry(child).title,
-          messages: detail.thread.messages.map((message) => ({
-            ...message,
-            text: projectDerivedText("read", message.text),
-          })),
-          activities: detail.thread.activities.map((activity) => ({
-            ...activity,
-            summary: projectDerivedText("read", activity.summary),
-            payload: projectReadTextValue(activity.payload),
-          })),
-          page,
-        };
-      }),
-    taskStatus: (scope, taskId) =>
-      Effect.gen(function* () {
-        return yield* readOwnedTask(yield* resolveReadScope(scope), taskId);
-      }),
-    taskWait: (scope, taskId, timeoutMs) =>
-      Effect.gen(function* () {
-        return yield* waitForTask(yield* resolveReadScope(scope), taskId, timeoutMs);
-      }),
-    taskCancel: (scope, taskId) =>
-      Effect.gen(function* () {
-        yield* denyArchitectCaller(
-          yield* resolveControlPlaneCaller(scope),
-          "cancel delegated tasks",
-        );
-        yield* denyArchitectTarget(taskId, "task_cancel");
-        const current = yield* readOwnedTask(scope, taskId);
-        if (isTerminalStatus(current.status)) return current;
-        const threadOption = yield* loadThreadDetail(taskId);
-        if (Option.isNone(threadOption)) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        const thread = threadOption.value;
-        const lineage = findLineage(thread);
-        if (lineage === null) {
-          return yield* failure("task_not_found", "The delegated task was not found.");
-        }
-        const rows = yield* listTurns(taskId);
-        const bound = rows.find(
-          (row) => row.pendingMessageId === lineage.delegatedMessageId && row.turnId !== null,
-        );
-        const pending = rows.filter(
-          (row) => row.turnId === null && row.pendingMessageId === lineage.delegatedMessageId,
-        );
-        const activeTurnId = thread.session?.activeTurnId ?? null;
-        if (
-          wasCancelRequested(thread, lineage) &&
-          bound?.turnId !== null &&
-          bound?.turnId !== undefined &&
-          bound.state === "interrupted" &&
-          activeTurnId === null
-        ) {
-          const completedAt = yield* dependencies.now;
-          yield* recordCancellationCompleted({
-            taskId,
-            lineage,
-            turnId: bound.turnId,
-            createdAt: completedAt,
-            reason: "provider-not-active",
-          });
-          return yield* readOwnedTask(scope, taskId);
-        }
-        const canInterruptBound =
-          bound?.turnId !== null && bound?.turnId !== undefined && activeTurnId === bound.turnId;
-        const canInterruptPending =
-          bound === undefined && pending.length === 1 && activeTurnId === null;
-        if (!canInterruptBound && !canInterruptPending) {
-          return yield* failure(
-            "task_not_cancellable",
-            "The delegated turn is not the child's active or uniquely pending turn.",
-          );
-        }
-        const now = yield* dependencies.now;
-        if (!wasCancelRequested(thread, lineage)) {
-          yield* dependencies
-            .dispatch({
-              type: "thread.activity.append",
-              commandId: CommandId.make(
-                deterministicId("mcp-delegation-cancel", taskId, lineage.requestFingerprint),
-              ),
-              threadId: taskId,
-              activity: {
-                id: EventId.make(
-                  deterministicId("mcp-delegation-cancel", taskId, lineage.requestFingerprint),
-                ),
-                tone: "info",
-                kind: DELEGATION_CANCEL_REQUESTED_ACTIVITY,
-                summary: "Delegated task cancellation requested",
-                payload: {
-                  taskId,
-                  delegatedMessageId: lineage.delegatedMessageId,
-                  delegatedTurnId: bound?.turnId ?? null,
-                },
-                turnId: bound?.turnId ?? null,
-                createdAt: now,
-              },
-              createdAt: now,
-            })
-            .pipe(Effect.mapError(orchestrationFailure("record delegated-task cancellation")));
-        }
-        const failedRequestIds = failedCancellationRequestIds(thread);
-        let attempt = 1;
-        let interruptCommandId = CommandId.make(
-          deterministicId(
-            "mcp-delegation-interrupt",
-            taskId,
-            lineage.requestFingerprint,
-            String(attempt),
-          ),
-        );
-        while (failedRequestIds.has(interruptCommandId)) {
-          attempt += 1;
-          interruptCommandId = CommandId.make(
-            deterministicId(
-              "mcp-delegation-interrupt",
-              taskId,
-              lineage.requestFingerprint,
-              String(attempt),
-            ),
-          );
-        }
-        yield* dependencies
-          .dispatch({
-            type: "thread.turn.interrupt",
-            commandId: interruptCommandId,
-            threadId: taskId,
-            ...(bound?.turnId === null || bound?.turnId === undefined
-              ? { pendingMessageId: lineage.delegatedMessageId }
-              : { turnId: bound.turnId }),
-            createdAt: now,
-          })
-          .pipe(Effect.mapError(orchestrationFailure("interrupt delegated provider turn")));
-        return yield* readOwnedTask(scope, taskId);
-      }),
+    capabilities: capabilitiesService.capabilities,
+    delegateTask: delegationService.delegateTask,
+    sendToTask: delegationService.sendToTask,
+    taskList: (scope, input) => taskQueryService.taskList(scope, input),
+    taskSearch: (scope, input) => taskQueryService.taskSearch(scope, input),
+    taskSummaryHistory: (scope, input) => taskQueryService.taskSummaryHistory(scope, input),
+    taskRead: (scope, input) => taskQueryService.taskRead(scope, input),
+    taskStatus: (scope, taskId) => taskQueryService.taskStatus(scope, taskId),
+    taskWait: (scope, taskId, timeoutMs) => taskQueryService.taskWait(scope, taskId, timeoutMs),
+    taskCancel: (scope, taskId) => taskQueryService.taskCancel(scope, taskId),
     switchProvider: (scope, input) =>
       Effect.gen(function* () {
         yield* requireCapability(scope);
@@ -3886,7 +2068,7 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             // Repeating the recorded target reuses the stored switch instead of
             // appending a misleading new record — but a replay lost to a crash
             // still has to start, or the child would sit queued forever.
-            const lastSwitch = findLastProviderSwitch(committed, lineage);
+            const lastSwitch = switchSupport.findLastProviderSwitch(committed, lineage);
             const repeatOf =
               lastSwitch !== null &&
               requestedIdentityMatches(target.requested, lastSwitch.requested)
@@ -3900,7 +2082,11 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
             };
             const switchedAt = repeatOf?.switchedAt ?? (yield* dependencies.now);
             const prevTransition = lastSwitch?.prevTransition ?? null;
-            const transition = switchTransitionHash(oldProvider, target.requested, prevTransition);
+            const transition = switchSupport.switchTransitionHash(
+              oldProvider,
+              target.requested,
+              prevTransition,
+            );
             const transitionId = (prefix: string) =>
               deterministicId(prefix, input.taskId, transition);
             if (repeatOf === null) {
@@ -4012,1465 +2198,27 @@ function makeService(dependencies: OrchestratorMcpDependencies): OrchestratorMcp
           }),
         );
       }),
-    boardCreateCard: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "own boards");
-        yield* Effect.all(
-          [
-            ensureAuthorTextAllowed("title", input.title),
-            ensureAuthorTextAllowed("body", input.body),
-          ],
-          { discard: true },
-        );
-        const repo = yield* requireBoardRepository();
-        yield* requireRegisteredOrchestrator(repo, scope);
-        const at = yield* nowIso();
-        const card: BoardCard = {
-          cardId: BoardCardId.make(NodeCrypto.randomUUID()),
-          orchestratorThreadId: scope.threadId,
-          title: input.title,
-          body: input.body,
-          status: input.status ?? "orchestrator",
-          createdBy: "orchestrator",
-          assignee: input.assignee ?? null,
-          executorRole: input.executorRole,
-          executorThreadId: null,
-          outcome: null,
-          lastError: null,
-          readiness: "ready",
-          readinessNote: null,
-          failureStreak: 0,
-          order: 0,
-          archived: false,
-          createdAt: at,
-          updatedAt: at,
-        };
-        yield* repo
-          .createCard(card)
-          .pipe(Effect.mapError(orchestrationFailure("create board card")));
-        yield* repo
-          .appendEvent(buildBoardCardEvent(card, { at }))
-          .pipe(Effect.mapError(orchestrationFailure("append board card event")));
-        return card;
-      }),
-    boardUpdateCard: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "own boards");
-        yield* denyExecutorCaller(scope, "own boards");
-        const repo = yield* requireBoardRepository();
-        yield* requireRegisteredOrchestrator(repo, scope);
-        const card = yield* requireOwnedCard(repo, scope, BoardCardId.make(input.cardId));
-        if (input.executorThreadId !== undefined && input.executorThreadId !== null) {
-          yield* denyArchitectTarget(input.executorThreadId, "board_update_card");
-        }
-        const at = yield* nowIso();
-        const statusChanged = input.status !== undefined && input.status !== card.status;
-        const readiness = input.readiness ?? card.readiness;
-        const readinessNote =
-          readiness === "ready" ? null : (input.readinessNote ?? card.readinessNote);
-        const readinessChanged =
-          readiness !== card.readiness || readinessNote !== card.readinessNote;
-        const executorChanged =
-          (input.executorRole !== undefined && input.executorRole !== card.executorRole) ||
-          (input.executorThreadId !== undefined &&
-            input.executorThreadId !== card.executorThreadId) ||
-          (input.assignee !== undefined && !Equal.equals(input.assignee, card.assignee));
-        const next: BoardCard = {
-          ...card,
-          ...(input.title === undefined ? {} : { title: input.title }),
-          ...(input.body === undefined ? {} : { body: input.body }),
-          ...(input.status === undefined ? {} : { status: input.status }),
-          readiness,
-          readinessNote,
-          ...(input.executorRole === undefined ? {} : { executorRole: input.executorRole }),
-          ...(input.assignee === undefined ? {} : { assignee: input.assignee }),
-          ...(input.executorThreadId === undefined
-            ? {}
-            : { executorThreadId: input.executorThreadId }),
-          ...(input.outcome === undefined ? {} : { outcome: input.outcome }),
-          ...(input.lastError === undefined ? {} : { lastError: input.lastError }),
-          ...(input.failureStreak === undefined ? {} : { failureStreak: input.failureStreak }),
-          ...(input.order === undefined ? {} : { order: input.order }),
-          ...(input.archived === undefined ? {} : { archived: input.archived }),
-          updatedAt: at,
-        };
-        if (input.archived === true && next.status !== "done") {
-          return yield* failure(
-            "archive_requires_done",
-            "Only done cards can be archived. Move the card to done first, or omit archived.",
-          );
-        }
-        if (next.status === "done" && next.readiness !== "ready") {
-          return yield* failure(
-            "readiness_not_ready",
-            "A card must be ready before it can move to done.",
-          );
-        }
-        if (
-          next.readiness !== "ready" &&
-          (next.readinessNote === null || next.readinessNote.trim().length === 0)
-        ) {
-          return yield* failure(
-            "readiness_note_required",
-            "A non-ready card needs a non-empty readinessNote.",
-          );
-        }
-        const startingExecution = card.status !== "in_progress" && next.status === "in_progress";
-        const lastErrorCheck =
-          next.lastError === null || (!startingExecution && next.lastError === card.lastError)
-            ? []
-            : [ensureAuthorTextAllowed("lastError", next.lastError)];
-        yield* Effect.all(
-          [
-            ...(startingExecution || next.title !== card.title
-              ? [ensureAuthorTextAllowed("title", next.title)]
-              : []),
-            ...(startingExecution || next.body !== card.body
-              ? [ensureAuthorTextAllowed("body", next.body)]
-              : []),
-            ...lastErrorCheck,
-            ...(next.readinessNote === null
-              ? []
-              : [ensureAuthorTextAllowed("readinessNote", next.readinessNote)]),
-          ],
-          { discard: true },
-        );
-        // The reactor matches cards by executor thread; without a linked
-        // executor and model a card would sit in progress forever.
-        if (
-          next.status === "in_progress" &&
-          (next.executorThreadId === null || next.assignee === null)
-        ) {
-          return yield* failure(
-            "executor_required",
-            "Link assignee and executorThreadId before moving a card to in_progress.",
-          );
-        }
-        // `card` above is the already-read previous value, so the check inside
-        // runs against it and this update costs one read plus one write.
-        yield* repo
-          .updateCardWithPrevious(next, Option.some(card))
-          .pipe(Effect.mapError(orchestrationFailure("update board card")));
-        if (statusChanged || executorChanged) {
-          const body = statusChanged
-            ? `status -> ${next.status}`
-            : `executor -> ${next.executorRole}`;
-          yield* repo
-            .appendEvent(buildBoardCardEvent(next, { at, body }))
-            .pipe(Effect.mapError(orchestrationFailure("append board card event")));
-        }
-        if (readinessChanged) {
-          const body =
-            next.readiness === "ready"
-              ? "readiness -> ready"
-              : `readiness -> ${next.readiness}: ${next.readinessNote}`;
-          yield* repo
-            .appendEvent(buildBoardCardEvent(next, { at, body }))
-            .pipe(Effect.mapError(orchestrationFailure("append board card event")));
-        }
-        return next;
-      }),
-    boardDeleteCard: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "own boards");
-        yield* denyExecutorCaller(scope, "own boards");
-        const repo = yield* requireBoardRepository();
-        yield* requireRegisteredOrchestrator(repo, scope);
-        const cardId = BoardCardId.make(input.cardId);
-        yield* requireOwnedCard(repo, scope, cardId);
-        yield* repo
-          .deleteCard(cardId)
-          .pipe(Effect.mapError(orchestrationFailure("delete board card")));
-        return {};
-      }),
-    boardListCards: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "read boards");
-        yield* denyExecutorCaller(scope, "read boards");
-        const repo = yield* requireBoardRepository();
-        yield* requireRegisteredOrchestrator(repo, scope);
-        const cards = yield* repo
-          .listCards()
-          .pipe(Effect.mapError(orchestrationFailure("list board cards")));
-        const owned = cards.filter((card) => card.orchestratorThreadId === scope.threadId);
-        if (input.cardIds !== undefined) {
-          // Explicit body reads: full cards in request order. The archive
-          // filter does not apply here; ownership is the only gate, and
-          // foreign or missing ids land in `notFound` instead of failing.
-          const ownedById = new Map(owned.map((card) => [card.cardId, card] as const));
-          const seen = new Set<string>();
-          const found: Array<BoardCard> = [];
-          const notFound: Array<BoardCardId> = [];
-          for (const rawId of input.cardIds) {
-            if (seen.has(rawId)) {
-              continue;
-            }
-            seen.add(rawId);
-            const cardId = BoardCardId.make(rawId);
-            const card = ownedById.get(cardId);
-            if (card === undefined) {
-              notFound.push(cardId);
-            } else {
-              found.push(card);
-            }
-          }
-          return {
-            cards: found,
-            truncated: false,
-            omittedCount: 0,
-            notFound,
-          } satisfies OrchestratorMcpBoardListCardsResult;
-        }
-        // Pointer list: summaries without bodies so a large board does not
-        // flood the coordinator's context on every wake. Bodies are read
-        // explicitly through `cardIds`.
-        const includeArchived = input.includeArchived ?? false;
-        const summaries = owned
-          .filter((card) => includeArchived || !card.archived)
-          .toSorted((left, right) =>
-            left.order === right.order
-              ? left.cardId.localeCompare(right.cardId)
-              : left.order - right.order,
-          )
-          .map(toBoardCardSummary);
-        const accepted: Array<OrchestratorMcpBoardCardSummary> = [];
-        for (const summary of summaries) {
-          const candidate: OrchestratorMcpBoardListCardsResult = {
-            cards: [...accepted, summary],
-            truncated: false,
-            omittedCount: 0,
-            notFound: [],
-          };
-          if (boardListCardsByteLength(candidate) > ORCHESTRATOR_MCP_BOARD_LIST_BUDGET_BYTES) {
-            break;
-          }
-          accepted.push(summary);
-        }
-        return {
-          cards: accepted,
-          truncated: accepted.length < summaries.length,
-          omittedCount: summaries.length - accepted.length,
-          notFound: [],
-        } satisfies OrchestratorMcpBoardListCardsResult;
-      }),
-    architectCreateOrGet: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "create an architect");
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "create an architect");
-        const parent = yield* requireActiveParent(scope);
-        yield* checkCoordinatorIdentity(
-          scope,
-          input.coordinatorThreadId,
-          parent.thread,
-          "create an architect",
-        );
-        const at = yield* nowIso();
-        const coordinatorThreadId = input.coordinatorThreadId;
-        const activeBeforeCreate = yield* store
-          .getActiveBindingByCoordinator(coordinatorThreadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (activeBeforeCreate === null) {
-          yield* validateArchitectSelection({
-            scope,
-            parent,
-            taskEffort: input.taskEffort,
-            modelSelection: input.modelSelection,
-            routingEvidence: input.routingEvidence,
-          });
-        }
-        const bindingId = deterministicId(
-          "architect-binding",
-          coordinatorThreadId,
-          input.idempotencyKey,
-        );
-        // Deterministic `arch:`-derived identity: stable for exact retry,
-        // fresh across keys. Losers (created:false) never dispatch create,
-        // so concurrent same-target creates converge to exactly one thread.
-        const architectThreadId = ThreadId.make(
-          `arch:${hash(["architect-thread", coordinatorThreadId, input.idempotencyKey]).slice(0, 40)}`,
-        );
-        const outcome = yield* store
-          .createOrGetBinding({
-            bindingId,
-            coordinatorThreadId,
-            architectThreadId,
-            projectId: parent.thread.projectId,
-            architectTaskEffort: input.taskEffort,
-            routingEvidence: input.routingEvidence,
-            createdAt: at,
-            createdBy: scope.threadId,
-            createIdempotencyKey: input.idempotencyKey,
-            createRequestFingerprint: hash({
-              taskEffort: input.taskEffort,
-              modelSelection: input.modelSelection,
-              routingEvidence: input.routingEvidence,
-            }),
-          })
-          .pipe(Effect.mapError(mapStoreError("create architect binding")));
-        const binding = outcome.binding;
-        if (binding.status !== "active") {
-          return yield* failure(
-            "binding_not_found",
-            "This Architect binding is terminal and cannot be recreated by replaying its create key.",
-          );
-        }
-        const exactCreateReplay = binding.createIdempotencyKey === input.idempotencyKey;
-        if (!outcome.created && !exactCreateReplay) {
-          return {
-            architectThreadId: binding.architectThreadId,
-            created: false,
-            binding,
-          } satisfies OrchestratorMcpArchitectCreateOrGetResult;
-        }
-        const existingThread = yield* loadThreadShell(binding.architectThreadId);
-        if (Option.isNone(existingThread)) {
-          yield* createArchitectThread(binding, parent.thread);
-        }
-        yield* appendPhase1Activity({
-          threadId: coordinatorThreadId,
-          commandId: `architect-bound:${binding.bindingId}`,
-          activityId: `architect-bound:${binding.bindingId}`,
-          kind: ARCHITECT_BOUND_ACTIVITY,
-          summary: "Architect bound",
-          payload: {
-            bindingId: binding.bindingId,
-            coordinatorThreadId,
-            architectThreadId: binding.architectThreadId,
-            architectTaskEffort: binding.architectTaskEffort,
-            modelSelection: input.modelSelection,
-            routingEvidence: binding.routingEvidence,
-          },
-          createdAt: at,
-        });
-        return {
-          architectThreadId: binding.architectThreadId,
-          created: outcome.created,
-          binding,
-        } satisfies OrchestratorMcpArchitectCreateOrGetResult;
-      }),
-    architectReplace: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "replace the architect");
-        yield* denyArchitectCaller(
-          yield* resolveControlPlaneCaller(scope),
-          "replace the architect",
-        );
-        const parent = yield* requireActiveParent(scope);
-        yield* checkCoordinatorIdentity(
-          scope,
-          input.coordinatorThreadId,
-          parent.thread,
-          "replace the architect",
-        );
-        yield* ensureAuthorTextAllowed("reason", input.reason);
-        const at = yield* nowIso();
-        const coordinatorThreadId = input.coordinatorThreadId;
-        const newBindingId = deterministicId(
-          "architect-binding",
-          coordinatorThreadId,
-          input.idempotencyKey,
-        );
-        const newArchitectThreadId = ThreadId.make(
-          `arch:${hash(["architect-thread", newBindingId]).slice(0, 40)}`,
-        );
-        const taskEffort = input.taskEffort;
-        const closeRequestFingerprint = hash({
-          operation: "replace",
-          reason: input.reason,
-          taskEffort,
-          modelSelection: input.modelSelection,
-          routingEvidence: input.routingEvidence,
-          replacedByBindingId: newBindingId,
-        });
-        const createRequestFingerprint = hash({
-          taskEffort,
-          modelSelection: input.modelSelection,
-          routingEvidence: input.routingEvidence,
-        });
-        const createInput = {
-          bindingId: newBindingId,
-          coordinatorThreadId,
-          architectThreadId: newArchitectThreadId,
-          projectId: parent.thread.projectId,
-          architectTaskEffort: taskEffort,
-          routingEvidence: input.routingEvidence,
-          createdAt: at,
-          createdBy: scope.threadId,
-          createIdempotencyKey: input.idempotencyKey,
-          createRequestFingerprint,
-        } as const;
-
-        const priorReplacement = yield* store
-          .findBindingByCreateKey({
-            coordinatorThreadId,
-            createIdempotencyKey: input.idempotencyKey,
-          })
-          .pipe(Effect.mapError(mapStoreError("read architect replacement")));
-        if (priorReplacement !== null) {
-          // Re-enter the repository's exact fingerprint check before returning
-          // a same-key replay. This also closes the crash gap after insert.
-          yield* store
-            .createOrGetBinding(createInput)
-            .pipe(Effect.mapError(mapStoreError("replay architect replacement")));
-          if (priorReplacement.status === "active") {
-            const existingThread = yield* loadThreadShell(priorReplacement.architectThreadId);
-            if (Option.isNone(existingThread)) {
-              yield* createArchitectThread(priorReplacement, parent.thread);
-            }
-            const replaced = yield* store
-              .findReplaceReplay({
-                coordinatorThreadId,
-                closeIdempotencyKey: input.idempotencyKey,
-                closeRequestFingerprint,
-              })
-              .pipe(Effect.mapError(mapStoreError("read replaced architect binding")));
-            if (replaced !== null) {
-              const linked = yield* store
-                .linkReplacementWinner({
-                  replacedBindingId: replaced.bindingId,
-                  closeIdempotencyKey: input.idempotencyKey,
-                  closeRequestFingerprint,
-                  winnerBindingId: priorReplacement.bindingId,
-                })
-                .pipe(Effect.mapError(mapStoreError("link replacement winner")));
-              if (linked === null) {
-                return yield* failure(
-                  "binding_conflict",
-                  "The committed replacement could not be linked to its prior binding.",
-                );
-              }
-              const receipt = yield* revokeArchitectCredential(replaced.architectThreadId);
-              yield* appendPhase1Activity({
-                threadId: coordinatorThreadId,
-                commandId: `architect-unbound:${replaced.bindingId}`,
-                activityId: `architect-unbound:${replaced.bindingId}`,
-                kind: ARCHITECT_UNBOUND_ACTIVITY,
-                summary: "Architect replaced",
-                payload: {
-                  bindingId: replaced.bindingId,
-                  architectThreadId: replaced.architectThreadId,
-                  reason: input.reason,
-                  replacedByBindingId: linked.replacedByBindingId,
-                  revokeReceipt: receipt,
-                },
-                createdAt: at,
-              });
-              yield* softDeleteArchitectThread(replaced.architectThreadId);
-            }
-            yield* appendPhase1Activity({
-              threadId: coordinatorThreadId,
-              commandId: `architect-bound:${priorReplacement.bindingId}`,
-              activityId: `architect-bound:${priorReplacement.bindingId}`,
-              kind: ARCHITECT_BOUND_ACTIVITY,
-              summary: "Architect bound",
-              payload: {
-                bindingId: priorReplacement.bindingId,
-                coordinatorThreadId,
-                architectThreadId: priorReplacement.architectThreadId,
-                architectTaskEffort: priorReplacement.architectTaskEffort,
-                modelSelection: input.modelSelection,
-                routingEvidence: priorReplacement.routingEvidence,
-              },
-              createdAt: at,
-            });
-          }
-          return {
-            architectThreadId: priorReplacement.architectThreadId,
-            binding: priorReplacement,
-          } satisfies OrchestratorMcpArchitectReplaceResult;
-        }
-
-        const active = yield* store
-          .getActiveBindingByCoordinator(coordinatorThreadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        let closed: CoordinatorArchitectBinding | null;
-        if (active !== null) {
-          yield* validateArchitectSelection({
-            scope,
-            parent,
-            taskEffort,
-            modelSelection: input.modelSelection,
-            routingEvidence: input.routingEvidence,
-          });
-          closed = yield* store
-            .closeBinding({
-              bindingId: active.bindingId,
-              status: "replaced",
-              // The replacement row is not committed yet. Link only after
-              // deterministic winner election commits its binding row.
-              replacedByBindingId: null,
-              detachReason: input.reason,
-              idempotencyKey: input.idempotencyKey,
-              closeRequestFingerprint,
-            })
-            .pipe(Effect.mapError(mapStoreError("close architect binding")));
-          if (closed === null) {
-            const winner = yield* store
-              .getActiveBindingByCoordinator(coordinatorThreadId)
-              .pipe(Effect.mapError(mapStoreError("resolve architect replacement race")));
-            if (winner !== null) {
-              return {
-                architectThreadId: winner.architectThreadId,
-                binding: winner,
-              } satisfies OrchestratorMcpArchitectReplaceResult;
-            }
-            return yield* failure(
-              "binding_conflict",
-              "Another replacement committed the close; retry after its winner is visible.",
-            );
-          }
-        } else {
-          // Recover the committed close-before-create window without reviving
-          // an unrelated terminal binding or accepting changed request data.
-          closed = yield* store
-            .findReplaceReplay({
-              coordinatorThreadId,
-              closeIdempotencyKey: input.idempotencyKey,
-              closeRequestFingerprint,
-            })
-            .pipe(Effect.mapError(mapStoreError("recover architect replacement")));
-          if (closed === null) {
-            const winner = yield* store
-              .getActiveBindingByCoordinator(coordinatorThreadId)
-              .pipe(Effect.mapError(mapStoreError("resolve architect replacement race")));
-            if (winner !== null) {
-              return {
-                architectThreadId: winner.architectThreadId,
-                binding: winner,
-              } satisfies OrchestratorMcpArchitectReplaceResult;
-            }
-            return yield* failure(
-              "binding_not_found",
-              "No active Architect or exact interrupted replacement exists for this coordinator.",
-            );
-          }
-        }
-        // Ordered boundary step (1): the durable active→replaced transition
-        // commits before any thread or credential work.
-        const created = yield* store
-          .createOrGetBinding(createInput)
-          .pipe(Effect.mapError(mapStoreError("create architect binding")));
-        const linked = yield* store
-          .linkReplacementWinner({
-            replacedBindingId: closed.bindingId,
-            closeIdempotencyKey: input.idempotencyKey,
-            closeRequestFingerprint,
-            winnerBindingId: created.binding.bindingId,
-          })
-          .pipe(Effect.mapError(mapStoreError("link replacement winner")));
-        if (linked === null) {
-          return yield* failure(
-            "binding_conflict",
-            "The committed replacement could not be linked to its prior binding.",
-          );
-        }
-        if (created.binding.bindingId !== newBindingId) {
-          // Lost the replace race: our thread.create never ran (binding-first
-          // ordering), so converge on the winner. If our deterministic thread
-          // id somehow exists (same-key replay after a crash), audit it as a
-          // race loser rather than leaking a binding-less architect thread.
-          const winner = created.binding;
-          const oursOption = yield* loadThreadDetail(newArchitectThreadId);
-          if (
-            Option.isSome(oursOption) &&
-            oursOption.value.id === newArchitectThreadId &&
-            winner.architectThreadId !== newArchitectThreadId
-          ) {
-            const receipt = yield* revokeArchitectCredential(newArchitectThreadId);
-            yield* appendPhase1Activity({
-              threadId: coordinatorThreadId,
-              commandId: `architect-unbound-race:${newBindingId}`,
-              activityId: `architect-unbound-race:${newBindingId}`,
-              kind: ARCHITECT_UNBOUND_ACTIVITY,
-              summary: "Architect race loser soft-deleted",
-              payload: {
-                bindingId: newBindingId,
-                architectThreadId: newArchitectThreadId,
-                reason: "binding-race-lost",
-                revokeReceipt: receipt,
-              },
-              createdAt: at,
-            });
-            yield* softDeleteArchitectThread(newArchitectThreadId);
-          }
-          return {
-            architectThreadId: winner.architectThreadId,
-            binding: winner,
-          } satisfies OrchestratorMcpArchitectReplaceResult;
-        }
-        const binding = created.binding;
-        yield* createArchitectThread(binding, parent.thread);
-        const receipt = yield* revokeArchitectCredential(closed.architectThreadId);
-        yield* appendPhase1Activity({
-          threadId: coordinatorThreadId,
-          commandId: `architect-unbound:${closed.bindingId}`,
-          activityId: `architect-unbound:${closed.bindingId}`,
-          kind: ARCHITECT_UNBOUND_ACTIVITY,
-          summary: "Architect replaced",
-          payload: {
-            bindingId: closed.bindingId,
-            architectThreadId: closed.architectThreadId,
-            reason: input.reason,
-            replacedByBindingId: linked.replacedByBindingId,
-            revokeReceipt: receipt,
-          },
-          createdAt: at,
-        });
-        yield* softDeleteArchitectThread(closed.architectThreadId);
-        yield* appendPhase1Activity({
-          threadId: coordinatorThreadId,
-          commandId: `architect-bound:${binding.bindingId}`,
-          activityId: `architect-bound:${binding.bindingId}`,
-          kind: ARCHITECT_BOUND_ACTIVITY,
-          summary: "Architect bound",
-          payload: {
-            bindingId: binding.bindingId,
-            coordinatorThreadId,
-            architectThreadId: binding.architectThreadId,
-            architectTaskEffort: binding.architectTaskEffort,
-            modelSelection: input.modelSelection,
-            routingEvidence: binding.routingEvidence,
-          },
-          createdAt: at,
-        });
-        return {
-          architectThreadId: binding.architectThreadId,
-          binding,
-        } satisfies OrchestratorMcpArchitectReplaceResult;
-      }),
-    architectDetach: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "detach the architect");
-        yield* denyArchitectCaller(yield* resolveControlPlaneCaller(scope), "detach the architect");
-        const parent = yield* requireActiveParent(scope);
-        yield* checkCoordinatorIdentity(
-          scope,
-          input.coordinatorThreadId,
-          parent.thread,
-          "detach the architect",
-        );
-        yield* ensureAuthorTextAllowed("reason", input.reason);
-        const at = yield* nowIso();
-        const coordinatorThreadId = input.coordinatorThreadId;
-        const active = yield* store
-          .getActiveBindingByCoordinator(coordinatorThreadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (active === null) {
-          // Idempotent replay returns the same terminal binding via the
-          // exact close key; terminal bindings never restore.
-          const replayed = yield* store
-            .findDetachReplay({
-              coordinatorThreadId,
-              closeIdempotencyKey: input.idempotencyKey,
-              closeRequestFingerprint: hash({ operation: "detach", reason: input.reason }),
-            })
-            .pipe(Effect.mapError(mapStoreError("read architect binding")));
-          if (replayed !== null) {
-            return { binding: replayed } satisfies OrchestratorMcpArchitectDetachResult;
-          }
-          return yield* failure(
-            "binding_not_found",
-            "No active architect binding for this coordinator.",
-          );
-        }
-        const closed = yield* store
-          .closeBinding({
-            bindingId: active.bindingId,
-            status: "detached",
-            replacedByBindingId: null,
-            detachReason: input.reason,
-            idempotencyKey: input.idempotencyKey,
-            closeRequestFingerprint: hash({ operation: "detach", reason: input.reason }),
-          })
-          .pipe(Effect.mapError(mapStoreError("close architect binding")));
-        if (closed === null || closed.status !== "detached") {
-          return yield* failure(
-            "binding_conflict",
-            "The Architect binding changed during detach; read the current binding before retrying.",
-          );
-        }
-        const receipt = yield* revokeArchitectCredential(active.architectThreadId);
-        yield* appendPhase1Activity({
-          threadId: coordinatorThreadId,
-          commandId: `architect-unbound:${active.bindingId}`,
-          activityId: `architect-unbound:${active.bindingId}`,
-          kind: ARCHITECT_UNBOUND_ACTIVITY,
-          summary: "Architect detached",
-          payload: {
-            bindingId: active.bindingId,
-            architectThreadId: active.architectThreadId,
-            reason: input.reason,
-            replacedByBindingId: null,
-            revokeReceipt: receipt,
-          },
-          createdAt: at,
-        });
-        yield* softDeleteArchitectThread(active.architectThreadId);
-        return {
-          binding: closed,
-        } satisfies OrchestratorMcpArchitectDetachResult;
-      }),
+    boardCreateCard: (scope, input) => boardService.boardCreateCard(scope, input),
+    boardUpdateCard: (scope, input) => boardService.boardUpdateCard(scope, input),
+    boardDeleteCard: (scope, input) => boardService.boardDeleteCard(scope, input),
+    boardListCards: (scope, input) => boardService.boardListCards(scope, input),
+    architectCreateOrGet: (scope, input) => architectService.architectCreateOrGet(scope, input),
+    architectReplace: (scope, input) => architectService.architectReplace(scope, input),
+    architectDetach: (scope, input) => architectService.architectDetach(scope, input),
     architectureReviewRequest: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "request an architecture review");
-        yield* denyArchitectCaller(
-          yield* resolveControlPlaneCaller(scope),
-          "request an architecture review",
-        );
-        const parent = yield* requireActiveParent(scope);
-        yield* checkCoordinatorIdentity(
-          scope,
-          input.coordinatorThreadId,
-          parent.thread,
-          "request an architecture review",
-        );
-        const posture = (input as { readonly executionPosture?: unknown }).executionPosture;
-        if (posture !== "continue" && posture !== "pause-branch" && posture !== "pause-all") {
-          // Schema requires executionPosture (no default); this is
-          // defense-in-depth so a missing posture is a typed rejection with
-          // no record created.
-          return yield* failure(
-            "orchestration_error",
-            "A review request requires an explicit executionPosture: continue, pause-branch, or pause-all.",
-          );
-        }
-        yield* ensureAuthorTextAllowed("question", input.question);
-        const at = yield* nowIso();
-        const coordinatorThreadId = input.coordinatorThreadId;
-        const binding = yield* store
-          .getActiveBindingByCoordinator(coordinatorThreadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (binding === null) {
-          return yield* failure(
-            "binding_not_found",
-            "No active architect binding for this coordinator.",
-          );
-        }
-        const reviewId = deterministicId(
-          "architecture-review",
-          coordinatorThreadId,
-          input.idempotencyKey,
-        );
-        const outcome = yield* store
-          .insertReview({
-            reviewId,
-            bindingId: binding.bindingId,
-            coordinatorThreadId: binding.coordinatorThreadId,
-            architectThreadId: binding.architectThreadId,
-            subjectChildThreadId: input.subjectChildThreadId ?? null,
-            reason: input.reason,
-            question: input.question,
-            refs: input.refs ?? {},
-            executionPosture: input.executionPosture,
-            requestIdempotencyKey: input.idempotencyKey,
-            requestPayloadFingerprint: hash({
-              subjectChildThreadId: input.subjectChildThreadId ?? null,
-              reason: input.reason,
-              question: input.question,
-              refs: input.refs ?? {},
-              executionPosture: input.executionPosture,
-            }),
-            createdAt: at,
-          })
-          .pipe(Effect.mapError(mapStoreError("insert architecture review")));
-        const review = outcome.review;
-        yield* ensureAuthorTextAllowed("question", review.question);
-        // Ordered intent first: architect aggregate carries the request,
-        // coordinator aggregate carries only the typed no-wake reference.
-        // Deterministic command ids also repair an exact retry after a crash
-        // between the durable insert and either activity append.
-        yield* appendPhase1Activity({
-          threadId: binding.architectThreadId,
-          commandId: `arch:review-requested:${reviewId}`,
-          activityId: `arch:review-requested:${reviewId}`,
-          kind: REVIEW_REQUESTED_ACTIVITY,
-          summary: "Architecture review requested",
-          payload: {
-            reviewId,
-            bindingId: binding.bindingId,
-            reason: review.reason,
-            question: review.question,
-            refs: review.refs,
-            executionPosture: review.executionPosture,
-            subjectChildThreadId: review.subjectChildThreadId,
-          },
-          createdAt: at,
-        });
-        yield* appendPhase1Activity({
-          threadId: binding.coordinatorThreadId,
-          commandId: reviewRefCommandId(reviewId),
-          activityId: reviewRefCommandId(reviewId),
-          kind: REVIEW_REQUESTED_REF_ACTIVITY,
-          summary: "Architecture review requested (no wake)",
-          payload: {
-            reviewId,
-            bindingId: binding.bindingId,
-            reason: review.reason,
-            executionPosture: review.executionPosture,
-          },
-          createdAt: at,
-        });
-        // Marker-gated: exact replay and crash-gap recovery converge here.
-        yield* wakeArchitectForReview(review, binding, at);
-        return { reviewId, status: "open" } satisfies OrchestratorMcpReviewRequestResult;
-      }),
+      architectService.architectureReviewRequest(scope, input),
     architectureReviewAnswer: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        const disposition = (input as { readonly disposition?: unknown }).disposition;
-        if (
-          disposition !== "recommendation" &&
-          disposition !== "needs-human-decision" &&
-          disposition !== "needs-more-evidence"
-        ) {
-          return yield* failure(
-            "orchestration_error",
-            "An architecture answer requires an explicit disposition: recommendation, needs-human-decision, or needs-more-evidence.",
-          );
-        }
-        const at = yield* nowIso();
-        const review = yield* store
-          .getReviewById(input.reviewId)
-          .pipe(Effect.mapError(mapStoreError("read architecture review")));
-        if (review === null) {
-          return yield* failure("review_not_found", "The architecture review was not found.");
-        }
-        // Architect-side only: the caller must hold the review's ACTIVE
-        // binding. A stale pre-revoke credential finds no binding and fails
-        // here even before registry revocation lands.
-        const callerBinding = yield* store
-          .getActiveBindingByArchitect(scope.threadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (callerBinding === null || callerBinding.bindingId !== review.bindingId) {
-          return yield* failure(
-            "architect_denied",
-            "Only the bound architect thread may answer its own reviews.",
-          );
-        }
-        yield* ensureAuthorTextAllowed("summary", input.summary);
-        const fingerprint = hash({
-          summary: input.summary,
-          disposition: input.disposition,
-          oclRefs: input.oclRefs ?? [],
-        });
-        const transition = yield* store
-          .answerReview({
-            reviewId: review.reviewId,
-            disposition: input.disposition,
-            summary: input.summary,
-            oclRefs: [...(input.oclRefs ?? [])],
-            answerIdempotencyKey: input.idempotencyKey,
-            answerPayloadFingerprint: fingerprint,
-            answeredAt: at,
-          })
-          .pipe(Effect.mapError(mapStoreError("answer architecture review")));
-        if (transition._tag === "conflict") {
-          return yield* failure(
-            "idempotency_conflict",
-            "This answer key already stored a different answer payload (summary, disposition, or refs).",
-          );
-        }
-        if (transition._tag === "state") {
-          return yield* failure(
-            "review_state_conflict",
-            "The review is no longer open for answering.",
-          );
-        }
-        if (transition._tag === "applied" || transition._tag === "replay") {
-          yield* appendPhase1Activity({
-            threadId: review.architectThreadId,
-            commandId: `arch:review-answered:${review.reviewId}`,
-            activityId: `arch:review-answered:${review.reviewId}`,
-            kind: REVIEW_ANSWERED_ACTIVITY,
-            summary: "Architecture review answered",
-            payload: {
-              reviewId: review.reviewId,
-              disposition: input.disposition,
-              summary: input.summary,
-              oclRefs: input.oclRefs ?? [],
-            },
-            createdAt: at,
-          });
-        }
-        // NEVER wakes the coordinator (normative §7.3): no turn dispatch on
-        // any answer path, regardless of disposition.
-        const stored =
-          transition._tag === "replay"
-            ? ((yield* store
-                .getReviewById(review.reviewId)
-                .pipe(Effect.mapError(mapStoreError("read architecture review")))) ?? review)
-            : review;
-        return {
-          reviewId: review.reviewId,
-          status: "answered",
-          disposition: stored.answerDisposition ?? input.disposition,
-        } satisfies OrchestratorMcpReviewAnswerResult;
-      }),
+      architectService.architectureReviewAnswer(scope, input),
     architectureReviewCancel: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "cancel architecture reviews");
-        if ((yield* resolveControlPlaneCaller(scope)).kind === "architect") {
-          return yield* failure(
-            "architect_denied",
-            "Architect threads cannot cancel reviews; cancellation is coordinator/human only.",
-          );
-        }
-        yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
-        const at = yield* nowIso();
-        const review = yield* store
-          .getReviewById(input.reviewId)
-          .pipe(Effect.mapError(mapStoreError("read architecture review")));
-        if (review === null) {
-          return yield* failure("review_not_found", "The architecture review was not found.");
-        }
-        // Coordinator/human only: architect cancel is denied even for its
-        // own reviews; anyone else is out of scope.
-        const caller = yield* resolveControlPlaneCaller(scope);
-        if (caller.kind === "architect") {
-          return yield* failure(
-            "architect_denied",
-            "Architect threads cannot cancel reviews; cancellation is coordinator/human only.",
-          );
-        }
-        if (scope.threadId !== review.coordinatorThreadId) {
-          return yield* failure(
-            "capability_denied",
-            "Only the coordinator thread itself (or a human on it) may cancel this review.",
-          );
-        }
-        yield* ensureAuthorTextAllowed("reason", input.reason);
-        const transition = yield* store
-          .cancelReview({
-            reviewId: review.reviewId,
-            reason: input.reason,
-            cancelIdempotencyKey: input.idempotencyKey,
-            cancelPayloadFingerprint: hash({
-              reason: input.reason,
-              cancelledBy: scope.threadId,
-            }),
-            cancelledAt: at,
-            cancelledBy: scope.threadId,
-          })
-          .pipe(Effect.mapError(mapStoreError("cancel architecture review")));
-        if (transition._tag === "state") {
-          return yield* failure(
-            "review_state_conflict",
-            "Only open or answered reviews can be cancelled.",
-          );
-        }
-        if (transition._tag === "conflict") {
-          return yield* failure(
-            "idempotency_conflict",
-            "This cancel key was already used with a different reason.",
-          );
-        }
-        if (transition._tag === "applied" || transition._tag === "replay") {
-          yield* appendPhase1Activity({
-            threadId: review.coordinatorThreadId,
-            commandId: `arch:review-cancelled:${review.reviewId}`,
-            activityId: `arch:review-cancelled:${review.reviewId}`,
-            kind: REVIEW_CANCELLED_ACTIVITY,
-            summary: "Architecture review cancelled",
-            payload: { reviewId: review.reviewId, reason: input.reason },
-            createdAt: at,
-          });
-        }
-        return {
-          reviewId: review.reviewId,
-          status: "cancelled",
-        } satisfies OrchestratorMcpReviewCancelResult;
-      }),
+      architectService.architectureReviewCancel(scope, input),
     prepareCoordinatorPublication: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        const binding = yield* store
-          .getActiveBindingByArchitect(scope.threadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (binding === null) {
-          return yield* failure(
-            "architect_denied",
-            "Only an Architect with an active binding may prepare a coordinator publication.",
-          );
-        }
-        yield* loadSwitchParent(scope);
-        yield* ensureAuthorTextAllowed("summary", input.summary);
-        const oclRefs = input.oclRefs ?? [];
-        const preparedAt = yield* nowIso();
-        const review = yield* store
-          .upsertPreparedPublication({
-            reviewId: deterministicId(
-              "architecture-advice",
-              binding.bindingId,
-              input.idempotencyKey,
-            ),
-            bindingId: binding.bindingId,
-            coordinatorThreadId: binding.coordinatorThreadId,
-            architectThreadId: binding.architectThreadId,
-            summary: input.summary,
-            disposition: input.disposition,
-            oclRefs,
-            executionPosture: input.executionPosture,
-            idempotencyKey: input.idempotencyKey,
-            payloadFingerprint: hash({
-              summary: input.summary,
-              disposition: input.disposition,
-              oclRefs,
-              executionPosture: input.executionPosture,
-            }),
-            preparedAt,
-          })
-          .pipe(Effect.mapError(mapStoreError("prepare coordinator publication")));
-        return {
-          reviewId: review.reviewId,
-          status: "answered",
-        } satisfies OrchestratorMcpPrepareCoordinatorPublicationResult;
-      }),
-    publishToCoordinator: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "publish architecture reviews");
-        // Fail forged architect claims before the review lookup so a hidden
-        // tool always denies; coordinator registration keeps unmarked chats
-        // from publishing.
-        if ((yield* resolveControlPlaneCaller(scope)).kind !== "architect") {
-          yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
-        }
-        const at = yield* nowIso();
-        const review = yield* store
-          .getReviewById(input.reviewId)
-          .pipe(Effect.mapError(mapStoreError("read architecture review")));
-        if (review === null) {
-          return yield* failure("review_not_found", "The architecture review was not found.");
-        }
-        const caller = yield* resolveControlPlaneCaller(scope);
-        const isOwnerArchitect =
-          caller.kind === "architect" && caller.binding.bindingId === review.bindingId;
-        const isCoordinator = scope.threadId === review.coordinatorThreadId;
-        if (!isOwnerArchitect && !isCoordinator) {
-          return yield* refusePublish(
-            store,
-            review.reviewId,
-            at,
-            caller.kind === "architect" ? "architect_denied" : "capability_denied",
-            "Only the bound architect or the coordinator may publish this review.",
-          );
-        }
-        if (review.origin === "architect-advice") {
-          return yield* refusePublish(
-            store,
-            review.reviewId,
-            at,
-            "human_publish_required",
-            "Prepared Architect publications can only be published by the human Publish button.",
-          );
-        }
-        const binding = yield* store
-          .getBindingById(review.bindingId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (binding === null) {
-          return yield* refusePublish(
-            store,
-            review.reviewId,
-            at,
-            "binding_not_found",
-            "The review binding no longer exists.",
-          );
-        }
-        // Validate the credential's frozen scope before changing review state;
-        // a drift refusal is recorded below and remains a failed publish.
-        yield* loadSwitchParent(scope).pipe(
-          Effect.tapError((error) => recordPublishFailure(store, review.reviewId, at, error)),
-        );
-        return yield* publishAnsweredReview(store, review, binding, {
-          idempotencyKey: input.idempotencyKey,
-          publishedBy: isOwnerArchitect ? "architect" : "coordinator",
-          publishedAt: at,
-        });
-      }),
-    publishArchitectPublication: (input) =>
-      Effect.gen(function* () {
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        const at = yield* nowIso();
-        const review = yield* store
-          .getReviewById(input.reviewId)
-          .pipe(Effect.mapError(mapStoreError("read architecture review")));
-        if (review === null) {
-          return yield* failure("review_not_found", "The architecture review was not found.");
-        }
-        const binding = yield* store
-          .getActiveBindingByCoordinator(review.coordinatorThreadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        if (binding === null || binding.bindingId !== review.bindingId) {
-          return yield* refusePublish(
-            store,
-            review.reviewId,
-            at,
-            "binding_not_found",
-            "The review no longer belongs to the active Architect binding.",
-          );
-        }
-        const sameKeyReplay =
-          review.status === "published" && review.publishIdempotencyKey === input.idempotencyKey;
-        if (review.status !== "answered" && !sameKeyReplay) {
-          return yield* refusePublish(
-            store,
-            review.reviewId,
-            at,
-            "review_state_conflict",
-            "Only answered reviews can be published.",
-          );
-        }
-        return yield* publishAnsweredReview(store, review, binding, {
-          idempotencyKey: input.idempotencyKey,
-          publishedBy: "human",
-          publishedAt: at,
-        });
-      }),
-    getCoordinatorBinding: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "query architect bindings");
-        // Query scope: coordinator thread itself, human on it, or the bound
-        // architect (own binding only).
-        const caller = yield* resolveControlPlaneCaller(scope);
-        if (caller.kind === "architect") {
-          if (caller.binding.coordinatorThreadId !== input.coordinatorThreadId) {
-            return yield* failure(
-              "architect_denied",
-              "Architect threads may only query their own binding.",
-            );
-          }
-        } else {
-          if (scope.threadId !== input.coordinatorThreadId) {
-            return yield* failure(
-              "capability_denied",
-              "Only the coordinator thread itself (or a human on it) may query this binding.",
-            );
-          }
-          yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
-        }
-        const binding = yield* store
-          .getActiveBindingByCoordinator(input.coordinatorThreadId)
-          .pipe(Effect.mapError(mapStoreError("read architect binding")));
-        return { binding } satisfies OrchestratorMcpGetCoordinatorBindingResult;
-      }),
+      architectService.prepareCoordinatorPublication(scope, input),
+    publishToCoordinator: (scope, input) => architectService.publishToCoordinator(scope, input),
+    publishArchitectPublication: (input) => architectService.publishArchitectPublication(input),
+    getCoordinatorBinding: (scope, input) => architectService.getCoordinatorBinding(scope, input),
     listArchitectureReviews: (scope, input) =>
-      Effect.gen(function* () {
-        yield* requireCapability(scope);
-        yield* requireSplitEnabled();
-        const store = yield* requireArchitectStore();
-        yield* denyExecutorCaller(scope, "query architecture reviews");
-        const caller = yield* resolveControlPlaneCaller(scope);
-        if (caller.kind === "architect") {
-          if (caller.binding.coordinatorThreadId !== input.coordinatorThreadId) {
-            return yield* failure(
-              "architect_denied",
-              "Architect threads may only query their own reviews.",
-            );
-          }
-        } else {
-          if (scope.threadId !== input.coordinatorThreadId) {
-            return yield* failure(
-              "capability_denied",
-              "Only the coordinator thread itself (or a human on it) may query these reviews.",
-            );
-          }
-          yield* requireRegisteredOrchestratorWhenBoardPresent(scope);
-        }
-        const reviews = yield* store
-          .listReviewsByCoordinator({
-            coordinatorThreadId: input.coordinatorThreadId,
-            ...(input.status === undefined ? {} : { status: input.status }),
-          })
-          .pipe(Effect.mapError(mapStoreError("list architecture reviews")));
-        return { reviews } satisfies OrchestratorMcpListArchitectureReviewsResult;
-      }),
-    reconcileAfterRestart: () =>
-      Effect.gen(function* () {
-        const store = yield* requireArchitectStore();
-        const at = yield* nowIso();
-        const outcomes: Array<{ readonly bindingId: string; readonly outcome: string }> = [];
-        const actives = yield* store
-          .listActiveBindings()
-          .pipe(Effect.mapError(mapStoreError("list active bindings")));
-        for (const binding of actives) {
-          const shellOption = yield* loadThreadShell(binding.architectThreadId);
-          if (Option.isNone(shellOption)) {
-            const createReceiptStatus =
-              dependencies.getArchitectCreateReceiptStatus === undefined
-                ? "unavailable"
-                : yield* dependencies.getArchitectCreateReceiptStatus(binding.bindingId);
-            if (createReceiptStatus === "missing") {
-              // A binding-first crash before dispatch has no create receipt.
-              // Replay the stable command id to heal exactly that window.
-              const coordinator = yield* loadThreadShell(binding.coordinatorThreadId);
-              if (Option.isNone(coordinator)) {
-                outcomes.push({
-                  bindingId: binding.bindingId,
-                  outcome: "architect-create-recovery-waiting-for-coordinator",
-                });
-                continue;
-              }
-              yield* createArchitectThread(binding, coordinator.value);
-              const selected = binding.routingEvidence?.consideredCandidates.at(-1);
-              yield* appendPhase1Activity({
-                threadId: binding.coordinatorThreadId,
-                commandId: `architect-bound:${binding.bindingId}`,
-                activityId: `architect-bound:${binding.bindingId}`,
-                kind: ARCHITECT_BOUND_ACTIVITY,
-                summary: "Architect bound",
-                payload: {
-                  bindingId: binding.bindingId,
-                  coordinatorThreadId: binding.coordinatorThreadId,
-                  architectThreadId: binding.architectThreadId,
-                  architectTaskEffort: binding.architectTaskEffort,
-                  modelSelection:
-                    selected === undefined
-                      ? null
-                      : {
-                          instanceId: selected.providerInstanceId,
-                          model: selected.model,
-                          options: selected.options,
-                        },
-                  routingEvidence: binding.routingEvidence,
-                },
-                createdAt: binding.createdAt,
-              });
-              outcomes.push({
-                bindingId: binding.bindingId,
-                outcome: "architect-thread-recovered",
-              });
-            } else {
-              // An accepted create receipt proves this is a thread lost while
-              // the server was down. A rejected or unavailable receipt cannot
-              // safely justify creating a new execution identity either.
-              const missingReason = "thread-missing-after-restart";
-              const closed = yield* store
-                .closeBinding({
-                  bindingId: binding.bindingId,
-                  status: "detached",
-                  replacedByBindingId: null,
-                  detachReason: missingReason,
-                  idempotencyKey: `architect-missing-thread:${binding.bindingId}`,
-                  closeRequestFingerprint: hash({
-                    operation: "reconcile-missing-thread",
-                    reason: missingReason,
-                  }),
-                })
-                .pipe(Effect.mapError(mapStoreError("detach missing architect thread")));
-              if (closed === null) {
-                const current = yield* store
-                  .getBindingById(binding.bindingId)
-                  .pipe(Effect.mapError(mapStoreError("resolve missing architect close race")));
-                outcomes.push({
-                  bindingId: binding.bindingId,
-                  outcome:
-                    current === null
-                      ? "binding-missing-during-reconcile"
-                      : `binding-closed-concurrently:${current.status}`,
-                });
-                continue;
-              }
-              const revokeReceipt = yield* revokeArchitectCredential(binding.architectThreadId);
-              yield* appendPhase1Activity({
-                threadId: binding.coordinatorThreadId,
-                commandId: `architect-unbound:${binding.bindingId}`,
-                activityId: `architect-unbound:${binding.bindingId}`,
-                kind: ARCHITECT_UNBOUND_ACTIVITY,
-                summary: "Architect missing after restart",
-                payload: {
-                  bindingId: binding.bindingId,
-                  architectThreadId: binding.architectThreadId,
-                  reason: missingReason,
-                  replacedByBindingId: closed.replacedByBindingId,
-                  revokeReceipt,
-                },
-                createdAt: at,
-              });
-              yield* softDeleteArchitectThread(binding.architectThreadId);
-              outcomes.push({ bindingId: binding.bindingId, outcome: missingReason });
-              continue;
-            }
-          }
-          // Marker-gap replay derives missing wakes exclusively from marker
-          // absence: open without review marker → re-wake architect once;
-          // published without publish marker → wake coordinator once;
-          // answered-unpublished → no wake to anyone.
-          const reviews = yield* store
-            .listReviewsByCoordinator({ coordinatorThreadId: binding.coordinatorThreadId })
-            .pipe(Effect.mapError(mapStoreError("list architecture reviews")));
-          for (const review of reviews) {
-            if (review.status === "open") {
-              const detailOption = yield* loadArchitectActivityDetail(binding.architectThreadId);
-              if (
-                Option.isSome(detailOption) &&
-                needsReviewWakeReplay(
-                  detailOption.value.activities,
-                  binding.architectThreadId,
-                  review.reviewId,
-                )
-              ) {
-                yield* wakeArchitectForReview(review, binding, at);
-                outcomes.push({
-                  bindingId: binding.bindingId,
-                  outcome: `review-wake-replayed:${review.reviewId}`,
-                });
-              }
-            } else if (review.status === "published") {
-              const detailOption = yield* loadArchitectActivityDetail(binding.coordinatorThreadId);
-              if (
-                Option.isSome(detailOption) &&
-                needsPublishWakeReplay(
-                  detailOption.value.activities,
-                  binding.coordinatorThreadId,
-                  review.reviewId,
-                )
-              ) {
-                yield* wakeCoordinatorForPublish(review, binding, at);
-                outcomes.push({
-                  bindingId: binding.bindingId,
-                  outcome: `publish-wake-replayed:${review.reviewId}`,
-                });
-              }
-            }
-          }
-        }
-        // Binding-less architect-thread sweep: any `arch:` thread with no
-        // binding row at all is a race orphan (soft-deleted threads keep
-        // their terminal rows, so they are never touched here).
-        if (dependencies.getShellSnapshot !== undefined) {
-          const snapshot = yield* dependencies
-            .getShellSnapshot()
-            .pipe(Effect.mapError(orchestrationFailure("read shell snapshot")));
-          // A close is durable before credential revocation and the audit
-          // notice. If the process stops in that gap while the Architect
-          // shell is already missing, the active-binding loop cannot see it
-          // next time; replay the terminal audit from retained binding rows.
-          for (const coordinator of snapshot.threads) {
-            if (coordinator.id.startsWith("arch:")) continue;
-            const bindings = yield* store
-              .listBindingsByCoordinator(coordinator.id)
-              .pipe(Effect.mapError(mapStoreError("read architect binding history")));
-            for (const binding of bindings) {
-              if (
-                binding.status !== "detached" ||
-                binding.detachReason !== "thread-missing-after-restart"
-              ) {
-                continue;
-              }
-              const detailOption = yield* loadArchitectActivityDetail(coordinator.id);
-              if (Option.isNone(detailOption)) {
-                outcomes.push({
-                  bindingId: binding.bindingId,
-                  outcome: "missing-architect-close-audit-waiting-for-coordinator",
-                });
-                continue;
-              }
-              const unboundId = `architect-unbound:${binding.bindingId}`;
-              if (detailOption.value.activities.some((activity) => activity.id === unboundId)) {
-                continue;
-              }
-              const revokeReceipt = yield* revokeArchitectCredential(binding.architectThreadId);
-              yield* appendPhase1Activity({
-                threadId: binding.coordinatorThreadId,
-                commandId: unboundId,
-                activityId: unboundId,
-                kind: ARCHITECT_UNBOUND_ACTIVITY,
-                summary: "Architect missing after restart",
-                payload: {
-                  bindingId: binding.bindingId,
-                  architectThreadId: binding.architectThreadId,
-                  reason: "thread-missing-after-restart",
-                  replacedByBindingId: binding.replacedByBindingId,
-                  revokeReceipt,
-                },
-                createdAt: at,
-              });
-              outcomes.push({
-                bindingId: binding.bindingId,
-                outcome: "missing-architect-close-audit-replayed",
-              });
-            }
-          }
-          for (const thread of snapshot.threads) {
-            if (!thread.id.startsWith("arch:")) continue;
-            const known = yield* store
-              .getAnyBindingByArchitect(thread.id)
-              .pipe(Effect.mapError(mapStoreError("read architect binding")));
-            if (known !== null) {
-              if (known.status === "active") continue;
-              const receipt = yield* revokeArchitectCredential(ThreadId.make(thread.id));
-              yield* appendPhase1Activity({
-                threadId: known.coordinatorThreadId,
-                commandId: `architect-unbound:${known.bindingId}`,
-                activityId: `architect-unbound:${known.bindingId}`,
-                kind: ARCHITECT_UNBOUND_ACTIVITY,
-                summary: "Architect soft-deleted during restart reconciliation",
-                payload: {
-                  bindingId: known.bindingId,
-                  architectThreadId: thread.id,
-                  reason: known.status,
-                  replacedByBindingId: known.replacedByBindingId,
-                  revokeReceipt: receipt,
-                },
-                createdAt: at,
-              });
-              yield* softDeleteArchitectThread(ThreadId.make(thread.id));
-              outcomes.push({
-                bindingId: known.bindingId,
-                outcome: "terminal-thread-soft-deleted",
-              });
-              continue;
-            }
-            const receipt = yield* revokeArchitectCredential(ThreadId.make(thread.id));
-            yield* appendPhase1Activity({
-              threadId: ThreadId.make(thread.id),
-              commandId: `architect-unbound-orphan:${thread.id}`,
-              activityId: `architect-unbound-orphan:${thread.id}`,
-              kind: ARCHITECT_UNBOUND_ACTIVITY,
-              summary: "Binding-less architect thread soft-deleted",
-              payload: {
-                bindingId: null,
-                architectThreadId: thread.id,
-                reason: "binding-race-lost",
-                revokeReceipt: receipt,
-              },
-              createdAt: at,
-            });
-            yield* softDeleteArchitectThread(ThreadId.make(thread.id));
-            outcomes.push({ bindingId: thread.id, outcome: "orphan-soft-deleted" });
-          }
-        }
-        return outcomes;
-      }),
+      architectService.listArchitectureReviews(scope, input),
+    reconcileAfterRestart: () => architectService.reconcileAfterRestart(),
   };
 }
 
@@ -5582,5 +2330,5 @@ export const __testing = {
   validateOptions,
   publishFailureReasonToken,
   taskSearchBatchSize: TASK_SEARCH_BATCH_SIZE,
-  switchCommitLockCount: () => switchCommitEntries.size,
+  switchCommitLockCount,
 };
