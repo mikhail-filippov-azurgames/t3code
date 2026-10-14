@@ -148,6 +148,7 @@ type LegacyProviderRuntimeEvent = {
 function makeFakeCodexAdapter(
   provider: ProviderDriverKind = CODEX_DRIVER,
   supportsConversationRollback?: boolean,
+  persistsResumeCursorOnTurnEnd = provider === CLAUDE_AGENT_DRIVER,
 ) {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -285,6 +286,7 @@ function makeFakeCodexAdapter(
       sessionModelSwitch: "in-session",
       ...(supportsConversationRollback !== undefined ? { supportsConversationRollback } : {}),
       ...(provider === CODEX_DRIVER ? { promptlessTurnContinuation: true } : {}),
+      ...(persistsResumeCursorOnTurnEnd ? { persistsResumeCursorOnTurnEnd: true } : {}),
     },
     startSession,
     sendTurn,
@@ -996,6 +998,312 @@ it.effect("ProviderServiceLive rejects new sessions for disabled custom instance
 );
 
 const routing = makeProviderServiceLayer();
+
+const interruptCapabilityCodex = makeFakeCodexAdapter();
+const interruptCapabilityClaude = makeFakeCodexAdapter(CLAUDE_AGENT_DRIVER);
+const interruptCapabilityAdapter: ProviderAdapterShape<ProviderAdapterError> = {
+  ...interruptCapabilityCodex.adapter,
+  capabilities: {
+    ...interruptCapabilityCodex.adapter.capabilities,
+    interruptForwardsPersistedTurnId: true,
+  },
+};
+const interruptRouting = makeProviderServiceLayer({
+  registry: makeAdapterRegistryMock({
+    [CODEX_DRIVER]: interruptCapabilityAdapter,
+    [CLAUDE_AGENT_DRIVER]: interruptCapabilityClaude.adapter,
+  }),
+});
+
+interruptRouting.layer("ProviderServiceLive interrupt forwarding capability", (it) => {
+  it.effect("forwards the persisted active turn id for a capable non-Muse adapter", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-interrupt-capability-enabled");
+      const persistedTurnId = asTurnId("persisted-active-turn");
+
+      yield* provider.startSession(threadId, {
+        provider: CODEX_DRIVER,
+        providerInstanceId: codexInstanceId,
+        threadId,
+        cwd: fixtureCwd("interrupt-capability-enabled"),
+        runtimeMode: "full-access",
+      });
+      const binding = yield* directory.getBinding(threadId);
+      assert(Option.isSome(binding));
+      if (!Option.isSome(binding)) return;
+      yield* directory.upsert({
+        ...binding.value,
+        runtimePayload: { activeTurnId: String(persistedTurnId) },
+      });
+
+      yield* provider.interruptTurn({ threadId });
+
+      assert.deepEqual(interruptCapabilityCodex.interruptTurn.mock.calls, [
+        [threadId, persistedTurnId],
+      ]);
+    }),
+  );
+
+  it.effect("omits the persisted active turn id when the capability is omitted", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const threadId = asThreadId("thread-interrupt-capability-omitted");
+      const persistedTurnId = asTurnId("persisted-active-turn-omitted");
+
+      yield* provider.startSession(threadId, {
+        provider: CLAUDE_AGENT_DRIVER,
+        providerInstanceId: claudeAgentInstanceId,
+        threadId,
+        cwd: fixtureCwd("interrupt-capability-omitted"),
+        runtimeMode: "full-access",
+      });
+      const binding = yield* directory.getBinding(threadId);
+      assert(Option.isSome(binding));
+      if (!Option.isSome(binding)) return;
+      yield* directory.upsert({
+        ...binding.value,
+        runtimePayload: { activeTurnId: String(persistedTurnId) },
+      });
+
+      yield* provider.interruptTurn({ threadId });
+
+      assert.deepEqual(interruptCapabilityClaude.interruptTurn.mock.calls, [[threadId, undefined]]);
+    }),
+  );
+
+  it.effect("prioritizes explicit turn ids with and without the capability", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService.ProviderService;
+      const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+      const explicitTurnId = asTurnId("explicit-interrupt-turn");
+      const cases = [
+        {
+          provider: CODEX_DRIVER,
+          providerInstanceId: codexInstanceId,
+          adapter: interruptCapabilityCodex,
+          threadId: asThreadId("thread-interrupt-explicit-capable"),
+          cwd: "interrupt-explicit-capable",
+        },
+        {
+          provider: CLAUDE_AGENT_DRIVER,
+          providerInstanceId: claudeAgentInstanceId,
+          adapter: interruptCapabilityClaude,
+          threadId: asThreadId("thread-interrupt-explicit-omitted"),
+          cwd: "interrupt-explicit-omitted",
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const persistedTurnId = asTurnId(`persisted-${String(testCase.threadId)}`);
+        yield* provider.startSession(testCase.threadId, {
+          provider: testCase.provider,
+          providerInstanceId: testCase.providerInstanceId,
+          threadId: testCase.threadId,
+          cwd: fixtureCwd(testCase.cwd),
+          runtimeMode: "full-access",
+        });
+        const binding = yield* directory.getBinding(testCase.threadId);
+        assert(Option.isSome(binding));
+        if (!Option.isSome(binding)) return;
+        yield* directory.upsert({
+          ...binding.value,
+          runtimePayload: { activeTurnId: String(persistedTurnId) },
+        });
+
+        yield* provider.interruptTurn({
+          threadId: testCase.threadId,
+          turnId: explicitTurnId,
+        });
+
+        assert.deepEqual(testCase.adapter.interruptTurn.mock.calls.at(-1), [
+          testCase.threadId,
+          explicitTurnId,
+        ]);
+      }
+    }),
+  );
+});
+
+const resumeCursorCapabilityDriver = ProviderDriverKind.make("resume-cursor-capability");
+const resumeCursorOmittedDriver = ProviderDriverKind.make("resume-cursor-omitted");
+const resumeCursorFailureDriver = ProviderDriverKind.make("resume-cursor-lookup-failure");
+const resumeCursorCapabilityInstance = ProviderInstanceId.make("resume-cursor-capability");
+const resumeCursorOmittedInstance = ProviderInstanceId.make("resume-cursor-omitted");
+const resumeCursorFailureInstance = ProviderInstanceId.make("resume-cursor-lookup-failure");
+const resumeCursorCapableFake = makeFakeCodexAdapter(resumeCursorCapabilityDriver, undefined, true);
+const resumeCursorOmittedFake = makeFakeCodexAdapter(resumeCursorOmittedDriver);
+const resumeCursorFailureFake = makeFakeCodexAdapter(resumeCursorFailureDriver);
+const resumeCursorCapabilityRouting = makeProviderServiceLayer({
+  registry: makeAdapterRegistryMock({
+    [resumeCursorCapabilityDriver]: resumeCursorCapableFake.adapter,
+    [resumeCursorOmittedDriver]: resumeCursorOmittedFake.adapter,
+  }),
+});
+
+resumeCursorCapabilityRouting.layer(
+  "ProviderServiceLive turn-end resume cursor capability",
+  (it) => {
+    it.effect("persists the adapter cursor for a capable non-Claude provider", () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId("thread-resume-cursor-capability");
+        const initial = yield* provider.startSession(threadId, {
+          provider: resumeCursorCapabilityDriver,
+          providerInstanceId: resumeCursorCapabilityInstance,
+          threadId,
+          cwd: fixtureCwd("resume-cursor-capability"),
+          runtimeMode: "full-access",
+        });
+        const cursor = { nativeBoundary: "capable-background-turn" };
+        resumeCursorCapableFake.updateSession(threadId, (session) => ({
+          ...session,
+          resumeCursor: cursor,
+        }));
+        resumeCursorCapableFake.listSessions.mockClear();
+
+        const completed = yield* provider.streamEvents.pipe(
+          Stream.filter((event) => event.eventId === "evt-resume-cursor-capability"),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        resumeCursorCapableFake.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-resume-cursor-capability"),
+          provider: resumeCursorCapabilityDriver,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId: asTurnId("background-capable-turn"),
+          payload: { state: "completed" },
+        });
+        yield* Fiber.join(completed);
+
+        const binding = yield* directory.getBinding(threadId);
+        assert(Option.isSome(binding));
+        if (!Option.isSome(binding)) return;
+        assert.deepEqual(binding.value.resumeCursor, cursor);
+        assert.notDeepEqual(binding.value.resumeCursor, initial.resumeCursor);
+        assert.equal(resumeCursorCapableFake.listSessions.mock.calls.length, 1);
+      }),
+    );
+
+    it.effect("does not list sessions or persist a cursor when capability is omitted", () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId("thread-resume-cursor-omitted");
+        const initial = yield* provider.startSession(threadId, {
+          provider: resumeCursorOmittedDriver,
+          providerInstanceId: resumeCursorOmittedInstance,
+          threadId,
+          cwd: fixtureCwd("resume-cursor-omitted"),
+          runtimeMode: "full-access",
+        });
+        const cursor = { nativeBoundary: "omitted-capability-turn" };
+        resumeCursorOmittedFake.updateSession(threadId, (session) => ({
+          ...session,
+          resumeCursor: cursor,
+        }));
+        resumeCursorOmittedFake.listSessions.mockClear();
+
+        const completed = yield* provider.streamEvents.pipe(
+          Stream.filter((event) => event.eventId === "evt-resume-cursor-omitted"),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        resumeCursorOmittedFake.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-resume-cursor-omitted"),
+          provider: resumeCursorOmittedDriver,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId: asTurnId("background-omitted-turn"),
+          payload: { state: "completed" },
+        });
+        yield* Fiber.join(completed);
+
+        const binding = yield* directory.getBinding(threadId);
+        assert(Option.isSome(binding));
+        if (!Option.isSome(binding)) return;
+        assert.deepEqual(binding.value.resumeCursor, initial.resumeCursor);
+        assert.equal(resumeCursorOmittedFake.listSessions.mock.calls.length, 0);
+      }),
+    );
+  },
+);
+
+let resumeCursorLookupUnavailable = false;
+const resumeCursorFailureBackingRegistry = makeAdapterRegistryMock({
+  [resumeCursorFailureDriver]: resumeCursorFailureFake.adapter,
+});
+const resumeCursorFailureRegistry: ProviderAdapterRegistry.ProviderAdapterRegistry["Service"] = {
+  ...resumeCursorFailureBackingRegistry,
+  getByInstance: (instanceId) =>
+    resumeCursorLookupUnavailable
+      ? Effect.fail(new ProviderUnsupportedError({ provider: resumeCursorFailureDriver }))
+      : resumeCursorFailureBackingRegistry.getByInstance(instanceId),
+};
+const resumeCursorFailureRouting = makeProviderServiceLayer({
+  registry: resumeCursorFailureRegistry,
+});
+
+resumeCursorFailureRouting.layer("ProviderServiceLive turn-end cursor lookup recovery", (it) => {
+  it.effect(
+    "continues publishing a non-capable provider event when its adapter is unavailable",
+    () =>
+      Effect.gen(function* () {
+        const provider = yield* ProviderService.ProviderService;
+        const directory = yield* ProviderSessionDirectory.ProviderSessionDirectory;
+        const threadId = asThreadId("thread-resume-cursor-lookup-failure");
+        const initial = yield* provider.startSession(threadId, {
+          provider: resumeCursorFailureDriver,
+          providerInstanceId: resumeCursorFailureInstance,
+          threadId,
+          cwd: fixtureCwd("resume-cursor-lookup-failure"),
+          runtimeMode: "full-access",
+        });
+        const cursor = { nativeBoundary: "unavailable-adapter-turn" };
+        resumeCursorFailureFake.updateSession(threadId, (session) => ({
+          ...session,
+          resumeCursor: cursor,
+        }));
+        resumeCursorFailureFake.listSessions.mockClear();
+
+        const completed = yield* provider.streamEvents.pipe(
+          Stream.filter((event) => event.eventId === "evt-resume-cursor-lookup-failure"),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        resumeCursorLookupUnavailable = true;
+        resumeCursorFailureFake.emit({
+          type: "turn.completed",
+          eventId: asEventId("evt-resume-cursor-lookup-failure"),
+          provider: resumeCursorFailureDriver,
+          createdAt: "2026-01-01T00:00:00.000Z",
+          threadId,
+          turnId: asTurnId("background-lookup-failure-turn"),
+          payload: { state: "completed" },
+        });
+        yield* Fiber.join(completed);
+        resumeCursorLookupUnavailable = false;
+
+        const binding = yield* directory.getBinding(threadId);
+        assert(Option.isSome(binding));
+        if (!Option.isSome(binding)) return;
+        assert.deepEqual(binding.value.resumeCursor, initial.resumeCursor);
+        assert.equal(resumeCursorFailureFake.listSessions.mock.calls.length, 0);
+      }),
+  );
+});
 
 const customCompactionDriver = ProviderDriverKind.make("custom-compaction-provider");
 const nativeCompactionInstanceId = ProviderInstanceId.make("native-compaction");

@@ -55,6 +55,14 @@ export interface ProviderAdapterCapabilities {
   /** False when a queued follow-up cannot be layered as a second running turn
       on one provider session. Omitted means the adapter can overlap turns. */
   readonly overlapsRunningTurns?: boolean;
+  /** Forwards a persisted active turn id for interrupt. Omitted keeps session-level behavior. */
+  readonly interruptForwardsPersistedTurnId?: boolean;
+  /** Restarts the session on any model selection change, not only a model change.
+      Omitted means false; the session then restarts only when the model changes
+      and sessionModelSwitch is unsupported. */
+  readonly restartOnModelSelectionChange?: boolean;
+  /** Persists the adapter cursor on turn end. Omitted means false. */
+  readonly persistsResumeCursorOnTurnEnd?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

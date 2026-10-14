@@ -1383,35 +1383,31 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         canonicalEvent.type === "turn.aborted"
       ) {
         yield* recordTurnCompletedAnalytics(source, canonicalEvent);
-        if (source.provider === "claudeAgent") {
-          // Background Claude turns have no sendTurn response to persist their
-          // new native boundary. Save it before clients can checkpoint the turn.
-          yield* Effect.gen(function* () {
-            const adapter = yield* registry.getByInstance(source.instanceId);
-            const session = (yield* adapter.listSessions()).find(
-              (session) => session.threadId === canonicalEvent.threadId,
-            );
-            if (session?.resumeCursor !== undefined) {
-              const binding = yield* directory.getBinding(session.threadId);
-              if (
-                Option.isNone(binding) ||
-                binding.value.providerInstanceId !== source.instanceId
-              ) {
-                return;
-              }
-              yield* directory.upsert({
-                threadId: session.threadId,
-                provider: source.provider,
-                providerInstanceId: source.instanceId,
-                resumeCursor: session.resumeCursor,
-              });
-            }
-          }).pipe(
-            Effect.catch((cause) =>
-              Effect.logWarning("failed to persist Claude turn resume state", { cause }),
-            ),
+        // Capable adapters may finish background turns without a sendTurn
+        // response to persist their native boundary before clients checkpoint.
+        yield* Effect.gen(function* () {
+          const adapter = yield* registry.getByInstance(source.instanceId);
+          if (!adapter.capabilities.persistsResumeCursorOnTurnEnd) return;
+          const session = (yield* adapter.listSessions()).find(
+            (session) => session.threadId === canonicalEvent.threadId,
           );
-        }
+          if (session?.resumeCursor !== undefined) {
+            const binding = yield* directory.getBinding(session.threadId);
+            if (Option.isNone(binding) || binding.value.providerInstanceId !== source.instanceId) {
+              return;
+            }
+            yield* directory.upsert({
+              threadId: session.threadId,
+              provider: source.provider,
+              providerInstanceId: source.instanceId,
+              resumeCursor: session.resumeCursor,
+            });
+          }
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("failed to persist turn resume state", { cause }),
+          ),
+        );
       } else if (canonicalEvent.type === "session.exited") {
         yield* clearTurnAnalyticsSession(source.instanceId, canonicalEvent.threadId);
       }
@@ -2222,11 +2218,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         });
         // The reactor interrupts by session (orchestration turn ids are not
         // provider turn ids in general), so input.turnId is usually absent.
-        // For Muse the persisted active turn id IS the provider (MSP) turn
-        // id end to end, and after a restart the fresh adapter record no
-        // longer knows it — forward it so a zombie turn can be named and
-        // settled instead of failing the Stop with missing_run. Other
-        // providers keep the session-level interrupt unchanged.
+        // Adapters declaring this capability use the persisted active turn id
+        // as their provider turn id, so zombie turns settle after restart
+        // instead of failing Stop with missing_run. Others keep session-level
+        // interrupts.
         const bindingOption = yield* directory.getBinding(input.threadId);
         const persistedActiveTurnId = readPersistedActiveTurnId(
           Option.getOrUndefined(bindingOption)?.runtimePayload,
@@ -2234,7 +2229,9 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
         yield* routed.adapter.interruptTurn(
           routed.threadId,
           input.turnId ??
-            (routed.adapter.provider === "museCode" ? persistedActiveTurnId : undefined),
+            (routed.adapter.capabilities.interruptForwardsPersistedTurnId
+              ? persistedActiveTurnId
+              : undefined),
         );
         yield* analytics.record("provider.turn.interrupted", {
           provider: routed.adapter.provider,
