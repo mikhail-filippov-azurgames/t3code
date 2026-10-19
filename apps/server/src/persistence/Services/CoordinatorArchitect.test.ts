@@ -28,7 +28,7 @@ const repositoryLayer = it.layer(
 const at = "2026-09-28T12:00:00.000Z";
 
 const routingEvidence = {
-  policyRef: "oc://doc/3900df61-9dd5-4621-9278-34ac20d60648@10",
+  policyRef: "oc://doc/fe000000-0000-4000-8000-000000000001@10",
   policyRevision: 10,
   role: "architecture",
   taskEffort: "high",

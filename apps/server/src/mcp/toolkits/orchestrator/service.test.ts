@@ -1283,7 +1283,7 @@ describe("OrchestratorMcpService", () => {
       const harness = makeHarness();
       const prompt = "Implement the accepted widget contract.\r\nСохрани исходные байты.\n  ";
       const handoff = {
-        contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
+        contractRef: "oc://doc/fe000000-0000-4000-8000-000000000002",
         requiredRevision: 2,
         implementsRevision: 2,
         stage: "implementation",
@@ -1293,7 +1293,7 @@ describe("OrchestratorMcpService", () => {
         acceptance: ["focused tests pass"],
         outputs: ["child result"],
         evidence: ["test log"],
-        predecessorRefs: ["oc://doc/1a02392b-6ad7-4d21-aae9-dfaa911c8831"],
+        predecessorRefs: ["oc://doc/fe000000-0000-4000-8000-000000000003"],
       } as const;
       const result = yield* harness.service.delegateTask(
         makeScope(),
@@ -1367,7 +1367,7 @@ describe("OrchestratorMcpService", () => {
           scope,
           delegateInput({
             handoff: {
-              contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
+              contractRef: "oc://doc/fe000000-0000-4000-8000-000000000002",
               requiredRevision: 2,
               implementsRevision: 2,
               stage: "implementation",
@@ -1389,7 +1389,7 @@ describe("OrchestratorMcpService", () => {
   it.effect("refuses secret prompts, titles, and handoff text before any delegation writes", () =>
     Effect.gen(function* () {
       const handoff = {
-        contractRef: "oc://doc/54218669-e04a-440e-96eb-f9117f918957",
+        contractRef: "oc://doc/fe000000-0000-4000-8000-000000000002",
         requiredRevision: 2,
         implementsRevision: 2,
         stage: "implementation",

@@ -4,8 +4,8 @@ import { openContextDocMenuItems, parseOpenContextDocHref } from "./openContextD
 
 describe("open context document links", () => {
   it.each([
-    ["oc://doc/84bbfd7b-3caa-4ce8-bef7-33e130fd7652", "84bbfd7b-3caa-4ce8-bef7-33e130fd7652"],
-    ["oc://doc/84bbfd7b-3caa-4ce8-bef7-33e130fd7652/", "84bbfd7b-3caa-4ce8-bef7-33e130fd7652"],
+    ["oc://doc/fe000000-0000-4000-8000-000000000004", "fe000000-0000-4000-8000-000000000004"],
+    ["oc://doc/fe000000-0000-4000-8000-000000000004/", "fe000000-0000-4000-8000-000000000004"],
     ["OC://DOC/plain-token", "plain-token"],
   ])("parses %s to its stable id", (href, stableId) => {
     expect(parseOpenContextDocHref(href)).toEqual({
@@ -15,9 +15,9 @@ describe("open context document links", () => {
   });
 
   it("resolves a versioned document link by stable id while preserving its revision for copying", () => {
-    expect(parseOpenContextDocHref("oc://doc/84bbfd7b-3caa-4ce8-bef7-33e130fd7652@5")).toEqual({
-      href: "oc://doc/84bbfd7b-3caa-4ce8-bef7-33e130fd7652@5",
-      stableId: "84bbfd7b-3caa-4ce8-bef7-33e130fd7652",
+    expect(parseOpenContextDocHref("oc://doc/fe000000-0000-4000-8000-000000000004@5")).toEqual({
+      href: "oc://doc/fe000000-0000-4000-8000-000000000004@5",
+      stableId: "fe000000-0000-4000-8000-000000000004",
     });
   });
 

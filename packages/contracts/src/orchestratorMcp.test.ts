@@ -686,7 +686,7 @@ describe("phase 1 coordinator/architect contracts", () => {
       options: [{ id: "reasoningEffort", value: "max" }],
     } as const;
     const routingEvidence = {
-      policyRef: "oc://doc/3900df61-9dd5-4621-9278-34ac20d60648@10",
+      policyRef: "oc://doc/fe000000-0000-4000-8000-000000000001@10",
       policyRevision: 10,
       role: "architecture",
       taskEffort: "high",
@@ -814,7 +814,7 @@ describe("phase 1 coordinator/architect contracts", () => {
   it("decodes routing evidence naming the current accepted policy revision", () => {
     const decodeEvidence = Schema.decodeUnknownSync(CoordinatorArchitectRoutingEvidence);
     const evidence = decodeEvidence({
-      policyRef: "oc://doc/3900df61-9dd5-4621-9278-34ac20d60648@10",
+      policyRef: "oc://doc/fe000000-0000-4000-8000-000000000001@10",
       policyRevision: 10,
       role: "architecture",
       taskEffort: "high",
@@ -830,14 +830,14 @@ describe("phase 1 coordinator/architect contracts", () => {
         },
       ],
     });
-    expect(evidence.policyRef).toBe("oc://doc/3900df61-9dd5-4621-9278-34ac20d60648@10");
+    expect(evidence.policyRef).toBe("oc://doc/fe000000-0000-4000-8000-000000000001@10");
     expect(evidence.policyRevision).toBe(10);
   });
 
   it("rejects a policyRef whose @revision suffix disagrees with policyRevision", () => {
     const decodeEvidence = Schema.decodeUnknownSync(CoordinatorArchitectRoutingEvidence);
     const evidence = {
-      policyRef: "oc://doc/3900df61-9dd5-4621-9278-34ac20d60648@10",
+      policyRef: "oc://doc/fe000000-0000-4000-8000-000000000001@10",
       policyRevision: 11,
       role: "architecture",
       taskEffort: "high",
@@ -857,7 +857,7 @@ describe("phase 1 coordinator/architect contracts", () => {
     expect(() =>
       decodeEvidence({
         ...evidence,
-        policyRef: "oc://doc/3900df61-9dd5-4621-9278-34ac20d60648@11",
+        policyRef: "oc://doc/fe000000-0000-4000-8000-000000000001@11",
         policyRevision: 10,
       }),
     ).toThrow();
@@ -867,7 +867,7 @@ describe("phase 1 coordinator/architect contracts", () => {
     const decodeEvidence = Schema.decodeUnknownSync(CoordinatorArchitectRoutingEvidence);
     expect(() =>
       decodeEvidence({
-        policyRef: "oc://doc/3900df61-9dd5-4621-9278-34ac20d60648",
+        policyRef: "oc://doc/fe000000-0000-4000-8000-000000000001",
         policyRevision: 10,
         role: "architecture",
         taskEffort: "high",
