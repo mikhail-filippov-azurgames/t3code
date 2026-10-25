@@ -4,6 +4,9 @@
 подключает или настраивает, своей логики в upstream-файлах нет. Каждая правка
 записывается в таблицу ниже.
 
+Исключение для двух переносимых исправлений Muse описано в отдельной таблице
+ниже: их логика остаётся в upstream-пакете провайдера, без копии адаптера в ft3.
+
 Цель: desktop ft3-v2 работает одновременно со старым ft3 desktop и официальным
 T3 Code без общих userData, single-instance lock, AppUserModelID и URL-схемы.
 single-instance lock привязан к userData, поэтому отдельной правки не требует.
@@ -52,3 +55,29 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
 Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
 не используют. Идентификаторы миграций в двух журналах независимы.
+
+## Исправления Muse в стеке ft3
+
+Перед успешным завершением адаптер сверяет потоковый текст с `session/read`:
+восстанавливает только совместимые хвосты и отсутствующие сообщения. Полнота
+подтверждается только непротиворечивой историей с завершёнными сообщениями;
+ошибка чтения сохраняет результат как `unavailable`, не блокируя завершение.
+
+В V2 не было поля полноты. Необязательный `outputStatus` в provider turn
+сохраняется существующей проекцией и JSON-контрактом; отсутствие поля у других
+провайдеров не означает подтверждённую полноту. Дополнительная SQL-миграция
+не требуется. `providerTurnId` является id оркестратора, поэтому для interrupt
+после потери in-memory active отдельно передаётся сохранённый native id.
+
+| Upstream-файл                                                                     | Правка                                                                          | Зачем                                                                                       |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `packages/provider-muse/src/server/adapter.ts`                                    | сверка истории перед terminal и fallback interrupt по native id                 | полнота текста и Stop после resume                                                          |
+| `packages/provider-muse/src/server/protocol.ts`                                   | необязательный `history.mode`                                                   | отличать исключённую историю от полной                                                      |
+| `packages/contracts/src/orchestrationV2.ts`                                       | необязательный `OrchestrationV2ProviderTurn.outputStatus`                       | сохранять `available` / `empty` / `unavailable` в результате хода                           |
+| `packages/provider-core/src/server/ProviderAdapter.ts`                            | необязательный `ProviderAdapterV2InterruptInput.nativeTurnId`                   | передавать native identity без разбора внутренних id                                        |
+| `apps/server/src/orchestration-v2/ProviderTurnControlService.ts`                  | native id из сохранённого turn в обоих interrupt-вызовах                        | fallback после потери состояния адаптера                                                    |
+| `packages/provider-muse/src/server/adapter.test.ts`                               | регрессии восстановления текста, недостоверной истории и interrupt после resume | воспроизводимость обеих ошибок                                                              |
+| `packages/contracts/src/orchestrationV2.test.ts`                                  | JSON round-trip с полем полноты и без него                                      | обратная совместимость результата                                                           |
+| `apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts`             | проверки передачи native id при Stop и restart                                  | доставка сохранённого native id                                                             |
+| `apps/server/src/orchestration-v2/Adapters/MuseAdapterV2.testkit.ts`              | явная RPC-ошибка для незаписанного чтения истории                               | старые live-записи не подменяются выдуманной историей; записанные запросы остаются строгими |
+| `apps/server/src/orchestration-v2/testkit/MuseReplayFixtures.integration.test.ts` | проверка `unavailable` в сохранённой проекции simple replay                     | полнота не выводится из одного terminal                                                     |

@@ -224,6 +224,9 @@ export const layer: Layer.Layer<
             .interruptTurn({
               providerThread: loaded.providerThread,
               providerTurnId: loaded.providerTurn.id,
+              ...(loaded.providerTurn.nativeTurnRef?.nativeId
+                ? { nativeTurnId: loaded.providerTurn.nativeTurnRef.nativeId }
+                : {}),
               requestRuntimeRestart: true,
             })
             .pipe(
@@ -293,6 +296,9 @@ export const layer: Layer.Layer<
           yield* loaded.session.value.interruptTurn({
             providerThread: loaded.providerThread,
             providerTurnId: loaded.providerTurn.id,
+            ...(loaded.providerTurn.nativeTurnRef?.nativeId
+              ? { nativeTurnId: loaded.providerTurn.nativeTurnRef.nativeId }
+              : {}),
           });
 
           for (let remaining = 1_000; remaining > 0; remaining -= 1) {
