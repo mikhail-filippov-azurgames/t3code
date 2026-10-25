@@ -8,6 +8,7 @@ import {
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
+  OrchestrationV2ProviderTurnJson,
   OrchestrationV2RpcSchemas,
   OrchestrationV2Subagent,
   OrchestrationV2ThreadShellJson,
@@ -35,6 +36,27 @@ const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
 );
 
 describe("orchestration V2 contracts", () => {
+  it("round-trips optional provider turn output completeness", () => {
+    const decode = Schema.decodeUnknownSync(OrchestrationV2ProviderTurnJson);
+    const encode = Schema.encodeSync(OrchestrationV2ProviderTurnJson);
+    const turn = {
+      id: "turn-1",
+      providerThreadId: "provider-thread-1",
+      nodeId: "node-1",
+      runAttemptId: null,
+      nativeTurnRef: null,
+      ordinal: 1,
+      status: "completed",
+      startedAt: null,
+      completedAt: null,
+    };
+    for (const outputStatus of ["available", "empty", "unavailable", undefined]) {
+      const payload = { ...turn, ...(outputStatus ? { outputStatus } : {}) };
+      expect(encode(decode(payload))).toEqual(payload);
+    }
+    expect(() => decode({ ...turn, outputStatus: "unknown" })).toThrow();
+  });
+
   it("decodes thread event types from a newer server as skippable items", () => {
     const decodeWireItems = Schema.decodeUnknownSync(
       Schema.toCodecJson(Schema.Array(OrchestrationV2RpcSchemas.subscribeThread.output)),

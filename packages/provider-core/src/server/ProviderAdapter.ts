@@ -441,6 +441,7 @@ export interface ProviderAdapterV2SteerInput {
 export interface ProviderAdapterV2InterruptInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly providerTurnId: ProviderTurnId;
+  readonly nativeTurnId?: string;
   readonly requestRuntimeRestart?: boolean;
 }
 

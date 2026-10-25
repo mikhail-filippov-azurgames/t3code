@@ -380,6 +380,215 @@ const approval = (turnId: string) => ({
 });
 
 describe("MuseAdapterV2", () => {
+  it.effect.each(["inline", "snapshot", "anchoredSnapshot"] as const)(
+    "reconciles completed output from %s history before closing the turn",
+    (mode) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        const { nativeId } = yield* startConversation(harness, fake);
+        const live: MuseItem = {
+          itemId: "answer",
+          turnId: nativeId,
+          kind: "agentMessage",
+          revision: 1,
+          status: "inProgress",
+          text: "Hel",
+        };
+        yield* fake.emit("item/started", { turnId: nativeId, item: live });
+        const first = yield* harness.takeEvent("message.updated");
+        yield* fake.emit("item/delta", { turnId: nativeId, itemId: live.itemId, delta: "lo" });
+        const items = [
+          { ...live, revision: 2, status: "completed", text: "Hello world" },
+          { ...live, itemId: "lost-answer", status: "completed", text: "Recovered message" },
+          { ...live, itemId: "other-turn", turnId: "older-turn", text: "Unrelated" },
+        ];
+        fake.queueResponse("session/read", {
+          session: { sessionId: harness.providerThread.nativeThreadRef!.nativeId },
+          history:
+            mode === "inline"
+              ? { mode, items }
+              : { mode, items: null, snapshot: { state: { items } } },
+        });
+        yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+        const completed = yield* harness.takeEvent(
+          "provider_turn.updated",
+          (event) => event.providerTurn.status === "completed",
+        );
+        const messages = harness.allEvents.filter((event) => event.type === "message.updated");
+        assert.deepStrictEqual(
+          messages.map((event) => [event.message.text, event.message.streaming]),
+          [
+            ["Hel", true],
+            ["Hello world", false],
+            ["Recovered message", false],
+          ],
+        );
+        assert.strictEqual(messages[1]!.message.id, first.message.id);
+        assert.propertyVal(completed.providerTurn, "outputStatus", "available");
+        assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+        assert.strictEqual((yield* fake.takeCall("session/read")).params.excludeItems, false);
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([
+    "conflicting-text",
+    "missing-item",
+    "missing-fallback",
+    "truncated",
+    "in-progress",
+    "ambiguous-owner",
+    "missing-history",
+    "excluded-history",
+    "duplicate-item",
+    "wrong-session",
+    "read-failed",
+    "read-timeout",
+  ] as const)("leaves output unavailable for %s history", (failure) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      const live: MuseItem = {
+        itemId: "answer",
+        turnId: nativeId,
+        kind: "agentMessage",
+        revision: 1,
+        status: "inProgress",
+        ...(failure === "missing-fallback" ? { fallbackText: "Live text" } : { text: "Live text" }),
+      };
+      yield* fake.emit("item/started", { turnId: nativeId, item: live });
+      yield* harness.takeEvent("message.updated");
+      const item: MuseItem = {
+        ...live,
+        revision: 2,
+        status: failure === "in-progress" ? "inProgress" : "completed",
+        text: failure === "conflicting-text" ? "Different text" : "Live text with tail",
+        ...(failure === "truncated" ? { truncated: true } : {}),
+        ...(failure === "ambiguous-owner" ? { turnId: null } : {}),
+      };
+      fake.queueResponse(
+        "session/read",
+        failure === "read-failed"
+          ? new Error("History unavailable")
+          : failure === "read-timeout"
+            ? pendingPromise<Record<string, unknown>>().promise
+            : {
+                session: {
+                  sessionId:
+                    failure === "wrong-session"
+                      ? "other-session"
+                      : harness.providerThread.nativeThreadRef!.nativeId,
+                },
+                ...(failure === "missing-history"
+                  ? {}
+                  : {
+                      history: {
+                        ...(failure === "excluded-history" ? { mode: "none" } : {}),
+                        items: ["missing-item", "missing-fallback"].includes(failure)
+                          ? []
+                          : failure === "duplicate-item"
+                            ? [item, { ...item, text: "Conflicting history" }]
+                            : [item],
+                      },
+                    }),
+              },
+      );
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      if (failure === "read-timeout") {
+        yield* fake.takeCall("session/read");
+        yield* TestClock.adjust(30_000);
+      }
+      const completed = yield* harness.takeEvent(
+        "provider_turn.updated",
+        (event) => event.providerTurn.status === "completed",
+      );
+      assert.propertyVal(completed.providerTurn, "outputStatus", "unavailable");
+      const last = harness.allEvents.findLast((event) => event.type === "message.updated");
+      assert.strictEqual(
+        last?.message.text,
+        ["truncated", "in-progress"].includes(failure) ? "Live text with tail" : "Live text",
+      );
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+      assert.strictEqual(fake.closeCount(), 0);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each(["empty", "fallbackText"] as const)(
+    "marks verified %s history correctly",
+    (kind) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        const { nativeId } = yield* startConversation(harness, fake);
+        if (kind === "fallbackText")
+          fake.setHistory([
+            {
+              itemId: "answer",
+              turnId: nativeId,
+              kind: "agentMessage",
+              revision: 1,
+              status: "completed",
+              fallbackText: "Recovered fallback",
+            },
+          ]);
+        yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+        const completed = yield* harness.takeEvent(
+          "provider_turn.updated",
+          (event) => event.providerTurn.status === "completed",
+        );
+        assert.propertyVal(
+          completed.providerTurn,
+          "outputStatus",
+          kind === "empty" ? "empty" : "available",
+        );
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect("interrupts a saved native turn after resume without an active turn", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake, INSTANCE_ID, "saved-session");
+      const saved = {
+        providerThread: harness.providerThread,
+        providerTurnId: ProviderTurnId.make("saved-orchestration-turn"),
+        nativeTurnId: "saved-native-turn",
+      };
+      const missingId = yield* harness.runtime
+        .interruptTurn({
+          providerThread: saved.providerThread,
+          providerTurnId: saved.providerTurnId,
+        })
+        .pipe(Effect.result);
+      const wrongThread = yield* harness.runtime
+        .interruptTurn({
+          ...saved,
+          providerThread: {
+            ...saved.providerThread,
+            nativeThreadRef: {
+              driver: MUSE_PROVIDER,
+              nativeId: "other-session",
+              strength: "strong",
+            },
+          },
+        })
+        .pipe(Effect.result);
+      assert.strictEqual(missingId._tag, "Failure");
+      assert.strictEqual(wrongThread._tag, "Failure");
+      assert.isFalse(fake.calls.some((call) => call.method === "turn/interrupt"));
+      yield* harness.runtime.interruptTurn(saved);
+      assert.deepStrictEqual(
+        fake.calls.filter((call) => call.method === "turn/interrupt").map((call) => call.params),
+        [{ sessionId: "saved-session", turnId: "saved-native-turn" }],
+      );
+      assert.isFalse(harness.allEvents.some((event) => event.type === "turn.terminal"));
+      yield* startConversation(harness, fake);
+      const wrongActive = yield* harness.runtime.interruptTurn(saved).pipe(Effect.result);
+      assert.strictEqual(wrongActive._tag, "Failure");
+      assert.strictEqual(fake.calls.filter((call) => call.method === "turn/interrupt").length, 1);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("connects the thread's MCP credential on native start and resume", () =>
     Effect.gen(function* () {
       yield* (yield* McpProviderSessions.McpProviderSessions).set({

@@ -247,6 +247,8 @@ const nativeRef = (nativeId: string) => ({
   nativeId,
   strength: "strong" as const,
 });
+const itemText = (item: MuseItem): string =>
+  item.text ?? item.summary?.join("\n") ?? item.fallbackText ?? "";
 const recordSchema = Schema.Record(Schema.String, Schema.Unknown);
 const INFORMATIONAL_NOTIFICATIONS = new Set([
   "session/contextUsage",
@@ -730,7 +732,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           yield* publishNativeSubagent(turn, item, base, status, time);
           return;
         }
-        const text = item.text ?? item.summary?.join("\n") ?? item.fallbackText ?? "";
+        const text = itemText(item);
         let turnItem: OrchestrationV2TurnItem;
         if (item.kind === "agentMessage") {
           const messageId = idAllocator.derive.messageFromProviderItem({
@@ -1060,6 +1062,81 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
       });
       const owns = (turn: ActiveTurn, turnId: string) =>
         turnId === turn.nativeId || turn.joined.has(turnId);
+      const reconcileTurnOutput = Effect.fnUntraced(function* (
+        turn: ActiveTurn,
+      ): Effect.fn.Return<NonNullable<OrchestrationV2ProviderTurn["outputStatus"]>> {
+        // History failure must not prevent terminal delivery.
+        const read = yield* Effect.tryPromise(() =>
+          host.connection.request("session/read", {
+            sessionId: nativeSessionId,
+            excludeItems: false,
+          }),
+        ).pipe(
+          Effect.timeout(options.requestTimeoutMs ?? 30_000),
+          Effect.flatMap((value) => decode(MuseSessionResult, value)),
+          Effect.option,
+        );
+        if (Option.isNone(read) || read.value.session.sessionId !== nativeSessionId)
+          return "unavailable";
+        const history = read.value.history;
+        const items =
+          history?.mode === "inline"
+            ? history.items
+            : history?.mode === "snapshot" || history?.mode === "anchoredSnapshot"
+              ? history.snapshot?.state.items
+              : history?.mode === undefined
+                ? (history?.items ?? history?.snapshot?.state.items)
+                : undefined;
+        if (!items) return "unavailable";
+        let complete = true;
+        let hasText = false;
+        const matched = new Set<string>();
+        const seen = new Set<string>();
+        const duplicates = new Set<string>();
+        for (const item of items) {
+          if (seen.has(item.itemId)) duplicates.add(item.itemId);
+          seen.add(item.itemId);
+        }
+        for (const item of items) {
+          if (!["agentMessage", "toolCall", "userShell"].includes(item.kind)) continue;
+          if (!item.turnId) {
+            if (!(item.kind === "userShell" && item.turnId === null)) complete = false;
+            continue;
+          }
+          if (!owns(turn, item.turnId)) continue;
+          if (duplicates.has(item.itemId)) {
+            complete = false;
+            continue;
+          }
+          if (item.kind !== "agentMessage") {
+            if (item.status === "inProgress") complete = false;
+            continue;
+          }
+          const previous = turn.items.get(item.itemId);
+          const text = itemText(item);
+          const streamed = previous ? itemText(previous) : "";
+          matched.add(item.itemId);
+          if (text.length > 0) hasText = true;
+          if (item.truncated || item.status !== "completed") complete = false;
+          if ((previous && previous.kind !== "agentMessage") || !text.startsWith(streamed)) {
+            complete = false;
+            continue;
+          }
+          if (!previous || text !== streamed || item.status !== previous.status) {
+            turn.items.set(item.itemId, item);
+            turn.dirty.delete(item.itemId);
+            yield* publishItem(turn, item);
+          }
+        }
+        for (const item of turn.items.values())
+          if (
+            item.kind === "agentMessage" &&
+            itemText(item).length > 0 &&
+            !matched.has(item.itemId)
+          )
+            complete = false;
+        return complete ? (hasText ? "available" : "empty") : "unavailable";
+      });
       const decideApproval = Effect.fnUntraced(function* (
         entry: PendingRequest,
         decision: ProviderApprovalDecision | undefined,
@@ -1467,6 +1544,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                     ? "interrupted"
                     : "cancelled"
                   : "failed";
+            if (status === "completed")
+              turn.providerTurn = {
+                ...turn.providerTurn,
+                outputStatus: yield* reconcileTurnOutput(turn),
+              };
             yield* finish(
               turn,
               status,
@@ -2234,11 +2316,16 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           function* (args) {
             const turn = active;
             if (
-              !turn ||
-              turn.providerTurn.id !== args.providerTurnId ||
+              (turn && turn.providerTurn.id !== args.providerTurnId) ||
               !validateThread(args.providerThread)
             )
               return yield* protocolError("This Muse turn is no longer active");
+            if (!turn) {
+              if (!args.nativeTurnId)
+                return yield* protocolError("The saved Muse turn has no native identity");
+              yield* request("turn/interrupt", { turnId: args.nativeTurnId });
+              return;
+            }
             turn.interruptRequested = true;
             if (turn.compact) {
               yield* eventPermit.withPermits(1)(

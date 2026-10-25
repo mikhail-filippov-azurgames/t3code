@@ -185,10 +185,13 @@ it.effect(
         resumeThread: () => Effect.die("unused resumeThread"),
         startTurn: () => Effect.die("unused startTurn"),
         steerTurn: () => Effect.die("unused steerTurn"),
-        interruptTurn: ({ providerThread: target }) =>
+        interruptTurn: (args) =>
           Effect.all(
             [
-              Ref.set(interruptedThread, target),
+              Effect.sync(() =>
+                assert.propertyVal(args, "nativeTurnId", "native-turn:restart-session"),
+              ),
+              Ref.set(interruptedThread, args.providerThread),
               Ref.update(projection, (current) => ({
                 ...current,
                 providerTurns: current.providerTurns.map((turn) =>
@@ -330,5 +333,19 @@ it.effect(
       assert.equal(interrupted?.providerSessionId, oldSessionId);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
+
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerThreads: [{ ...providerThread, providerSessionId: oldSessionId }],
+      }));
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        yield* control.interrupt({
+          threadId,
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+        });
+      }).pipe(Effect.provide(layerControl));
     }),
 );

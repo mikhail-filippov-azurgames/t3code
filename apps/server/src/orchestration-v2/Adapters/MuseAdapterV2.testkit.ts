@@ -256,6 +256,23 @@ class MuseReplayController {
       if (!possible && pending && startsTurn(entry)) break;
     }
     if (!possible) {
+      // Legacy recordings have no durable output read.
+      if (
+        isRecord(actual) &&
+        actual.method === "session/read" &&
+        typeof actual.id === "number" &&
+        isRecord(actual.params) &&
+        actual.params.excludeItems === false
+      ) {
+        host.incoming.push(
+          `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: actual.id,
+            error: { code: -32000, message: "Session history was not recorded" },
+          })}\n`,
+        );
+        return;
+      }
       this.fail(
         new MuseReplayMismatchError({
           scenario: this.transcript.scenario,

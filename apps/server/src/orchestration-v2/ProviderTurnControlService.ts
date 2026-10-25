@@ -217,6 +217,9 @@ export const layer: Layer.Layer<
           yield* session.value.interruptTurn({
             providerThread: loaded.providerThread,
             providerTurnId: loaded.providerTurn.id,
+            ...(loaded.providerTurn.nativeTurnRef?.nativeId
+              ? { nativeTurnId: loaded.providerTurn.nativeTurnRef.nativeId }
+              : {}),
             requestRuntimeRestart: true,
           });
           // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
@@ -272,6 +275,9 @@ export const layer: Layer.Layer<
           yield* loaded.session.value.interruptTurn({
             providerThread: loaded.providerThread,
             providerTurnId: loaded.providerTurn.id,
+            ...(loaded.providerTurn.nativeTurnRef?.nativeId
+              ? { nativeTurnId: loaded.providerTurn.nativeTurnRef.nativeId }
+              : {}),
           });
 
           for (let remaining = 1_000; remaining > 0; remaining -= 1) {

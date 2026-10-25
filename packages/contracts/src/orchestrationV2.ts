@@ -1090,6 +1090,8 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  /** Omitted when the provider does not verify output completeness. */
+  outputStatus: Schema.optional(Schema.Literals(["available", "empty", "unavailable"])),
 });
 export type OrchestrationV2ProviderTurn = typeof OrchestrationV2ProviderTurn.Type;
 
