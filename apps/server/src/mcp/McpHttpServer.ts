@@ -1,4 +1,5 @@
 import * as Cause from "effect/Cause";
+import * as Ft3Host from "@t3tools/ft3-host/server";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -1088,6 +1089,7 @@ export const layerMcpTransport = McpServer.layerHttp({
 
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  ...Ft3Host.mcpToolkits,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

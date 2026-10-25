@@ -15,6 +15,14 @@ single-instance lock привязан к userData, поэтому отдельн
 | `apps/desktop/src/app/DesktopUserData.ts`       | `resolveUserDataPath` берёт `current` имя из override                                     | изоляция Chromium-профиля от `t3code` (ft3) и `t3code-v2` (официальный T3) |
 | `apps/desktop/src/electron/ElectronProtocol.ts` | `getDesktopScheme` и `registerDesktopSchemePrivilegesSync` читают `T3CODE_DESKTOP_SCHEME` | изоляция URL-схемы; регистрируется как privileged до `ready`               |
 
+Тестовые правки той же desktop-интеграции:
+
+| Upstream-файл                                        | Правка                              | Зачем                                        |
+| ---------------------------------------------------- | ----------------------------------- | -------------------------------------------- |
+| `apps/desktop/src/app/DesktopEnvironment.test.ts`    | тест передачи env override          | проверка конфигурации userData               |
+| `apps/desktop/src/app/DesktopUserData.test.ts`       | тест имени каталога из override     | проверка изоляции userData                   |
+| `apps/desktop/src/electron/ElectronProtocol.test.ts` | тесты override и fallback URL-схемы | проверка совместимости значений по умолчанию |
+
 AppUserModelID переопределяется штатным env `T3CODE_DESKTOP_APP_USER_MODEL_ID`
 (`apps/desktop/src/app/DesktopConfig.ts`), правки не требует.
 
@@ -27,3 +35,20 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 | URL-схема      | `t3code`             | `t3code`             | `T3CODE_DESKTOP_SCHEME=ft3`                           |
 
 Без env поведение совпадает с upstream.
+
+## Серверная композиция ft3
+
+`packages/ft3-host` владеет серверной логикой форка. Upstream-файлы только
+подключают его экспорты; зависимость направлена от сервера к пакету.
+
+| Upstream-файл                           | Правка                                                                           | Зачем                                                |
+| --------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `apps/server/src/server.ts`             | импорт `ft3-host/server`, `Ft3Host.layer` в композиции Layer                     | подключение серверных возможностей ft3               |
+| `apps/server/src/mcp/McpHttpServer.ts`  | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`        | подключение регистрационных Layer MCP-toolkit'ов ft3 |
+| `apps/server/src/persistence/Sqlite.ts` | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()` | миграции пакета на той же SQLite-сессии после core   |
+| `apps/server/package.json`              | зависимость `@t3tools/ft3-host: workspace:*`                                     | разрешение workspace-пакета                          |
+| `pnpm-lock.yaml`                        | importer `packages/ft3-host` и зависимость сервера                               | воспроизводимое подключение пакета                   |
+
+Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
+Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
+не используют. Идентификаторы миграций в двух журналах независимы.
