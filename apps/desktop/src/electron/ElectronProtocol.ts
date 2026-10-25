@@ -16,8 +16,16 @@ export const DESKTOP_HOST = "app";
 const DESKTOP_PRODUCTION_SCHEME = "t3code";
 const DESKTOP_DEVELOPMENT_SCHEME = "t3code-dev";
 
+function resolveDesktopSchemeOverride(): string | undefined {
+  const value = process.env.T3CODE_DESKTOP_SCHEME?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
 export function getDesktopScheme(isDevelopment: boolean): string {
-  return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
+  return (
+    resolveDesktopSchemeOverride() ??
+    (isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME)
+  );
 }
 
 function getDesktopOrigin(isDevelopment: boolean): string {
@@ -109,6 +117,25 @@ function withContentSecurityPolicy(response: Response, policy: string): Response
 
 // Must run synchronously before Electron emits ready.
 function registerDesktopSchemePrivilegesSync(): void {
+  const overrideScheme = resolveDesktopSchemeOverride();
+  const overridePrivileges =
+    overrideScheme !== undefined &&
+    overrideScheme !== DESKTOP_PRODUCTION_SCHEME &&
+    overrideScheme !== DESKTOP_DEVELOPMENT_SCHEME
+      ? [
+          {
+            scheme: overrideScheme,
+            privileges: {
+              standard: true,
+              secure: true,
+              supportFetchAPI: true,
+              corsEnabled: true,
+              stream: true,
+              codeCache: true,
+            },
+          },
+        ]
+      : [];
   Electron.protocol.registerSchemesAsPrivileged([
     {
       scheme: DESKTOP_PRODUCTION_SCHEME,
@@ -132,6 +159,7 @@ function registerDesktopSchemePrivilegesSync(): void {
         stream: true,
       },
     },
+    ...overridePrivileges,
   ]);
 }
 
