@@ -154,3 +154,32 @@ describe("ElectronProtocol", () => {
     }).pipe(Effect.provide(layerProtocol)),
   );
 });
+
+describe("desktop scheme override", () => {
+  const restoreScheme = (previous: string | undefined) => {
+    if (previous === undefined) delete process.env.T3CODE_DESKTOP_SCHEME;
+    else process.env.T3CODE_DESKTOP_SCHEME = previous;
+  };
+
+  it("prefers the configured scheme over the default", () => {
+    const previous = process.env.T3CODE_DESKTOP_SCHEME;
+    try {
+      process.env.T3CODE_DESKTOP_SCHEME = " ft3 ";
+      assert.equal(ElectronProtocol.getDesktopScheme(false), "ft3");
+      assert.equal(ElectronProtocol.getDesktopScheme(true), "ft3");
+    } finally {
+      restoreScheme(previous);
+    }
+  });
+
+  it("falls back to the default scheme without an override", () => {
+    const previous = process.env.T3CODE_DESKTOP_SCHEME;
+    try {
+      delete process.env.T3CODE_DESKTOP_SCHEME;
+      assert.equal(ElectronProtocol.getDesktopScheme(false), "t3code");
+      assert.equal(ElectronProtocol.getDesktopScheme(true), "t3code-dev");
+    } finally {
+      restoreScheme(previous);
+    }
+  });
+});
