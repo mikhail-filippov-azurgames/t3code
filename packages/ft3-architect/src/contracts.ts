@@ -426,6 +426,20 @@ export interface ArchitectLinkReplacementWinnerInput {
   readonly winnerBindingId: string;
 }
 
+export const ArchitectReconcileOutcomeKind = Schema.Literals([
+  "thread-delete-replayed",
+  "review-wake-delivered",
+  "publish-wake-delivered",
+]);
+export type ArchitectReconcileOutcomeKind = typeof ArchitectReconcileOutcomeKind.Type;
+
+export const ArchitectReconcileOutcome = Schema.Struct({
+  kind: ArchitectReconcileOutcomeKind,
+  bindingId: TrimmedNonEmptyString,
+  reviewId: Schema.optional(TrimmedNonEmptyString),
+});
+export type ArchitectReconcileOutcome = typeof ArchitectReconcileOutcome.Type;
+
 export interface ArchitectBindingReplayLookup {
   readonly coordinatorThreadId: ThreadId;
   readonly closeIdempotencyKey: string;

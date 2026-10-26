@@ -123,6 +123,10 @@ export class ArchitectService extends Context.Service<
       Contracts.ArchitectCoordinatorArchitectSidebarSnapshot,
       Contracts.ArchitectMcpFailure
     >;
+    readonly reconcileAfterRestart: () => Effect.Effect<
+      ReadonlyArray<Contracts.ArchitectReconcileOutcome>,
+      Contracts.ArchitectMcpFailure
+    >;
   }
 >()("@t3tools/ft3-architect/ArchitectService") {}
 
@@ -1224,6 +1228,62 @@ const make = Effect.gen(function* () {
         });
       },
     ),
+    reconcileAfterRestart: Effect.fn("Ft3ArchitectService.reconcileAfterRestart")(function* () {
+      const outcomes: Array<Contracts.ArchitectReconcileOutcome> = [];
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const closedBindings = yield* repo.listClosedBindings().pipe(Effect.mapError(unavailable));
+      for (const binding of closedBindings) {
+        const shell = yield* threads
+          .getThreadShell(binding.architectThreadId)
+          .pipe(Effect.mapError(unavailable));
+        if (shell === null || shell.deletedAt !== null) continue;
+        yield* softDeleteArchitectThread(binding.architectThreadId);
+        outcomes.push({ kind: "thread-delete-replayed", bindingId: binding.bindingId });
+      }
+      const awaitingWake = yield* repo.listReviewsAwaitingWake().pipe(Effect.mapError(unavailable));
+      for (const review of awaitingWake) {
+        const binding = yield* repo
+          .getBindingById(review.bindingId)
+          .pipe(Effect.mapError(unavailable));
+        if (
+          binding === null ||
+          binding.status !== "active" ||
+          binding.architectThreadId !== review.architectThreadId
+        ) {
+          continue;
+        }
+        const shell = yield* threads
+          .getThreadShell(review.architectThreadId)
+          .pipe(Effect.mapError(unavailable));
+        if (shell === null || shell.deletedAt !== null) continue;
+        yield* wakeArchitectForReview(review, binding, at);
+        outcomes.push({
+          kind: "review-wake-delivered",
+          bindingId: binding.bindingId,
+          reviewId: review.reviewId,
+        });
+      }
+      const awaitingPublish = yield* repo
+        .listReviewsAwaitingPublishDelivery()
+        .pipe(Effect.mapError(unavailable));
+      for (const review of awaitingPublish) {
+        const binding = yield* repo
+          .getBindingById(review.bindingId)
+          .pipe(Effect.mapError(unavailable));
+        if (binding === null) continue;
+        const shell = yield* threads
+          .getThreadShell(binding.coordinatorThreadId)
+          .pipe(Effect.mapError(unavailable));
+        if (shell === null || shell.deletedAt !== null) continue;
+        yield* wakeCoordinatorForPublish(review, binding, at);
+        outcomes.push({
+          kind: "publish-wake-delivered",
+          bindingId: binding.bindingId,
+          reviewId: review.reviewId,
+        });
+      }
+      return outcomes;
+    }),
     getCoordinatorArchitectSidebar: Effect.fn("Ft3ArchitectService.getCoordinatorArchitectSidebar")(
       function* (input) {
         const binding = yield* repo

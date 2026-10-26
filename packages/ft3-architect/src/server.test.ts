@@ -1107,6 +1107,154 @@ describe("ft3 architect toolkit through ft3-host", () => {
   });
 });
 
+function reconcileFixture() {
+  const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
+    [parentId, otherId, architectId, childId].map((id) => [id, liveThreadShell(id)]),
+  );
+  const createdCommands = new Array<unknown>();
+  const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
+    dispatch: (command) =>
+      Effect.sync(() => {
+        createdCommands.push(command);
+        if (command.type === "thread.create") {
+          shells.set(command.threadId, liveThreadShell(command.threadId));
+        }
+        if (command.type === "thread.delete") {
+          shells.delete(command.threadId);
+        }
+        return { sequence: 0, storedEvents: [] };
+      }),
+  });
+  const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+    getProviders: Effect.succeed([codexProvider]),
+  });
+  const layer = ArchitectService.layer.pipe(
+    Layer.provide(ArchitectRepository.layer),
+    Layer.provideMerge(BoardRepository.layer),
+    Layer.provide(threads),
+    Layer.provide(providerRegistry),
+    Layer.provide(crypto),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+  );
+  return { layer, shells, createdCommands };
+}
+
+describe("ft3 architect restart reconciliation", () => {
+  const detachedArchitectId = ThreadId.make("arch:retired");
+
+  it.effect("replays thread.delete for closed bindings whose architect threads survived", () => {
+    const f = reconcileFixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DELETE FROM ft3_architect_review`;
+      yield* sql`UPDATE ft3_architect_binding SET status = 'detached' WHERE binding_id = 'binding:1'`;
+      f.shells.set(detachedArchitectId, liveThreadShell(detachedArchitectId));
+      yield* sql`INSERT INTO ft3_architect_binding (binding_id, coordinator_thread_id, architect_thread_id, project_id, architect_task_effort, status, created_at, created_by, create_idempotency_key, create_request_fingerprint) VALUES ('binding:2', ${parentId}, ${detachedArchitectId}, 'project:architect', 'medium', 'replaced', ${epoch}, ${parentId}, 'key:2', 'fp:2')`;
+      const service = yield* ArchitectService.ArchitectService;
+      assert.deepStrictEqual(yield* service.reconcileAfterRestart(), [
+        { kind: "thread-delete-replayed", bindingId: "binding:1" },
+        { kind: "thread-delete-replayed", bindingId: "binding:2" },
+      ]);
+      const deletes = f.createdCommands.filter(
+        (command) => (command as { type: string }).type === "thread.delete",
+      ) as ReadonlyArray<{ readonly threadId: ThreadId; readonly commandId: string }>;
+      assert.deepStrictEqual(
+        deletes.map((command) => [command.threadId, command.commandId]),
+        [
+          [architectId, `architect-delete:${architectId}`],
+          [detachedArchitectId, `architect-delete:${detachedArchitectId}`],
+        ],
+      );
+      assert.isUndefined(f.shells.get(architectId));
+      assert.isUndefined(f.shells.get(detachedArchitectId));
+      assert.deepStrictEqual(yield* service.reconcileAfterRestart(), []);
+      assert.equal(
+        f.createdCommands.filter(
+          (command) => (command as { type: string }).type === "thread.delete",
+        ).length,
+        2,
+      );
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("delivers an undelivered review wake exactly once", () => {
+    const f = reconcileFixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const service = yield* ArchitectService.ArchitectService;
+      assert.deepStrictEqual(yield* service.reconcileAfterRestart(), [
+        { kind: "review-wake-delivered", bindingId: "binding:1", reviewId: "review:1" },
+      ]);
+      const wakes = f.createdCommands.filter(
+        (command) => (command as { type: string }).type === "message.dispatch",
+      ) as ReadonlyArray<{
+        readonly threadId: ThreadId;
+        readonly commandId: string;
+        readonly text: string;
+      }>;
+      assert.equal(wakes.length, 1);
+      assert.equal(wakes[0]!.threadId, architectId);
+      assert.equal(wakes[0]!.commandId, "arch:review-wake:review:1");
+      assert.include(wakes[0]!.text, "review:1");
+      const sql = yield* SqlClient.SqlClient;
+      assert.isNotNull(
+        (yield* sql`SELECT request_wake_delivered_at FROM ft3_architect_review WHERE review_id = 'review:1'`)[0]!
+          .request_wake_delivered_at,
+      );
+      assert.deepStrictEqual(yield* service.reconcileAfterRestart(), []);
+      assert.equal(
+        f.createdCommands.filter(
+          (command) => (command as { type: string }).type === "message.dispatch",
+        ).length,
+        1,
+      );
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("delivers an undelivered publish wake exactly once", () => {
+    const f = reconcileFixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE ft3_architect_review SET status = 'published', answer_disposition = 'recommendation', answer_summary = 'Looks safe.', answer_idempotency_key = 'ans:1', publish_idempotency_key = 'publish:1', published_at = ${epoch}, published_by = 'architect', request_wake_delivered_at = ${epoch} WHERE review_id = 'review:1'`;
+      const service = yield* ArchitectService.ArchitectService;
+      assert.deepStrictEqual(yield* service.reconcileAfterRestart(), [
+        { kind: "publish-wake-delivered", bindingId: "binding:1", reviewId: "review:1" },
+      ]);
+      const wakes = f.createdCommands.filter(
+        (command) => (command as { type: string }).type === "message.dispatch",
+      ) as ReadonlyArray<{
+        readonly threadId: ThreadId;
+        readonly commandId: string;
+        readonly text: string;
+      }>;
+      assert.equal(wakes.length, 1);
+      assert.equal(wakes[0]!.threadId, parentId);
+      assert.equal(wakes[0]!.commandId, "arch:publish-wake:review:1");
+      assert.include(wakes[0]!.text, "[recommendation]");
+      assert.isNotNull(
+        (yield* sql`SELECT publish_delivered_at FROM ft3_architect_review WHERE review_id = 'review:1'`)[0]!
+          .publish_delivered_at,
+      );
+      assert.deepStrictEqual(yield* service.reconcileAfterRestart(), []);
+      assert.equal(
+        f.createdCommands.filter(
+          (command) => (command as { type: string }).type === "message.dispatch",
+        ).length,
+        1,
+      );
+    }).pipe(Effect.provide(f.layer));
+  });
+});
+
 describe("ft3 architect shipped skill", () => {
   it("exists on disk and carries no local document reference", () => {
     const content = NodeFS.readFileSync(ARCHITECT_SKILL_PATH, "utf8");
