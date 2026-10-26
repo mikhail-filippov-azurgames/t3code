@@ -25,6 +25,7 @@
     "@t3tools/ft3-architect": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
     "@t3tools/ft3-orchestration": "workspace:*",
+    "@t3tools/ft3-vcs": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

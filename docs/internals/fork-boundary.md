@@ -119,12 +119,39 @@ middleware `Ft3RpcScopeAuthorization`) и сливает её в серверн�
 вызывают сервисы `ft3-board`/`ft3-architect`; человек в web действует от своего
 имени — отметка оркестратора и публикация человеком через
 `publishHumanPublication`. Контракты методов (payload/success) перенесены из
-старого форка; `vcs.listCommitHistory` в этот срез не входит.
+старого форка; `vcs.listCommitHistory` в этот срез не входит — см. «Граф
+коммитов (S2)».
 
 | Upstream-файл                | Правка                                                                                                            | Зачем                                                 |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `apps/server/src/ws.ts`      | `WsRpcGroup.merge(Ft3Rpc.group)`, spread `...Ft3Rpc.handlers`, `Ft3Rpc.authorizationLayer`, `Ft3Rpc.serviceLayer` | подключение группы, обработчиков, прав и сервисов ft3 |
 | `apps/server/src/ws.test.ts` | mock `BoardService`/`ArchitectService` в config-RPC слое                                                          | серверный RPC-слой теперь требует ft3-сервисы         |
+
+## Граф коммитов (срез S2)
+
+`packages/ft3-vcs` владеет чтением истории коммитов. Контракты
+`VcsCommitHistory*` перенесены из старого форка в `ft3-vcs/contracts` (в V2 их
+нет — есть только `paginateBranches`). `CommitHistoryService` вызывает git через
+тот же `VcsProcess`, что и `GitVcsDriver`, не правя `GitVcsDriverCore.ts`:
+`git log` с `--decorate=full` и `--format`/`-z` (как в старом форке), исключает
+внутренние checkpoint-рефы `refs/t3/checkpoints`, а `GitWorkflowService`-логика
+нерепозиторного cwd воспроизведена проверкой `rev-parse --is-inside-work-tree`.
+RPC-метод `vcs.listCommitHistory` (read → `orchestration:read`) добавляется в
+группу ft3 теми же строками, что доска и архитектор — `ft3-host` лишь
+импортирует `ft3-vcs/rpc` и сливает rpcs/handlers/scopes/serviceLayer. Права
+`ws.ts`/`RpcAuthorization.ts` не правятся. Парсер и пагинация (`--skip`/`-n`,
+локализация протухшего `offset` по `id`) покрыты тестами на моке `VcsProcess`.
+
+Web-вкладка «Commit graph» в реестре `ft3-web` переносит компоненты старого
+форка (`CommitsGraph`, `webGitGraphAdapter`, `commitsGraphPreferences`,
+`commitsGraphSelection`) на `@web-git-graph/web` с тем же патчем через
+`patchedDependencies` в `pnpm-workspace.yaml`. Реф-бейджи читаются только из
+`--decorate`-вывода `git log`; дополнение рефами веток через `usePaginatedBranches`
+не перенесено (у V2 `VcsRef` нет поля `target`).
+
+| Файл                  | Правка                                                                | Зачем                                           |
+| --------------------- | --------------------------------------------------------------------- | ----------------------------------------------- |
+| `pnpm-workspace.yaml` | `"@web-git-graph/web@1.0.7": patches/@web-git-graph__web@1.0.7.patch` | применить патч темы/колонок, как в старом форке |
 
 ## Исправления Muse в стеке ft3
 
