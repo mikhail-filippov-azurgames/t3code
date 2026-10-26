@@ -61,4 +61,32 @@ const board = Effect.gen(function* () {
   yield* sql`CREATE INDEX idx_ft3_board_cards_working_ready ON ft3_board_cards(orchestrator_thread_id, archived, readiness, status)`;
 });
 
-export const migrations = { "2_Board": board };
+const reactor = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE ft3_board_reactor_cursor (id INTEGER PRIMARY KEY CHECK (id = 1), sequence INTEGER NOT NULL)`;
+  yield* sql`INSERT INTO ft3_board_reactor_cursor VALUES (1, 0)`;
+  yield* sql`
+    CREATE TABLE ft3_board_reactor_wakes (
+      wake_key TEXT PRIMARY KEY NOT NULL,
+      orchestrator_thread_id TEXT NOT NULL REFERENCES ft3_board_orchestrators(thread_id) ON DELETE CASCADE,
+      executor_thread_id TEXT NOT NULL,
+      context TEXT NOT NULL
+    )
+  `;
+  yield* sql`
+    CREATE TABLE ft3_board_reactor_background (
+      provider_thread_id TEXT PRIMARY KEY NOT NULL,
+      thread_id TEXT NOT NULL,
+      task_ids_json TEXT NOT NULL
+    )
+  `;
+  yield* sql`
+    CREATE TABLE ft3_board_reactor_outcomes (
+      card_id TEXT NOT NULL REFERENCES ft3_board_cards(card_id) ON DELETE CASCADE,
+      execution_key TEXT NOT NULL,
+      PRIMARY KEY (card_id, execution_key)
+    )
+  `;
+});
+
+export const migrations = { "2_Board": board, "3_BoardReactor": reactor };
