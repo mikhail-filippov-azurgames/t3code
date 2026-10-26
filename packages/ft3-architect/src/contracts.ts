@@ -138,6 +138,7 @@ export const ArchitectureReviewRecord = Schema.Struct({
   createdAt: IsoDateTime,
   answeredAt: Schema.NullOr(IsoDateTime),
   publishedAt: Schema.NullOr(IsoDateTime),
+  requestWakeDeliveredAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   origin: ArchitectureReviewOrigin,
   publishedBy: Schema.NullOr(ArchitectureReviewPublishedBy),
   publishDeliveredAt: Schema.optional(Schema.NullOr(IsoDateTime)),
@@ -212,6 +213,92 @@ export const ArchitectDetachResult = Schema.Struct({
 });
 export type ArchitectDetachResult = typeof ArchitectDetachResult.Type;
 
+export const ArchitectReviewRequestInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+  subjectChildThreadId: Schema.optional(ThreadId),
+  reason: ArchitectureReviewReason,
+  question: BoundedReviewQuestion,
+  refs: Schema.optional(ArchitectureReviewRefs),
+  executionPosture: ArchitectureReviewExecutionPosture,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectReviewRequestInput = typeof ArchitectReviewRequestInput.Type;
+
+export const ArchitectReviewRequestResult = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  status: Schema.Literal("open"),
+});
+export type ArchitectReviewRequestResult = typeof ArchitectReviewRequestResult.Type;
+
+export const ArchitectReviewAnswerInput = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  disposition: ArchitectureReviewAnswerDisposition,
+  summary: BoundedAnswerSummary,
+  oclRefs: Schema.optional(boundedArray(DocumentRef, 32)),
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectReviewAnswerInput = typeof ArchitectReviewAnswerInput.Type;
+
+export const ArchitectReviewAnswerResult = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  status: Schema.Literal("answered"),
+  disposition: ArchitectureReviewAnswerDisposition,
+});
+export type ArchitectReviewAnswerResult = typeof ArchitectReviewAnswerResult.Type;
+
+export const ArchitectReviewCancelInput = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  reason: BoundedDetachReason,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectReviewCancelInput = typeof ArchitectReviewCancelInput.Type;
+
+export const ArchitectReviewCancelResult = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  status: Schema.Literal("cancelled"),
+});
+export type ArchitectReviewCancelResult = typeof ArchitectReviewCancelResult.Type;
+
+export interface ArchitectInsertReviewInput {
+  readonly reviewId: string;
+  readonly bindingId: string;
+  readonly coordinatorThreadId: ThreadId;
+  readonly architectThreadId: ThreadId;
+  readonly subjectChildThreadId: ThreadId | null;
+  readonly reason: ArchitectureReviewReason;
+  readonly question: string;
+  readonly refs: ArchitectureReviewRefs;
+  readonly executionPosture: ArchitectureReviewExecutionPosture;
+  readonly requestIdempotencyKey: string;
+  readonly requestPayloadFingerprint: string;
+  readonly createdAt: string;
+}
+
+export interface ArchitectAnswerReviewInput {
+  readonly reviewId: string;
+  readonly disposition: ArchitectureReviewAnswerDisposition;
+  readonly summary: string;
+  readonly refs: ArchitectureReviewRefs;
+  readonly answerIdempotencyKey: string;
+  readonly answerPayloadFingerprint: string;
+  readonly answeredAt: string;
+}
+
+export interface ArchitectCancelReviewInput {
+  readonly reviewId: string;
+  readonly reason: string;
+  readonly cancelIdempotencyKey: string;
+  readonly cancelPayloadFingerprint: string;
+  readonly cancelledAt: string;
+  readonly cancelledBy: ThreadId;
+}
+
+export type ArchitectReviewTransition =
+  | { readonly _tag: "applied" }
+  | { readonly _tag: "replay" }
+  | { readonly _tag: "conflict" }
+  | { readonly _tag: "state" };
+
 export interface ArchitectCreateBindingInput {
   readonly bindingId: string;
   readonly coordinatorThreadId: ThreadId;
@@ -259,6 +346,9 @@ export class ArchitectMcpFailure extends Schema.TaggedError<ArchitectMcpFailure>
         "idempotency_conflict",
         "binding_not_found",
         "binding_conflict",
+        "review_not_found",
+        "review_state_conflict",
+        "author_text_rejected",
       ]),
     ]),
     message: Schema.String,

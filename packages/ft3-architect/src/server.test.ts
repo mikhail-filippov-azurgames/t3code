@@ -37,6 +37,9 @@ const decodeList = Schema.decodeUnknownEffect(Contracts.ArchitectListArchitectur
 const decodeCreate = Schema.decodeUnknownEffect(Contracts.ArchitectCreateOrGetResult);
 const decodeReplace = Schema.decodeUnknownEffect(Contracts.ArchitectReplaceResult);
 const decodeDetach = Schema.decodeUnknownEffect(Contracts.ArchitectDetachResult);
+const decodeRequest = Schema.decodeUnknownEffect(Contracts.ArchitectReviewRequestResult);
+const decodeAnswer = Schema.decodeUnknownEffect(Contracts.ArchitectReviewAnswerResult);
+const decodeCancel = Schema.decodeUnknownEffect(Contracts.ArchitectReviewCancelResult);
 const decodeFailure = Schema.decodeUnknownSync(Contracts.ArchitectMcpFailure);
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:architect-test"),
@@ -129,6 +132,30 @@ const detachArgs = (overrides: Record<string, unknown> = {}) => ({
   coordinatorThreadId: parentId,
   reason: "Detach the advisor.",
   idempotencyKey: "detach:1",
+  ...overrides,
+});
+
+const requestArgs = (overrides: Record<string, unknown> = {}) => ({
+  coordinatorThreadId: parentId,
+  reason: "direct-advice",
+  question: "Is this contract safe?",
+  executionPosture: "continue",
+  idempotencyKey: "req:wake:1",
+  ...overrides,
+});
+
+const answerArgs = (overrides: Record<string, unknown> = {}) => ({
+  reviewId: "review:1",
+  disposition: "recommendation",
+  summary: "Looks safe.",
+  idempotencyKey: "ans:1",
+  ...overrides,
+});
+
+const cancelArgs = (overrides: Record<string, unknown> = {}) => ({
+  reviewId: "review:1",
+  reason: "No longer needed.",
+  idempotencyKey: "cancel:1",
   ...overrides,
 });
 
@@ -603,6 +630,139 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(
         failure(yield* call("architect_detach", detachArgs(), asThread(otherId))).code,
         "capability_denied",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("requests a review and wakes the architect exactly once", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const first = yield* decodeRequest(
+        (yield* call("architecture_review_request", requestArgs())).structuredContent,
+      );
+      assert.equal(first.status, "open");
+      const second = yield* decodeRequest(
+        (yield* call("architecture_review_request", requestArgs())).structuredContent,
+      );
+      assert.equal(second.reviewId, first.reviewId);
+      const wakes = f.createdCommands.filter(
+        (command) => (command as { type: string }).type === "message.dispatch",
+      );
+      assert.equal(wakes.length, 1);
+      const wake = wakes[0] as { threadId: ThreadId; commandId: string; text: string };
+      assert.equal(wake.threadId, architectId);
+      assert.equal(wake.commandId, `arch:review-wake:${first.reviewId}`);
+      assert.include(wake.text, first.reviewId);
+      const sql = yield* SqlClient.SqlClient;
+      const delivered =
+        (yield* sql`SELECT request_wake_delivered_at FROM ft3_architect_review WHERE review_id = ${first.reviewId}`)[0]!
+          .request_wake_delivered_at;
+      assert.isNotNull(delivered);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("answers a review without waking the coordinator", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const result = yield* decodeAnswer(
+        (yield* call("architecture_review_answer", answerArgs(), asThread(architectId)))
+          .structuredContent,
+      );
+      assert.equal(result.status, "answered");
+      assert.equal(result.disposition, "recommendation");
+      assert.equal(f.createdCommands.length, 0);
+      const sql = yield* SqlClient.SqlClient;
+      const stored =
+        (yield* sql`SELECT status, answer_summary, answer_disposition FROM ft3_architect_review WHERE review_id = 'review:1'`)[0]!;
+      assert.equal(stored.status, "answered");
+      assert.equal(stored.answer_summary, "Looks safe.");
+      assert.equal(stored.answer_disposition, "recommendation");
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("cancels a review as the coordinator", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const result = yield* decodeCancel(
+        (yield* call("architecture_review_cancel", cancelArgs())).structuredContent,
+      );
+      assert.equal(result.status, "cancelled");
+      const sql = yield* SqlClient.SqlClient;
+      const stored =
+        (yield* sql`SELECT status, cancelled_by FROM ft3_architect_review WHERE review_id = 'review:1'`)[0]!;
+      assert.equal(stored.status, "cancelled");
+      assert.equal(stored.cancelled_by, parentId);
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses a foreign coordinator and the architect on the review cycle", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* mark(otherId);
+      yield* seedArchitect;
+      assert.equal(
+        failure(yield* call("architecture_review_request", requestArgs(), asThread(otherId))).code,
+        "capability_denied",
+      );
+      assert.equal(
+        failure(yield* call("architecture_review_cancel", cancelArgs(), asThread(otherId))).code,
+        "capability_denied",
+      );
+      assert.equal(
+        failure(yield* call("architecture_review_answer", answerArgs(), asThread(otherId))).code,
+        "architect_denied",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("rejects secrets in review request, answer, cancel, replace and detach text", () => {
+    const f = fixture();
+    const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456";
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      assert.equal(
+        failure(
+          yield* call("architecture_review_request", requestArgs({ question: `Use ${secret}` })),
+        ).code,
+        "author_text_rejected",
+      );
+      assert.equal(
+        failure(
+          yield* call(
+            "architecture_review_answer",
+            answerArgs({ summary: `Token ${secret}` }),
+            asThread(architectId),
+          ),
+        ).code,
+        "author_text_rejected",
+      );
+      assert.equal(
+        failure(yield* call("architecture_review_cancel", cancelArgs({ reason: secret }))).code,
+        "author_text_rejected",
+      );
+      assert.equal(
+        failure(yield* call("architect_replace", replaceArgs({ reason: `Key ${secret}` }))).code,
+        "author_text_rejected",
+      );
+      assert.equal(
+        failure(yield* call("architect_detach", detachArgs({ reason: secret }))).code,
+        "author_text_rejected",
       );
       assert.equal(f.createdCommands.length, 0);
     }).pipe(Effect.provide(f.layer));

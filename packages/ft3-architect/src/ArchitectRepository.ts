@@ -35,6 +35,25 @@ export class ArchitectRepository extends Context.Service<
       ReadonlyArray<Contracts.ArchitectureReviewRecord>,
       ArchitectRepositoryError
     >;
+    readonly getReviewById: (
+      reviewId: string,
+    ) => Effect.Effect<Contracts.ArchitectureReviewRecord | null, ArchitectRepositoryError>;
+    readonly insertReview: (
+      input: Contracts.ArchitectInsertReviewInput,
+    ) => Effect.Effect<
+      { readonly review: Contracts.ArchitectureReviewRecord; readonly created: boolean },
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
+    readonly answerReview: (
+      input: Contracts.ArchitectAnswerReviewInput,
+    ) => Effect.Effect<Contracts.ArchitectReviewTransition, ArchitectRepositoryError>;
+    readonly cancelReview: (
+      input: Contracts.ArchitectCancelReviewInput,
+    ) => Effect.Effect<Contracts.ArchitectReviewTransition, ArchitectRepositoryError>;
+    readonly markReviewWakeDelivered: (input: {
+      readonly reviewId: string;
+      readonly deliveredAt: string;
+    }) => Effect.Effect<void, ArchitectRepositoryError>;
     readonly createOrGetBinding: (
       input: Contracts.ArchitectCreateBindingInput,
     ) => Effect.Effect<
@@ -112,6 +131,7 @@ const ReviewRow = Schema.Struct({
   createdAt: Schema.String,
   answeredAt: Schema.NullOr(Schema.String),
   publishedAt: Schema.NullOr(Schema.String),
+  requestWakeDeliveredAt: Schema.NullOr(Schema.String),
   origin: Contracts.ArchitectureReviewOrigin,
   publishedBy: Schema.NullOr(Contracts.ArchitectureReviewPublishedBy),
   publishDeliveredAt: Schema.NullOr(Schema.String),
@@ -131,6 +151,7 @@ const encodeRoutingEvidence = Schema.encodeSync(
 const decodeRefs = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Contracts.ArchitectureReviewRefs),
 );
+const encodeRefs = Schema.encodeSync(Schema.fromJsonString(Contracts.ArchitectureReviewRefs));
 
 const databaseError = (operation: string) => (cause: unknown) =>
   new ArchitectRepositoryError({ operation, cause });
@@ -165,7 +186,8 @@ const reviewColumns = (sql: SqlClient.SqlClient) => sql`
   publish_idempotency_key AS "publishIdempotencyKey",
   cancel_idempotency_key AS "cancelIdempotencyKey",
   cancelled_at AS "cancelledAt", cancelled_by AS "cancelledBy", created_at AS "createdAt",
-  answered_at AS "answeredAt", published_at AS "publishedAt", origin,
+  answered_at AS "answeredAt", published_at AS "publishedAt",
+  request_wake_delivered_at AS "requestWakeDeliveredAt", origin,
   published_by AS "publishedBy", publish_delivered_at AS "publishDeliveredAt",
   last_publish_failure_reason AS "lastPublishFailureReason",
   last_publish_failure_message AS "lastPublishFailureMessage",
@@ -237,6 +259,7 @@ const make = Effect.gen(function* () {
           createdAt: row.createdAt,
           answeredAt: row.answeredAt,
           publishedAt: row.publishedAt,
+          requestWakeDeliveredAt: row.requestWakeDeliveredAt,
           origin: row.origin,
           publishedBy: row.publishedBy,
           publishDeliveredAt: row.publishDeliveredAt,
@@ -283,6 +306,124 @@ const make = Effect.gen(function* () {
         return yield* reviewsFromRows(rows);
       },
       Effect.mapError(databaseError("list architecture reviews")),
+    ),
+    getReviewById: Effect.fn("Ft3ArchitectRepository.getReviewById")(
+      function* (reviewId) {
+        const rows =
+          yield* sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE review_id = ${reviewId}`;
+        const reviews = yield* reviewsFromRows(rows);
+        return reviews[0] ?? null;
+      },
+      Effect.mapError(databaseError("read architecture review")),
+    ),
+    insertReview: Effect.fn("Ft3ArchitectRepository.insertReview")(function* (input) {
+      const byKey = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE coordinator_thread_id = ${input.coordinatorThreadId} AND request_idempotency_key = ${input.requestIdempotencyKey}`;
+      const fingerprint = sql<{ readonly fingerprint: string | null }>`
+        SELECT request_payload_fingerprint AS fingerprint
+        FROM ft3_architect_review
+        WHERE coordinator_thread_id = ${input.coordinatorThreadId}
+          AND request_idempotency_key = ${input.requestIdempotencyKey}`;
+      const byId = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE review_id = ${input.reviewId}`;
+      const conflict = () =>
+        new Contracts.ArchitectMcpFailure({
+          code: "idempotency_conflict",
+          message: "This review request key was already used with a different request payload.",
+        });
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const priorFingerprint = yield* fingerprint;
+            if (priorFingerprint[0] !== undefined) {
+              if (
+                priorFingerprint[0].fingerprint !== null &&
+                priorFingerprint[0].fingerprint !== input.requestPayloadFingerprint
+              ) {
+                return yield* conflict();
+              }
+              const prior = yield* reviewsFromRows(yield* byKey);
+              return { review: prior[0]!, created: false };
+            }
+            yield* sql`INSERT INTO ft3_architect_review (review_id, binding_id, coordinator_thread_id, architect_thread_id, subject_child_thread_id, reason, question, refs_json, execution_posture, status, request_idempotency_key, request_payload_fingerprint, created_at, origin) VALUES (${input.reviewId}, ${input.bindingId}, ${input.coordinatorThreadId}, ${input.architectThreadId}, ${input.subjectChildThreadId}, ${input.reason}, ${input.question}, ${encodeRefs(input.refs)}, ${input.executionPosture}, 'open', ${input.requestIdempotencyKey}, ${input.requestPayloadFingerprint}, ${input.createdAt}, 'coordinator-request') ON CONFLICT (coordinator_thread_id, request_idempotency_key) DO NOTHING`;
+            const inserted = yield* reviewsFromRows(yield* byId);
+            if (inserted[0] === undefined) {
+              const winner = yield* reviewsFromRows(yield* byKey);
+              if (winner[0] === undefined) {
+                return yield* new ArchitectRepositoryError({
+                  operation: "insert review",
+                  cause: new Error("ft3_architect_review winner missing after insert"),
+                });
+              }
+              return { review: winner[0]!, created: false };
+            }
+            return { review: inserted[0]!, created: true };
+          }),
+        )
+        .pipe(Effect.mapError(preserveError("insert architecture review")));
+    }),
+    answerReview: Effect.fn("Ft3ArchitectRepository.answerReview")(function* (input) {
+      const byId = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE review_id = ${input.reviewId}`;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const found = yield* reviewsFromRows(yield* byId);
+            if (found[0] === undefined)
+              return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+            const review = found[0]!;
+            if (review.status === "answered") {
+              if (review.answerIdempotencyKey !== input.answerIdempotencyKey) {
+                return { _tag: "conflict" } as Contracts.ArchitectReviewTransition;
+              }
+              return (
+                review.answerPayloadFingerprint === input.answerPayloadFingerprint
+                  ? { _tag: "replay" }
+                  : { _tag: "conflict" }
+              ) as Contracts.ArchitectReviewTransition;
+            }
+            if (review.status !== "open")
+              return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+            yield* sql`UPDATE ft3_architect_review SET status = 'answered', answer_disposition = ${input.disposition}, answer_summary = ${input.summary}, refs_json = ${encodeRefs(input.refs)}, answer_idempotency_key = ${input.answerIdempotencyKey}, answer_payload_fingerprint = ${input.answerPayloadFingerprint}, answered_at = ${input.answeredAt} WHERE review_id = ${input.reviewId} AND status = 'open'`;
+            return { _tag: "applied" } as Contracts.ArchitectReviewTransition;
+          }),
+        )
+        .pipe(Effect.mapError(databaseError("answer architecture review")));
+    }),
+    cancelReview: Effect.fn("Ft3ArchitectRepository.cancelReview")(function* (input) {
+      const byId = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE review_id = ${input.reviewId}`;
+      const fingerprint = sql<{ readonly key: string | null; readonly fingerprint: string | null }>`
+        SELECT cancel_idempotency_key AS key, cancel_payload_fingerprint AS fingerprint
+        FROM ft3_architect_review WHERE review_id = ${input.reviewId}`;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const found = yield* reviewsFromRows(yield* byId);
+            if (found[0] === undefined)
+              return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+            const review = found[0]!;
+            if (review.status === "cancelled") {
+              const row = yield* fingerprint;
+              if (row[0]?.key !== input.cancelIdempotencyKey) {
+                return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+              }
+              return (
+                row[0]?.fingerprint === input.cancelPayloadFingerprint
+                  ? { _tag: "replay" }
+                  : { _tag: "conflict" }
+              ) as Contracts.ArchitectReviewTransition;
+            }
+            if (review.status !== "open" && review.status !== "answered") {
+              return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+            }
+            yield* sql`UPDATE ft3_architect_review SET status = 'cancelled', cancel_idempotency_key = ${input.cancelIdempotencyKey}, cancel_payload_fingerprint = ${input.cancelPayloadFingerprint}, cancelled_at = ${input.cancelledAt}, cancelled_by = ${input.cancelledBy} WHERE review_id = ${input.reviewId} AND status IN ('open', 'answered')`;
+            return { _tag: "applied" } as Contracts.ArchitectReviewTransition;
+          }),
+        )
+        .pipe(Effect.mapError(databaseError("cancel architecture review")));
+    }),
+    markReviewWakeDelivered: Effect.fn("Ft3ArchitectRepository.markReviewWakeDelivered")(
+      function* (input) {
+        yield* sql`UPDATE ft3_architect_review SET request_wake_delivered_at = ${input.deliveredAt} WHERE review_id = ${input.reviewId}`;
+      },
+      Effect.mapError(databaseError("mark review wake delivered")),
     ),
     createOrGetBinding: Effect.fn("Ft3ArchitectRepository.createOrGetBinding")(function* (input) {
       const fingerprintByKey = sql<{ readonly fingerprint: string }>`

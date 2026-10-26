@@ -47,14 +47,14 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 Его MCP-регистрация использует существующие `McpToolAccess` и `toolkitRegistration`;
 host загружает её при построении Layer, чтобы не замкнуть инициализацию модулей сервера.
 
-| Upstream-файл                                       | Правка                                                                                  | Зачем                                                               |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `apps/server/src/server.ts`                         | импорт `ft3-host/server`, `Ft3Host.layer` и `Ft3Host.reactorLayer()` в композиции Layer | подключение серверных возможностей ft3, запуск реактора доски       |
-| `apps/server/src/mcp/McpHttpServer.ts`              | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`               | подключение регистрационных Layer MCP-toolkit'ов ft3                |
-| `apps/server/src/persistence/Sqlite.ts`             | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()`        | миграции пакета на той же SQLite-сессии после core                  |
-| `apps/server/package.json`                          | зависимость `@t3tools/ft3-host: workspace:*`                                            | разрешение workspace-пакета                                         |
-| `pnpm-lock.yaml`                                    | importers `packages/ft3-*` и workspace-зависимости                                      | воспроизводимое подключение пакетов                                 |
-| `apps/server/src/persistence/ft3Migrations.test.ts` | ожидаемые записи `Board`, `BoardReactor` и `Architect` в журнале ft3                    | проверка подключения миграций пакетов доски, реактора и архитектора |
+| Upstream-файл                                       | Правка                                                                                      | Зачем                                                               |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `apps/server/src/server.ts`                         | импорт `ft3-host/server`, `Ft3Host.layer` и `Ft3Host.reactorLayer()` в композиции Layer     | подключение серверных возможностей ft3, запуск реактора доски       |
+| `apps/server/src/mcp/McpHttpServer.ts`              | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`                   | подключение регистрационных Layer MCP-toolkit'ов ft3                |
+| `apps/server/src/persistence/Sqlite.ts`             | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()`            | миграции пакета на той же SQLite-сессии после core                  |
+| `apps/server/package.json`                          | зависимость `@t3tools/ft3-host: workspace:*`                                                | разрешение workspace-пакета                                         |
+| `pnpm-lock.yaml`                                    | importers `packages/ft3-*` и workspace-зависимости                                          | воспроизводимое подключение пакетов                                 |
+| `apps/server/src/persistence/ft3Migrations.test.ts` | ожидаемые записи `Board`, `BoardReactor`, `Architect` и `ArchitectReviewWake` в журнале ft3 | проверка подключения миграций пакетов доски, реактора и архитектора |
 
 Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
 Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
@@ -80,13 +80,24 @@ SQL-каскад, поэтому `BoardReactor` (`packages/ft3-board/src/BoardRe
 legacy `coordinator_architect_binding`/`architecture_review` (миграции
 058–061, 063 старого форка) с V2-владением: `coordinator_thread_id` ссылается
 на `orchestration_v2_projection_threads` с каскадом, как отметка доски.
-Срез 1–2 переносит только чтение: инструменты `get_coordinator_binding` и
-`list_architecture_reviews`. Отметка оркестратора не дублируется — проверка
+Срез 1–2 перенёс чтение (`get_coordinator_binding`, `list_architecture_reviews`);
+срез 4 — создание/замену/отзыв связки; срез 5 — цикл ревью
+(`architecture_review_request`, `architecture_review_answer`,
+`architecture_review_cancel`). Отметка оркестратора не дублируется — проверка
 при вызове читает `BoardRepository.listOrchestrators` из `ft3-board`. Права
 повторяют `ft3-board`: capability `orchestration`, живой тред, отказ
 делегированному исполнителю; доступ к данным — сам координатор (или человек
-на нём) либо связанный архитектор только к своей связке. Создание, замена,
-ответ и публикация ревью — в следующих срезах.
+на нём) либо связанный архитектор только к своей связке.
+
+Побудка архитектора доставляется штатным `message.dispatch` с
+детерминированным `commandId` (`arch:review-wake:<reviewId>`), отметка
+`request_wake_delivered_at` пишется после подтверждения (миграция
+`5_ArchitectReviewWake`); повторная доставка идемпотентна по receipt, а
+рестарт-гэп между вставкой ревью и побудкой закрывается той же отметкой.
+Ответ (`architecture_review_answer`) сохраняет ответ и не будит координатора,
+как в старом форке. Политика секретов `ft3-board/authorTextPolicy` применяется
+к `question`, `summary`, `reason` (запрос/ответ/отмена) и к `reason` в
+replace/detach. Публикация ревью координатору — в следующем срезе.
 
 ## Исправления Muse в стеке ft3
 

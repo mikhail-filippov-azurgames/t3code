@@ -16,6 +16,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
+import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
@@ -73,10 +74,14 @@ function fixture() {
   const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
   });
+  const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+    getProviders: Effect.succeed([]),
+  });
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits, Ft3Host.layer).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(threads),
+    Layer.provide(providerRegistry),
     Layer.provide(crypto),
   );
   return { layer, shells };
