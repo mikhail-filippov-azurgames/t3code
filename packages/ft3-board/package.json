@@ -35,6 +35,10 @@
       "types": "./src/BoardService.ts",
       "import": "./src/BoardService.ts"
     },
+    "./delegation": {
+      "types": "./src/BoardDelegationService.ts",
+      "import": "./src/BoardDelegationService.ts"
+    },
     "./contracts": {
       "types": "./src/contracts.ts",
       "import": "./src/contracts.ts"
@@ -50,6 +54,7 @@
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
+    "@t3tools/ft3-delegation": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
