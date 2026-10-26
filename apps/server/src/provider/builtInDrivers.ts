@@ -1,7 +1,3 @@
-import {
-  AcpRegistryDriver,
-  type AcpRegistryDriverEnv,
-} from "@t3tools/provider-acp-registry/server";
 import { AntigravityDriver, type AntigravityDriverEnv } from "./Drivers/AntigravityDriver.ts";
 import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
 import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
@@ -10,6 +6,10 @@ import { FxDriver, type FxDriverEnv } from "@t3tools/provider-fx/server";
 import { GrokDriver, type GrokDriverEnv } from "@t3tools/provider-grok/server";
 import { OpenCodeDriver, type OpenCodeDriverEnv } from "@t3tools/provider-opencode/server";
 import { MuseDriver, type MuseDriverEnv } from "@t3tools/provider-muse/server";
+import {
+  Ft3KimiDriver as AcpRegistryDriver,
+  type Ft3KimiDriverEnv as AcpRegistryDriverEnv,
+} from "@t3tools/ft3-kimi/server";
 import {
   Ft3PiDriver as PiDriver,
   type Ft3PiDriverEnv as PiDriverEnv,
