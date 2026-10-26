@@ -20,10 +20,11 @@ import {
 } from "./agentDir.ts";
 import {
   loadPiInferenceConfig,
-  makePiInferenceServerManager,
   piInferenceModelsBaseUrl,
+  piInferenceServerManager,
   resolvePiInferenceConfigPath,
 } from "./inferenceServer.ts";
+import { defaultCodexImportPaths, importCodexResourcesIntoAgentDir } from "./skills.ts";
 
 export type Ft3PiDriverEnv = PiDriverEnv | FileSystem.FileSystem | Path.Path;
 
@@ -66,7 +67,9 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
       defaultModel,
     };
     const environment = withPiAgentDir(input.environment, agentDir);
-    const inference = makePiInferenceServerManager(inferenceConfig);
+    const inference = piInferenceServerManager;
+    inference.registerInstance(instanceId, inferenceConfig);
+    const codexPaths = defaultCodexImportPaths(processEnvironment);
 
     yield* ensurePiAgentFiles(agentDir, agentFiles).pipe(
       Effect.mapError(
@@ -79,7 +82,22 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
           }),
       ),
     );
-    yield* Effect.addFinalizer(() => Effect.sync(() => inference.stopAll()));
+    yield* Effect.tryPromise({
+      try: () =>
+        importCodexResourcesIntoAgentDir({
+          agentDir,
+          codexHome: codexPaths.codexHome,
+          hostHome: codexPaths.hostHome,
+        }),
+      catch: (cause) =>
+        new ProviderDriverError({
+          driver: PiDriver.driverKind,
+          instanceId,
+          detail: `Failed to import Codex skills and AGENTS.md into ${agentDir}.`,
+          cause,
+        }),
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(() => inference.disposeInstance(instanceId)));
 
     const instance = yield* PiDriver.create({ ...input, environment });
 
@@ -104,7 +122,7 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
       const model =
         typeof turn.modelSelection.model === "string" ? turn.modelSelection.model : undefined;
       yield* Effect.tryPromise({
-        try: () => inference.ensureReady(model),
+        try: () => inference.ensureReady(instanceId, model),
         catch: (cause) =>
           new ProviderAdapterTurnStartError({
             driver: PiDriver.driverKind,
