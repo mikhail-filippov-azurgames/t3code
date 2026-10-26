@@ -182,6 +182,36 @@ export const ArchitectCreateOrGetResult = Schema.Struct({
 });
 export type ArchitectCreateOrGetResult = typeof ArchitectCreateOrGetResult.Type;
 
+const BoundedDetachReason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+
+export const ArchitectReplaceInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+  taskEffort: ArchitectTaskEffort,
+  modelSelection: ModelSelection,
+  routingEvidence: CoordinatorArchitectRoutingEvidence,
+  reason: BoundedDetachReason,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectReplaceInput = typeof ArchitectReplaceInput.Type;
+
+export const ArchitectReplaceResult = Schema.Struct({
+  architectThreadId: ThreadId,
+  binding: CoordinatorArchitectBinding,
+});
+export type ArchitectReplaceResult = typeof ArchitectReplaceResult.Type;
+
+export const ArchitectDetachInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+  reason: BoundedDetachReason,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectDetachInput = typeof ArchitectDetachInput.Type;
+
+export const ArchitectDetachResult = Schema.Struct({
+  binding: CoordinatorArchitectBinding,
+});
+export type ArchitectDetachResult = typeof ArchitectDetachResult.Type;
+
 export interface ArchitectCreateBindingInput {
   readonly bindingId: string;
   readonly coordinatorThreadId: ThreadId;
@@ -195,6 +225,28 @@ export interface ArchitectCreateBindingInput {
   readonly createRequestFingerprint: string;
 }
 
+export interface ArchitectCloseBindingInput {
+  readonly bindingId: string;
+  readonly status: "detached" | "replaced";
+  readonly replacedByBindingId: string | null;
+  readonly detachReason: string | null;
+  readonly idempotencyKey: string;
+  readonly closeRequestFingerprint: string;
+}
+
+export interface ArchitectLinkReplacementWinnerInput {
+  readonly replacedBindingId: string;
+  readonly closeIdempotencyKey: string;
+  readonly closeRequestFingerprint: string;
+  readonly winnerBindingId: string;
+}
+
+export interface ArchitectBindingReplayLookup {
+  readonly coordinatorThreadId: ThreadId;
+  readonly closeIdempotencyKey: string;
+  readonly closeRequestFingerprint: string;
+}
+
 export class ArchitectMcpFailure extends Schema.TaggedError<ArchitectMcpFailure>()(
   "OrchestratorMcpFailure",
   {
@@ -206,6 +258,7 @@ export class ArchitectMcpFailure extends Schema.TaggedError<ArchitectMcpFailure>
         "routing_evidence_mismatch",
         "idempotency_conflict",
         "binding_not_found",
+        "binding_conflict",
       ]),
     ]),
     message: Schema.String,

@@ -56,8 +56,40 @@ const architectCreateOrGet = Tool.make("architect_create_or_get", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const architectReplace = Tool.make("architect_replace", {
+  description:
+    "Permanently replace this coordinator thread's architect with a fresh thread. The old binding transitions to replaced first, then its credential is revoked. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectReplaceInput,
+  success: Contracts.ArchitectReplaceResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Replace coordinator architect")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const architectDetach = Tool.make("architect_detach", {
+  description:
+    "Permanently detach this coordinator thread's architect. The binding transitions to detached, the credential is revoked, and terminal bindings never restore. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectDetachInput,
+  success: Contracts.ArchitectDetachResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Detach coordinator architect")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const toolkit = Toolkit.make(
   getCoordinatorBinding,
   listArchitectureReviews,
   architectCreateOrGet,
+  architectReplace,
+  architectDetach,
 );

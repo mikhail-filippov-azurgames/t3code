@@ -41,6 +41,34 @@ export class ArchitectRepository extends Context.Service<
       { readonly binding: Contracts.CoordinatorArchitectBinding; readonly created: boolean },
       ArchitectRepositoryError | Contracts.ArchitectMcpFailure
     >;
+    readonly findBindingByCreateKey: (input: {
+      readonly coordinatorThreadId: ThreadId;
+      readonly createIdempotencyKey: string;
+    }) => Effect.Effect<Contracts.CoordinatorArchitectBinding | null, ArchitectRepositoryError>;
+    readonly findDetachReplay: (
+      input: Contracts.ArchitectBindingReplayLookup,
+    ) => Effect.Effect<
+      Contracts.CoordinatorArchitectBinding | null,
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
+    readonly findReplaceReplay: (
+      input: Contracts.ArchitectBindingReplayLookup,
+    ) => Effect.Effect<
+      Contracts.CoordinatorArchitectBinding | null,
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
+    readonly closeBinding: (
+      input: Contracts.ArchitectCloseBindingInput,
+    ) => Effect.Effect<
+      Contracts.CoordinatorArchitectBinding | null,
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
+    readonly linkReplacementWinner: (
+      input: Contracts.ArchitectLinkReplacementWinnerInput,
+    ) => Effect.Effect<
+      Contracts.CoordinatorArchitectBinding | null,
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
   }
 >()("@t3tools/ft3-architect/ArchitectRepository") {}
 
@@ -56,6 +84,8 @@ const BindingRow = Schema.Struct({
   replacedByBindingId: Schema.NullOr(Schema.String),
   detachReason: Schema.NullOr(Schema.String),
   createIdempotencyKey: Schema.String,
+  closeIdempotencyKey: Schema.NullOr(Schema.String),
+  closeRequestFingerprint: Schema.NullOr(Schema.String),
   routingEvidenceJson: Schema.NullOr(Schema.String),
 });
 
@@ -105,12 +135,22 @@ const decodeRefs = Schema.decodeUnknownEffect(
 const databaseError = (operation: string) => (cause: unknown) =>
   new ArchitectRepositoryError({ operation, cause });
 
+const preserveError = (operation: string) => (error: unknown) => {
+  const tagged = error as { readonly _tag?: string } | null;
+  return tagged !== null &&
+    (tagged._tag === "OrchestratorMcpFailure" || tagged._tag === "ArchitectRepositoryError")
+    ? (error as ArchitectRepositoryError | Contracts.ArchitectMcpFailure)
+    : databaseError(operation)(error);
+};
+
 const bindingColumns = (sql: SqlClient.SqlClient) => sql`
   binding_id AS "bindingId", coordinator_thread_id AS "coordinatorThreadId",
   architect_thread_id AS "architectThreadId", project_id AS "projectId",
   architect_task_effort AS "architectTaskEffort", status, created_at AS "createdAt",
   created_by AS "createdBy", replaced_by_binding_id AS "replacedByBindingId",
   detach_reason AS "detachReason", create_idempotency_key AS "createIdempotencyKey",
+  close_idempotency_key AS "closeIdempotencyKey",
+  close_request_fingerprint AS "closeRequestFingerprint",
   routing_evidence_json AS "routingEvidenceJson"
 `;
 
@@ -160,6 +200,8 @@ const make = Effect.gen(function* () {
           replacedByBindingId: row.replacedByBindingId,
           detachReason: row.detachReason,
           createIdempotencyKey: row.createIdempotencyKey,
+          closeIdempotencyKey: row.closeIdempotencyKey,
+          closeRequestFingerprint: row.closeRequestFingerprint,
         };
       }),
     );
@@ -291,6 +333,122 @@ const make = Effect.gen(function* () {
           ),
         );
     }),
+    findBindingByCreateKey: Effect.fn("Ft3ArchitectRepository.findBindingByCreateKey")(
+      function* (input) {
+        const rows =
+          yield* sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE coordinator_thread_id = ${input.coordinatorThreadId} AND create_idempotency_key = ${input.createIdempotencyKey}`;
+        const bindings = yield* bindingsFromRows(rows);
+        return bindings[0] ?? null;
+      },
+      Effect.mapError(databaseError("read binding by create key")),
+    ),
+    findDetachReplay: Effect.fn("Ft3ArchitectRepository.findDetachReplay")(
+      function* (input) {
+        const rows =
+          yield* sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE coordinator_thread_id = ${input.coordinatorThreadId}`;
+        const bindings = yield* bindingsFromRows(rows);
+        const match = bindings.find(
+          (binding) =>
+            binding.status === "detached" &&
+            binding.closeIdempotencyKey === input.closeIdempotencyKey,
+        );
+        if (match === undefined) return null;
+        if (match.closeRequestFingerprint !== input.closeRequestFingerprint) {
+          return yield* new Contracts.ArchitectMcpFailure({
+            code: "idempotency_conflict",
+            message: "This detach key was already used with a different request.",
+          });
+        }
+        return match;
+      },
+      Effect.mapError(preserveError("replay detach architect binding")),
+    ),
+    findReplaceReplay: Effect.fn("Ft3ArchitectRepository.findReplaceReplay")(
+      function* (input) {
+        const rows =
+          yield* sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE coordinator_thread_id = ${input.coordinatorThreadId}`;
+        const bindings = yield* bindingsFromRows(rows);
+        const match = bindings.find(
+          (binding) =>
+            binding.status === "replaced" &&
+            binding.closeIdempotencyKey === input.closeIdempotencyKey,
+        );
+        if (match === undefined) return null;
+        if (match.closeRequestFingerprint !== input.closeRequestFingerprint) {
+          return yield* new Contracts.ArchitectMcpFailure({
+            code: "idempotency_conflict",
+            message: "This replacement key was already used with a different request.",
+          });
+        }
+        return match;
+      },
+      Effect.mapError(preserveError("replay replace architect binding")),
+    ),
+    closeBinding: Effect.fn("Ft3ArchitectRepository.closeBinding")(function* (input) {
+      const byId = (bindingId: string) =>
+        sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE binding_id = ${bindingId}`;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const found = yield* bindingsFromRows(yield* byId(input.bindingId));
+            if (found[0] === undefined) return null;
+            const current = found[0]!;
+            if (current.status !== "active") {
+              if (current.closeIdempotencyKey !== input.idempotencyKey) return null;
+              if (current.closeRequestFingerprint !== input.closeRequestFingerprint) {
+                return yield* new Contracts.ArchitectMcpFailure({
+                  code: "idempotency_conflict",
+                  message: "This close key was already used with a different request.",
+                });
+              }
+              return current;
+            }
+            yield* sql`UPDATE ft3_architect_binding SET status = ${input.status}, replaced_by_binding_id = ${input.replacedByBindingId}, detach_reason = ${input.detachReason}, close_idempotency_key = ${input.idempotencyKey}, close_request_fingerprint = ${input.closeRequestFingerprint} WHERE binding_id = ${input.bindingId} AND status = 'active'`;
+            const updated = yield* bindingsFromRows(yield* byId(input.bindingId));
+            return updated[0] ?? null;
+          }),
+        )
+        .pipe(Effect.mapError(preserveError("close architect binding")));
+    }),
+    linkReplacementWinner: Effect.fn("Ft3ArchitectRepository.linkReplacementWinner")(
+      function* (input) {
+        const byId = (bindingId: string) =>
+          sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE binding_id = ${bindingId}`;
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const replacedRows = yield* bindingsFromRows(yield* byId(input.replacedBindingId));
+              if (replacedRows[0] === undefined) return null;
+              const replaced = replacedRows[0]!;
+              if (
+                replaced.status !== "replaced" ||
+                replaced.closeIdempotencyKey !== input.closeIdempotencyKey
+              ) {
+                return null;
+              }
+              if (replaced.closeRequestFingerprint !== input.closeRequestFingerprint) {
+                return yield* new Contracts.ArchitectMcpFailure({
+                  code: "idempotency_conflict",
+                  message: "This replacement close key was already used with a different request.",
+                });
+              }
+              const winnerRows = yield* bindingsFromRows(yield* byId(input.winnerBindingId));
+              if (
+                winnerRows[0] === undefined ||
+                winnerRows[0]!.coordinatorThreadId !== replaced.coordinatorThreadId
+              ) {
+                return null;
+              }
+              if (replaced.replacedByBindingId !== input.winnerBindingId) {
+                yield* sql`UPDATE ft3_architect_binding SET replaced_by_binding_id = ${input.winnerBindingId} WHERE binding_id = ${input.replacedBindingId} AND status = 'replaced' AND close_idempotency_key = ${input.closeIdempotencyKey} AND close_request_fingerprint = ${input.closeRequestFingerprint}`;
+              }
+              const linked = yield* bindingsFromRows(yield* byId(input.replacedBindingId));
+              return linked[0] ?? null;
+            }),
+          )
+          .pipe(Effect.mapError(preserveError("link replacement winner")));
+      },
+    ),
   });
 });
 

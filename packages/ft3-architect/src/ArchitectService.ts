@@ -49,6 +49,14 @@ export class ArchitectService extends Context.Service<
       scope: Scope,
       input: Contracts.ArchitectCreateOrGetInput,
     ) => Effect.Effect<Contracts.ArchitectCreateOrGetResult, Contracts.ArchitectMcpFailure>;
+    readonly replace: (
+      scope: Scope,
+      input: Contracts.ArchitectReplaceInput,
+    ) => Effect.Effect<Contracts.ArchitectReplaceResult, Contracts.ArchitectMcpFailure>;
+    readonly detach: (
+      scope: Scope,
+      input: Contracts.ArchitectDetachInput,
+    ) => Effect.Effect<Contracts.ArchitectDetachResult, Contracts.ArchitectMcpFailure>;
   }
 >()("@t3tools/ft3-architect/ArchitectService") {}
 
@@ -136,17 +144,18 @@ const make = Effect.gen(function* () {
     }
   });
 
-  const requireCreateScope = Effect.fn("Ft3ArchitectService.requireCreateScope")(function* (
+  const requireControlScope = Effect.fn("Ft3ArchitectService.requireControlScope")(function* (
     scope: Scope,
     coordinatorThreadId: ThreadId,
+    operation: "create an architect" | "replace the architect" | "detach the architect",
   ) {
     if (!scope.capabilities.has("orchestration")) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "capability_denied",
-        message: "This credential cannot create an architect.",
+        message: `This credential cannot ${operation}.`,
       });
     }
-    const caller = yield* McpInvocationContext.requireThreadScope(scope, "Architect creation");
+    const caller = yield* McpInvocationContext.requireThreadScope(scope, "Architect control");
     const shell = yield* threads
       .getThreadShell(caller.thread.threadId)
       .pipe(Effect.mapError(unavailable));
@@ -159,7 +168,7 @@ const make = Effect.gen(function* () {
     if (shell.lineage.relationshipToParent === "subagent") {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "delegated_executor_denied",
-        message: "Delegated executor threads cannot create an architect.",
+        message: `Delegated executor threads cannot ${operation}.`,
       });
     }
     const binding = yield* repo
@@ -168,13 +177,13 @@ const make = Effect.gen(function* () {
     if (binding !== null) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "architect_denied",
-        message: "Architect threads cannot create another architect.",
+        message: `Architect threads cannot ${operation}.`,
       });
     }
     if (caller.thread.threadId !== coordinatorThreadId) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "capability_denied",
-        message: "Only the coordinator thread itself (or a human on it) may create its architect.",
+        message: `Only the coordinator thread itself (or a human on it) may ${operation}.`,
       });
     }
     const orchestrators = yield* board.listOrchestrators().pipe(Effect.mapError(unavailable));
@@ -190,6 +199,13 @@ const make = Effect.gen(function* () {
       });
     }
     return { caller, shell };
+  });
+
+  const requireCreateScope = Effect.fn("Ft3ArchitectService.requireCreateScope")(function* (
+    scope: Scope,
+    coordinatorThreadId: ThreadId,
+  ) {
+    return yield* requireControlScope(scope, coordinatorThreadId, "create an architect");
   });
 
   const validateArchitectSelection = Effect.fn("Ft3ArchitectService.validateArchitectSelection")(
@@ -277,6 +293,20 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(unavailable));
   });
 
+  const softDeleteArchitectThread = Effect.fn("Ft3ArchitectService.softDeleteArchitectThread")(
+    function* (threadId: ThreadId) {
+      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+      if (shell === null) return;
+      yield* threads
+        .dispatch({
+          type: "thread.delete",
+          commandId: CommandId.make(`architect-delete:${threadId}`),
+          threadId,
+        })
+        .pipe(Effect.mapError(unavailable));
+    },
+  );
+
   return ArchitectService.of({
     getBinding: Effect.fn("Ft3ArchitectService.getBinding")(function* (scope, input) {
       yield* requireQueryScope(scope, input.coordinatorThreadId);
@@ -342,6 +372,204 @@ const make = Effect.gen(function* () {
         yield* createArchitectThread(binding, shell);
       }
       return { architectThreadId: binding.architectThreadId, created: outcome.created, binding };
+    }),
+    replace: Effect.fn("Ft3ArchitectService.replace")(function* (scope, input) {
+      const { caller, shell } = yield* requireControlScope(
+        scope,
+        input.coordinatorThreadId,
+        "replace the architect",
+      );
+      yield* validateArchitectSelection(input);
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const coordinatorThreadId = input.coordinatorThreadId;
+      const bindingId = `architect-binding:${(yield* hash(["architect-binding", coordinatorThreadId, input.idempotencyKey])).slice(0, 40)}`;
+      const architectThreadId = ThreadId.make(
+        `arch:${(yield* hash(["architect-thread", coordinatorThreadId, input.idempotencyKey])).slice(0, 40)}`,
+      );
+      const closeRequestFingerprint = yield* hash({
+        operation: "replace",
+        reason: input.reason,
+        taskEffort: input.taskEffort,
+        modelSelection: input.modelSelection,
+        routingEvidence: input.routingEvidence,
+        replacedByBindingId: bindingId,
+      });
+      const createRequestFingerprint = yield* hash({
+        taskEffort: input.taskEffort,
+        modelSelection: input.modelSelection,
+        routingEvidence: input.routingEvidence,
+      });
+      const createInput: Contracts.ArchitectCreateBindingInput = {
+        bindingId,
+        coordinatorThreadId,
+        architectThreadId,
+        projectId: shell.projectId,
+        architectTaskEffort: input.taskEffort,
+        routingEvidence: input.routingEvidence,
+        createdAt: at,
+        createdBy: caller.thread.threadId,
+        createIdempotencyKey: input.idempotencyKey,
+        createRequestFingerprint,
+      };
+
+      const priorReplacement = yield* repo
+        .findBindingByCreateKey({ coordinatorThreadId, createIdempotencyKey: input.idempotencyKey })
+        .pipe(Effect.mapError(repositoryFailure));
+      if (priorReplacement !== null) {
+        yield* repo.createOrGetBinding(createInput).pipe(Effect.mapError(repositoryFailure));
+        if (priorReplacement.status === "active") {
+          const existingThread = yield* threads
+            .getThreadShell(priorReplacement.architectThreadId)
+            .pipe(Effect.mapError(unavailable));
+          if (existingThread === null || existingThread.deletedAt !== null) {
+            yield* createArchitectThread(priorReplacement, shell);
+          }
+          const replaced = yield* repo
+            .findReplaceReplay({
+              coordinatorThreadId,
+              closeIdempotencyKey: input.idempotencyKey,
+              closeRequestFingerprint,
+            })
+            .pipe(Effect.mapError(repositoryFailure));
+          if (replaced !== null) {
+            const linked = yield* repo
+              .linkReplacementWinner({
+                replacedBindingId: replaced.bindingId,
+                closeIdempotencyKey: input.idempotencyKey,
+                closeRequestFingerprint,
+                winnerBindingId: priorReplacement.bindingId,
+              })
+              .pipe(Effect.mapError(repositoryFailure));
+            if (linked === null) {
+              return yield* new Contracts.ArchitectMcpFailure({
+                code: "binding_conflict",
+                message: "The committed replacement could not be linked to its prior binding.",
+              });
+            }
+            yield* softDeleteArchitectThread(replaced.architectThreadId);
+          }
+        }
+        return { architectThreadId: priorReplacement.architectThreadId, binding: priorReplacement };
+      }
+
+      const active = yield* repo
+        .getActiveBindingByCoordinator(coordinatorThreadId)
+        .pipe(Effect.mapError(repositoryFailure));
+      let closed: Contracts.CoordinatorArchitectBinding | null;
+      if (active !== null) {
+        closed = yield* repo
+          .closeBinding({
+            bindingId: active.bindingId,
+            status: "replaced",
+            replacedByBindingId: null,
+            detachReason: input.reason,
+            idempotencyKey: input.idempotencyKey,
+            closeRequestFingerprint,
+          })
+          .pipe(Effect.mapError(repositoryFailure));
+        if (closed === null) {
+          const winner = yield* repo
+            .getActiveBindingByCoordinator(coordinatorThreadId)
+            .pipe(Effect.mapError(repositoryFailure));
+          if (winner !== null) {
+            return { architectThreadId: winner.architectThreadId, binding: winner };
+          }
+          return yield* new Contracts.ArchitectMcpFailure({
+            code: "binding_conflict",
+            message: "Another replacement committed the close; retry after its winner is visible.",
+          });
+        }
+      } else {
+        closed = yield* repo
+          .findReplaceReplay({
+            coordinatorThreadId,
+            closeIdempotencyKey: input.idempotencyKey,
+            closeRequestFingerprint,
+          })
+          .pipe(Effect.mapError(repositoryFailure));
+        if (closed === null) {
+          const winner = yield* repo
+            .getActiveBindingByCoordinator(coordinatorThreadId)
+            .pipe(Effect.mapError(repositoryFailure));
+          if (winner !== null) {
+            return { architectThreadId: winner.architectThreadId, binding: winner };
+          }
+          return yield* new Contracts.ArchitectMcpFailure({
+            code: "binding_not_found",
+            message:
+              "No active architect or exact interrupted replacement exists for this coordinator.",
+          });
+        }
+      }
+      const created = yield* repo
+        .createOrGetBinding(createInput)
+        .pipe(Effect.mapError(repositoryFailure));
+      const linked = yield* repo
+        .linkReplacementWinner({
+          replacedBindingId: closed.bindingId,
+          closeIdempotencyKey: input.idempotencyKey,
+          closeRequestFingerprint,
+          winnerBindingId: created.binding.bindingId,
+        })
+        .pipe(Effect.mapError(repositoryFailure));
+      if (linked === null) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "binding_conflict",
+          message: "The committed replacement could not be linked to its prior binding.",
+        });
+      }
+      if (created.binding.bindingId !== bindingId) {
+        const winner = created.binding;
+        yield* softDeleteArchitectThread(architectThreadId);
+        return { architectThreadId: winner.architectThreadId, binding: winner };
+      }
+      const binding = created.binding;
+      yield* createArchitectThread(binding, shell);
+      yield* softDeleteArchitectThread(closed.architectThreadId);
+      return { architectThreadId: binding.architectThreadId, binding };
+    }),
+    detach: Effect.fn("Ft3ArchitectService.detach")(function* (scope, input) {
+      yield* requireControlScope(scope, input.coordinatorThreadId, "detach the architect");
+      const coordinatorThreadId = input.coordinatorThreadId;
+      const closeRequestFingerprint = yield* hash({ operation: "detach", reason: input.reason });
+      const active = yield* repo
+        .getActiveBindingByCoordinator(coordinatorThreadId)
+        .pipe(Effect.mapError(repositoryFailure));
+      if (active === null) {
+        const replayed = yield* repo
+          .findDetachReplay({
+            coordinatorThreadId,
+            closeIdempotencyKey: input.idempotencyKey,
+            closeRequestFingerprint,
+          })
+          .pipe(Effect.mapError(repositoryFailure));
+        if (replayed !== null) {
+          return { binding: replayed };
+        }
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "binding_not_found",
+          message: "No active architect binding for this coordinator.",
+        });
+      }
+      const closed = yield* repo
+        .closeBinding({
+          bindingId: active.bindingId,
+          status: "detached",
+          replacedByBindingId: null,
+          detachReason: input.reason,
+          idempotencyKey: input.idempotencyKey,
+          closeRequestFingerprint,
+        })
+        .pipe(Effect.mapError(repositoryFailure));
+      if (closed === null || closed.status !== "detached") {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "binding_conflict",
+          message:
+            "The architect binding changed during detach; read the current binding before retrying.",
+        });
+      }
+      yield* softDeleteArchitectThread(active.architectThreadId);
+      return { binding: closed };
     }),
   });
 });
