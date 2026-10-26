@@ -66,6 +66,20 @@ const handlers = McpToolAccess.toLayer(toolkit, {
       return yield* service.cancelReview(scope, input);
     }),
   ),
+  prepare_coordinator_publication: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.prepareCoordinatorPublication(scope, input);
+    }),
+  ),
+  publish_to_coordinator: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.publishToCoordinator(scope, input);
+    }),
+  ),
 });
 
 export const layer = toolkitRegistration(toolkit, handlers).pipe(

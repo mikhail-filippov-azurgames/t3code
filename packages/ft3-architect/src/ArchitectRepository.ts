@@ -54,6 +54,24 @@ export class ArchitectRepository extends Context.Service<
       readonly reviewId: string;
       readonly deliveredAt: string;
     }) => Effect.Effect<void, ArchitectRepositoryError>;
+    readonly getBindingById: (
+      bindingId: string,
+    ) => Effect.Effect<Contracts.CoordinatorArchitectBinding | null, ArchitectRepositoryError>;
+    readonly upsertPreparedPublication: (
+      input: Contracts.ArchitectPreparedPublicationUpsertInput,
+    ) => Effect.Effect<
+      Contracts.ArchitectureReviewRecord,
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
+    readonly publishReview: (
+      input: Contracts.ArchitectReviewPublishInput,
+    ) => Effect.Effect<Contracts.ArchitectReviewTransition, ArchitectRepositoryError>;
+    readonly markPublishDelivered: (
+      input: Contracts.ArchitectReviewPublishDeliveredInput,
+    ) => Effect.Effect<void, ArchitectRepositoryError>;
+    readonly recordPublishFailure: (
+      input: Contracts.ArchitectReviewPublishFailureInput,
+    ) => Effect.Effect<void, ArchitectRepositoryError>;
     readonly createOrGetBinding: (
       input: Contracts.ArchitectCreateBindingInput,
     ) => Effect.Effect<
@@ -424,6 +442,113 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE ft3_architect_review SET request_wake_delivered_at = ${input.deliveredAt} WHERE review_id = ${input.reviewId}`;
       },
       Effect.mapError(databaseError("mark review wake delivered")),
+    ),
+    getBindingById: Effect.fn("Ft3ArchitectRepository.getBindingById")(
+      function* (bindingId) {
+        const rows =
+          yield* sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE binding_id = ${bindingId}`;
+        const bindings = yield* bindingsFromRows(rows);
+        return bindings[0] ?? null;
+      },
+      Effect.mapError(databaseError("read binding by id")),
+    ),
+    upsertPreparedPublication: Effect.fn("Ft3ArchitectRepository.upsertPreparedPublication")(
+      function* (input) {
+        const fingerprintByKey = sql<{ readonly fingerprint: string | null }>`
+        SELECT request_payload_fingerprint AS fingerprint
+        FROM ft3_architect_review
+        WHERE coordinator_thread_id = ${input.coordinatorThreadId}
+          AND request_idempotency_key = ${input.idempotencyKey}`;
+        const byKey = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE coordinator_thread_id = ${input.coordinatorThreadId} AND request_idempotency_key = ${input.idempotencyKey}`;
+        const byBinding = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE binding_id = ${input.bindingId} AND origin = 'architect-advice' AND status = 'answered'`;
+        const byId = (reviewId: string) =>
+          sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE review_id = ${reviewId}`;
+        const refsJson = encodeRefs({ architectOclRefs: [...input.oclRefs] });
+        const conflict = () =>
+          new Contracts.ArchitectMcpFailure({
+            code: "idempotency_conflict",
+            message: "This prepare key was already used with a different publication.",
+          });
+        return yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const priorFingerprint = yield* fingerprintByKey;
+              if (priorFingerprint[0] !== undefined) {
+                if (
+                  priorFingerprint[0].fingerprint !== null &&
+                  priorFingerprint[0].fingerprint !== input.payloadFingerprint
+                ) {
+                  return yield* conflict();
+                }
+                const prior = yield* reviewsFromRows(yield* byKey);
+                return prior[0]!;
+              }
+              const existing = yield* reviewsFromRows(yield* byBinding);
+              if (existing[0] !== undefined) {
+                const existingId = existing[0]!.reviewId;
+                yield* sql`UPDATE ft3_architect_review SET coordinator_thread_id = ${input.coordinatorThreadId}, architect_thread_id = ${input.architectThreadId}, subject_child_thread_id = NULL, reason = 'direct-advice', question = ${input.summary}, refs_json = ${refsJson}, execution_posture = ${input.executionPosture}, answer_disposition = ${input.disposition}, status = 'answered', answer_summary = ${input.summary}, request_idempotency_key = ${input.idempotencyKey}, request_payload_fingerprint = ${input.payloadFingerprint}, answer_idempotency_key = ${input.idempotencyKey}, answer_payload_fingerprint = ${input.payloadFingerprint}, publish_idempotency_key = NULL, cancel_idempotency_key = NULL, cancel_payload_fingerprint = NULL, cancelled_at = NULL, cancelled_by = NULL, created_at = ${input.preparedAt}, answered_at = ${input.preparedAt}, published_at = NULL, origin = 'architect-advice', published_by = NULL, publish_delivered_at = NULL, last_publish_failure_reason = NULL, last_publish_failure_message = NULL, last_publish_failure_at = NULL WHERE review_id = ${existingId} AND origin = 'architect-advice' AND status = 'answered'`;
+                const stored = yield* reviewsFromRows(yield* byId(existingId));
+                if (stored[0] === undefined) {
+                  return yield* new ArchitectRepositoryError({
+                    operation: "upsert prepared publication",
+                    cause: new Error("ft3_architect_review advice missing after update"),
+                  });
+                }
+                return stored[0]!;
+              }
+              yield* sql`INSERT INTO ft3_architect_review (review_id, binding_id, coordinator_thread_id, architect_thread_id, subject_child_thread_id, reason, question, refs_json, execution_posture, answer_disposition, status, answer_summary, request_idempotency_key, request_payload_fingerprint, answer_idempotency_key, answer_payload_fingerprint, publish_idempotency_key, cancel_idempotency_key, cancel_payload_fingerprint, cancelled_at, cancelled_by, created_at, answered_at, published_at, publish_delivered_at, last_publish_failure_reason, last_publish_failure_message, last_publish_failure_at, origin, published_by) VALUES (${input.reviewId}, ${input.bindingId}, ${input.coordinatorThreadId}, ${input.architectThreadId}, NULL, 'direct-advice', ${input.summary}, ${refsJson}, ${input.executionPosture}, ${input.disposition}, 'answered', ${input.summary}, ${input.idempotencyKey}, ${input.payloadFingerprint}, ${input.idempotencyKey}, ${input.payloadFingerprint}, NULL, NULL, NULL, NULL, NULL, ${input.preparedAt}, ${input.preparedAt}, NULL, NULL, NULL, NULL, NULL, 'architect-advice', NULL)`;
+              const stored = yield* reviewsFromRows(yield* byId(input.reviewId));
+              if (stored[0] === undefined) {
+                const winner = yield* reviewsFromRows(yield* byKey);
+                if (winner[0] === undefined) {
+                  return yield* new ArchitectRepositoryError({
+                    operation: "upsert prepared publication",
+                    cause: new Error("ft3_architect_review advice missing after insert"),
+                  });
+                }
+                return winner[0]!;
+              }
+              return stored[0]!;
+            }),
+          )
+          .pipe(Effect.mapError(preserveError("upsert prepared publication")));
+      },
+    ),
+    publishReview: Effect.fn("Ft3ArchitectRepository.publishReview")(function* (input) {
+      const byId = sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE review_id = ${input.reviewId}`;
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const found = yield* reviewsFromRows(yield* byId);
+            if (found[0] === undefined)
+              return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+            const review = found[0]!;
+            if (review.status === "published") {
+              return (
+                review.publishIdempotencyKey === input.publishIdempotencyKey
+                  ? { _tag: "replay" }
+                  : { _tag: "conflict" }
+              ) as Contracts.ArchitectReviewTransition;
+            }
+            if (review.status !== "answered")
+              return { _tag: "state" } as Contracts.ArchitectReviewTransition;
+            yield* sql`UPDATE ft3_architect_review SET status = 'published', publish_idempotency_key = ${input.publishIdempotencyKey}, published_at = ${input.publishedAt}, published_by = ${input.publishedBy} WHERE review_id = ${input.reviewId} AND status = 'answered'`;
+            return { _tag: "applied" } as Contracts.ArchitectReviewTransition;
+          }),
+        )
+        .pipe(Effect.mapError(databaseError("publish architecture review")));
+    }),
+    markPublishDelivered: Effect.fn("Ft3ArchitectRepository.markPublishDelivered")(
+      function* (input) {
+        yield* sql`UPDATE ft3_architect_review SET publish_delivered_at = ${input.deliveredAt}, last_publish_failure_reason = NULL, last_publish_failure_message = NULL, last_publish_failure_at = NULL WHERE review_id = ${input.reviewId}`;
+      },
+      Effect.mapError(databaseError("mark publish delivered")),
+    ),
+    recordPublishFailure: Effect.fn("Ft3ArchitectRepository.recordPublishFailure")(
+      function* (input) {
+        yield* sql`UPDATE ft3_architect_review SET last_publish_failure_reason = ${input.reason}, last_publish_failure_message = ${input.message}, last_publish_failure_at = ${input.attemptedAt} WHERE review_id = ${input.reviewId}`;
+      },
+      Effect.mapError(databaseError("record publish failure")),
     ),
     createOrGetBinding: Effect.fn("Ft3ArchitectRepository.createOrGetBinding")(function* (input) {
       const fingerprintByKey = sql<{ readonly fingerprint: string }>`
