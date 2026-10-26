@@ -35,6 +35,18 @@ export class ArchitectRepository extends Context.Service<
       ReadonlyArray<Contracts.ArchitectureReviewRecord>,
       ArchitectRepositoryError
     >;
+    readonly listClosedBindings: () => Effect.Effect<
+      ReadonlyArray<Contracts.CoordinatorArchitectBinding>,
+      ArchitectRepositoryError
+    >;
+    readonly listReviewsAwaitingWake: () => Effect.Effect<
+      ReadonlyArray<Contracts.ArchitectureReviewRecord>,
+      ArchitectRepositoryError
+    >;
+    readonly listReviewsAwaitingPublishDelivery: () => Effect.Effect<
+      ReadonlyArray<Contracts.ArchitectureReviewRecord>,
+      ArchitectRepositoryError
+    >;
     readonly getReviewById: (
       reviewId: string,
     ) => Effect.Effect<Contracts.ArchitectureReviewRecord | null, ArchitectRepositoryError>;
@@ -324,6 +336,32 @@ const make = Effect.gen(function* () {
         return yield* reviewsFromRows(rows);
       },
       Effect.mapError(databaseError("list architecture reviews")),
+    ),
+    listClosedBindings: Effect.fn("Ft3ArchitectRepository.listClosedBindings")(
+      function* () {
+        const rows =
+          yield* sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE status IN ('detached', 'replaced') ORDER BY created_at ASC, binding_id ASC`;
+        return yield* bindingsFromRows(rows);
+      },
+      Effect.mapError(databaseError("list closed architect bindings")),
+    ),
+    listReviewsAwaitingWake: Effect.fn("Ft3ArchitectRepository.listReviewsAwaitingWake")(
+      function* () {
+        const rows =
+          yield* sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE status = 'open' AND request_wake_delivered_at IS NULL ORDER BY created_at ASC, review_id ASC`;
+        return yield* reviewsFromRows(rows);
+      },
+      Effect.mapError(databaseError("list architecture reviews awaiting wake")),
+    ),
+    listReviewsAwaitingPublishDelivery: Effect.fn(
+      "Ft3ArchitectRepository.listReviewsAwaitingPublishDelivery",
+    )(
+      function* () {
+        const rows =
+          yield* sql`SELECT ${reviewSelect} FROM ft3_architect_review WHERE status = 'published' AND publish_delivered_at IS NULL ORDER BY created_at ASC, review_id ASC`;
+        return yield* reviewsFromRows(rows);
+      },
+      Effect.mapError(databaseError("list architecture reviews awaiting publish delivery")),
     ),
     getReviewById: Effect.fn("Ft3ArchitectRepository.getReviewById")(
       function* (reviewId) {
