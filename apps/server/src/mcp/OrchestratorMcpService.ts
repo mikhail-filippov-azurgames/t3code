@@ -67,7 +67,11 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
-import { delegationTextDecision, projectDerivedText } from "@t3tools/ft3-delegation/server";
+import {
+  delegationPermissionDenial,
+  delegationTextDecision,
+  projectDerivedText,
+} from "@t3tools/ft3-delegation/server";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -2468,6 +2472,19 @@ const make = Effect.gen(function* () {
         parent.thread.interactionMode,
         input.interactionMode,
       );
+      const unreadable = () => failure("orchestration_error", "Unable to read server settings.");
+      const settings = isRetryOfAcceptedDelegation
+        ? undefined
+        : yield* serverSettings.getSettings.pipe(Effect.mapError(unreadable));
+      const denial = delegationPermissionDenial({
+        settings,
+        providers,
+        parentThread: parent.thread,
+        targetInstanceId: target.modelSelection.instanceId,
+        runtimeMode,
+        interactionMode,
+      });
+      if (denial !== undefined) return yield* failure(denial.code, denial.reason);
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
         const project = yield* requireProject(parent.thread.projectId);
