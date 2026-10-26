@@ -21,6 +21,7 @@ import { forkParked } from "../../../apps/server/src/serverActivation.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
 import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
+import { routingPolicyRef } from "./routingPolicy.ts";
 
 export class BoardReactorError extends Schema.TaggedError<BoardReactorError>()(
   "BoardReactorError",
@@ -51,7 +52,8 @@ const encodeTaskIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Sch
 const failure = (operation: string) => (cause: unknown) =>
   new BoardReactorError({ operation, cause });
 
-const make = Effect.fn("Ft3BoardReactor.make")(function* (modelSelectionPolicyRef: string) {
+const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
+  const routingPolicyRefValue = yield* routingPolicyRef;
   const sql = yield* SqlClient.SqlClient;
   const board = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -314,7 +316,7 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (modelSelectionPolicyRe
         commandId: CommandId.make(wake.key),
         threadId: targetId,
         messageId: MessageId.make(wake.key),
-        text: buildBoardWakePrompt(modelSelectionPolicyRef, wake.context),
+        text: buildBoardWakePrompt(routingPolicyRefValue, skillPath, wake.context),
         attachments: [],
         createdBy: "agent",
         creationSource: "server",
@@ -408,11 +410,10 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (modelSelectionPolicyRe
   return BoardReactor.of({ process, recover, start });
 });
 
-export const layer = (modelSelectionPolicyRef = "") =>
-  Layer.effect(BoardReactor, make(modelSelectionPolicyRef));
+export const layer = (skillPath = "") => Layer.effect(BoardReactor, make(skillPath));
 
-export const layerWorker = (modelSelectionPolicyRef = "") =>
+export const layerWorker = (skillPath = "") =>
   Layer.effectDiscard(Effect.flatMap(BoardReactor, (reactor) => reactor.start())).pipe(
-    Layer.provide(layer(modelSelectionPolicyRef)),
+    Layer.provide(layer(skillPath)),
     Layer.provide(BoardRepository.layer),
   );

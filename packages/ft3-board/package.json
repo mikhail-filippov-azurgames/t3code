@@ -22,6 +22,10 @@
     "./authorTextPolicy": {
       "types": "./src/authorTextPolicy.ts",
       "import": "./src/authorTextPolicy.ts"
+    },
+    "./routingPolicy": {
+      "types": "./src/routingPolicy.ts",
+      "import": "./src/routingPolicy.ts"
     }
   },
   "scripts": {

@@ -8,6 +8,7 @@ import {
 import type { OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import { applyAuthorTextPolicy } from "@t3tools/ft3-board/authorTextPolicy";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
+import { routingPolicyRef } from "@t3tools/ft3-board/routingPolicy";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -129,6 +130,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const providers = yield* ProviderRegistry.ProviderRegistry;
   const crypto = yield* Crypto.Crypto;
+  const routingPolicyRefValue = yield* routingPolicyRef;
   const hash = (value: unknown) =>
     crypto
       .digest("SHA-256", new TextEncoder().encode(JSON.stringify(stableValue(value))))
@@ -269,6 +271,12 @@ const make = Effect.gen(function* () {
   const validateArchitectSelection = Effect.fn("Ft3ArchitectService.validateArchitectSelection")(
     function* (input: Contracts.ArchitectCreateOrGetInput) {
       const evidence = input.routingEvidence;
+      if (routingPolicyRefValue.trim() !== "" && evidence.policyRef !== routingPolicyRefValue) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "routing_evidence_mismatch",
+          message: "The routing evidence does not reference the configured routing policy.",
+        });
+      }
       const selected = evidence.consideredCandidates.at(-1);
       const optionsMatch =
         (yield* hash(selected === undefined ? [] : selected.options)) ===
