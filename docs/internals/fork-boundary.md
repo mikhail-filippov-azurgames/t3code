@@ -325,3 +325,26 @@ stays allowed.
 | `apps/server/src/mcp/OrchestratorMcpService.ts` | import `delegationPermissionDenial`; read settings and call it once before dispatch, then fail with the returned `code`/`reason` | refuse a child whose provider configuration outranks the parent envelope |
 
 New fork-owned tests: `packages/ft3-delegation/src/delegationPermissionEnvelope.test.ts` and `apps/server/src/mcp/OrchestratorMcpService.delegationEnvelope.test.ts`.
+
+## Kimi usage limits (S)
+
+`packages/ft3-kimi` оборачивает upstream `AcpRegistryDriver`, сохраняя его
+`driverKind` (`acpRegistry`), и добавляет только чтение plan usage Kimi Code.
+ACP не отдаёт квоты, поэтому wrapper читает OAuth-токен CLI из
+`~/.kimi-code/credentials/` (слот вычисляется так же, как в `kimi login`),
+обновляет его через `{oauthHost}/api/oauth/token` с записью обратно в тот же
+файл (tmp + rename, та же wire-форма) и запрашивает `GET {baseUrl}/usages`.
+Лимиты прикрепляются к snapshot только для Kimi-инстанса: registry-агент
+`kimi` или local-команда с именем `kimi`; остальные ACP-инстансы проходят без
+изменений. Кэш лимитов — 60 секунд, `refresh` форсирует новый запрос.
+Пакет не содержит исполняемого файла: используется `commandPath` инстанса.
+
+| Upstream-файл                                | Правка                                                                                             | Зачем                                                             |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `apps/server/src/provider/builtInDrivers.ts` | импорт `Ft3KimiDriver as AcpRegistryDriver` из `@t3tools/ft3-kimi/server` вместо registry-драйвера | добавляет usage limits Kimi без нового provider kind и правок web |
+| `apps/server/package.json`                   | зависимость `@t3tools/ft3-kimi: workspace:*`                                                       | разрешает workspace-пакет                                         |
+| `pnpm-lock.yaml`                             | importer `packages/ft3-kimi` и зависимость `apps/server`                                           | фиксирует workspace-связи                                         |
+
+Новые тесты форка: `packages/ft3-kimi/src/usageLimits.test.ts` (мок HTTP и
+временный файл credentials, реальный `~/.kimi-code` не читается) и
+`packages/ft3-kimi/src/driver.test.ts`.
