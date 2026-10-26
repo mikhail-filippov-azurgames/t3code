@@ -11,16 +11,29 @@ describe("ft3 migrations", () => {
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
 
-      assert.deepStrictEqual(yield* runMigrations(), [[1, "Ft3Meta"]]);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [1, "Ft3Meta"],
+        [2, "Board"],
+      ]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
       `;
       assert.deepStrictEqual(
         tables.map((row) => row.name),
-        ["ft3_meta", "ft3_migrations"],
+        [
+          "ft3_board_card_deletions",
+          "ft3_board_card_events",
+          "ft3_board_cards",
+          "ft3_board_orchestrators",
+          "ft3_meta",
+          "ft3_migrations",
+        ],
       );
       const journal = yield* sql`SELECT migration_id, name FROM ft3_migrations`;
-      assert.deepStrictEqual(journal, [{ migration_id: 1, name: "Ft3Meta" }]);
+      assert.deepStrictEqual(journal, [
+        { migration_id: 1, name: "Ft3Meta" },
+        { migration_id: 2, name: "Board" },
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -39,7 +52,10 @@ describe("ft3 migrations", () => {
       `;
       const coreBefore = yield* sql`SELECT * FROM effect_sql_migrations`;
 
-      assert.deepStrictEqual(yield* runMigrations(), [[1, "Ft3Meta"]]);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [1, "Ft3Meta"],
+        [2, "Board"],
+      ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
       const ft3Before = yield* sql`SELECT * FROM ft3_migrations`;
 
@@ -64,7 +80,10 @@ describe("ft3 migrations", () => {
       assert.deepStrictEqual(yield* sql`SELECT * FROM ft3_meta`, [{ probe: "retained" }]);
 
       yield* sql`DROP TABLE ft3_meta`;
-      assert.deepStrictEqual(yield* runMigrations(), [[1, "Ft3Meta"]]);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [1, "Ft3Meta"],
+        [2, "Board"],
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
