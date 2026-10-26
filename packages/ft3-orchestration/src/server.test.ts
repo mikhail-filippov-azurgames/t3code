@@ -33,6 +33,7 @@ import {
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import { selectHistoryPageFromCursor } from "../../../apps/server/src/orchestration-v2/threadHistoryPaging.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import * as Contracts from "./contracts.ts";
@@ -52,6 +53,9 @@ const crypto = Layer.succeed(
     digest: () => Effect.die("unused"),
   }),
 );
+const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+  getProviders: Effect.succeed([]),
+});
 const parentId = ThreadId.make("thread:parent");
 const otherParentId = ThreadId.make("thread:other-parent");
 const aId = NodeId.make("node:a");
@@ -261,6 +265,7 @@ function fixture() {
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(dependencies),
+    Layer.provide(providerRegistry),
     Layer.provide(SqlitePersistence.layerMemory),
     Layer.provide(crypto),
   );
@@ -566,6 +571,7 @@ describe("ft3 task toolkit through ft3-host", () => {
       const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(liveQueries),
+        Layer.provide(providerRegistry),
         Layer.provide(crypto),
       );
       return yield* Effect.gen(function* () {
