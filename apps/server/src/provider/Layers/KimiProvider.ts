@@ -12,9 +12,12 @@ import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/unstable/http";
 import type * as EffectAcpSchema from "effect-acp/schema";
 
 import {
@@ -23,6 +26,7 @@ import {
   kimiSessionSelectOptions,
   makeKimiAcpRuntime,
 } from "../acp/KimiAcpSupport.ts";
+import { probeKimiUsageLimits } from "./kimiUsageLimits.ts";
 import {
   buildSelectOptionDescriptor,
   buildServerProvider,
@@ -43,6 +47,7 @@ const KIMI_PRESENTATION = {
 const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({ optionDescriptors: [] });
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
 const ACP_PROBE_TIMEOUT_MS = 15_000;
+const USAGE_PROBE_TIMEOUT_MS = 10_000;
 
 const KIMI_FALLBACK_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
@@ -177,7 +182,11 @@ export const checkKimiProviderStatus = Effect.fn("checkKimiProviderStatus")(func
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Crypto.Crypto
+  | ChildProcessSpawner.ChildProcessSpawner
+  | Crypto.Crypto
+  | FileSystem.FileSystem
+  | HttpClient.HttpClient
+  | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const fallbackModels = kimiModelsFromSettings(kimiSettings.customModels);
@@ -241,6 +250,12 @@ export const checkKimiProviderStatus = Effect.fn("checkKimiProviderStatus")(func
     });
   }
 
+  // Runs alongside the ACP probe; the usage read only needs the on-disk
+  // credential slot and the coding API, not a live ACP session.
+  const usageProbe = probeKimiUsageLimits({ environment }).pipe(
+    Effect.timeoutOption(USAGE_PROBE_TIMEOUT_MS),
+  );
+
   const acpExit = yield* discoverKimiModelsViaAcp(kimiSettings, environment, cwd).pipe(
     Effect.timeoutOption(ACP_PROBE_TIMEOUT_MS),
     Effect.exit,
@@ -252,6 +267,8 @@ export const checkKimiProviderStatus = Effect.fn("checkKimiProviderStatus")(func
       errorTag: Exit.isFailure(acpExit) ? causeErrorTag(acpExit.cause) : "Timeout",
     });
   }
+  const usageLimitsOption = yield* usageProbe;
+  const usageLimits = Option.getOrElse(usageLimitsOption, () => undefined);
   const auth: ServerProviderAuth = acpFailed
     ? { status: "unknown" }
     : { status: "authenticated", type: "cached_token", label: "Kimi account" };
@@ -270,6 +287,7 @@ export const checkKimiProviderStatus = Effect.fn("checkKimiProviderStatus")(func
       version,
       status: acpFailed ? "warning" : "ready",
       auth,
+      ...(usageLimits ? { usageLimits } : {}),
       ...(acpFailed
         ? {
             message:
