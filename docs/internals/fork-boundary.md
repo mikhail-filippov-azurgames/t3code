@@ -155,6 +155,33 @@ Web-вкладка «Commit graph» в реестре `ft3-web` переноси
 | --------------------- | --------------------------------------------------------------------- | ----------------------------------------------- |
 | `pnpm-workspace.yaml` | `"@web-git-graph/web@1.0.7": patches/@web-git-graph__web@1.0.7.patch` | применить патч темы/колонок, как в старом форке |
 
+## Pi: managed agent dir, local inference and executor-only instances (срез 1)
+
+`packages/ft3-pi` оборачивает upstream `PiDriver`: в `create()` он пишет управляемый
+agent-dir (`<stateDir>/pi/<instanceId>/agent`) с `models.json` (`ft3-local/*`,
+`http://127.0.0.1:11434/v1` по умолчанию) и `settings.json` (пиннинг tools по
+режиму хода, `defaultProjectTrust: never`), затем ставит `PI_CODING_AGENT_DIR` в env
+инстанса и передаёт его в upstream. `settings.json` переписывается под режим
+сессии до открытия Pi-процесса и под режим хода перед каждым ходом (и compaction).
+`ensureReady(model)` берёт профиль llama-server из `inference-profiles.json` рядом с
+agent-dir (или `T3CODE_FT3_PI_INFERENCE_CONFIG`), поднимает один процесс на endpoint,
+ждёт `/health` и `/v1/models`. Слоты, ручной start/stop, импорт Codex-skills и
+блокировка launch-env (`NODE_*`, proxy, `PI_*`) не перенесены: upstream адаптер
+всегда досмешивает ambient env. Профили с `baseUrl` вне loopback и `.ps1`
+launchers отклоняются, а не запускаются.
+
+`T3CODE_FT3_EXECUTOR_ONLY_INSTANCES` — список id инстансов через запятую; такие
+инстансы не получают capability `orchestration` ни в MCP-credential, ни в наборе
+`ProviderSessionManager`, поэтому не могут действовать как координатор.
+
+| Upstream-файл                                                          | Правка                                                                                | Зачем                                                                 |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `apps/server/src/provider/builtInDrivers.ts:12-15`                     | импорт `Ft3PiDriver as PiDriver` из `@t3tools/ft3-pi/server`                          | подключить управляемый Pi вместо upstream-драйвера                    |
+| `apps/server/src/orchestration-v2/ProviderSessionManager.ts:1,429-437` | импорт и вычисление capability `orchestration` через `isExecutorOnlyProviderInstance` | не выдавать координаторские права исполнителю                         |
+| `apps/server/src/mcp/McpSessionRegistry.ts:2,110-116`                  | импорт и то же условие вокруг `orchestration`                                         | registry выдаёт capability сам, поэтому одной правки в менеджере мало |
+| `apps/server/package.json:44`                                          | зависимость `@t3tools/ft3-pi: workspace:*`                                            | разрешение workspace-пакета                                           |
+| `pnpm-lock.yaml`                                                       | importer `packages/ft3-pi` и зависимость `apps/server`                                | воспроизводимое подключение                                           |
+
 ## Исправления Muse в стеке ft3
 
 Перед успешным завершением адаптер сверяет потоковый текст с `session/read`:

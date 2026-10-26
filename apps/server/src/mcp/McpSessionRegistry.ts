@@ -1,4 +1,5 @@
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { isExecutorOnlyProviderInstance } from "@t3tools/ft3-pi/policy";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -110,7 +111,9 @@ const makeWithOptions = Effect.fn("McpSessionRegistry.make")(function* (
         },
         client: undefined,
         capabilities: new Set<McpInvocationContext.McpCapability>([
-          "orchestration",
+          ...(isExecutorOnlyProviderInstance(request.providerInstanceId)
+            ? []
+            : (["orchestration"] as const)),
           "worktree",
           "pull-requests",
           ...(request.capabilities ?? (browserToolsAvailable ? (["preview"] as const) : [])),
