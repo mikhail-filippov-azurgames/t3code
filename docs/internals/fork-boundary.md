@@ -44,14 +44,25 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 Его MCP-регистрация использует существующие `McpToolAccess` и `toolkitRegistration`;
 host загружает её при построении Layer, чтобы не замкнуть инициализацию модулей сервера.
 
-| Upstream-файл                           | Правка                                                                           | Зачем                                                |
-| --------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `apps/server/src/server.ts`             | импорт `ft3-host/server`, `Ft3Host.layer` в композиции Layer                     | подключение серверных возможностей ft3               |
-| `apps/server/src/mcp/McpHttpServer.ts`  | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`        | подключение регистрационных Layer MCP-toolkit'ов ft3 |
-| `apps/server/src/persistence/Sqlite.ts` | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()` | миграции пакета на той же SQLite-сессии после core   |
-| `apps/server/package.json`              | зависимость `@t3tools/ft3-host: workspace:*`                                     | разрешение workspace-пакета                          |
-| `pnpm-lock.yaml`                        | importers `packages/ft3-*` и workspace-зависимости                               | воспроизводимое подключение пакетов                  |
+| Upstream-файл                                       | Правка                                                                           | Зачем                                                |
+| --------------------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `apps/server/src/server.ts`                         | импорт `ft3-host/server`, `Ft3Host.layer` в композиции Layer                     | подключение серверных возможностей ft3               |
+| `apps/server/src/mcp/McpHttpServer.ts`              | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`        | подключение регистрационных Layer MCP-toolkit'ов ft3 |
+| `apps/server/src/persistence/Sqlite.ts`             | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()` | миграции пакета на той же SQLite-сессии после core   |
+| `apps/server/package.json`                          | зависимость `@t3tools/ft3-host: workspace:*`                                     | разрешение workspace-пакета                          |
+| `pnpm-lock.yaml`                                    | importers `packages/ft3-*` и workspace-зависимости                               | воспроизводимое подключение пакетов                  |
+| `apps/server/src/persistence/ft3Migrations.test.ts` | ожидаемая запись `Board` в журнале ft3                                           | проверка подключения миграций пакета доски           |
 
 Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
 Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
 не используют. Идентификаторы миграций в двух журналах независимы.
+
+`packages/ft3-board` хранит доску отдельно от журнала событий V2. Репозиторий
+принимает человеческую отметку оркестратора для будущего UI; MCP не
+предоставляет инструмент назначения этой роли. Инструменты регистрируются для
+всех сессий, а capability `orchestration`, актуальная человеческая отметка и
+принадлежность карточки проверяются при каждом вызове. Это позволяет назначать
+и снимать роль без перезапуска сессии. Внешний ключ отметки указывает на
+`orchestration_v2_projection_threads`; логическое удаление V2 требует очистки
+будущим реактором, поскольку SQL-каскад работает только при физическом удалении.
+

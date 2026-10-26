@@ -1,0 +1,33 @@
+{
+  "name": "@t3tools/ft3-board",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
+    },
+    "./migrations": {
+      "types": "./src/migrations.ts",
+      "import": "./src/migrations.ts"
+    },
+    "./repository": {
+      "types": "./src/BoardRepository.ts",
+      "import": "./src/BoardRepository.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@t3tools/shared": "workspace:*",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}
