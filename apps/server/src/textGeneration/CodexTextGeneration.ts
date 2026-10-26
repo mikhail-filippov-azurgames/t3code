@@ -1,4 +1,5 @@
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -29,6 +30,8 @@ import { getCodexServiceTierOptionValue } from "../codexModelOptions.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const CODEX_TIMEOUT_MS = 180_000;
+const CODEX_OUTPUT_DRAIN_MS = 1_000;
+const CODEX_TIMEOUT_STDERR_CHARS = 400;
 const CODEX_MCP_LIST_TIMEOUT_MS = 10_000;
 // Plugins/apps add MCP servers; use trailing config overrides because --disable loses to user -c flags.
 const CODEX_NO_PLUGIN_ARGS = [
@@ -64,16 +67,14 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const serverConfig = yield* Effect.service(ServerConfig.ServerConfig);
   const resolvedEnvironment = environment ?? process.env;
 
-  const readStreamAsString = <E>(
+  const readStreamInto = <E>(
     operation: string,
     stream: Stream.Stream<Uint8Array, E>,
-  ): Effect.Effect<string, TextGenerationError> =>
+    onChunk: (chunk: string) => void,
+  ): Effect.Effect<void, TextGenerationError> =>
     stream.pipe(
       Stream.decodeText(),
-      Stream.runFold(
-        () => "",
-        (acc, chunk) => acc + chunk,
-      ),
+      Stream.runForEach((chunk) => Effect.sync(() => onChunk(chunk))),
       Effect.mapError((cause) =>
         normalizeCliError("codex", operation, cause, "Failed to collect process output"),
       ),
@@ -232,6 +233,8 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     const outputPath = yield* writeTempFile(operation, "codex-output", "").pipe(
       Effect.onError(() => removeTempFileDir(schemaPath)),
     );
+    let stdout = "";
+    let stderr = "";
 
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
       const resolved = resolveRuntime
@@ -320,18 +323,24 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ),
         );
 
-      const [stdout, stderr, exitCode] = yield* Effect.all(
+      const outputDrained = yield* Effect.all(
         [
-          readStreamAsString(operation, child.stdout),
-          readStreamAsString(operation, child.stderr),
-          child.exitCode.pipe(
-            Effect.mapError((cause) =>
-              normalizeCliError("codex", operation, cause, "Failed to read Codex CLI exit code"),
-            ),
-          ),
+          readStreamInto(operation, child.stdout, (chunk) => {
+            stdout += chunk;
+          }),
+          readStreamInto(operation, child.stderr, (chunk) => {
+            stderr += chunk;
+          }),
         ],
-        { concurrency: "unbounded" },
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.forkScoped);
+      const exitCode = yield* child.exitCode.pipe(
+        Effect.mapError((cause) =>
+          normalizeCliError("codex", operation, cause, "Failed to read Codex CLI exit code"),
+        ),
       );
+      // Codex can leave helpers holding the inherited pipes after it exits, so EOF is not reliable.
+      yield* Fiber.join(outputDrained).pipe(Effect.timeoutOption(CODEX_OUTPUT_DRAIN_MS));
 
       if (exitCode !== 0) {
         const stderrDetail = stderr.trim();
@@ -357,10 +366,18 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         Effect.timeoutOption(investigate?.timeoutMs ?? CODEX_TIMEOUT_MS),
         Effect.flatMap(
           Option.match({
-            onNone: () =>
-              Effect.fail(
-                new TextGenerationError({ operation, detail: "Codex CLI request timed out." }),
-              ),
+            onNone: () => {
+              const stderrTail = stderr.trim().slice(-CODEX_TIMEOUT_STDERR_CHARS);
+              return Effect.fail(
+                new TextGenerationError({
+                  operation,
+                  detail:
+                    stderrTail.length > 0
+                      ? `Codex CLI request timed out. Last stderr: ${stderrTail}`
+                      : "Codex CLI request timed out.",
+                }),
+              );
+            },
             onSome: () => Effect.void,
           }),
         ),
