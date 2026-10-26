@@ -1,8 +1,11 @@
 import {
   IsoDateTime,
   ModelSelection,
+  NodeId,
   NonNegativeInt,
   OrchestratorMcpFailure,
+  PositiveInt,
+  ProviderTurnId,
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -201,6 +204,38 @@ export const BoardCardResolveResult = Schema.Struct({
   details: Schema.Array(BoardCardLookupDetail),
 });
 export type BoardCardResolveResult = typeof BoardCardResolveResult.Type;
+
+export const BoardDelegationStatus = Schema.Literals([
+  "queued",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+export type BoardDelegationStatus = typeof BoardDelegationStatus.Type;
+export const BoardDelegation = Schema.Struct({
+  taskId: NodeId,
+  childThreadId: ThreadId,
+  title: Schema.String,
+  latestStatus: BoardDelegationStatus,
+  latestTurnId: Schema.NullOr(ProviderTurnId),
+  updatedAt: IsoDateTime,
+  summary: Schema.NullOr(Schema.String),
+});
+export type BoardDelegation = typeof BoardDelegation.Type;
+export const BoardExecutorDelegationsInput = Schema.Struct({
+  cardId: BoardCardId,
+  afterTaskId: Schema.optional(NodeId),
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
+});
+export type BoardExecutorDelegationsInput = typeof BoardExecutorDelegationsInput.Type;
+export const BoardExecutorDelegationsResult = Schema.Struct({
+  delegations: Schema.Array(BoardDelegation).check(Schema.isMaxLength(100)),
+  nextCursor: Schema.NullOr(NodeId),
+});
+export type BoardExecutorDelegationsResult = typeof BoardExecutorDelegationsResult.Type;
 
 export const BoardCreateInput = Schema.Struct({
   orchestratorThreadId: ThreadId,

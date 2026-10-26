@@ -31,6 +31,7 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 
 export { ArchitectService } from "@t3tools/ft3-architect/service";
 export { BoardService } from "@t3tools/ft3-board/service";
+export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
 export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
 
 export const FT3_WS_METHODS = {

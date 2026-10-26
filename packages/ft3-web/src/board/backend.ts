@@ -55,6 +55,12 @@ export function createBoardEnvironmentAtoms<R, E>(
     staleTimeMs: 15_000,
     refreshIntervalMs: 15_000,
   });
+  const delegations = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:executor-delegations",
+    tag: WS_METHODS.boardExecutorDelegations,
+    staleTimeMs: 15_000,
+    refreshIntervalMs: 15_000,
+  });
   const refreshLists = (environmentId: EnvironmentId, registry: AtomRegistry.AtomRegistry) => {
     registry.refresh(list({ environmentId, input: {} }));
     registry.refresh(list({ environmentId, input: { includeArchived: true } }));
@@ -83,6 +89,7 @@ export function createBoardEnvironmentAtoms<R, E>(
     orchestratorsList,
     list,
     resolve,
+    delegations,
     orchestratorAdd: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:board:orchestrator-add",
       tag: WS_METHODS.boardOrchestratorAdd,

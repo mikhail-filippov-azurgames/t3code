@@ -5,8 +5,9 @@ import {
   type BoardCardEvent,
   type BoardCardReadiness,
   type BoardCardStatus,
-  type ExecutorRole as BoardExecutorRole,
+  type BoardDelegationStatus,
   type BoardListResult,
+  type ExecutorRole as BoardExecutorRole,
 } from "@t3tools/ft3-board/contracts";
 import * as Cause from "effect/Cause";
 
@@ -219,4 +220,24 @@ export function formatBoardEventTime(iso: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+const DELEGATION_STATUS_LABELS: Readonly<Record<BoardDelegationStatus, string>> = {
+  queued: "Queued",
+  running: "Running",
+  waiting: "Waiting",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+  interrupted: "Interrupted",
+};
+
+export function boardDelegationStatusLabel(status: BoardDelegationStatus): string {
+  return DELEGATION_STATUS_LABELS[status];
+}
+
+export function boardDelegationSummaryText(summary: string | null): string | null {
+  if (summary === null) return null;
+  const text = summary.trim();
+  return text.length === 0 ? null : text;
 }
