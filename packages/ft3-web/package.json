@@ -1,0 +1,31 @@
+{
+  "name": "@t3tools/ft3-web",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./panels": "./src/panels.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --project ft3-web-unit --project ft3-web-browser"
+  },
+  "dependencies": {
+    "@effect/atom-react": "catalog:",
+    "@t3tools/client-runtime": "workspace:*",
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/ft3-board": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "@tanstack/react-router": "^1.160.2",
+    "effect": "catalog:",
+    "lucide-react": "^0.564.0",
+    "react": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@vitest/browser-playwright": "5.0.5",
+    "playwright": "1.60.0",
+    "vite-plus": "catalog:"
+  }
+}
