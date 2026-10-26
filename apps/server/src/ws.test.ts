@@ -21,6 +21,7 @@ import {
 import {
   ArchitectService as Ft3ArchitectService,
   BoardService as Ft3BoardService,
+  CommitHistoryService as Ft3CommitHistoryService,
 } from "@t3tools/ft3-host/rpc";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -668,6 +669,7 @@ it.effect.each(["pending", "cached"] as const)(
         }),
         Layer.mock(Ft3BoardService)({}),
         Layer.mock(Ft3ArchitectService)({}),
+        Layer.mock(Ft3CommitHistoryService)({}),
         Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           scratchRoot: Effect.succeedNone,

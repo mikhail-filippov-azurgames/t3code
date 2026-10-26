@@ -14,8 +14,11 @@
     "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
+    "@t3tools/ft3-vcs": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@tanstack/react-router": "^1.160.2",
+    "@web-git-graph/protocol": "1.0.7",
+    "@web-git-graph/web": "1.0.7",
     "effect": "catalog:",
     "lucide-react": "^0.564.0",
     "react": "catalog:"

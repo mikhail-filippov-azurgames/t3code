@@ -1,5 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { LayoutDashboard, PanelsTopLeft } from "lucide-react";
+import { GitBranch, LayoutDashboard, PanelsTopLeft } from "lucide-react";
 import { lazy, Suspense, type ComponentType } from "react";
 
 export interface Ft3Surface {
@@ -32,6 +32,7 @@ export const ft3Surface = (surfaceType: string): Ft3Surface => ({
 });
 
 const BoardPanel = lazy(() => import("./board/BoardPanel.tsx"));
+const CommitsPanel = lazy(() => import("./commits/CommitsPanel.tsx"));
 
 export const ft3SurfaceRegistry: Readonly<Record<string, Ft3SurfaceDefinition>> = {
   board: {
@@ -42,6 +43,15 @@ export const ft3SurfaceRegistry: Readonly<Record<string, Ft3SurfaceDefinition>> 
     disabledReason: "Available from a server thread.",
     available: (ref) => ref !== null,
     open: (ref, openSurface) => openSurface(ref, ft3Surface("board")),
+  },
+  commits: {
+    component: CommitsPanel,
+    icon: GitBranch,
+    title: "Commit graph",
+    shortcut: "G",
+    disabledReason: "Available from a server thread.",
+    available: (ref) => ref !== null,
+    open: (ref, openSurface) => openSurface(ref, ft3Surface("commits")),
   },
 };
 

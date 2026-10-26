@@ -34,6 +34,20 @@ describe("FT3 panel registry", () => {
     expect(ft3SurfaceTitle("board")).toBe("Board");
   });
 
+  it("offers Commit graph and opens its surface", () => {
+    const open = vi.fn();
+    const action = ft3SurfaceActions(ref, open).find((entry) => entry.label === "Commit graph")!;
+    expect(action.available).toBe(true);
+    action.onClick();
+    expect(open).toHaveBeenCalledWith(ref, {
+      id: "ft3:commits",
+      kind: "ft3",
+      surfaceType: "commits",
+    });
+    expect(ft3SurfaceRegistry.commits?.component).toBeDefined();
+    expect(ft3SurfaceTitle("commits")).toBe("Commit graph");
+  });
+
   it("rejects unknown persisted types and inherited object names", () => {
     for (const surfaceType of ["missing", "constructor", "__proto__", "toString"]) {
       expect(normalizeFt3Surface(ft3Surface(surfaceType))).toEqual([]);
