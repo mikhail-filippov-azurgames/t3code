@@ -1,3 +1,4 @@
+import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
@@ -3073,6 +3074,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          items.push(
+                            <ArchitectSidebarPin
+                              key={`architect-pin:${item.key}`}
+                              thread={threadByKey.get(item.key)!}
+                              onNavigate={navigateToThread}
+                            />,
+                          );
                           continue;
                         }
                         switch (item.marker) {

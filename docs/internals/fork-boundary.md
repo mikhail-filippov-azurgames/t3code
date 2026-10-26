@@ -227,3 +227,24 @@ queries. Pinned cards use the original environment/thread storage keys and
 bounded `board.resolve` requests. Coordinator requests use V2's normal message
 dispatch. The old panel's delegated-summary history and commit graph are separate
 features and are not part of this Board surface.
+
+## Architect sidebar and human publication (S4)
+
+`packages/ft3-web/src/architect` owns the coordinator pin, the human publish menu
+and their RPC state. The pin reads the binding snapshot for the coordinator row;
+the publish menu reads the snapshot for the Architect thread itself, so neither
+needs binding state from upstream. Only an active binding nests the Architect row,
+and only the bound Architect thread with unpublished records shows Publish.
+
+| Upstream file                                   | Connection                                                                             | Reason                                                     |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `apps/web/src/components/Sidebar.tsx`           | import `ArchitectSidebarPin`; push one pin after each thread row                       | nest the Architect under its coordinator without row slots |
+| `apps/web/src/components/chat/ChatComposer.tsx` | import `ArchitectPublishButton`; render it beside the attach button for server threads | publish Architect advice from the composer                 |
+| `pnpm-lock.yaml`                                | `@t3tools/ft3-architect` dependency of the `packages/ft3-web` importer                 | resolve the browser-safe architect contracts               |
+
+`packages/ft3-architect/package.json` exports `./contracts` for those types; the
+web extension must not import the server `./rpc` entry. Publication idempotency
+keys are generated in `ft3-web`, while scope, binding and publication state stay
+server-authoritative. The old pin's provider picker is not transferred: Replace
+writes a reason-backed replace request into the coordinator's composer draft and
+lets the Coordinator apply it under the routing policy.
