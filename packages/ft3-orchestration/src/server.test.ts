@@ -43,6 +43,7 @@ const decodeList = Schema.decodeUnknownEffect(Contracts.TaskListResult);
 const decodeSearch = Schema.decodeUnknownEffect(Contracts.TaskSearchResult);
 const decodeRead = Schema.decodeUnknownEffect(Contracts.TaskReadResult);
 const decodeAttach = Schema.decodeUnknownEffect(Contracts.TaskAttachHandoffResult);
+const decodeHistory = Schema.decodeUnknownEffect(Contracts.TaskSummaryHistoryResult);
 const isHandoff = Schema.is(Contracts.TaskHandoff);
 const isListInput = Schema.is(Contracts.TaskListInput);
 const isSearchInput = Schema.is(Contracts.TaskSearchInput);
@@ -282,7 +283,7 @@ function fixture() {
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(dependencies),
     Layer.provide(providerRegistry),
-    Layer.provide(SqlitePersistence.layerMemory),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(crypto),
   );
   return {
@@ -333,6 +334,7 @@ describe("ft3 task toolkit through ft3-host", () => {
           "task_list",
           "task_read",
           "task_search",
+          "task_summary_history",
         ]);
         const readOnly = taskTools.filter(({ tool }) => tool.name !== "task_attach_handoff");
         assert.isTrue(readOnly.every(({ tool }) => tool.annotations?.readOnlyHint === true));
@@ -741,6 +743,39 @@ describe("ft3 task toolkit through ft3-host", () => {
         "invalid_request",
       );
       assert.deepStrictEqual(f.historyReads, []);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("returns generated and imported summaries in task_list and summary history", () => {
+    const f = fixture();
+    f.shells.set(f.aThreadId, { ...f.shells.get(f.aThreadId)!, status: "idle" });
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO ft3_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES
+          (${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'turn:a',
+            '2026-10-25T01:00:00.000Z', 'Current summary', 'model', '["turn:a"]', 0,
+            'fingerprint:current', 'ready', NULL, 1, NULL, '2026-10-25T01:00:00.000Z'),
+          (${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'legacy:turn:0',
+            '2026-10-01T00:00:00.000Z', 'Historical summary', 'model', '["legacy:turn:0"]', 0,
+            'fingerprint:legacy', 'ready', NULL, 1, NULL, '2026-10-01T00:00:00.000Z')`;
+      const listed = yield* decodeList((yield* call("task_list", {})).structuredContent);
+      assert.equal(listed.tasks[0]!.summary!.text, "Current summary");
+      assert.isFalse(listed.tasks[0]!.summary!.stale);
+      assert.isNull(listed.tasks[1]!.summary);
+      const history = yield* decodeHistory(
+        (yield* call("task_summary_history", {})).structuredContent,
+      );
+      assert.deepStrictEqual(
+        history.records.map((record) => record.sourceTurnId),
+        ["turn:a", "legacy:turn:0"],
+      );
+      assert.equal(history.records[0]!.summaryText, "Current summary");
+      assert.isTrue(history.records[1]!.stale);
+      assert.isNull(history.nextCursor);
     }).pipe(Effect.provide(f.layer));
   });
 

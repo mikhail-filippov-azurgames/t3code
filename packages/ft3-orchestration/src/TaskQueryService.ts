@@ -2,12 +2,14 @@ import {
   EventId,
   OrchestratorMcpFailure,
   OrchestrationV2TurnItemJson,
+  ProviderTurnId,
+  TurnId,
   type MessageId,
   type NodeId,
   type OrchestrationV2RunStatus,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadHistoryPage,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -30,11 +32,41 @@ import type {
   TaskReadResult,
   TaskSearchInput,
   TaskSearchResult,
+  TaskSummary,
+  TaskSummaryHistoryInput,
+  TaskSummaryHistoryResult,
 } from "./contracts.ts";
+import * as DelegatedTaskSummaryRepository from "./DelegatedTaskSummaryRepository.ts";
+import { safeSummaryText } from "./DelegatedTaskSummaryText.ts";
 import * as TaskHandoffService from "./TaskHandoffService.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
 const encodeTurnItem = Schema.encodeEffect(OrchestrationV2TurnItemJson);
+const ACTIVE_THREAD_STATUSES: ReadonlySet<string> = new Set([
+  "queued",
+  "preparing",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+const historyTurnState = (
+  status: string | null,
+): TaskSummaryHistoryResult["records"][number]["currentTurnState"] => {
+  switch (status) {
+    case "pending":
+    case "running":
+    case "interrupted":
+    case "completed":
+      return status;
+    case "failed":
+      return "error";
+    case "cancelled":
+      return "interrupted";
+    default:
+      return null;
+  }
+};
 
 export class TaskQueryService extends Context.Service<
   TaskQueryService,
@@ -51,6 +83,10 @@ export class TaskQueryService extends Context.Service<
       scope: Scope,
       input: TaskReadInput,
     ) => Effect.Effect<TaskReadResult, OrchestratorMcpFailure>;
+    readonly history: (
+      scope: Scope,
+      input: TaskSummaryHistoryInput,
+    ) => Effect.Effect<TaskSummaryHistoryResult, OrchestratorMcpFailure>;
   }
 >()("@t3tools/ft3-orchestration/TaskQueryService") {}
 
@@ -89,6 +125,7 @@ function statusForRun(
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const handoffs = yield* TaskHandoffService.TaskHandoffService;
+  const summaries = yield* DelegatedTaskSummaryRepository.DelegatedTaskSummaryRepository;
 
   const ownedTasks = Effect.fn("Ft3TaskQueryService.ownedTasks")(function* (scope: Scope) {
     const caller = yield* McpInvocationContext.requireThreadScope(scope, "Delegated task queries");
@@ -150,6 +187,29 @@ const make = Effect.gen(function* () {
         return right.attemptOrdinal - left.attemptOrdinal || b.ordinal - a.ordinal;
       })[0];
     const pending = records.runtimeRequests.some((request) => request.status === "pending");
+    const summaryRow = yield* summaries
+      .getLatestByChild(String(child.id))
+      .pipe(Effect.mapError(unavailable));
+    let summary: TaskSummary | null = null;
+    if (summaryRow !== null) {
+      const watermark = yield* summaries
+        .currentWatermark(String(child.id))
+        .pipe(Effect.mapError(unavailable));
+      summary = {
+        text: summaryRow.text,
+        source: summaryRow.source,
+        sourceTurnIds: summaryRow.sourceTurnIds.map((turnId) => TurnId.make(turnId)),
+        watermark: summaryRow.watermark,
+        stale:
+          summaryRow.state !== "ready" ||
+          summaryRow.sourceTurnId !== (latestTurn === undefined ? "" : String(latestTurn.id)) ||
+          summaryRow.watermark < watermark ||
+          pending ||
+          ACTIVE_THREAD_STATUSES.has(child.status),
+        state: summaryRow.state,
+        error: summaryRow.error,
+      };
+    }
     const entry: TaskMemoryEntry = {
       taskId: task.id,
       childThreadId: child.id,
@@ -159,7 +219,7 @@ const make = Effect.gen(function* () {
       latestTurnId: latestTurn?.id ?? null,
       updatedAt: DateTime.formatIso(child.updatedAt),
       worktreePath: child.worktreePath,
-      summary: null,
+      summary,
       handoff: yield* handoffs.get(task.id),
     };
     return entry;
@@ -190,7 +250,8 @@ const make = Effect.gen(function* () {
         entry.latestTurnId !== search &&
         entry.latestStatus !== search &&
         entry.worktreePath !== search &&
-        ![entry.title, entry.worktreePath ?? "", task.result ?? ""]
+        entry.summary?.sourceTurnIds.some((turnId) => String(turnId) === search) !== true &&
+        ![entry.title, entry.worktreePath ?? "", task.result ?? "", entry.summary?.text ?? ""]
           .join("\n")
           .toLocaleLowerCase()
           .includes(folded!)
@@ -317,6 +378,7 @@ const make = Effect.gen(function* () {
         taskId: entry.taskId,
         title: entry.title,
         handoff: entry.handoff,
+        summary: entry.summary,
         messages,
         activities,
         page: {
@@ -325,6 +387,45 @@ const make = Effect.gen(function* () {
           snapshotSequence: history.snapshotSequence,
           threadSequence: history.snapshotSequence,
         },
+      };
+    }),
+    history: Effect.fn("Ft3TaskQueryService.history")(function* (scope, input) {
+      const { parent } = yield* ownedTasks(scope);
+      const limit = input.limit ?? 50;
+      const rows = yield* summaries
+        .listHistory({
+          parentThreadId: String(parent.id),
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          limit,
+        })
+        .pipe(Effect.mapError(unavailable));
+      const page = rows.slice(0, limit);
+      const records: TaskSummaryHistoryResult["records"][number][] = page.map((row) => ({
+        childThreadId: ThreadId.make(row.childThreadId),
+        sourceTurnId: TurnId.make(row.sourceTurnId),
+        completedAt: row.completedAt,
+        summaryText: safeSummaryText(row.summaryText),
+        summaryState: row.summaryState,
+        summaryWatermark: row.summaryWatermark,
+        currentTurnId: row.currentTurnId === null ? null : ProviderTurnId.make(row.currentTurnId),
+        currentTurnState: historyTurnState(row.currentTurnState),
+        currentWatermark: row.currentWatermark,
+        executorRole: "",
+        stale:
+          row.sourceTurnId !== (row.currentTurnId ?? "") ||
+          row.summaryWatermark !== row.currentWatermark,
+      }));
+      const last = page.at(-1);
+      return {
+        records,
+        nextCursor:
+          rows.length > limit && last !== undefined
+            ? {
+                completedAt: last.completedAt,
+                childThreadId: ThreadId.make(last.childThreadId),
+                sourceTurnId: TurnId.make(last.sourceTurnId),
+              }
+            : null,
       };
     }),
   });
