@@ -1,4 +1,4 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -11,6 +11,8 @@ import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocatio
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
+import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
+import { routingPolicyRef } from "./routingPolicy.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
 export class BoardService extends Context.Service<
@@ -32,6 +34,37 @@ export class BoardService extends Context.Service<
       scope: Scope,
       input: Contracts.BoardDeleteCardInput,
     ) => Effect.Effect<{}, Contracts.BoardMcpFailure>;
+    readonly listOrchestrators: () => Effect.Effect<
+      Contracts.BoardOrchestratorsListResult,
+      Contracts.BoardMcpFailure
+    >;
+    readonly markOrchestrator: (
+      input: Contracts.BoardOrchestratorAddInput,
+    ) => Effect.Effect<Contracts.BoardOrchestrator, Contracts.BoardMcpFailure>;
+    readonly unmarkOrchestrator: (
+      input: Contracts.BoardOrchestratorRemoveInput,
+    ) => Effect.Effect<Contracts.BoardOrchestratorRemoveResult, Contracts.BoardMcpFailure>;
+    readonly resendBrief: (
+      input: Contracts.BoardOrchestratorResendBriefInput,
+    ) => Effect.Effect<Contracts.BoardOrchestratorResendBriefResult, Contracts.BoardMcpFailure>;
+    readonly listBoard: (
+      input: Contracts.BoardListInput,
+    ) => Effect.Effect<Contracts.BoardListResult, Contracts.BoardMcpFailure>;
+    readonly resolveCards: (
+      input: Contracts.BoardCardResolveInput,
+    ) => Effect.Effect<Contracts.BoardCardResolveResult, Contracts.BoardMcpFailure>;
+    readonly createHumanCard: (
+      input: Contracts.BoardCreateInput,
+    ) => Effect.Effect<Contracts.BoardCard, Contracts.BoardMcpFailure>;
+    readonly startCard: (
+      input: Contracts.BoardStartInput,
+    ) => Effect.Effect<Contracts.BoardCard, Contracts.BoardMcpFailure>;
+    readonly updateHumanCard: (
+      input: Contracts.BoardUpdateInput,
+    ) => Effect.Effect<Contracts.BoardCard, Contracts.BoardMcpFailure>;
+    readonly deleteHumanCard: (
+      input: Contracts.BoardDeleteInput,
+    ) => Effect.Effect<Contracts.BoardDeleteResult, Contracts.BoardMcpFailure>;
   }
 >()("@t3tools/ft3-board/BoardService") {}
 
@@ -77,6 +110,7 @@ const make = Effect.gen(function* () {
   const repo = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const crypto = yield* Crypto.Crypto;
+  const routingPolicyRefValue = yield* routingPolicyRef;
   const event = Effect.fn("Ft3BoardService.event")(function* (
     card: Contracts.BoardCard,
     at: string,
@@ -143,6 +177,50 @@ const make = Effect.gen(function* () {
       .getCard(Contracts.BoardCardId.make(cardId))
       .pipe(Effect.mapError(unavailable));
     return card === null || card.orchestratorThreadId !== threadId ? yield* notFound() : card;
+  });
+
+  const requireMarkableThread = Effect.fn("Ft3BoardService.requireMarkableThread")(function* (
+    threadId: ThreadId,
+  ) {
+    const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* new Contracts.BoardMcpFailure({
+        code: "thread_not_found",
+        message: `Thread ${threadId} was not found.`,
+      });
+    }
+    if (String(threadId).startsWith("arch:")) {
+      return yield* new Contracts.BoardMcpFailure({
+        code: "architect_denied",
+        message: "Architect threads cannot be board Coordinators.",
+      });
+    }
+    if (shell.lineage.relationshipToParent === "subagent") {
+      return yield* new Contracts.BoardMcpFailure({
+        code: "delegated_executor_denied",
+        message: "Delegated child threads cannot be board Coordinators.",
+      });
+    }
+  });
+
+  const wakeOrchestrator = Effect.fn("Ft3BoardService.wakeOrchestrator")(function* (
+    threadId: ThreadId,
+    key: string,
+    context: string,
+  ) {
+    yield* threads
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(key),
+        threadId,
+        messageId: MessageId.make(key),
+        text: buildBoardWakePrompt(routingPolicyRefValue, "", context),
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "server",
+        dispatchMode: { type: "start_immediately" },
+      })
+      .pipe(Effect.mapError(unavailable));
   });
 
   return BoardService.of({
@@ -321,6 +399,249 @@ const make = Effect.gen(function* () {
         omittedCount: summaries.length - accepted.length,
         notFound: [],
       };
+    }),
+    listOrchestrators: Effect.fn("Ft3BoardService.listOrchestrators")(function* () {
+      const orchestrators = yield* repo.listOrchestrators().pipe(Effect.mapError(unavailable));
+      return { orchestrators };
+    }),
+    markOrchestrator: Effect.fn("Ft3BoardService.markOrchestrator")(function* (input) {
+      yield* requireMarkableThread(input.threadId);
+      const orchestrators = yield* repo.listOrchestrators().pipe(Effect.mapError(unavailable));
+      const existing = orchestrators.find((row) => row.threadId === input.threadId);
+      if (existing !== undefined) return existing;
+      const createdAt = DateTime.formatIso(yield* DateTime.now);
+      const created = yield* repo
+        .addOrchestrator({ threadId: input.threadId, createdBy: "human", createdAt })
+        .pipe(Effect.mapError(repositoryFailure));
+      yield* wakeOrchestrator(
+        input.threadId,
+        `ft3:board:mark:${input.threadId}`,
+        "This thread was marked a board Coordinator by a human.",
+      );
+      return created;
+    }),
+    unmarkOrchestrator: Effect.fn("Ft3BoardService.unmarkOrchestrator")(function* (input) {
+      yield* repo.removeOrchestrator(input.threadId).pipe(Effect.mapError(unavailable));
+      const cards = yield* repo.listCards(input.threadId).pipe(Effect.mapError(unavailable));
+      const executors = new Set(
+        cards.flatMap((card) => (card.executorThreadId === null ? [] : [card.executorThreadId])),
+      );
+      yield* Effect.forEach(
+        Array.from(executors),
+        (threadId) =>
+          threads
+            .dispatch({
+              type: "thread.delete",
+              commandId: CommandId.make(`ft3:board:unmark:child:${threadId}`),
+              threadId,
+            })
+            .pipe(Effect.asVoid, Effect.mapError(unavailable)),
+        { discard: true },
+      );
+      return {};
+    }),
+    resendBrief: Effect.fn("Ft3BoardService.resendBrief")(function* (input) {
+      const orchestrators = yield* repo.listOrchestrators().pipe(Effect.mapError(unavailable));
+      if (!orchestrators.some((row) => row.threadId === input.threadId)) {
+        return yield* new Contracts.BoardMcpFailure({
+          code: "task_not_found",
+          message: `Thread ${input.threadId} is not a registered board Coordinator.`,
+        });
+      }
+      yield* requireMarkableThread(input.threadId);
+      const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
+      yield* wakeOrchestrator(
+        input.threadId,
+        `ft3:board:brief:${input.threadId}:${nonce}`,
+        "The board brief was re-delivered by a human.",
+      );
+      return {};
+    }),
+    listBoard: Effect.fn("Ft3BoardService.listBoard")(function* (input) {
+      const includeArchived = input.includeArchived === true;
+      const [cards, events, archivedCounts] = yield* Effect.all(
+        [
+          repo.listCardsAll({ includeArchived }).pipe(Effect.mapError(unavailable)),
+          repo.listEventsAll({ includeArchived }).pipe(Effect.mapError(unavailable)),
+          includeArchived
+            ? Effect.succeed([] as ReadonlyArray<Contracts.BoardArchivedCount>)
+            : repo.countArchivedCards().pipe(Effect.mapError(unavailable)),
+        ],
+        { concurrency: 3 },
+      );
+      return { cards, events, ...(includeArchived ? {} : { archivedCounts }) };
+    }),
+    resolveCards: Effect.fn("Ft3BoardService.resolveCards")(function* (input) {
+      const resolved = yield* Effect.forEach(
+        [...new Set(input.tokens)],
+        (token) =>
+          Effect.gen(function* () {
+            const tokenText = String(token);
+            let card: Contracts.BoardCard | undefined;
+            if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tokenText)) {
+              card =
+                (yield* repo
+                  .getCard(Contracts.BoardCardId.make(tokenText.toLowerCase()))
+                  .pipe(Effect.mapError(unavailable))) ?? undefined;
+            } else {
+              const matches = yield* repo
+                .findCardsByPrefix(tokenText.toLowerCase())
+                .pipe(Effect.mapError(unavailable));
+              card = matches.length === 1 ? matches[0] : undefined;
+            }
+            return card === undefined ? undefined : { token, card };
+          }),
+        { concurrency: 8 },
+      );
+      const title = (owner: { readonly title: string } | null) =>
+        owner === null || owner.title.trim() === "" ? null : owner.title;
+      const matches = yield* Effect.forEach(
+        resolved.filter((entry) => entry !== undefined),
+        ({ token, card }) =>
+          Effect.gen(function* () {
+            const [owner, events] = yield* Effect.all(
+              [
+                threads
+                  .getThreadShell(card.orchestratorThreadId)
+                  .pipe(Effect.mapError(unavailable)),
+                repo.listEventsForCard(card.cardId).pipe(Effect.mapError(unavailable)),
+              ],
+              { concurrency: 2 },
+            );
+            return {
+              token,
+              card,
+              orchestratorThreadTitle: title(owner),
+              recentEvents: [...events].reverse().slice(0, 3),
+            };
+          }),
+        { concurrency: 8 },
+      );
+      const details = yield* Effect.forEach(
+        [...new Set(input.cardIds)],
+        (cardId) =>
+          Effect.gen(function* () {
+            const card = yield* repo.getCard(cardId).pipe(Effect.mapError(unavailable));
+            if (card === null) return undefined;
+            const [owner, events] = yield* Effect.all(
+              [
+                threads
+                  .getThreadShell(card.orchestratorThreadId)
+                  .pipe(Effect.mapError(unavailable)),
+                repo.listEventsForCard(card.cardId).pipe(Effect.mapError(unavailable)),
+              ],
+              { concurrency: 2 },
+            );
+            return { card, orchestratorThreadTitle: title(owner), events };
+          }),
+        { concurrency: 8 },
+      );
+      return {
+        matches,
+        details: details.filter((entry) => entry !== undefined),
+      };
+    }),
+    createHumanCard: Effect.fn("Ft3BoardService.createHumanCard")(function* (input) {
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const card: Contracts.BoardCard = {
+        cardId: Contracts.BoardCardId.make(
+          yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable)),
+        ),
+        orchestratorThreadId: input.orchestratorThreadId,
+        title: input.title,
+        body: input.body,
+        status: "todo",
+        createdBy: "human",
+        assignee: input.assignee ?? null,
+        executorRole: input.executorRole,
+        executorThreadId: null,
+        outcome: null,
+        lastError: null,
+        readiness: "ready",
+        readinessNote: null,
+        failureStreak: 0,
+        order: 0,
+        archived: false,
+        createdAt: at,
+        updatedAt: at,
+      };
+      yield* repo
+        .createCard(card, [yield* event(card, at, "created by human")])
+        .pipe(Effect.mapError(repositoryFailure));
+      return card;
+    }),
+    startCard: Effect.fn("Ft3BoardService.startCard")(function* (input) {
+      const card = yield* repo.getCard(input.cardId).pipe(Effect.mapError(unavailable));
+      if (card === null) return yield* notFound();
+      if (card.archived) {
+        return yield* new Contracts.BoardMcpFailure({
+          code: "archive_requires_done",
+          message: `Archived board card ${card.cardId} cannot be started.`,
+        });
+      }
+      if (card.status !== "todo" && card.status !== "backlog") {
+        return yield* new Contracts.BoardMcpFailure({
+          code: "readiness_not_ready",
+          message: `Board card ${card.cardId} is '${card.status}'; only 'todo' or 'backlog' cards can start.`,
+        });
+      }
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const next: Contracts.BoardCard = { ...card, status: "orchestrator", updatedAt: at };
+      yield* repo
+        .updateCard(next, [yield* event(next, at, "started by human")])
+        .pipe(Effect.mapError(repositoryFailure));
+      yield* wakeOrchestrator(
+        card.orchestratorThreadId,
+        `ft3:board:start:${card.cardId}`,
+        `Board card "${card.title}" (${card.cardId}) was started by a human. Executor role: ${card.executorRole}.\n\n${card.body}`,
+      );
+      return next;
+    }),
+    updateHumanCard: Effect.fn("Ft3BoardService.updateHumanCard")(function* (input) {
+      const rejected = (
+        [
+          "title",
+          "body",
+          "status",
+          "executorRole",
+          "assignee",
+          "executorThreadId",
+          "outcome",
+          "lastError",
+          "failureStreak",
+          "order",
+        ] as const
+      ).filter((field) => input[field] !== undefined);
+      if (rejected.length > 0) {
+        return yield* new Contracts.BoardMcpFailure({
+          code: "author_text_rejected",
+          message: `Human clients may only change 'archived'; rejected fields: ${[...rejected].sort().join(", ")}.`,
+        });
+      }
+      const card = yield* repo.getCard(input.cardId).pipe(Effect.mapError(unavailable));
+      if (card === null) return yield* notFound();
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const next: Contracts.BoardCard = {
+        ...card,
+        archived: input.archived ?? card.archived,
+        updatedAt: at,
+      };
+      yield* repo
+        .updateCard(
+          next,
+          next.archived === card.archived
+            ? []
+            : [yield* event(next, at, next.archived ? "archived by human" : "unarchived by human")],
+        )
+        .pipe(Effect.mapError(repositoryFailure));
+      return next;
+    }),
+    deleteHumanCard: Effect.fn("Ft3BoardService.deleteHumanCard")(function* () {
+      return yield* new Contracts.BoardMcpFailure({
+        code: "capability_denied",
+        message:
+          "Human clients cannot delete board cards; the Coordinator deletes cards through MCP.",
+      });
     }),
   });
 });

@@ -58,6 +58,23 @@ export class BoardRepository extends Context.Service<
       ReadonlyArray<Contracts.BoardCardDeletionRecord>,
       BoardRepositoryError
     >;
+    readonly listCardsAll: (input: {
+      readonly includeArchived: boolean;
+    }) => Effect.Effect<ReadonlyArray<Contracts.BoardCard>, BoardRepositoryError>;
+    readonly listEventsAll: (input: {
+      readonly includeArchived: boolean;
+    }) => Effect.Effect<ReadonlyArray<Contracts.BoardCardEvent>, BoardRepositoryError>;
+    readonly countArchivedCards: () => Effect.Effect<
+      ReadonlyArray<{
+        readonly orchestratorThreadId: ThreadId;
+        readonly status: Contracts.BoardCard["status"];
+        readonly count: number;
+      }>,
+      BoardRepositoryError
+    >;
+    readonly findCardsByPrefix: (
+      prefix: string,
+    ) => Effect.Effect<ReadonlyArray<Contracts.BoardCard>, BoardRepositoryError>;
   }
 >()("@t3tools/ft3-board/BoardRepository") {}
 
@@ -257,6 +274,49 @@ const make = Effect.gen(function* () {
         return yield* decodeDeletions(rows);
       },
       Effect.mapError(databaseError("list deletion records")),
+    ),
+    listCardsAll: Effect.fn("Ft3BoardRepository.listCardsAll")(
+      function* (input) {
+        const rows = input.includeArchived
+          ? yield* sql`SELECT ${columns} FROM ft3_board_cards ORDER BY order_index, card_id`
+          : yield* sql`SELECT ${columns} FROM ft3_board_cards WHERE archived = 0 ORDER BY order_index, card_id`;
+        return yield* cardsFromRows(rows);
+      },
+      Effect.mapError(databaseError("list all cards")),
+    ),
+    listEventsAll: Effect.fn("Ft3BoardRepository.listEventsAll")(
+      function* (input) {
+        const rows = input.includeArchived
+          ? yield* sql`SELECT e.entry_id AS "entryId", e.card_id AS "cardId", e.at, e.status, e.executor_role AS "executorRole", e.model, e.effort, e.body, e.source FROM ft3_board_card_events e ORDER BY e.at, e.entry_id`
+          : yield* sql`SELECT e.entry_id AS "entryId", e.card_id AS "cardId", e.at, e.status, e.executor_role AS "executorRole", e.model, e.effort, e.body, e.source FROM ft3_board_card_events e JOIN ft3_board_cards c ON c.card_id = e.card_id WHERE c.archived = 0 ORDER BY e.at, e.entry_id`;
+        return yield* decodeEvents(
+          rows.map(({ body, ...row }) => (body === null ? row : { ...row, body })),
+        );
+      },
+      Effect.mapError(databaseError("list all card events")),
+    ),
+    countArchivedCards: Effect.fn("Ft3BoardRepository.countArchivedCards")(
+      function* () {
+        const rows = yield* sql<{
+          readonly orchestratorThreadId: string;
+          readonly status: string;
+          readonly count: number;
+        }>`SELECT orchestrator_thread_id AS "orchestratorThreadId", status, COUNT(*) AS "count" FROM ft3_board_cards WHERE archived = 1 GROUP BY orchestrator_thread_id, status`;
+        return rows.map((row) => ({
+          orchestratorThreadId: ThreadId.make(row.orchestratorThreadId),
+          status: Schema.decodeUnknownSync(Contracts.BoardCardStatus)(row.status),
+          count: row.count,
+        }));
+      },
+      Effect.mapError(databaseError("count archived cards")),
+    ),
+    findCardsByPrefix: Effect.fn("Ft3BoardRepository.findCardsByPrefix")(
+      function* (prefix) {
+        return yield* cardsFromRows(
+          yield* sql`SELECT ${columns} FROM ft3_board_cards WHERE card_id LIKE ${`${prefix}%`}`,
+        );
+      },
+      Effect.mapError(databaseError("find cards by prefix")),
     ),
   });
 });

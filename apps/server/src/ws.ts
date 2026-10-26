@@ -99,6 +99,7 @@ import {
   WS_METHODS,
   WsRpcGroup,
 } from "@t3tools/contracts";
+import * as Ft3Rpc from "@t3tools/ft3-host/rpc";
 import {
   HttpRouter,
   HttpServerRequest,
@@ -555,7 +556,7 @@ function projectFileFailureContext(
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
-const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+const ServerWsRpcGroup = WsRpcGroup.merge(Ft3Rpc.group).middleware(RpcInstrumentation);
 
 // RpcGroup.toLayer derives each handler's requirements by scanning every RPC in
 // the group, so its type cost grows with handlers × RPCs. Near 200 methods that
@@ -1902,6 +1903,7 @@ export const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        ...Ft3Rpc.handlers,
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -3345,7 +3347,7 @@ export const layer = Layer.unwrap(
           yield* RpcServer.make(ServerWsRpcGroup, WS_RPC_SERVER_OPTIONS).pipe(
             Effect.provideService(RpcServer.Protocol, withTerminalOutputWindow(protocol)),
             Effect.provide(
-              Layer.merge(
+              Layer.mergeAll(
                 RpcAuthorization.layer(session.scopes, (method, payload) => {
                   // Anonymous product signal: the feature and its enum variant,
                   // credited to the connecting client's surface only.
@@ -3362,6 +3364,7 @@ export const layer = Layer.unwrap(
                         .pipe(Effect.ignore);
                 }),
                 rpcInstrumentationLayer,
+                Ft3Rpc.authorizationLayer(session.scopes),
               ),
             ),
             Effect.forkScoped,
@@ -3380,6 +3383,7 @@ export const layer = Layer.unwrap(
               // Handler-context reporters see only request defects, not server-wide defects.
               Layer.provide(DefectReporter.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+              Layer.provide(Ft3Rpc.serviceLayer),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
               Layer.provide(Layer.succeed(ServerSelfUpdate.ServerSelfUpdate, serverSelfUpdate)),
