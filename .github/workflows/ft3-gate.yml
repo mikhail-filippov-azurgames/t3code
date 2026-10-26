@@ -58,8 +58,11 @@ jobs:
           $packages = @(
             '@t3tools/ft3-architect',
             '@t3tools/ft3-board',
+            '@t3tools/ft3-delegation',
             '@t3tools/ft3-host',
+            '@t3tools/ft3-kimi',
             '@t3tools/ft3-orchestration',
+            '@t3tools/ft3-pi',
             '@t3tools/ft3-vcs',
             '@t3tools/ft3-web'
           )
@@ -87,8 +90,11 @@ jobs:
           $packages = @(
             '@t3tools/ft3-architect',
             '@t3tools/ft3-board',
+            '@t3tools/ft3-delegation',
             '@t3tools/ft3-host',
+            '@t3tools/ft3-kimi',
             '@t3tools/ft3-orchestration',
+            '@t3tools/ft3-pi',
             '@t3tools/ft3-vcs',
             '@t3tools/ft3-web'
           )
