@@ -1,0 +1,112 @@
+# Windows gate for ft3/v2, which upstream ci.yml skips: it runs on pull requests and main pushes only.
+# Scope is the fork surface: ft3-* packages plus the edited upstream files, never the full suite.
+name: ft3 gate
+
+on:
+  push:
+    branches:
+      - ft3/v2
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ft3-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Windows gate
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      # setup-vp's own cache restores a Linux-shaped store on Windows, which is slower than none.
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: false
+          run-install: false
+
+      - name: Resolve package cache path
+        id: package_cache_path
+        shell: pwsh
+        run: '"path=$(vp pm cache dir)" >> $env:GITHUB_OUTPUT'
+
+      - name: Cache packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ steps.package_cache_path.outputs.path }}
+          key: ft3-gate-packages-v1-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - name: Install
+        run: vp install
+
+      # Parallel tsc-rs runs share a daemon and return another project's diagnostics.
+      - name: Typecheck ft3 packages
+        shell: pwsh
+        run: |
+          $packages = @(
+            '@t3tools/ft3-architect',
+            '@t3tools/ft3-board',
+            '@t3tools/ft3-host',
+            '@t3tools/ft3-orchestration',
+            '@t3tools/ft3-vcs',
+            '@t3tools/ft3-web'
+          )
+          $failed = @()
+          foreach ($package in $packages) {
+            vp run --filter $package typecheck
+            if ($LASTEXITCODE -ne 0) { $failed += $package }
+          }
+          if ($failed.Count -gt 0) { throw "Typecheck failed: $($failed -join ', ')" }
+
+      - name: Typecheck server and web
+        shell: pwsh
+        run: |
+          vp run --filter t3 typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'apps/server typecheck failed' }
+          vp run --filter @t3tools/web typecheck
+          if ($LASTEXITCODE -ne 0) { throw 'apps/web typecheck failed' }
+
+      - name: Install Chromium for ft3-web browser tests
+        run: node packages/ft3-web/node_modules/playwright/cli.js install --only-shell chromium
+
+      - name: Test ft3 packages
+        shell: pwsh
+        run: |
+          $packages = @(
+            '@t3tools/ft3-architect',
+            '@t3tools/ft3-board',
+            '@t3tools/ft3-host',
+            '@t3tools/ft3-orchestration',
+            '@t3tools/ft3-vcs',
+            '@t3tools/ft3-web'
+          )
+          $failed = @()
+          foreach ($package in $packages) {
+            vp run --filter $package test
+            if ($LASTEXITCODE -ne 0) { $failed += $package }
+          }
+          if ($failed.Count -gt 0) { throw "Tests failed: $($failed -join ', ')" }
+
+      # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
+      - name: Test changed server files
+        working-directory: apps/server
+        run: vp test run src/ws.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts
+
+      - name: Test changed desktop files
+        working-directory: apps/desktop
+        run: vp test run src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts
+
+      - name: Test provider-muse
+        run: vp run --filter @t3tools/provider-muse test

@@ -7,6 +7,8 @@
 Исключение для двух переносимых исправлений Muse описано в отдельной таблице
 ниже: их логика остаётся в upstream-пакете провайдера, без копии адаптера в ft3.
 
+Гейт: `.github/workflows/ft3-gate.yml` на Windows по push в `ft3/v2` и вручную гоняет typecheck и тесты `packages/ft3-*`, typecheck `apps/server`/`apps/web` и тесты правленых upstream-файлов из таблиц ниже.
+
 Цель: desktop ft3-v2 работает одновременно со старым ft3 desktop и официальным
 T3 Code без общих userData, single-instance lock, AppUserModelID и URL-схемы.
 single-instance lock привязан к userData, поэтому отдельной правки не требует.
