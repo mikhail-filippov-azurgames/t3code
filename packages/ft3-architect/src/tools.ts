@@ -86,10 +86,58 @@ const architectDetach = Tool.make("architect_detach", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const architectureReviewRequest = Tool.make("architecture_review_request", {
+  description:
+    "Request an architecture review from the bound architect. executionPosture is required (continue, pause-branch, or pause-all) and is advisory only. The request wakes the architect exactly once; the coordinator is never woken by a request. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectReviewRequestInput,
+  success: Contracts.ArchitectReviewRequestResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Request architecture review")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const architectureReviewAnswer = Tool.make("architecture_review_answer", {
+  description:
+    "Answer an architecture review as the bound architect. disposition is required (recommendation, needs-human-decision, or needs-more-evidence). Answers are first-wins and never wake the coordinator. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectReviewAnswerInput,
+  success: Contracts.ArchitectReviewAnswerResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Answer architecture review")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const architectureReviewCancel = Tool.make("architecture_review_cancel", {
+  description:
+    "Cancel an open or answered architecture review as the coordinator (or a human on it). Cancelling a published review is rejected. Cancellation never wakes anyone. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectReviewCancelInput,
+  success: Contracts.ArchitectReviewCancelResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Cancel architecture review")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const toolkit = Toolkit.make(
   getCoordinatorBinding,
   listArchitectureReviews,
   architectCreateOrGet,
   architectReplace,
   architectDetach,
+  architectureReviewRequest,
+  architectureReviewAnswer,
+  architectureReviewCancel,
 );
