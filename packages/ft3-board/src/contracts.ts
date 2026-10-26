@@ -20,7 +20,9 @@ export const BoardCardStatus = Schema.Literals([
   "review",
   "done",
 ]);
+export type BoardCardStatus = typeof BoardCardStatus.Type;
 export const BoardCardReadiness = Schema.Literals(["ready", "needs_human", "blocked"]);
+export type BoardCardReadiness = typeof BoardCardReadiness.Type;
 export const BoardCreatedBy = Schema.Literals(["human", "orchestrator"]);
 export const ExecutorRole = Schema.Literals([
   "architecture",
@@ -30,6 +32,7 @@ export const ExecutorRole = Schema.Literals([
   "research",
   "general",
 ]);
+export type ExecutorRole = typeof ExecutorRole.Type;
 export const BoardCardOutcome = Schema.Literals(["succeeded", "failed", "cancelled"]);
 
 export const BoardOrchestrator = Schema.Struct({
