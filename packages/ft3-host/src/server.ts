@@ -27,4 +27,9 @@ export const mcpToolkits = [
       Effect.map((module) => module.layer),
     ),
   ),
+  Layer.unwrap(
+    Effect.promise(() => import("@t3tools/ft3-architect/server")).pipe(
+      Effect.map((module) => module.layer),
+    ),
+  ),
 ] as const;
