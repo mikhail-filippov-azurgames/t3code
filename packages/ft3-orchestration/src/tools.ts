@@ -2,10 +2,17 @@ import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
+import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import * as TaskHandoffService from "./TaskHandoffService.ts";
 import * as TaskQueryService from "./TaskQueryService.ts";
 import * as Contracts from "./contracts.ts";
 
-const dependencies = [McpInvocationContext.McpInvocationContext, TaskQueryService.TaskQueryService];
+const dependencies = [
+  McpInvocationContext.McpInvocationContext,
+  ThreadManagement.ThreadManagementService,
+  TaskQueryService.TaskQueryService,
+  TaskHandoffService.TaskHandoffService,
+];
 
 const taskList = Tool.make("task_list", {
   description:
@@ -49,4 +56,18 @@ const taskRead = Tool.make("task_read", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-export const toolkit = Toolkit.make(taskList, taskSearch, taskRead);
+const taskAttachHandoff = Tool.make("task_attach_handoff", {
+  description:
+    "Attach an OCL handoff to one of this parent's direct T3-owned delegated tasks after delegate_task. Only the task's parent may attach, and repeating the same handoff is idempotent.",
+  parameters: Contracts.TaskAttachHandoffInput,
+  success: Contracts.TaskAttachHandoffResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+export const toolkit = Toolkit.make(taskList, taskSearch, taskRead, taskAttachHandoff);

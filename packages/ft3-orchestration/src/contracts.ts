@@ -45,6 +45,57 @@ export const TaskReadInput = Schema.Struct({
 });
 export type TaskReadInput = typeof TaskReadInput.Type;
 
+const boundedHandoffText = (maximum: number) =>
+  Schema.String.check(
+    Schema.isNonEmpty(),
+    Schema.isMaxLength(maximum),
+    Schema.makeFilter((value) => value.trim().length > 0 || "Text must not be blank."),
+  );
+
+export const OclDocumentRef = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(45),
+  Schema.isPattern(
+    /^oc:\/\/doc\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  ),
+);
+export type OclDocumentRef = typeof OclDocumentRef.Type;
+
+export const TaskHandoff = Schema.Struct({
+  contractRef: OclDocumentRef,
+  requiredRevision: PositiveInt,
+  implementsRevision: PositiveInt,
+  stage: boundedHandoffText(256),
+  owns: Schema.Array(boundedHandoffText(2_000)).check(Schema.isMaxLength(100)),
+  reads: Schema.Array(boundedHandoffText(2_000)).check(Schema.isMaxLength(100)),
+  forbidden: Schema.Array(boundedHandoffText(2_000)).check(Schema.isMaxLength(100)),
+  acceptance: Schema.Array(boundedHandoffText(2_000)).check(Schema.isMaxLength(100)),
+  outputs: Schema.Array(boundedHandoffText(2_000)).check(Schema.isMaxLength(100)),
+  evidence: Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(4_096))).check(
+    Schema.isMaxLength(100),
+  ),
+  predecessorRefs: Schema.Array(OclDocumentRef).check(Schema.isMaxLength(100)),
+}).check(
+  Schema.makeFilter(
+    (handoff) =>
+      handoff.requiredRevision === handoff.implementsRevision ||
+      "requiredRevision must equal implementsRevision.",
+  ),
+);
+export type TaskHandoff = typeof TaskHandoff.Type;
+
+export const TaskAttachHandoffInput = Schema.Struct({
+  taskId: NodeId,
+  handoff: TaskHandoff,
+});
+export type TaskAttachHandoffInput = typeof TaskAttachHandoffInput.Type;
+
+export const TaskAttachHandoffResult = Schema.Struct({
+  taskId: NodeId,
+  handoff: TaskHandoff,
+  created: Schema.Boolean,
+});
+export type TaskAttachHandoffResult = typeof TaskAttachHandoffResult.Type;
+
 const TaskMemoryEntry = Schema.Struct({
   taskId: NodeId,
   childThreadId: ThreadId,
@@ -55,6 +106,7 @@ const TaskMemoryEntry = Schema.Struct({
   updatedAt: IsoDateTime,
   worktreePath: Schema.NullOr(Schema.String),
   summary: Schema.Null,
+  handoff: Schema.NullOr(TaskHandoff),
 });
 export type TaskMemoryEntry = typeof TaskMemoryEntry.Type;
 
@@ -95,6 +147,7 @@ const TranscriptActivity = Schema.Struct({
 export const TaskReadResult = Schema.Struct({
   taskId: NodeId,
   title: Schema.String,
+  handoff: Schema.NullOr(TaskHandoff),
   messages: Schema.Array(TranscriptMessage).check(Schema.isMaxLength(10_000)),
   activities: Schema.Array(TranscriptActivity).check(Schema.isMaxLength(10_000)),
   page: Schema.Struct({
