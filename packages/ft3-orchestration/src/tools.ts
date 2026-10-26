@@ -16,7 +16,7 @@ const dependencies = [
 
 const taskList = Tool.make("task_list", {
   description:
-    "List this parent's direct T3-owned delegated tasks, including archived children. taskId is the V2 task node ID used by task_status; role and summary are unavailable and null.",
+    "List this parent's direct T3-owned delegated tasks, including archived children. taskId is the V2 task node ID used by task_status; role is unavailable and null, and summary carries the latest delegated-turn summary once it exists.",
   parameters: Contracts.TaskListInput,
   success: Contracts.TaskListResult,
   failure: OrchestratorMcpFailure,
@@ -56,6 +56,20 @@ const taskRead = Tool.make("task_read", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const taskSummaryHistory = Tool.make("task_summary_history", {
+  description:
+    "Page through this parent's delegated-turn summaries, newest first, including imported historical summaries. stale marks records that no longer describe the child's current turn; follow nextCursor to read older records.",
+  parameters: Contracts.TaskSummaryHistoryInput,
+  success: Contracts.TaskSummaryHistoryResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 const taskAttachHandoff = Tool.make("task_attach_handoff", {
   description:
     "Attach an OCL handoff to one of this parent's direct T3-owned delegated tasks after delegate_task. Only the task's parent may attach, and repeating the same handoff is idempotent.",
@@ -70,4 +84,10 @@ const taskAttachHandoff = Tool.make("task_attach_handoff", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-export const toolkit = Toolkit.make(taskList, taskSearch, taskRead, taskAttachHandoff);
+export const toolkit = Toolkit.make(
+  taskList,
+  taskSearch,
+  taskRead,
+  taskSummaryHistory,
+  taskAttachHandoff,
+);

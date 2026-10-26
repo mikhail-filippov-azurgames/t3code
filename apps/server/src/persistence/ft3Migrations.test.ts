@@ -25,6 +25,7 @@ it.effect("initializes core and ft3 schemas through the server persistence layer
       { migration_id: 5, name: "ArchitectReviewWake" },
       { migration_id: 6, name: "Ft3DelegatedTaskSummaries" },
       { migration_id: 7, name: "Ft3TaskHandoffs" },
+      { migration_id: 8, name: "Ft3DelegatedTaskSummaryReactor" },
     ]);
     yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
 
