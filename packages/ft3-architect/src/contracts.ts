@@ -259,6 +259,40 @@ export const ArchitectReviewCancelResult = Schema.Struct({
 });
 export type ArchitectReviewCancelResult = typeof ArchitectReviewCancelResult.Type;
 
+export const ArchitectPrepareCoordinatorPublicationInput = Schema.Struct({
+  summary: BoundedAnswerSummary,
+  disposition: ArchitectureReviewAnswerDisposition,
+  oclRefs: Schema.optional(boundedArray(DocumentRef, 32)),
+  executionPosture: ArchitectureReviewExecutionPosture,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectPrepareCoordinatorPublicationInput =
+  typeof ArchitectPrepareCoordinatorPublicationInput.Type;
+
+export const ArchitectPrepareCoordinatorPublicationResult = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  status: Schema.Literal("answered"),
+});
+export type ArchitectPrepareCoordinatorPublicationResult =
+  typeof ArchitectPrepareCoordinatorPublicationResult.Type;
+
+export const ArchitectPublishToCoordinatorInput = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectPublishToCoordinatorInput = typeof ArchitectPublishToCoordinatorInput.Type;
+
+export const ArchitectPublishToCoordinatorResult = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  status: Schema.Literal("published"),
+});
+export type ArchitectPublishToCoordinatorResult = typeof ArchitectPublishToCoordinatorResult.Type;
+
+export const ArchitectHumanPublicationInput = ArchitectPublishToCoordinatorInput;
+export type ArchitectHumanPublicationInput = typeof ArchitectHumanPublicationInput.Type;
+export const ArchitectHumanPublicationResult = ArchitectPublishToCoordinatorResult;
+export type ArchitectHumanPublicationResult = typeof ArchitectHumanPublicationResult.Type;
+
 export interface ArchitectInsertReviewInput {
   readonly reviewId: string;
   readonly bindingId: string;
@@ -291,6 +325,39 @@ export interface ArchitectCancelReviewInput {
   readonly cancelPayloadFingerprint: string;
   readonly cancelledAt: string;
   readonly cancelledBy: ThreadId;
+}
+
+export interface ArchitectPreparedPublicationUpsertInput {
+  readonly reviewId: string;
+  readonly bindingId: string;
+  readonly coordinatorThreadId: ThreadId;
+  readonly architectThreadId: ThreadId;
+  readonly summary: string;
+  readonly disposition: ArchitectureReviewAnswerDisposition;
+  readonly oclRefs: ReadonlyArray<string>;
+  readonly executionPosture: ArchitectureReviewExecutionPosture;
+  readonly idempotencyKey: string;
+  readonly payloadFingerprint: string;
+  readonly preparedAt: string;
+}
+
+export interface ArchitectReviewPublishInput {
+  readonly reviewId: string;
+  readonly publishIdempotencyKey: string;
+  readonly publishedAt: string;
+  readonly publishedBy: ArchitectureReviewPublishedBy;
+}
+
+export interface ArchitectReviewPublishDeliveredInput {
+  readonly reviewId: string;
+  readonly deliveredAt: string;
+}
+
+export interface ArchitectReviewPublishFailureInput {
+  readonly reviewId: string;
+  readonly reason: string;
+  readonly message: string;
+  readonly attemptedAt: string;
 }
 
 export type ArchitectReviewTransition =
@@ -349,6 +416,7 @@ export class ArchitectMcpFailure extends Schema.TaggedError<ArchitectMcpFailure>
         "review_not_found",
         "review_state_conflict",
         "author_text_rejected",
+        "human_publish_required",
       ]),
     ]),
     message: Schema.String,

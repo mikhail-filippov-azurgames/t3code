@@ -14,6 +14,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
@@ -34,6 +35,19 @@ const stableValue = (value: unknown): unknown => {
   }
   return value;
 };
+
+const rejectedAuthorTextField = (
+  field: "question" | "reason" | "summary",
+  text: string,
+): "question" | "reason" | "summary" | null => {
+  try {
+    return applyAuthorTextPolicy(field, text)._tag === "Accepted" ? null : field;
+  } catch {
+    return field;
+  }
+};
+
+const reviewRefsJson = Schema.encodeSync(Schema.fromJsonString(Contracts.ArchitectureReviewRefs));
 
 export class ArchitectService extends Context.Service<
   ArchitectService,
@@ -76,6 +90,26 @@ export class ArchitectService extends Context.Service<
       scope: Scope,
       input: Contracts.ArchitectReviewCancelInput,
     ) => Effect.Effect<Contracts.ArchitectReviewCancelResult, Contracts.ArchitectMcpFailure>;
+    readonly prepareCoordinatorPublication: (
+      scope: Scope,
+      input: Contracts.ArchitectPrepareCoordinatorPublicationInput,
+    ) => Effect.Effect<
+      Contracts.ArchitectPrepareCoordinatorPublicationResult,
+      Contracts.ArchitectMcpFailure
+    >;
+    readonly publishToCoordinator: (
+      scope: Scope,
+      input: Contracts.ArchitectPublishToCoordinatorInput,
+    ) => Effect.Effect<
+      Contracts.ArchitectPublishToCoordinatorResult,
+      Contracts.ArchitectMcpFailure
+    >;
+    readonly publishHumanPublication: (
+      input: Contracts.ArchitectHumanPublicationInput,
+    ) => Effect.Effect<
+      Contracts.ArchitectPublishToCoordinatorResult,
+      Contracts.ArchitectMcpFailure
+    >;
   }
 >()("@t3tools/ft3-architect/ArchitectService") {}
 
@@ -408,6 +442,236 @@ const make = Effect.gen(function* () {
     yield* repo
       .markReviewWakeDelivered({ reviewId: review.reviewId, deliveredAt: at })
       .pipe(Effect.mapError(unavailable));
+  });
+
+  const requirePrepareScope = Effect.fn("Ft3ArchitectService.requirePrepareScope")(function* (
+    scope: Scope,
+  ) {
+    if (!scope.capabilities.has("orchestration")) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "capability_denied",
+        message: "This credential cannot prepare a coordinator publication.",
+      });
+    }
+    const caller = yield* McpInvocationContext.requireThreadScope(
+      scope,
+      "Prepare coordinator publication",
+    );
+    const shell = yield* threads
+      .getThreadShell(caller.thread.threadId)
+      .pipe(Effect.mapError(unavailable));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "thread_not_found",
+        message: "The calling thread was not found.",
+      });
+    }
+    if (shell.lineage.relationshipToParent === "subagent") {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "delegated_executor_denied",
+        message: "Delegated executor threads cannot prepare coordinator publications.",
+      });
+    }
+    const binding = yield* repo
+      .getActiveBindingByArchitect(caller.thread.threadId)
+      .pipe(Effect.mapError(unavailable));
+    if (binding === null) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "architect_denied",
+        message: "Only a bound architect thread may prepare a coordinator publication.",
+      });
+    }
+    return { caller, binding };
+  });
+
+  const requirePublishScope = Effect.fn("Ft3ArchitectService.requirePublishScope")(function* (
+    scope: Scope,
+    review: Contracts.ArchitectureReviewRecord,
+  ) {
+    if (!scope.capabilities.has("orchestration")) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "capability_denied",
+        message: "This credential cannot publish architecture reviews.",
+      });
+    }
+    const caller = yield* McpInvocationContext.requireThreadScope(
+      scope,
+      "Publish architecture reviews",
+    );
+    const shell = yield* threads
+      .getThreadShell(caller.thread.threadId)
+      .pipe(Effect.mapError(unavailable));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "thread_not_found",
+        message: "The calling thread was not found.",
+      });
+    }
+    if (shell.lineage.relationshipToParent === "subagent") {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "delegated_executor_denied",
+        message: "Delegated executor threads cannot publish architecture reviews.",
+      });
+    }
+    const binding = yield* repo
+      .getActiveBindingByArchitect(caller.thread.threadId)
+      .pipe(Effect.mapError(unavailable));
+    if (binding !== null) {
+      if (binding.bindingId !== review.bindingId) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "architect_denied",
+          message: "Only the bound architect thread may publish its own reviews.",
+        });
+      }
+      return { caller, shell, isOwnerArchitect: true };
+    }
+    if (caller.thread.threadId !== review.coordinatorThreadId) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "capability_denied",
+        message: "Only the coordinator thread itself (or a human on it) may publish this review.",
+      });
+    }
+    const orchestrators = yield* board.listOrchestrators().pipe(Effect.mapError(unavailable));
+    if (
+      !orchestrators.some(
+        (mark) => mark.threadId === review.coordinatorThreadId && mark.createdBy === "human",
+      )
+    ) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "capability_denied",
+        message:
+          "This thread is not a registered board orchestrator. Ask a human to mark this thread as a board orchestrator, then retry this tool.",
+      });
+    }
+    return { caller, shell, isOwnerArchitect: false };
+  });
+
+  const recordPublishFailure = Effect.fn("Ft3ArchitectService.recordPublishFailure")(function* (
+    reviewId: string,
+    attemptedAt: string,
+    error: Contracts.ArchitectMcpFailure,
+  ) {
+    yield* repo
+      .recordPublishFailure({
+        reviewId,
+        reason: error.code,
+        message: error.message.slice(0, 2_000),
+        attemptedAt,
+      })
+      .pipe(Effect.mapError(unavailable), Effect.ignore);
+  });
+
+  const refusePublish = Effect.fn("Ft3ArchitectService.refusePublish")(function* (
+    reviewId: string,
+    attemptedAt: string,
+    code: typeof Contracts.ArchitectMcpFailure.fields.code.Type,
+    message: string,
+  ) {
+    const error = new Contracts.ArchitectMcpFailure({ code, message });
+    yield* recordPublishFailure(reviewId, attemptedAt, error);
+    return yield* error;
+  });
+
+  const wakeCoordinatorForPublish = Effect.fn("Ft3ArchitectService.wakeCoordinatorForPublish")(
+    function* (
+      review: Contracts.ArchitectureReviewRecord,
+      binding: Contracts.CoordinatorArchitectBinding,
+      at: string,
+    ) {
+      const disposition = review.answerDisposition;
+      if (disposition === null) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "review_state_conflict",
+          message:
+            "An answered review must have a stored answer disposition before it can be published.",
+        });
+      }
+      const summary = review.answerSummary ?? "";
+      const refs = review.refs;
+      const text =
+        review.publishedBy === "human"
+          ? `Published by the human via the Publish button\n${
+              review.origin === "coordinator-request"
+                ? `Coordinator question:\n${review.question}\n\n`
+                : ""
+            }Disposition: ${disposition}\nSummary: ${summary}\nStable references: ${reviewRefsJson(refs)}`
+          : `Architecture review published [${disposition}]:\n${summary}\nStable references: ${reviewRefsJson(refs)}`;
+      const wakeId = `arch:publish-wake:${review.reviewId}`;
+      yield* threads
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(wakeId),
+          threadId: binding.coordinatorThreadId,
+          messageId: MessageId.make(wakeId),
+          text,
+          attachments: [],
+          createdBy: "agent",
+          creationSource: "server",
+          dispatchMode: { type: "start_immediately" },
+        })
+        .pipe(Effect.mapError(unavailable));
+      yield* repo
+        .markPublishDelivered({ reviewId: review.reviewId, deliveredAt: at })
+        .pipe(Effect.mapError(unavailable));
+    },
+  );
+
+  const publishAnsweredReview = Effect.fn("Ft3ArchitectService.publishAnsweredReview")(function* (
+    review: Contracts.ArchitectureReviewRecord,
+    binding: Contracts.CoordinatorArchitectBinding,
+    input: {
+      readonly idempotencyKey: string;
+      readonly publishedBy: Contracts.ArchitectureReviewPublishedBy;
+      readonly publishedAt: string;
+    },
+  ) {
+    const unsafeField =
+      rejectedAuthorTextField("question", review.question) ??
+      (review.answerSummary === null
+        ? null
+        : rejectedAuthorTextField("summary", review.answerSummary));
+    if (unsafeField !== null) {
+      return yield* refusePublish(
+        review.reviewId,
+        input.publishedAt,
+        "author_text_rejected",
+        `The authored ${unsafeField} could not be confirmed secret-free. Remove sensitive values and try again.`,
+      );
+    }
+    const transition = yield* repo
+      .publishReview({
+        reviewId: review.reviewId,
+        publishIdempotencyKey: input.idempotencyKey,
+        publishedAt: input.publishedAt,
+        publishedBy: input.publishedBy,
+      })
+      .pipe(Effect.mapError(repositoryFailure));
+    if (transition._tag === "conflict") {
+      return yield* refusePublish(
+        review.reviewId,
+        input.publishedAt,
+        "idempotency_conflict",
+        "This publish key was already used for this review.",
+      );
+    }
+    if (transition._tag === "state") {
+      return yield* refusePublish(
+        review.reviewId,
+        input.publishedAt,
+        "review_state_conflict",
+        "Only answered reviews can be published.",
+      );
+    }
+    const stored =
+      (yield* repo.getReviewById(review.reviewId).pipe(Effect.mapError(unavailable))) ?? review;
+    yield* Effect.gen(function* () {
+      if (stored.publishDeliveredAt == null) {
+        yield* wakeCoordinatorForPublish(stored, binding, input.publishedAt);
+      }
+    }).pipe(
+      Effect.tapError((error) => recordPublishFailure(review.reviewId, input.publishedAt, error)),
+    );
+    return { reviewId: review.reviewId, status: "published" as const };
   });
 
   return ArchitectService.of({
@@ -807,6 +1071,108 @@ const make = Effect.gen(function* () {
       }
       return { reviewId: review.reviewId, status: "cancelled" };
     }),
+    prepareCoordinatorPublication: Effect.fn("Ft3ArchitectService.prepareCoordinatorPublication")(
+      function* (scope, input) {
+        const { binding } = yield* requirePrepareScope(scope);
+        yield* validateAuthorText("summary", input.summary);
+        const at = DateTime.formatIso(yield* DateTime.now);
+        const oclRefs = input.oclRefs ?? [];
+        const review = yield* repo
+          .upsertPreparedPublication({
+            reviewId: `arch:advice:${(yield* hash(["architecture-advice", binding.bindingId, input.idempotencyKey])).slice(0, 40)}`,
+            bindingId: binding.bindingId,
+            coordinatorThreadId: binding.coordinatorThreadId,
+            architectThreadId: binding.architectThreadId,
+            summary: input.summary,
+            disposition: input.disposition,
+            oclRefs,
+            executionPosture: input.executionPosture,
+            idempotencyKey: input.idempotencyKey,
+            payloadFingerprint: yield* hash({
+              summary: input.summary,
+              disposition: input.disposition,
+              oclRefs,
+              executionPosture: input.executionPosture,
+            }),
+            preparedAt: at,
+          })
+          .pipe(Effect.mapError(repositoryFailure));
+        return { reviewId: review.reviewId, status: "answered" };
+      },
+    ),
+    publishToCoordinator: Effect.fn("Ft3ArchitectService.publishToCoordinator")(
+      function* (scope, input) {
+        const review = yield* repo.getReviewById(input.reviewId).pipe(Effect.mapError(unavailable));
+        if (review === null) {
+          return yield* new Contracts.ArchitectMcpFailure({
+            code: "review_not_found",
+            message: "The architecture review was not found.",
+          });
+        }
+        const { isOwnerArchitect } = yield* requirePublishScope(scope, review);
+        if (review.origin === "architect-advice") {
+          return yield* refusePublish(
+            review.reviewId,
+            DateTime.formatIso(yield* DateTime.now),
+            "human_publish_required",
+            "Prepared architect publications can only be published by the human Publish button.",
+          );
+        }
+        const binding = yield* repo
+          .getBindingById(review.bindingId)
+          .pipe(Effect.mapError(unavailable));
+        if (binding === null) {
+          return yield* refusePublish(
+            review.reviewId,
+            DateTime.formatIso(yield* DateTime.now),
+            "binding_not_found",
+            "The review binding no longer exists.",
+          );
+        }
+        return yield* publishAnsweredReview(review, binding, {
+          idempotencyKey: input.idempotencyKey,
+          publishedBy: isOwnerArchitect ? "architect" : "coordinator",
+          publishedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+      },
+    ),
+    publishHumanPublication: Effect.fn("Ft3ArchitectService.publishHumanPublication")(
+      function* (input) {
+        const review = yield* repo.getReviewById(input.reviewId).pipe(Effect.mapError(unavailable));
+        if (review === null) {
+          return yield* new Contracts.ArchitectMcpFailure({
+            code: "review_not_found",
+            message: "The architecture review was not found.",
+          });
+        }
+        const binding = yield* repo
+          .getActiveBindingByCoordinator(review.coordinatorThreadId)
+          .pipe(Effect.mapError(unavailable));
+        if (binding === null || binding.bindingId !== review.bindingId) {
+          return yield* refusePublish(
+            review.reviewId,
+            DateTime.formatIso(yield* DateTime.now),
+            "binding_not_found",
+            "The review no longer belongs to the active architect binding.",
+          );
+        }
+        const sameKeyReplay =
+          review.status === "published" && review.publishIdempotencyKey === input.idempotencyKey;
+        if (review.status !== "answered" && !sameKeyReplay) {
+          return yield* refusePublish(
+            review.reviewId,
+            DateTime.formatIso(yield* DateTime.now),
+            "review_state_conflict",
+            "Only answered reviews can be published.",
+          );
+        }
+        return yield* publishAnsweredReview(review, binding, {
+          idempotencyKey: input.idempotencyKey,
+          publishedBy: "human",
+          publishedAt: DateTime.formatIso(yield* DateTime.now),
+        });
+      },
+    ),
   });
 });
 

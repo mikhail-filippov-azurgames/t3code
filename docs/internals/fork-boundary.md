@@ -97,7 +97,16 @@ legacy `coordinator_architect_binding`/`architecture_review` (миграции
 Ответ (`architecture_review_answer`) сохраняет ответ и не будит координатора,
 как в старом форке. Политика секретов `ft3-board/authorTextPolicy` применяется
 к `question`, `summary`, `reason` (запрос/ответ/отмена) и к `reason` в
-replace/detach. Публикация ревью координатору — в следующем срезе.
+replace/detach. Срез 6 — публикация координатору: `prepare_coordinator_publication`
+(архитектор готовит advice-запись `origin='architect-advice'` со статусом
+`answered`, никогда не будит, повторная подготовка заменяет предыдущую) и
+`publish_to_coordinator` (единственная побудка координатора за ревью,
+детерминированный `commandId` `arch:publish-wake:<reviewId>`, отметка
+`publish_delivered_at`; повтор не будит). Advice-запись публикует только
+человек: серверный метод `publishHumanPublication` (`published_by='human'`,
+как в миграции 063), который позже вызовет UI; попытка архитектора
+опубликовать advice отклоняется как `human_publish_required`. Политика
+секретов применяется и к тексту публикации (question/summary).
 
 ## Исправления Muse в стеке ft3
 

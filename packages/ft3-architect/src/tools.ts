@@ -131,6 +131,36 @@ const architectureReviewCancel = Tool.make("architecture_review_cancel", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const prepareCoordinatorPublication = Tool.make("prepare_coordinator_publication", {
+  description:
+    "Prepare a coordinator publication as the bound architect. This never wakes the coordinator; the human publishes it with the Publish button. Replaces the previous unpublished preparation. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectPrepareCoordinatorPublicationInput,
+  success: Contracts.ArchitectPrepareCoordinatorPublicationResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Prepare coordinator publication")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const publishToCoordinator = Tool.make("publish_to_coordinator", {
+  description:
+    "Publish an answered review to the coordinator. This is the only architect-originated coordinator wake: it fires exactly once per review and carries the stored disposition. Ordinary answers never wake the coordinator. Reuse the same idempotencyKey only for an exact retry.",
+  parameters: Contracts.ArchitectPublishToCoordinatorInput,
+  success: Contracts.ArchitectPublishToCoordinatorResult,
+  failure: Contracts.ArchitectMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Publish review to coordinator")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const toolkit = Toolkit.make(
   getCoordinatorBinding,
   listArchitectureReviews,
@@ -140,4 +170,6 @@ export const toolkit = Toolkit.make(
   architectureReviewRequest,
   architectureReviewAnswer,
   architectureReviewCancel,
+  prepareCoordinatorPublication,
+  publishToCoordinator,
 );
