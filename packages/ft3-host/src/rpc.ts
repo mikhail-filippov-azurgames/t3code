@@ -24,6 +24,13 @@ import {
   ft3VcsRpcServiceLayer,
   ft3VcsRpcs,
 } from "@t3tools/ft3-vcs/rpc";
+import {
+  FT3_PI_WS_METHODS,
+  piRpcHandlers,
+  piRpcScopes,
+  piRpcServiceLayer,
+  piRpcs,
+} from "@t3tools/ft3-pi/rpc";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -37,10 +44,16 @@ export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
 export const FT3_WS_METHODS = {
   ...FT3_BOARD_WS_METHODS,
   ...FT3_ARCHITECT_WS_METHODS,
+  ...FT3_PI_WS_METHODS,
   ...FT3_VCS_WS_METHODS,
 } as const;
 
-const ft3RpcScopes = { ...boardRpcScopes, ...architectRpcScopes, ...ft3VcsRpcScopes } as const;
+const ft3RpcScopes = {
+  ...boardRpcScopes,
+  ...architectRpcScopes,
+  ...piRpcScopes,
+  ...ft3VcsRpcScopes,
+} as const;
 
 export class Ft3RpcScopeAuthorization extends RpcMiddleware.Service<Ft3RpcScopeAuthorization>()(
   "t3/ft3/Ft3RpcScopeAuthorization",
@@ -68,14 +81,23 @@ export const authorizationLayer = (scopes: ReadonlyArray<AuthEnvironmentScope>) 
     return effect;
   });
 
-export const group = RpcGroup.make(...boardRpcs, ...architectRpcs, ...ft3VcsRpcs).middleware(
-  Ft3RpcScopeAuthorization,
-);
+export const group = RpcGroup.make(
+  ...boardRpcs,
+  ...architectRpcs,
+  ...piRpcs,
+  ...ft3VcsRpcs,
+).middleware(Ft3RpcScopeAuthorization);
 
-export const handlers = { ...boardRpcHandlers, ...architectRpcHandlers, ...ft3VcsRpcHandlers };
+export const handlers = {
+  ...boardRpcHandlers,
+  ...architectRpcHandlers,
+  ...piRpcHandlers,
+  ...ft3VcsRpcHandlers,
+};
 
 export const serviceLayer = Layer.mergeAll(
   boardRpcServiceLayer,
   architectRpcServiceLayer,
+  piRpcServiceLayer,
   ft3VcsRpcServiceLayer,
 );
