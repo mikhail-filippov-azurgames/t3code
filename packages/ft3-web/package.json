@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./panels": "./src/panels.tsx"
+    "./panels": "./src/panels.tsx",
+    "./architect": "./src/architect/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -13,6 +14,7 @@
     "@effect/atom-react": "catalog:",
     "@t3tools/client-runtime": "workspace:*",
     "@t3tools/contracts": "workspace:*",
+    "@t3tools/ft3-architect": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
     "@t3tools/ft3-vcs": "workspace:*",
     "@t3tools/shared": "workspace:*",
