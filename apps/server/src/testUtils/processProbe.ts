@@ -4,6 +4,12 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 
+// Killing a probed process resets its TCP connection, so the read side fails after it is gone.
+export const isExpectedProbeSocketError = (error: unknown): boolean => {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+  return code === "ECONNRESET" || code === "EPIPE";
+};
+
 export const makeProcessProbe = Effect.gen(function* () {
   const started = yield* Deferred.make<number>();
   const exited = yield* Deferred.make<void>();
@@ -23,6 +29,9 @@ export const makeProcessProbe = Effect.gen(function* () {
     socket.on("close", () => {
       sockets.delete(socket);
       Deferred.doneUnsafe(exited, Effect.void);
+    });
+    socket.on("error", (error) => {
+      if (!isExpectedProbeSocketError(error)) throw error;
     });
   });
   yield* Effect.acquireRelease(
