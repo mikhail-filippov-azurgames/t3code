@@ -166,44 +166,54 @@ const make = Effect.gen(function* () {
     );
 
   return DelegatedTaskSummaryRepository.of({
-    getByTurn: ({ childThreadId, sourceTurnId }) =>
-      one(
-        sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
-          WHERE child_thread_id = ${childThreadId} AND source_turn_id = ${sourceTurnId}`,
-        "getByTurn",
-      ),
-    getLatestByChild: (childThreadId) =>
-      one(
-        sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
-          WHERE child_thread_id = ${childThreadId}
-          ORDER BY completed_at DESC, source_turn_id DESC LIMIT 1`,
-        "getLatestByChild",
-      ),
-    getLatestBefore: ({ childThreadId, sourceTurnId, completedAt }) =>
-      one(
-        sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
-          WHERE child_thread_id = ${childThreadId} AND source_turn_id <> ${sourceTurnId}
-            AND (completed_at < ${completedAt}
-              OR (completed_at = ${completedAt} AND source_turn_id < ${sourceTurnId}))
-          ORDER BY completed_at DESC, source_turn_id DESC LIMIT 1`,
-        "getLatestBefore",
-      ),
-    listPending: () =>
+    getByTurn: Effect.fn("DelegatedTaskSummaryRepository.getByTurn")(
+      ({ childThreadId, sourceTurnId }) =>
+        one(
+          sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
+            WHERE child_thread_id = ${childThreadId} AND source_turn_id = ${sourceTurnId}`,
+          "getByTurn",
+        ),
+    ),
+    getLatestByChild: Effect.fn("DelegatedTaskSummaryRepository.getLatestByChild")(
+      (childThreadId) =>
+        one(
+          sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
+            WHERE child_thread_id = ${childThreadId}
+            ORDER BY completed_at DESC, source_turn_id DESC LIMIT 1`,
+          "getLatestByChild",
+        ),
+    ),
+    getLatestBefore: Effect.fn("DelegatedTaskSummaryRepository.getLatestBefore")(
+      ({ childThreadId, sourceTurnId, completedAt }) =>
+        one(
+          sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
+            WHERE child_thread_id = ${childThreadId} AND source_turn_id <> ${sourceTurnId}
+              AND (completed_at < ${completedAt}
+                OR (completed_at = ${completedAt} AND source_turn_id < ${sourceTurnId}))
+            ORDER BY completed_at DESC, source_turn_id DESC LIMIT 1`,
+          "getLatestBefore",
+        ),
+    ),
+    listPending: Effect.fn("DelegatedTaskSummaryRepository.listPending")(() =>
       mapError("listPending")(
         sql<SummaryRow>`SELECT child_thread_id AS "childThreadId", parent_environment_id AS "parentEnvironmentId", parent_thread_id AS "parentThreadId", source_turn_id AS "sourceTurnId", completed_at AS "completedAt", summary_text AS text, source, source_turn_ids_json AS "sourceTurnIdsJson", watermark, content_fingerprint AS "contentFingerprint", state, error, attempt_count AS "attemptCount", retry_after AS "retryAfter", updated_at AS "updatedAt" FROM ft3_delegated_task_summaries
           WHERE state = 'pending'
           ORDER BY retry_after ASC, updated_at ASC, child_thread_id ASC, source_turn_id ASC
           LIMIT 500`,
       ).pipe(Effect.map((rows) => rows.map(toRecord))),
-    currentWatermark: (childThreadId) =>
-      mapError("currentWatermark")(
-        sql<{ readonly watermark: number }>`SELECT COALESCE(MAX(sequence), 0) AS watermark
+    ),
+    currentWatermark: Effect.fn("DelegatedTaskSummaryRepository.currentWatermark")(
+      (childThreadId) =>
+        mapError("currentWatermark")(
+          sql<{ readonly watermark: number }>`SELECT COALESCE(MAX(sequence), 0) AS watermark
           FROM orchestration_events
           WHERE aggregate_kind = 'thread' AND stream_id = ${childThreadId}`,
-      ).pipe(Effect.map((rows) => rows[0]?.watermark ?? 0)),
-    listHistory: ({ parentThreadId, cursor, limit }) =>
-      mapError("listHistory")(
-        sql<SummaryHistoryRow>`SELECT
+        ).pipe(Effect.map((rows) => rows[0]?.watermark ?? 0)),
+    ),
+    listHistory: Effect.fn("DelegatedTaskSummaryRepository.listHistory")(
+      ({ parentThreadId, cursor, limit }) =>
+        mapError("listHistory")(
+          sql<SummaryHistoryRow>`SELECT
             s.child_thread_id AS "childThreadId",
             s.source_turn_id AS "sourceTurnId",
             s.completed_at AS "completedAt",
@@ -233,8 +243,9 @@ const make = Effect.gen(function* () {
             )
           ORDER BY s.completed_at DESC, s.child_thread_id DESC, s.source_turn_id DESC
           LIMIT ${limit + 1}`,
-      ),
-    insertPending: (row) =>
+        ),
+    ),
+    insertPending: Effect.fn("DelegatedTaskSummaryRepository.insertPending")((row) =>
       mapError("insertPending")(
         sql`INSERT INTO ft3_delegated_task_summaries (
             child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
@@ -247,9 +258,11 @@ const make = Effect.gen(function* () {
             'pending', NULL, ${row.attemptCount}, ${row.retryAfter}, ${row.updatedAt}
           ) ON CONFLICT(child_thread_id, source_turn_id) DO NOTHING`,
       ).pipe(Effect.asVoid),
-    claimGeneration: ({ childThreadId, sourceTurnId, retryAfter, updatedAt }) =>
-      mapError("claimGeneration")(
-        sql<{ readonly childThreadId: string }>`
+    ),
+    claimGeneration: Effect.fn("DelegatedTaskSummaryRepository.claimGeneration")(
+      ({ childThreadId, sourceTurnId, retryAfter, updatedAt }) =>
+        mapError("claimGeneration")(
+          sql<{ readonly childThreadId: string }>`
           UPDATE ft3_delegated_task_summaries
           SET attempt_count = attempt_count + 1, retry_after = ${retryAfter}, updated_at = ${updatedAt}
           WHERE child_thread_id = ${childThreadId} AND source_turn_id = ${sourceTurnId}
@@ -260,8 +273,9 @@ const make = Effect.gen(function* () {
               OR (state = 'error' AND retry_after IS NULL)
             )
           RETURNING child_thread_id AS "childThreadId"`,
-      ).pipe(Effect.map((rows) => rows.length > 0)),
-    complete: (input) =>
+        ).pipe(Effect.map((rows) => rows.length > 0)),
+    ),
+    complete: Effect.fn("DelegatedTaskSummaryRepository.complete")((input) =>
       mapError("complete")(
         sql`UPDATE ft3_delegated_task_summaries SET
             summary_text = ${safeSummaryText(input.text)}, source = ${input.source},
@@ -270,13 +284,15 @@ const make = Effect.gen(function* () {
             state = 'ready', error = NULL, retry_after = NULL, updated_at = ${input.updatedAt}
           WHERE child_thread_id = ${input.childThreadId} AND source_turn_id = ${input.sourceTurnId}`,
       ).pipe(Effect.asVoid),
-    fail: (input) =>
+    ),
+    fail: Effect.fn("DelegatedTaskSummaryRepository.fail")((input) =>
       mapError("fail")(
         sql`UPDATE ft3_delegated_task_summaries SET
             state = ${input.final ? "error" : "pending"}, error = ${safeSummaryText(input.error)},
             retry_after = ${input.retryAfter}, updated_at = ${input.updatedAt}
           WHERE child_thread_id = ${input.childThreadId} AND source_turn_id = ${input.sourceTurnId}`,
       ).pipe(Effect.asVoid),
+    ),
   });
 });
 

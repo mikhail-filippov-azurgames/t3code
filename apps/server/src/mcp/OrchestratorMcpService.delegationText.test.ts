@@ -224,7 +224,7 @@ describe("OrchestratorMcpService delegation text policy", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId },
+        thread: { id: childThreadId, title: "Child result" },
         runs: [
           {
             id: RunId.make("run:delegation-result-child"),

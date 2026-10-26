@@ -377,16 +377,15 @@ const make = Effect.gen(function* () {
 
   const softDeleteArchitectThread = Effect.fn("Ft3ArchitectService.softDeleteArchitectThread")(
     function* (threadId: ThreadId) {
-      const shell = yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+      const shell = yield* threads.getThreadShell(threadId);
       if (shell === null) return;
-      yield* threads
-        .dispatch({
-          type: "thread.delete",
-          commandId: CommandId.make(`architect-delete:${threadId}`),
-          threadId,
-        })
-        .pipe(Effect.mapError(unavailable));
+      yield* threads.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make(`architect-delete:${threadId}`),
+        threadId,
+      });
     },
+    Effect.mapError(unavailable),
   );
 
   const validateAuthorText = Effect.fn("Ft3ArchitectService.validateAuthorText")((
@@ -450,23 +449,19 @@ const make = Effect.gen(function* () {
     at: string,
   ) {
     const wakeId = `arch:review-wake:${review.reviewId}`;
-    yield* threads
-      .dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(wakeId),
-        threadId: binding.architectThreadId,
-        messageId: MessageId.make(wakeId),
-        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator.`,
-        attachments: [],
-        createdBy: "agent",
-        creationSource: "server",
-        dispatchMode: { type: "start_immediately" },
-      })
-      .pipe(Effect.mapError(unavailable));
-    yield* repo
-      .markReviewWakeDelivered({ reviewId: review.reviewId, deliveredAt: at })
-      .pipe(Effect.mapError(unavailable));
-  });
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(wakeId),
+      threadId: binding.architectThreadId,
+      messageId: MessageId.make(wakeId),
+      text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator.`,
+      attachments: [],
+      createdBy: "agent",
+      creationSource: "server",
+      dispatchMode: { type: "start_immediately" },
+    });
+    yield* repo.markReviewWakeDelivered({ reviewId: review.reviewId, deliveredAt: at });
+  }, Effect.mapError(unavailable));
 
   const requirePrepareScope = Effect.fn("Ft3ArchitectService.requirePrepareScope")(function* (
     scope: Scope,
@@ -1286,28 +1281,25 @@ const make = Effect.gen(function* () {
     }),
     getCoordinatorArchitectSidebar: Effect.fn("Ft3ArchitectService.getCoordinatorArchitectSidebar")(
       function* (input) {
-        const binding = yield* repo
-          .getActiveBindingByCoordinator(input.coordinatorThreadId)
-          .pipe(Effect.mapError(unavailable));
+        const binding = yield* repo.getActiveBindingByCoordinator(input.coordinatorThreadId);
         if (binding === null) return emptySidebarSnapshot();
-        const reviews = yield* repo
-          .listReviewsByCoordinator({ coordinatorThreadId: input.coordinatorThreadId })
-          .pipe(Effect.mapError(unavailable));
+        const reviews = yield* repo.listReviewsByCoordinator({
+          coordinatorThreadId: input.coordinatorThreadId,
+        });
         return buildSidebarSnapshot(binding, reviews);
       },
+      Effect.mapError(unavailable),
     ),
     getCoordinatorArchitectSidebarByArchitect: Effect.fn(
       "Ft3ArchitectService.getCoordinatorArchitectSidebarByArchitect",
     )(function* (input) {
-      const binding = yield* repo
-        .getActiveBindingByArchitect(input.architectThreadId)
-        .pipe(Effect.mapError(unavailable));
+      const binding = yield* repo.getActiveBindingByArchitect(input.architectThreadId);
       if (binding === null) return emptySidebarSnapshot();
-      const reviews = yield* repo
-        .listReviewsByCoordinator({ coordinatorThreadId: binding.coordinatorThreadId })
-        .pipe(Effect.mapError(unavailable));
+      const reviews = yield* repo.listReviewsByCoordinator({
+        coordinatorThreadId: binding.coordinatorThreadId,
+      });
       return buildSidebarSnapshot(binding, reviews);
-    }),
+    }, Effect.mapError(unavailable)),
   });
 });
 
