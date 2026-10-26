@@ -67,6 +67,7 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
+import { delegationTextDecision, projectDerivedText } from "@t3tools/ft3-delegation/server";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -979,9 +980,10 @@ function timelineItem(input: {
   readonly messagesByThreadId: ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection["messages"]>;
 }): OrchestratorMcpThreadTimelineItem {
   const text = turnItemText(input.row.item);
+  const projectedText = text === null ? null : projectDerivedText("read", text);
   const offset = input.textOffset ?? 0;
-  const end = textPageEnd(text, offset, input.maxChars);
-  const textTruncated = text !== null && text.length > end;
+  const end = textPageEnd(projectedText, offset, input.maxChars);
+  const textTruncated = projectedText !== null && projectedText.length > end;
   const messageId =
     input.row.item.type === "user_message" || input.row.item.type === "assistant_message"
       ? input.row.item.messageId
@@ -1006,7 +1008,7 @@ function timelineItem(input: {
     type: input.row.item.type,
     status: input.row.item.status,
     title: input.row.item.title,
-    text: text === null ? null : text.slice(offset, end),
+    text: projectedText === null ? null : projectedText.slice(offset, end),
     textTruncated,
     nextTextOffset: textTruncated ? end : null,
     updatedAt: DateTime.formatIso(input.row.item.updatedAt),
@@ -1599,6 +1601,10 @@ const make = Effect.gen(function* () {
         ? derivedResult
         : subagentResultForRun(childProjection, terminalRun).text
       : null;
+    const summaryText =
+      derivedResult === null ? null : projectDerivedText("summary", derivedResult);
+    const latestTerminalSummaryText =
+      latestTerminalSummary === null ? null : projectDerivedText("summary", latestTerminalSummary);
     const resultContextTransferId = resultTransfer?.id ?? null;
     const latestTerminalResultContextTransferId = resultTransferForRun(terminalRun)?.id ?? null;
     const modelSelection = childRun?.modelSelection ??
@@ -1621,12 +1627,13 @@ const make = Effect.gen(function* () {
       providerInstanceId: modelSelection.instanceId,
       model: modelSelection.model,
       options: modelSelection.options ?? [],
-      summary: derivedResult,
+      summary: summaryText,
       resultContextTransferId,
       latestTerminalRunId: terminalRun?.id ?? null,
       latestTerminalStatus:
         terminalStatus !== null && isTerminalTaskStatus(terminalStatus) ? terminalStatus : null,
-      latestTerminalSummary: latestTerminalSummary === derivedResult ? null : latestTerminalSummary,
+      latestTerminalSummary:
+        latestTerminalSummaryText === summaryText ? null : latestTerminalSummaryText,
       latestTerminalResultContextTransferId:
         latestTerminalResultContextTransferId === resultContextTransferId
           ? null
@@ -2433,6 +2440,10 @@ const make = Effect.gen(function* () {
           "parent_not_active",
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
+      }
+      const delegationText = delegationTextDecision({ task: input.task, title: input.title });
+      if (delegationText._tag === "Denied") {
+        return yield* failure("capability_denied", delegationText.reason);
       }
       const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
