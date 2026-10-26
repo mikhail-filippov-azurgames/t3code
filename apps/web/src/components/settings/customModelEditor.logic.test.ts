@@ -19,6 +19,22 @@ const draft = (overrides: Partial<CustomModelDraft>): CustomModelDraft => ({
 });
 
 describe("customModelEditor.logic", () => {
+  it("offers Kimi thinking levels for custom models", () => {
+    const presets = DESCRIPTOR_PRESETS_BY_KIND[ProviderDriverKind.make("kimi")];
+    expect(presets).toEqual([
+      {
+        id: "reasoningEffort",
+        label: "Thinking",
+        type: "select",
+        choices: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+          { id: "max", label: "Max", isDefault: true },
+        ],
+      },
+    ]);
+  });
+
   it("round-trips a definition through the draft, marking the current value as default", () => {
     const definition = definitionFromDraft(
       draft({

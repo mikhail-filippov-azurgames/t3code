@@ -89,6 +89,18 @@ export const DESCRIPTOR_PRESETS_BY_KIND: Partial<
   [ProviderDriverKind.make("grok")]: [
     { id: "reasoningEffort", label: "Reasoning", type: "select", choices: EFFORT_CHOICES },
   ],
+  [ProviderDriverKind.make("kimi")]: [
+    {
+      id: "reasoningEffort",
+      label: "Thinking",
+      type: "select",
+      choices: [
+        { id: "low", label: "Low" },
+        { id: "high", label: "High" },
+        { id: "max", label: "Max", isDefault: true },
+      ],
+    },
+  ],
   [ProviderDriverKind.make("opencode")]: [
     { id: "variant", label: "Reasoning", type: "select", choices: EFFORT_CHOICES },
     {

@@ -522,7 +522,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Providers",
     to: "/settings/providers",
     searchTerms: [
-      "agents cli codex claude cursor grok opencode pi local ollama lm studio vllm openai compatible endpoint antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory arguments environment variables display name accent color custom favorite hidden auto compact",
+      "agents cli codex claude cursor grok kimi opencode pi local ollama lm studio vllm openai compatible endpoint antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory arguments environment variables display name accent color custom favorite hidden auto compact",
     ],
   },
   {

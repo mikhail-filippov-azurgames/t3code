@@ -15,6 +15,7 @@ export type TextGenerationProvider =
   | "claudeAgent"
   | "cursor"
   | "grok"
+  | "kimi"
   | "opencode"
   | "pi";
 

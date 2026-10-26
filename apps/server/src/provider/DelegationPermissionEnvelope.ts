@@ -52,6 +52,7 @@ const DRIVER_ENV_PREFIXES: Readonly<Record<string, ReadonlyArray<string>>> = {
   opencode: ["OPENCODE_"],
   pi: ["PI_", "T3CODE_PI_", "OPENAI_"],
   grok: ["GROK_", "XAI_"],
+  kimi: ["KIMI_", "MOONSHOT_"],
   antigravity: ["ANTIGRAVITY_", "GOOGLE_", "GEMINI_"],
   cursor: ["CURSOR_"],
   museCode: ["MUSE_", "META_"],
@@ -711,6 +712,8 @@ function normalizedRuntimeForDriver(input: DelegationPermissionEnvelopeInput):
       return { runtime: profile.authority, externalTools: [] };
     }
     case "grok":
+      return { runtime: runtimeEnvelope(input.runtimeMode), externalTools: [] };
+    case "kimi":
       return { runtime: runtimeEnvelope(input.runtimeMode), externalTools: [] };
     case "museCode": {
       // A full-access Muse runtime is the top authority envelope: the

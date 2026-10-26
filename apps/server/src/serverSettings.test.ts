@@ -834,10 +834,12 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       yield* recordProviderUsage("grok");
+      yield* recordProviderUsage("kimi");
 
       const settings = yield* serverSettings.getSettings;
 
       assert.isTrue(settings.providers.grok.enabled);
+      assert.isTrue(settings.providers.kimi.enabled);
       assert.isFalse(settings.providers.opencode.enabled);
       assert.isFalse(settings.providers.cursor.enabled);
     }).pipe(Effect.provide(makeServerSettingsLayer())),
@@ -1179,6 +1181,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
             enabled: false,
           },
           grok: {
+            enabled: false,
+          },
+          kimi: {
             enabled: false,
           },
           opencode: {

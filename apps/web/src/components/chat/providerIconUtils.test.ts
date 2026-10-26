@@ -2,11 +2,16 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MuseCodeIcon, PiAgentIcon } from "../Icons";
+import { KimiIcon, MuseCodeIcon, PiAgentIcon } from "../Icons";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
 import { PROVIDER_ICON_BY_PROVIDER } from "./providerIconUtils";
 
 describe("provider icons", () => {
+  it("maps Kimi to its bundled vector icon", () => {
+    expect(PROVIDER_ICON_BY_PROVIDER[ProviderDriverKind.make("kimi")]).toBe(KimiIcon);
+    expect(renderToStaticMarkup(createElement(KimiIcon))).toContain("<path");
+  });
+
   it("renders the Muse Code glyph instead of the initials fallback", () => {
     expect(PROVIDER_ICON_BY_PROVIDER[ProviderDriverKind.make("museCode")]).toBe(MuseCodeIcon);
   });

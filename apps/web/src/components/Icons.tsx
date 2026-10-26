@@ -280,6 +280,17 @@ export const GrokIcon: Icon = ({ className, ...props }) => (
   </svg>
 );
 
+export const KimiIcon: Icon = ({ className, ...props }) => (
+  <svg
+    {...props}
+    viewBox="0 0 24 24"
+    fill="none"
+    className={cn("fill-[#111111] dark:fill-[#F5F5F5]", className)}
+  >
+    <path d="M4 3h4v7.2L15.4 3h5.1l-8.3 8.1L21 21h-5.2l-6.1-7.4L8 15.2V21H4V3Z" />
+  </svg>
+);
+
 export const MuseCodeIcon: Icon = ({ className, ...props }) => (
   <svg {...props} viewBox="0 0 24 24" fill="none" className={cn("text-[#0866FF]", className)}>
     <path
