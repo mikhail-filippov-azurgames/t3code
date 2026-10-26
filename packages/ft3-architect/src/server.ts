@@ -31,6 +31,20 @@ const handlers = McpToolAccess.toLayer(toolkit, {
       return yield* service.createOrGet(scope, input);
     }),
   ),
+  architect_replace: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.replace(scope, input);
+    }),
+  ),
+  architect_detach: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.detach(scope, input);
+    }),
+  ),
 });
 
 export const layer = toolkitRegistration(toolkit, handlers).pipe(

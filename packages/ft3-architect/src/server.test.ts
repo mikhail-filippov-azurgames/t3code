@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
@@ -20,7 +21,10 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as BoardRepository from "@t3tools/ft3-board/repository";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
+import * as ArchitectRepository from "./ArchitectRepository.ts";
+import * as ArchitectService from "./ArchitectService.ts";
 import * as Contracts from "./contracts.ts";
 
 const parentId = ThreadId.make("thread:arch-coord");
@@ -31,6 +35,8 @@ const epoch = "2026-10-26T00:00:00.000Z";
 const decodeGet = Schema.decodeUnknownEffect(Contracts.ArchitectGetCoordinatorBindingResult);
 const decodeList = Schema.decodeUnknownEffect(Contracts.ArchitectListArchitectureReviewsResult);
 const decodeCreate = Schema.decodeUnknownEffect(Contracts.ArchitectCreateOrGetResult);
+const decodeReplace = Schema.decodeUnknownEffect(Contracts.ArchitectReplaceResult);
+const decodeDetach = Schema.decodeUnknownEffect(Contracts.ArchitectDetachResult);
 const decodeFailure = Schema.decodeUnknownSync(Contracts.ArchitectMcpFailure);
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:architect-test"),
@@ -60,7 +66,11 @@ const crypto = Layer.succeed(
   Crypto.Crypto,
   Crypto.make({
     randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: (_algorithm, data) => Effect.succeed(data),
+    digest: (_algorithm, data) =>
+      Effect.promise(async () => {
+        const bytes = new Uint8Array(data);
+        return new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes));
+      }),
   }),
 );
 
@@ -105,6 +115,23 @@ const createArgs = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const replaceArgs = (overrides: Record<string, unknown> = {}) => ({
+  coordinatorThreadId: parentId,
+  taskEffort: "medium",
+  modelSelection: { instanceId: "codex", model: "gpt-5" },
+  routingEvidence: createEvidence,
+  reason: "Replace the advisor.",
+  idempotencyKey: "replace:1",
+  ...overrides,
+});
+
+const detachArgs = (overrides: Record<string, unknown> = {}) => ({
+  coordinatorThreadId: parentId,
+  reason: "Detach the advisor.",
+  idempotencyKey: "detach:1",
+  ...overrides,
+});
+
 function fixture() {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
     [parentId, otherId, architectId, childId].map((id) => [id, liveThreadShell(id)]),
@@ -122,6 +149,9 @@ function fixture() {
         createdCommands.push(command);
         if (command.type === "thread.create") {
           shells.set(command.threadId, liveThreadShell(command.threadId));
+        }
+        if (command.type === "thread.delete") {
+          shells.delete(command.threadId);
         }
         return { sequence: 0, storedEvents: [] };
       }),
@@ -489,5 +519,176 @@ describe("ft3 architect toolkit through ft3-host", () => {
     assert.isFalse(
       Schema.is(Contracts.ArchitectGetCoordinatorBindingInput)({ coordinatorThreadId: "" }),
     );
+  });
+
+  it.effect("replaces the architect and closes the old binding", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const created = yield* decodeCreate(
+        (yield* call("architect_create_or_get", createArgs())).structuredContent,
+      );
+      const replaced = yield* decodeReplace(
+        (yield* call("architect_replace", replaceArgs())).structuredContent,
+      );
+      assert.notEqual(replaced.binding.bindingId, created.binding.bindingId);
+      assert.equal(replaced.binding.status, "active");
+      assert.equal(replaced.binding.architectThreadId, replaced.architectThreadId);
+      const sql = yield* SqlClient.SqlClient;
+      const old =
+        (yield* sql`SELECT status, replaced_by_binding_id, detach_reason FROM ft3_architect_binding WHERE binding_id = ${created.binding.bindingId}`)[0]!;
+      assert.equal(old.status, "replaced");
+      assert.equal(old.replaced_by_binding_id, replaced.binding.bindingId);
+      assert.equal(old.detach_reason, "Replace the advisor.");
+      assert.isUndefined(f.shells.get(created.architectThreadId));
+      assert.isDefined(f.shells.get(replaced.architectThreadId));
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("detaches the architect and revokes its thread", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const result = yield* decodeDetach(
+        (yield* call("architect_detach", detachArgs())).structuredContent,
+      );
+      assert.equal(result.binding.status, "detached");
+      assert.equal(result.binding.bindingId, "binding:1");
+      assert.equal(result.binding.detachReason, "Detach the advisor.");
+      assert.isUndefined(f.shells.get(architectId));
+      const got = yield* decodeGet(
+        (yield* call("get_coordinator_binding", { coordinatorThreadId: parentId }))
+          .structuredContent,
+      );
+      assert.isNull(got.binding);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("repeats detach idempotently", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const first = yield* decodeDetach(
+        (yield* call("architect_detach", detachArgs())).structuredContent,
+      );
+      assert.equal(first.binding.status, "detached");
+      const second = yield* decodeDetach(
+        (yield* call("architect_detach", detachArgs())).structuredContent,
+      );
+      assert.equal(second.binding.bindingId, first.binding.bindingId);
+      assert.equal(second.binding.status, "detached");
+      const deletes = f.createdCommands.filter(
+        (command) => (command as { type: string }).type === "thread.delete",
+      );
+      assert.equal(deletes.length, 1);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses a foreign coordinator thread", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* mark(otherId);
+      yield* seedArchitect;
+      assert.equal(
+        failure(yield* call("architect_replace", replaceArgs(), asThread(otherId))).code,
+        "capability_denied",
+      );
+      assert.equal(
+        failure(yield* call("architect_detach", detachArgs(), asThread(otherId))).code,
+        "capability_denied",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("races two replaces to a single winner", () => {
+    const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
+      [parentId, otherId, architectId, childId].map((id) => [id, liveThreadShell(id)]),
+    );
+    const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
+      dispatch: (command) =>
+        Effect.sync(() => {
+          if (command.type === "thread.create") {
+            shells.set(command.threadId, liveThreadShell(command.threadId));
+          }
+          if (command.type === "thread.delete") {
+            shells.delete(command.threadId);
+          }
+          return { sequence: 0, storedEvents: [] };
+        }),
+    });
+    const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([codexProvider]),
+    });
+    let injected = false;
+    const wrappedRepo = Layer.effect(
+      ArchitectRepository.ArchitectRepository,
+      Effect.gen(function* () {
+        const real = yield* ArchitectRepository.ArchitectRepository;
+        return ArchitectRepository.ArchitectRepository.of({
+          ...real,
+          closeBinding: (input) =>
+            Effect.gen(function* () {
+              const closed = yield* real.closeBinding(input);
+              if (closed !== null && input.status === "replaced" && !injected) {
+                injected = true;
+                yield* real.createOrGetBinding({
+                  bindingId: "binding:winner",
+                  coordinatorThreadId: parentId,
+                  architectThreadId: ThreadId.make("arch:winner"),
+                  projectId: ProjectId.make("project:architect"),
+                  architectTaskEffort: "medium",
+                  routingEvidence: createEvidence,
+                  createdAt: epoch,
+                  createdBy: parentId,
+                  createIdempotencyKey: "race:winner",
+                  createRequestFingerprint: "winner-fp",
+                });
+              }
+              return closed;
+            }),
+        });
+      }),
+    ).pipe(Layer.provide(ArchitectRepository.layer));
+    const serviceLayer = ArchitectService.layer.pipe(
+      Layer.provide(wrappedRepo),
+      Layer.provideMerge(BoardRepository.layer),
+      Layer.provide(threads),
+      Layer.provide(providerRegistry),
+      Layer.provide(crypto),
+    );
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const service = yield* ArchitectService.ArchitectService;
+      const loser = yield* service.replace(scope, {
+        coordinatorThreadId: parentId,
+        taskEffort: "medium",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+        routingEvidence: createEvidence,
+        reason: "Replace loses the race.",
+        idempotencyKey: "race:loser",
+      });
+      assert.equal(loser.binding.bindingId, "binding:winner");
+      assert.equal(loser.architectThreadId, ThreadId.make("arch:winner"));
+      const sql = yield* SqlClient.SqlClient;
+      const original =
+        (yield* sql`SELECT status, replaced_by_binding_id FROM ft3_architect_binding WHERE binding_id = 'binding:1'`)[0]!;
+      assert.equal(original.status, "replaced");
+      assert.equal(original.replaced_by_binding_id, "binding:winner");
+      const active =
+        yield* sql`SELECT binding_id FROM ft3_architect_binding WHERE coordinator_thread_id = ${parentId} AND status = 'active'`;
+      assert.equal(active.length, 1);
+      assert.equal(active[0]!.binding_id, "binding:winner");
+    }).pipe(Effect.provide(serviceLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))));
   });
 });
