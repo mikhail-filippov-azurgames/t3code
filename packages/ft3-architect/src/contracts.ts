@@ -1,0 +1,177 @@
+import {
+  CheckpointRef,
+  IsoDateTime,
+  MessageId,
+  OrchestratorMcpFailure,
+  PositiveInt,
+  ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderOptionSelection,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+
+export const ArchitectTaskEffort = Schema.Literals(["low", "medium", "high", "very-high"]);
+export type ArchitectTaskEffort = typeof ArchitectTaskEffort.Type;
+export const CoordinatorArchitectBindingStatus = Schema.Literals([
+  "active",
+  "detached",
+  "replaced",
+]);
+export type CoordinatorArchitectBindingStatus = typeof CoordinatorArchitectBindingStatus.Type;
+export const ArchitectureReviewReason = Schema.Literals([
+  "contract-conflict",
+  "scope-expansion",
+  "hard-bug",
+  "milestone-review",
+  "direct-advice",
+]);
+export type ArchitectureReviewReason = typeof ArchitectureReviewReason.Type;
+export const ArchitectureReviewExecutionPosture = Schema.Literals([
+  "continue",
+  "pause-branch",
+  "pause-all",
+]);
+export type ArchitectureReviewExecutionPosture = typeof ArchitectureReviewExecutionPosture.Type;
+export const ArchitectureReviewAnswerDisposition = Schema.Literals([
+  "recommendation",
+  "needs-human-decision",
+  "needs-more-evidence",
+]);
+export type ArchitectureReviewAnswerDisposition = typeof ArchitectureReviewAnswerDisposition.Type;
+export const ArchitectureReviewStatus = Schema.Literals([
+  "open",
+  "answered",
+  "published",
+  "cancelled",
+]);
+export type ArchitectureReviewStatus = typeof ArchitectureReviewStatus.Type;
+export const ArchitectureReviewOrigin = Schema.Literals([
+  "coordinator-request",
+  "architect-advice",
+]);
+export type ArchitectureReviewOrigin = typeof ArchitectureReviewOrigin.Type;
+export const ArchitectureReviewPublishedBy = Schema.Literals(["architect", "coordinator", "human"]);
+export type ArchitectureReviewPublishedBy = typeof ArchitectureReviewPublishedBy.Type;
+
+const BoundedIdempotencyKey = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
+const BoundedFingerprint = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
+const BoundedReviewQuestion = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
+const BoundedAnswerSummary = Schema.String.check(Schema.isMaxLength(2_000));
+const DocumentRef = TrimmedNonEmptyString.check(Schema.isMaxLength(45));
+const PolicyDocumentRef = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
+const boundedArray = <Element extends Schema.Top>(element: Element, maximum: number) =>
+  Schema.Array(element).check(Schema.isMaxLength(maximum));
+
+const RoutingCandidate = Schema.Struct({
+  alias: TrimmedNonEmptyString,
+  providerInstanceId: ProviderInstanceId,
+  driverKind: ProviderDriverKind,
+  model: TrimmedNonEmptyString,
+  options: Schema.Array(ProviderOptionSelection),
+  disposition: Schema.Literals(["ineligible", "selected"]),
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(500)),
+});
+export const CoordinatorArchitectRoutingEvidence = Schema.Struct({
+  policyRef: PolicyDocumentRef,
+  policyRevision: PositiveInt,
+  role: Schema.Literal("architecture"),
+  taskEffort: ArchitectTaskEffort,
+  consideredCandidates: boundedArray(RoutingCandidate, 16),
+});
+export type CoordinatorArchitectRoutingEvidence = typeof CoordinatorArchitectRoutingEvidence.Type;
+
+export const ArchitectureReviewRefs = Schema.Struct({
+  messageIds: Schema.optional(boundedArray(MessageId, 64)),
+  checkpoint: Schema.optional(Schema.NullOr(CheckpointRef)),
+  oclRefs: Schema.optional(boundedArray(DocumentRef, 32)),
+  architectOclRefs: Schema.optional(boundedArray(DocumentRef, 32)),
+});
+export type ArchitectureReviewRefs = typeof ArchitectureReviewRefs.Type;
+
+export const CoordinatorArchitectBinding = Schema.Struct({
+  bindingId: TrimmedNonEmptyString,
+  coordinatorThreadId: ThreadId,
+  architectThreadId: ThreadId,
+  projectId: ProjectId,
+  architectTaskEffort: ArchitectTaskEffort,
+  routingEvidence: Schema.NullOr(CoordinatorArchitectRoutingEvidence),
+  status: CoordinatorArchitectBindingStatus,
+  createdAt: IsoDateTime,
+  createdBy: ThreadId,
+  replacedByBindingId: Schema.NullOr(TrimmedNonEmptyString),
+  detachReason: Schema.NullOr(Schema.String),
+  createIdempotencyKey: BoundedIdempotencyKey,
+});
+export type CoordinatorArchitectBinding = typeof CoordinatorArchitectBinding.Type;
+
+export const ArchitectureReviewDeliveryFailure = Schema.Struct({
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  message: Schema.String.check(Schema.isMaxLength(2_000)),
+  attemptedAt: IsoDateTime,
+});
+export type ArchitectureReviewDeliveryFailure = typeof ArchitectureReviewDeliveryFailure.Type;
+
+export const ArchitectureReviewRecord = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  bindingId: TrimmedNonEmptyString,
+  coordinatorThreadId: ThreadId,
+  architectThreadId: ThreadId,
+  subjectChildThreadId: Schema.NullOr(ThreadId),
+  reason: ArchitectureReviewReason,
+  question: BoundedReviewQuestion,
+  refs: ArchitectureReviewRefs,
+  executionPosture: ArchitectureReviewExecutionPosture,
+  answerDisposition: Schema.NullOr(ArchitectureReviewAnswerDisposition),
+  status: ArchitectureReviewStatus,
+  answerSummary: Schema.NullOr(BoundedAnswerSummary),
+  requestIdempotencyKey: BoundedIdempotencyKey,
+  answerIdempotencyKey: Schema.NullOr(BoundedIdempotencyKey),
+  answerPayloadFingerprint: Schema.NullOr(BoundedFingerprint),
+  publishIdempotencyKey: Schema.NullOr(BoundedIdempotencyKey),
+  cancelIdempotencyKey: Schema.NullOr(BoundedIdempotencyKey),
+  cancelledAt: Schema.NullOr(IsoDateTime),
+  cancelledBy: Schema.NullOr(Schema.Union([ThreadId, Schema.Literal("human")])),
+  createdAt: IsoDateTime,
+  answeredAt: Schema.NullOr(IsoDateTime),
+  publishedAt: Schema.NullOr(IsoDateTime),
+  origin: ArchitectureReviewOrigin,
+  publishedBy: Schema.NullOr(ArchitectureReviewPublishedBy),
+  publishDeliveredAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  lastPublishFailure: Schema.optional(Schema.NullOr(ArchitectureReviewDeliveryFailure)),
+});
+export type ArchitectureReviewRecord = typeof ArchitectureReviewRecord.Type;
+
+export const ArchitectGetCoordinatorBindingInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+});
+export type ArchitectGetCoordinatorBindingInput = typeof ArchitectGetCoordinatorBindingInput.Type;
+export const ArchitectGetCoordinatorBindingResult = Schema.Struct({
+  binding: Schema.NullOr(CoordinatorArchitectBinding),
+});
+export type ArchitectGetCoordinatorBindingResult = typeof ArchitectGetCoordinatorBindingResult.Type;
+
+export const ArchitectListArchitectureReviewsInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+  status: Schema.optional(ArchitectureReviewStatus),
+});
+export type ArchitectListArchitectureReviewsInput =
+  typeof ArchitectListArchitectureReviewsInput.Type;
+export const ArchitectListArchitectureReviewsResult = Schema.Struct({
+  reviews: boundedArray(ArchitectureReviewRecord, 100),
+});
+export type ArchitectListArchitectureReviewsResult =
+  typeof ArchitectListArchitectureReviewsResult.Type;
+
+export class ArchitectMcpFailure extends Schema.TaggedError<ArchitectMcpFailure>()(
+  "OrchestratorMcpFailure",
+  {
+    code: Schema.Union([
+      OrchestratorMcpFailure.fields.code,
+      Schema.Literals(["architect_denied", "delegated_executor_denied"]),
+    ]),
+    message: Schema.String,
+  },
+) {}
