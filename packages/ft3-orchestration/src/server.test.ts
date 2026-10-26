@@ -19,6 +19,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -44,6 +45,13 @@ const isSearchInput = Schema.is(Contracts.TaskSearchInput);
 const isReadInput = Schema.is(Contracts.TaskReadInput);
 
 const epoch = DateTime.makeUnsafe("2026-10-25T00:00:00.000Z");
+const crypto = Layer.succeed(
+  Crypto.Crypto,
+  Crypto.make({
+    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
+    digest: () => Effect.die("unused"),
+  }),
+);
 const parentId = ThreadId.make("thread:parent");
 const otherParentId = ThreadId.make("thread:other-parent");
 const aId = NodeId.make("node:a");
@@ -253,6 +261,8 @@ function fixture() {
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(dependencies),
+    Layer.provide(SqlitePersistence.layerMemory),
+    Layer.provide(crypto),
   );
   return {
     layer,
@@ -290,16 +300,17 @@ function failure(result: McpSchema.CallToolResult) {
 }
 
 describe("ft3 task toolkit through ft3-host", () => {
-  it.effect("registers exactly the three read-only tools", () => {
+  it.effect("registers the three read-only task tools alongside host toolkits", () => {
     const f = fixture();
     return Effect.gen(function* () {
       const server = yield* McpServer.McpServer;
-      assert.deepStrictEqual(server.tools.map(({ tool }) => tool.name).sort(), [
+      const taskTools = server.tools.filter(({ tool }) => tool.name.startsWith("task_"));
+      assert.deepStrictEqual(taskTools.map(({ tool }) => tool.name).sort(), [
         "task_list",
         "task_read",
         "task_search",
       ]);
-      assert.isTrue(server.tools.every(({ tool }) => tool.annotations?.readOnlyHint === true));
+      assert.isTrue(taskTools.every(({ tool }) => tool.annotations?.readOnlyHint === true));
     }).pipe(Effect.provide(f.layer));
   });
 
@@ -504,7 +515,9 @@ describe("ft3 task toolkit through ft3-host", () => {
 
   it.effect("reads bounded snapshots and older pages from the V2 SQLite projection", () => {
     const f = fixture();
-    const persistence = ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory));
+    const persistence = ProjectionStore.layer.pipe(
+      Layer.provideMerge(SqlitePersistence.layerMemory),
+    );
     const seed = Layer.effectDiscard(
       Effect.gen(function* () {
         const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -553,6 +566,7 @@ describe("ft3 task toolkit through ft3-host", () => {
       const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(liveQueries),
+        Layer.provide(crypto),
       );
       return yield* Effect.gen(function* () {
         const first = yield* call("task_read", { taskId: aId, turnLimit: 1 });

@@ -19,6 +19,7 @@ it.effect("initializes core and ft3 schemas through the server persistence layer
     );
     assert.deepStrictEqual(yield* sql`SELECT migration_id, name FROM ft3_migrations`, [
       { migration_id: 1, name: "Ft3Meta" },
+      { migration_id: 2, name: "Board" },
     ]);
     yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
 
