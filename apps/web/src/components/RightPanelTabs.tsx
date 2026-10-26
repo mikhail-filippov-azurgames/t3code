@@ -1,3 +1,4 @@
+import { ft3SurfaceActions, ft3SurfaceTitle, Ft3SurfaceIcon } from "@t3tools/ft3-web/panels";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { useProjects, useServerConfigs, useThreadShells } from "~/state/entities";
@@ -7,6 +8,7 @@ import {
 } from "@t3tools/client-runtime/thread-pull-requests";
 import type {
   ContextMenuItem,
+  ScopedThreadRef,
   EnvironmentId,
   PreviewSessionSnapshot,
   ProjectId,
@@ -50,7 +52,7 @@ import {
 
 import { isElectron } from "~/env";
 import type { DesktopPreviewOverlay } from "~/previewStateStore";
-import type { RightPanelSurface } from "~/rightPanelStore";
+import { type RightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
 import { resolveShortcutCommand, type ShortcutMatchContext } from "~/keybindings";
 import { readLocalApi } from "~/localApi";
@@ -94,6 +96,7 @@ import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { observeResize } from "~/lib/observeResize";
 
 export interface RightPanelTabsProps {
+  threadRef?: ScopedThreadRef | null;
   mode: PreviewPanelMode;
   maximized?: boolean;
   open?: boolean;
@@ -294,6 +297,7 @@ function SurfaceMenuItem(props: {
 }
 
 function RightPanelEmptyState(props: {
+  ft3Actions: ReturnType<typeof ft3SurfaceActions>;
   onAddBrowser: () => void;
   onAddBrowserInProfile: (profileId: string) => void;
   browserProfiles: ReadonlyArray<{ readonly id: string; readonly name: string }>;
@@ -371,6 +375,7 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
     },
+    ...props.ft3Actions,
   ] as const;
 
   type SurfaceAction = (typeof actions)[number];
@@ -536,6 +541,8 @@ function surfaceTitle(
   terminalLabelsById: ReadonlyMap<string, string>,
 ): string {
   switch (surface.kind) {
+    case "ft3":
+      return ft3SurfaceTitle(surface.surfaceType);
     case "diff":
       return "Diff";
     case "files":
@@ -616,6 +623,8 @@ function SurfaceIcon({
   pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
 }) {
   switch (surface.kind) {
+    case "ft3":
+      return <Ft3SurfaceIcon surfaceType={surface.surfaceType} />;
     case "preview":
       return <PreviewFavicon capturedUrl={previewCapturedUrl} url={previewUrl} />;
     case "diff":
@@ -944,6 +953,8 @@ function RightPanelTab(
 }
 
 export function RightPanelTabs(props: RightPanelTabsProps) {
+  const openFt3Surface = useRightPanelStore((state) => state.openFt3Surface);
+  const ft3Actions = ft3SurfaceActions(props.threadRef ?? null, openFt3Surface);
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
   const browserProfiles = useBrowserDefaults().profiles;
   const { resolvedTheme } = useTheme();
@@ -1066,6 +1077,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
     },
+    ...ft3Actions,
   ] as const;
 
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1423,6 +1435,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       <div className="flex min-h-0 flex-1 flex-col" data-right-panel-surface-content>
         {props.activeSurfaceId === null ? (
           <RightPanelEmptyState
+            ft3Actions={ft3Actions}
             onAddBrowser={props.onAddBrowser}
             onAddBrowserInProfile={props.onAddBrowserInProfile}
             browserProfiles={browserProfiles}

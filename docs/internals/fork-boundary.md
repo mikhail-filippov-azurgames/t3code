@@ -165,3 +165,38 @@ exit code, затем дренаж с ограниченным ожидание�
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `apps/server/src/textGeneration/CodexTextGeneration.ts`      | `readStreamInto` + `Effect.forkScoped`; ожидание exit code, `Fiber.join` с `timeoutOption`; хвост stderr | генерация не зависает на открытых пайпах после выхода codex |
 | `apps/server/src/textGeneration/CodexTextGeneration.test.ts` | регрессии с detached-helper, держащим stdio; проверка сообщения об ошибке                                | воспроизводит зависание и сохраняет сообщение об ошибке     |
+
+## Web extensions (S3)
+
+`packages/ft3-web` owns the ft3 surface registry and Board UI. Upstream only
+knows `kind: "ft3"` and `surfaceType`; titles, icons, availability, launch
+actions, rendering and persisted ft3 surface validation belong to the registry.
+New ft3 surface types need no additional upstream branches.
+
+| Upstream file                                               | Connection                                                                                                                                                                                                                                     | Reason                                                                  |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `apps/web/src/rightPanelStore.ts`                           | import `Ft3Surface`/`normalizeFt3Surface`; add `"ft3"` to kinds and the surface union; exclude it from singleton operations; `openFt3Surface` delegates to existing `userAction`/`upsertSurface`; migration delegates to `normalizeFt3Surface` | preserve ft3 identity through normal panel storage and lifecycle        |
+| `apps/web/src/components/RightPanelTabs.tsx`                | registry import; optional `threadRef`; select `openFt3Surface`; spread registry launch actions into the launcher and add menu; delegate title and icon                                                                                         | a single presentation hook for every ft3 surface                        |
+| `apps/web/src/components/chat/RightPanelSurfaceContent.tsx` | import and `case "ft3"` delegation to `Ft3SurfaceContent`                                                                                                                                                                                      | mount the registry component with the panel's thread and visibility     |
+| `apps/web/src/components/ChatView.tsx`                      | pass the existing server `threadRef` to `ChatRightPanel`                                                                                                                                                                                       | scope launch actions to the actual panel, including remote environments |
+| `apps/web/src/reopenClosedView.ts`                          | `case "ft3"` delegates to `openFt3Surface`                                                                                                                                                                                                     | reopen the exact surface type                                           |
+| `apps/web/src/index.css`                                    | `@source "../../../packages/ft3-web/src"`                                                                                                                                                                                                      | include extension classes in Tailwind output                            |
+| `apps/web/package.json`                                     | `@t3tools/ft3-web: workspace:*`                                                                                                                                                                                                                | resolve the extension package                                           |
+| `packages/client-runtime/src/rpc/protocol.ts`               | import `@t3tools/ft3-host/rpc-contracts`; merge its group into `RpcClient.make`                                                                                                                                                                | reuse the existing authenticated environment WS session                 |
+| `packages/client-runtime/package.json`                      | `@t3tools/ft3-host: workspace:*`                                                                                                                                                                                                               | resolve the browser-safe RPC entry                                      |
+| `vite.config.ts`                                            | add `packages/ft3-web` to `TEST_CONFIG_PACKAGES`                                                                                                                                                                                               | route extension unit/browser tests to their own config                  |
+| `pnpm-lock.yaml`                                            | workspace links for `apps/web`/`packages/client-runtime` and the `packages/ft3-web` importer                                                                                                                                                   | record dependencies using existing resolutions                          |
+
+RPC definitions live in `ft3-board/rpc-contracts`, `ft3-architect/rpc-contracts`
+and `ft3-host/rpc-contracts`. Server entries re-export those definitions and keep
+their handlers and authorization layers. Web must import the contract entry:
+the server `ft3-host/rpc` entry also loads repositories and services.
+
+The extension uses the web host's `~` alias for existing V2 controls and state
+hooks. Its typecheck includes the host web sources, which also supply router
+type registration; this package is a web extension, not a standalone UI library.
+Board reads refresh while observed, and writes invalidate the existing list
+queries. Pinned cards use the original environment/thread storage keys and
+bounded `board.resolve` requests. Coordinator requests use V2's normal message
+dispatch. The old panel's delegated-summary history and commit graph are separate
+features and are not part of this Board surface.

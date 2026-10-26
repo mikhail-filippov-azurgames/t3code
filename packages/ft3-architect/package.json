@@ -22,6 +22,10 @@
     "./service": {
       "types": "./src/ArchitectService.ts",
       "import": "./src/ArchitectService.ts"
+    },
+    "./rpc-contracts": {
+      "types": "./src/rpc-contracts.ts",
+      "import": "./src/rpc-contracts.ts"
     }
   },
   "scripts": {

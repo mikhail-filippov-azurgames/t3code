@@ -117,6 +117,9 @@ export async function reopenClosedView(
   )
     return false;
   switch (surface.kind) {
+    case "ft3":
+      panels.openFt3Surface(ref, surface);
+      break;
     case "preview":
       if (surface.resourceId !== null) return false;
       panels.openBrowser(ref, null);

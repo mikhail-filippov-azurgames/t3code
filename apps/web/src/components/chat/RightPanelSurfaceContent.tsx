@@ -1,3 +1,4 @@
+import { Ft3SurfaceContent } from "@t3tools/ft3-web/panels";
 import type {
   EditorId,
   EnvironmentId,
@@ -79,6 +80,14 @@ export function RightPanelSurfaceContent(props: {
   const { surface, threadRef, visible } = props;
   if (surface === null) return null;
   switch (surface.kind) {
+    case "ft3":
+      return (
+        <Ft3SurfaceContent
+          surfaceType={surface.surfaceType}
+          threadRef={threadRef}
+          visible={visible}
+        />
+      );
     case "preview":
       return (
         <Suspense fallback={null}>

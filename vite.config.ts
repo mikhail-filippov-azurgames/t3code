@@ -23,6 +23,7 @@ const TEST_CONFIG_PACKAGES = [
   "apps/server",
   "apps/web",
   "packages/client-runtime",
+  "packages/ft3-web",
 ];
 
 // `vp test run <file>` from the repo root hands each file to its package's

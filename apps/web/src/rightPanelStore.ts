@@ -1,3 +1,4 @@
+import { normalizeFt3Surface, type Ft3Surface } from "@t3tools/ft3-web/panels";
 import {
   parseScopedThreadKey,
   scopedThreadKey,
@@ -13,6 +14,7 @@ import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import type { ChatFileAttachment } from "./types";
 
 const RIGHT_PANEL_KINDS = [
+  "ft3",
   "diff",
   "files",
   "file",
@@ -34,6 +36,7 @@ export interface DeviceTabTarget {
 }
 
 export type RightPanelSurface =
+  | Ft3Surface
   | { id: `browser:${string}`; kind: "preview"; resourceId: string }
   | { id: "browser:new"; kind: "preview"; resourceId: null }
   | { id: "device" | `device:${string}`; kind: "device"; target?: DeviceTabTarget; title?: string }
@@ -120,8 +123,9 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "ft3">,
   ) => void;
+  openFt3Surface: (ref: ScopedThreadRef, surface: Ft3Surface) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
   renameDevice: (ref: ScopedThreadRef, surfaceId: string, title: string) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
@@ -179,7 +183,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "ft3">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -202,7 +206,7 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "ft3">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -449,6 +453,7 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                 threadState && typeof threadState === "object" ? threadState : null;
               const surfaces = Array.isArray(validThreadState?.surfaces)
                 ? validThreadState.surfaces.flatMap<RightPanelSurface>((surface) => {
+                    if (surface.kind === "ft3") return normalizeFt3Surface(surface);
                     const kind = (surface as { kind?: string }).kind;
                     if (kind === "plan" || kind === "agents") return [];
                     if (
@@ -647,6 +652,10 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             }
             return upsertSurface(current, singletonSurface(kind));
           }),
+        ),
+      openFt3Surface: (ref, surface) =>
+        set((state) =>
+          userAction(state, scopedThreadKey(ref), (current) => upsertSurface(current, surface)),
         ),
       openDevice: (ref, target, automatic = false) =>
         set((state) =>
