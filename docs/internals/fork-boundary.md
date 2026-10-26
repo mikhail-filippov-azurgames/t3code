@@ -215,12 +215,16 @@ launchers отклоняются, а не запускаются.
 plugin marketplace) может держать унаследованные пайпы открытыми, поэтому EOF —
 ненадёжный признак завершения вывода. Потоки читаются в фоне, ожидается только
 exit code, затем дренаж с ограниченным ожиданием `CODEX_OUTPUT_DRAIN_MS`. При
-таймауте в ошибку добавляется хвост stderr.
+таймауте в ошибку добавляется хвост stderr. Прерывание запроса убивает
+fixture-процесс, поэтому его TCP-соединение с `processProbe` сбрасывается:
+сокет пробы глотает только `ECONNRESET`/`EPIPE` после убийства, остальные
+ошибки пробрасывает.
 
 | Upstream-файл                                                | Правка                                                                                                   | Зачем                                                       |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | `apps/server/src/textGeneration/CodexTextGeneration.ts`      | `readStreamInto` + `Effect.forkScoped`; ожидание exit code, `Fiber.join` с `timeoutOption`; хвост stderr | генерация не зависает на открытых пайпах после выхода codex |
 | `apps/server/src/textGeneration/CodexTextGeneration.test.ts` | регрессии с detached-helper, держащим stdio; проверка сообщения об ошибке                                | воспроизводит зависание и сохраняет сообщение об ошибке     |
+| `apps/server/src/testUtils/processProbe.ts`                  | обработчик `error` на сокете пробы; регрессионный тест `processProbe.test.ts`                            | без него kill fixture-процесса даёт uncaught `ECONNRESET`   |
 
 ## Web extensions (S3)
 

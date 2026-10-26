@@ -31,6 +31,7 @@ import type {
   TaskSearchInput,
   TaskSearchResult,
 } from "./contracts.ts";
+import * as TaskHandoffService from "./TaskHandoffService.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
 const encodeTurnItem = Schema.encodeEffect(OrchestrationV2TurnItemJson);
@@ -87,6 +88,7 @@ function statusForRun(
 
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const handoffs = yield* TaskHandoffService.TaskHandoffService;
 
   const ownedTasks = Effect.fn("Ft3TaskQueryService.ownedTasks")(function* (scope: Scope) {
     const caller = yield* McpInvocationContext.requireThreadScope(scope, "Delegated task queries");
@@ -158,6 +160,7 @@ const make = Effect.gen(function* () {
       updatedAt: DateTime.formatIso(child.updatedAt),
       worktreePath: child.worktreePath,
       summary: null,
+      handoff: yield* handoffs.get(task.id),
     };
     return entry;
   });
@@ -313,6 +316,7 @@ const make = Effect.gen(function* () {
       return {
         taskId: entry.taskId,
         title: entry.title,
+        handoff: entry.handoff,
         messages,
         activities,
         page: {

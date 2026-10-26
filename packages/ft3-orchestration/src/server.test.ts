@@ -23,6 +23,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
@@ -41,11 +42,26 @@ import * as Contracts from "./contracts.ts";
 const decodeList = Schema.decodeUnknownEffect(Contracts.TaskListResult);
 const decodeSearch = Schema.decodeUnknownEffect(Contracts.TaskSearchResult);
 const decodeRead = Schema.decodeUnknownEffect(Contracts.TaskReadResult);
+const decodeAttach = Schema.decodeUnknownEffect(Contracts.TaskAttachHandoffResult);
+const isHandoff = Schema.is(Contracts.TaskHandoff);
 const isListInput = Schema.is(Contracts.TaskListInput);
 const isSearchInput = Schema.is(Contracts.TaskSearchInput);
 const isReadInput = Schema.is(Contracts.TaskReadInput);
 
 const epoch = DateTime.makeUnsafe("2026-10-25T00:00:00.000Z");
+const handoff: Contracts.TaskHandoff = {
+  contractRef: "oc://doc/319134b5-b44b-457c-a812-1dffd337f26c",
+  requiredRevision: 1,
+  implementsRevision: 1,
+  stage: "implementation",
+  owns: ["packages/ft3-orchestration/src/TaskHandoffService.ts"],
+  reads: ["docs/internals/fork-boundary.md"],
+  forbidden: ["apps/server/src/mcp/OrchestratorMcpService.ts"],
+  acceptance: ["task_read returns the attached handoff"],
+  outputs: ["handoff row"],
+  evidence: ["oc://doc/319134b5-b44b-457c-a812-1dffd337f26c"],
+  predecessorRefs: [],
+};
 const crypto = Layer.succeed(
   Crypto.Crypto,
   Crypto.make({
@@ -305,18 +321,79 @@ function failure(result: McpSchema.CallToolResult) {
 }
 
 describe("ft3 task toolkit through ft3-host", () => {
-  it.effect("registers the three read-only task tools alongside host toolkits", () => {
+  it.effect(
+    "registers the read-only task tools and the handoff attachment alongside host toolkits",
+    () => {
+      const f = fixture();
+      return Effect.gen(function* () {
+        const server = yield* McpServer.McpServer;
+        const taskTools = server.tools.filter(({ tool }) => tool.name.startsWith("task_"));
+        assert.deepStrictEqual(taskTools.map(({ tool }) => tool.name).sort(), [
+          "task_attach_handoff",
+          "task_list",
+          "task_read",
+          "task_search",
+        ]);
+        const readOnly = taskTools.filter(({ tool }) => tool.name !== "task_attach_handoff");
+        assert.isTrue(readOnly.every(({ tool }) => tool.annotations?.readOnlyHint === true));
+        const attach = taskTools.find(({ tool }) => tool.name === "task_attach_handoff");
+        assert.isFalse(attach?.tool.annotations?.readOnlyHint);
+        assert.isTrue(attach?.tool.annotations?.idempotentHint);
+      }).pipe(Effect.provide(f.layer));
+    },
+  );
+
+  it.effect("attaches a parent-owned handoff and returns it from task_read and task_list", () => {
     const f = fixture();
     return Effect.gen(function* () {
-      const server = yield* McpServer.McpServer;
-      const taskTools = server.tools.filter(({ tool }) => tool.name.startsWith("task_"));
-      assert.deepStrictEqual(taskTools.map(({ tool }) => tool.name).sort(), [
-        "task_list",
-        "task_read",
-        "task_search",
-      ]);
-      assert.isTrue(taskTools.every(({ tool }) => tool.annotations?.readOnlyHint === true));
+      const attached = yield* call("task_attach_handoff", { taskId: aId, handoff });
+      const result = yield* decodeAttach(attached.structuredContent);
+      assert.isTrue(result.created);
+      assert.deepStrictEqual(result.handoff, handoff);
+      const read = yield* decodeRead((yield* call("task_read", { taskId: aId })).structuredContent);
+      assert.deepStrictEqual(read.handoff, handoff);
+      const listed = yield* decodeList((yield* call("task_list", {})).structuredContent);
+      assert.deepStrictEqual(
+        listed.tasks.map((task) => task.handoff),
+        [handoff, null],
+      );
     }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses attaching to a foreign task and leaves it without a handoff", () => {
+    const f = fixture();
+    const other = { ...scope, thread: { ...scope.thread!, threadId: otherParentId } };
+    return Effect.gen(function* () {
+      const denied = yield* call("task_attach_handoff", { taskId: aId, handoff }, other);
+      assert.equal(failure(denied).code, "task_not_found");
+      const read = yield* decodeRead((yield* call("task_read", { taskId: aId })).structuredContent);
+      assert.isNull(read.handoff);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("treats a repeated handoff as idempotent and rejects a different one", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const first = yield* decodeAttach(
+        (yield* call("task_attach_handoff", { taskId: aId, handoff })).structuredContent,
+      );
+      const again = yield* decodeAttach(
+        (yield* call("task_attach_handoff", { taskId: aId, handoff })).structuredContent,
+      );
+      assert.isTrue(first.created);
+      assert.isFalse(again.created);
+      assert.deepStrictEqual(again.handoff, handoff);
+      const changed = yield* call("task_attach_handoff", {
+        taskId: aId,
+        handoff: { ...handoff, stage: "review" },
+      });
+      assert.equal(failure(changed).code, "invalid_request");
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it("rejects a handoff whose revisions differ", () => {
+    assert.isFalse(isHandoff({ ...handoff, implementsRevision: 2 }));
+    assert.isFalse(isHandoff({ ...handoff, contractRef: "oc://doc/not-a-uuid" }));
   });
 
   it.effect("lists direct owned children in cursor order including archived threads", () => {
@@ -555,6 +632,12 @@ describe("ft3 task toolkit through ft3-host", () => {
             payload: row.item,
           });
         }
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`
+          UPDATE orchestration_v2_projection_subagents
+          SET payload_json = json_set(payload_json, '$.handoff', json(${JSON.stringify(handoff)}))
+          WHERE subagent_id = ${aId}
+        `;
       }),
     );
     return Effect.gen(function* () {
@@ -592,6 +675,9 @@ describe("ft3 task toolkit through ft3-host", () => {
           older.messages.map((message) => message.text),
           ["Turn 1"],
         );
+        assert.deepStrictEqual(older.handoff, handoff);
+        const listed = yield* decodeList((yield* call("task_list", {})).structuredContent);
+        assert.deepStrictEqual(listed.tasks.find((task) => task.taskId === aId)?.handoff, handoff);
         const foreign = yield* call("task_read", { taskId: foreignId });
         assert.equal(failure(foreign).code, "task_not_found");
       }).pipe(Effect.provide(layer));
