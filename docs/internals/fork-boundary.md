@@ -41,8 +41,11 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 
 ## Серверная композиция ft3
 
-`packages/ft3-host` владеет серверной логикой форка. Upstream-файлы только
-подключают его экспорты; зависимость направлена от сервера к пакету.
+`packages/ft3-host` владеет серверной композицией форка. Функциональные пакеты
+подключаются через него; upstream-файлы только подключают его экспорты.
+`packages/ft3-orchestration` читает V2-проекции без собственного движка и состояния.
+Его MCP-регистрация использует существующие `McpToolAccess` и `toolkitRegistration`;
+host загружает её при построении Layer, чтобы не замкнуть инициализацию модулей сервера.
 
 | Upstream-файл                           | Правка                                                                           | Зачем                                                |
 | --------------------------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------- |
@@ -50,7 +53,7 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 | `apps/server/src/mcp/McpHttpServer.ts`  | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`        | подключение регистрационных Layer MCP-toolkit'ов ft3 |
 | `apps/server/src/persistence/Sqlite.ts` | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()` | миграции пакета на той же SQLite-сессии после core   |
 | `apps/server/package.json`              | зависимость `@t3tools/ft3-host: workspace:*`                                     | разрешение workspace-пакета                          |
-| `pnpm-lock.yaml`                        | importer `packages/ft3-host` и зависимость сервера                               | воспроизводимое подключение пакета                   |
+| `pnpm-lock.yaml`                        | importers `packages/ft3-*` и workspace-зависимости                               | воспроизводимое подключение пакетов                  |
 
 Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
 Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
