@@ -7,6 +7,10 @@
       "types": "./src/server.ts",
       "import": "./src/server.ts"
     },
+    "./reactor": {
+      "types": "./src/ArchitectReconciler.ts",
+      "import": "./src/ArchitectReconciler.ts"
+    },
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"
