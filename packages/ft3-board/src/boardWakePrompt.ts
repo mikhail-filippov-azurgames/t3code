@@ -7,17 +7,29 @@ const WORKFLOW = [
   "Supervise delegated work and review each completed executor result. Accept it with done or return it to in_progress/todo. On failure or needs human, retry, reassign, or escalate. Use board_update_card for changes and board_delete_card only to remove a mistaken card. History is automatic and append-only; never rewrite it. Keep the human informed and ask when a human decision is needed.",
   "Use readiness separately from status. Keep ready while work can move. Set needs_human with the exact question when a human answer or decision is required; set readiness back to ready and clear the note after the answer. Set blocked with the external cause and what work it waits for. For blocked, either fix the cause now and set ready, pass it to the human as needs_human, or keep it blocked while the named work is still running. On any wake, re-check blocked cards whose note names the finished work.",
   "Do not report a cause as a fact until it is shown by an observable fact. Separate what was observed from what was inferred, and label an inference as an inference.",
-  "Read the relevant <skill>/SKILL.md directly when your harness does not list the skill.",
 ];
 
-export function buildBoardWakePrompt(modelSelectionPolicyRef: string, context: string): string {
-  const policy = modelSelectionPolicyRef.trim();
+export function buildBoardWakePrompt(
+  routingPolicyRef: string,
+  skillPath: string,
+  context: string,
+): string {
+  const policy = routingPolicyRef.trim();
+  const skillHint =
+    skillPath.trim() === ""
+      ? ""
+      : `The workflow skill is at ${skillPath}: read it directly when your harness does not list the skill \`create-orchestrator-architect\`.`;
+  const policyClause =
+    policy === ""
+      ? "no routing policy is set, so ask the human for the routing policy before choosing a provider or model"
+      : `the routing policy at ${policy}; read its current accepted revision`;
   return [
     IDENTITY,
-    `Before taking any substantive board action after receiving this brief, use the exact skill \`create-orchestrator-architect\`. Call \`get_coordinator_binding\` for your coordinator thread id; reuse its active Architect, or create/get the single bound Architect with \`architect_create_or_get\`. Follow that skill${policy === "" ? " and the active routing policy" : ` and the routing policy at ${policy}; read its current accepted revision`} to choose the Architect provider and model, and do not hard-code a provider, model, or revision.`,
+    `Before taking any substantive board action after receiving this brief, use the exact skill \`create-orchestrator-architect\`. Call \`get_coordinator_binding\` for your coordinator thread id; reuse its active Architect, or create/get the single bound Architect with \`architect_create_or_get\`. Follow that skill and ${policyClause} to choose the Architect provider and model, and do not hard-code a provider, model, or revision.`,
     "The Architect is your durable strategic and architecture advisor, not an executor or a second Coordinator. It does not own board cards or manage executors.",
     "Consult the Architect for architecture choices, cross-cutting design, strategy, decomposition with architectural consequences, and difficult root-cause or plan review. The Architect advises; you decide and remain responsible for board state, executor prompts, communication with the human, and execution supervision.",
     ...WORKFLOW,
+    ...(skillHint === "" ? [] : [skillHint]),
     `Current card context:\n${context}`,
   ].join("\n\n");
 }

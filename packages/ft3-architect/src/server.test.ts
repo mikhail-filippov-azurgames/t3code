@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeFS from "node:fs";
 import {
   EnvironmentId,
   ProjectId,
@@ -9,6 +11,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,6 +29,7 @@ import * as Ft3Host from "../../ft3-host/src/server.ts";
 import * as ArchitectRepository from "./ArchitectRepository.ts";
 import * as ArchitectService from "./ArchitectService.ts";
 import * as Contracts from "./contracts.ts";
+import { ARCHITECT_SKILL_PATH } from "./skillLocation.ts";
 
 const parentId = ThreadId.make("thread:arch-coord");
 const otherId = ThreadId.make("thread:other-coord");
@@ -487,6 +491,46 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(command.type, "thread.create");
       assert.equal(command.threadId, result.architectThreadId);
     }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("rejects routing evidence that does not reference the configured policy", () => {
+    const f = fixture();
+    const layer = f.layer.pipe(
+      Layer.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { T3CODE_FT3_ROUTING_POLICY_REF: "other-policy" } }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      assert.equal(
+        failure(yield* call("architect_create_or_get", createArgs())).code,
+        "routing_evidence_mismatch",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("accepts routing evidence that references the configured policy", () => {
+    const f = fixture();
+    const layer = f.layer.pipe(
+      Layer.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { T3CODE_FT3_ROUTING_POLICY_REF: "policy" } }),
+        ),
+      ),
+    );
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const result = yield* decodeCreate(
+        (yield* call("architect_create_or_get", createArgs())).structuredContent,
+      );
+      assert.equal(result.created, true);
+      assert.equal(result.binding.routingEvidence!.policyRef, "policy");
+    }).pipe(Effect.provide(layer));
   });
 
   it.effect("repeats an exact create idempotently", () => {
@@ -1060,5 +1104,15 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(active.length, 1);
       assert.equal(active[0]!.binding_id, "binding:winner");
     }).pipe(Effect.provide(serviceLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))));
+  });
+});
+
+describe("ft3 architect shipped skill", () => {
+  it("exists on disk and carries no local document reference", () => {
+    const content = NodeFS.readFileSync(ARCHITECT_SKILL_PATH, "utf8");
+    assert.include(ARCHITECT_SKILL_PATH, "create-orchestrator-architect");
+    assert.notInclude(content, "oc://");
+    assert.notInclude(content, ".opencontext");
+    assert.include(content, "routing policy");
   });
 });
