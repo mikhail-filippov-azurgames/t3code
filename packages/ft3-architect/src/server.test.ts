@@ -40,6 +40,10 @@ const decodeDetach = Schema.decodeUnknownEffect(Contracts.ArchitectDetachResult)
 const decodeRequest = Schema.decodeUnknownEffect(Contracts.ArchitectReviewRequestResult);
 const decodeAnswer = Schema.decodeUnknownEffect(Contracts.ArchitectReviewAnswerResult);
 const decodeCancel = Schema.decodeUnknownEffect(Contracts.ArchitectReviewCancelResult);
+const decodePrepare = Schema.decodeUnknownEffect(
+  Contracts.ArchitectPrepareCoordinatorPublicationResult,
+);
+const decodePublish = Schema.decodeUnknownEffect(Contracts.ArchitectPublishToCoordinatorResult);
 const decodeFailure = Schema.decodeUnknownSync(Contracts.ArchitectMcpFailure);
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:architect-test"),
@@ -156,6 +160,20 @@ const cancelArgs = (overrides: Record<string, unknown> = {}) => ({
   reviewId: "review:1",
   reason: "No longer needed.",
   idempotencyKey: "cancel:1",
+  ...overrides,
+});
+
+const prepareArgs = (overrides: Record<string, unknown> = {}) => ({
+  summary: "Add a bounded cache.",
+  disposition: "recommendation",
+  executionPosture: "continue",
+  idempotencyKey: "prepare:1",
+  ...overrides,
+});
+
+const publishArgs = (overrides: Record<string, unknown> = {}) => ({
+  reviewId: "review:1",
+  idempotencyKey: "publish:1",
   ...overrides,
 });
 
@@ -765,6 +783,198 @@ describe("ft3 architect toolkit through ft3-host", () => {
         "author_text_rejected",
       );
       assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("prepares a coordinator publication without waking the coordinator", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const result = yield* decodePrepare(
+        (yield* call("prepare_coordinator_publication", prepareArgs(), asThread(architectId)))
+          .structuredContent,
+      );
+      assert.equal(result.status, "answered");
+      const sql = yield* SqlClient.SqlClient;
+      const stored =
+        (yield* sql`SELECT origin, status, answer_summary, answer_disposition, published_by FROM ft3_architect_review WHERE review_id = ${result.reviewId}`)[0]!;
+      assert.equal(stored.origin, "architect-advice");
+      assert.equal(stored.status, "answered");
+      assert.equal(stored.answer_summary, "Add a bounded cache.");
+      assert.equal(stored.answer_disposition, "recommendation");
+      assert.equal(stored.published_by, null);
+      assert.equal(f.createdCommands.length, 0);
+      const replaced = yield* decodePrepare(
+        (yield* call(
+          "prepare_coordinator_publication",
+          prepareArgs({ summary: "Cache behind a flag.", idempotencyKey: "prepare:2" }),
+          asThread(architectId),
+        )).structuredContent,
+      );
+      assert.equal(replaced.reviewId, result.reviewId);
+      const advice =
+        (yield* sql`SELECT answer_summary FROM ft3_architect_review WHERE origin = 'architect-advice'`)[0]!;
+      assert.equal(advice.answer_summary, "Cache behind a flag.");
+      assert.equal(
+        failure(
+          yield* call(
+            "publish_to_coordinator",
+            publishArgs({ reviewId: result.reviewId }),
+            asThread(architectId),
+          ),
+        ).code,
+        "human_publish_required",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("publishes once and wakes the coordinator, repeat does not wake", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      yield* decodeAnswer(
+        (yield* call("architecture_review_answer", answerArgs(), asThread(architectId)))
+          .structuredContent,
+      );
+      const first = yield* decodePublish(
+        (yield* call("publish_to_coordinator", publishArgs(), asThread(architectId)))
+          .structuredContent,
+      );
+      assert.equal(first.status, "published");
+      const wake = () =>
+        f.createdCommands.filter(
+          (command) => (command as { type: string }).type === "message.dispatch",
+        );
+      assert.equal(wake().length, 1);
+      const dispatched = wake()[0] as { threadId: ThreadId; commandId: string; text: string };
+      assert.equal(dispatched.threadId, parentId);
+      assert.equal(dispatched.commandId, "arch:publish-wake:review:1");
+      assert.include(dispatched.text, "[recommendation]");
+      const replay = yield* decodePublish(
+        (yield* call("publish_to_coordinator", publishArgs(), asThread(architectId)))
+          .structuredContent,
+      );
+      assert.equal(replay.status, "published");
+      assert.equal(wake().length, 1);
+      const sql = yield* SqlClient.SqlClient;
+      const stored =
+        (yield* sql`SELECT publish_delivered_at, published_by FROM ft3_architect_review WHERE review_id = 'review:1'`)[0]!;
+      assert.isNotNull(stored.publish_delivered_at);
+      assert.equal(stored.published_by, "architect");
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("publishes an answered review on behalf of a human", () => {
+    const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
+      [parentId, otherId, architectId, childId].map((id) => [id, liveThreadShell(id)]),
+    );
+    const createdCommands = new Array<unknown>();
+    const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
+      dispatch: (command) =>
+        Effect.sync(() => {
+          createdCommands.push(command);
+          return { sequence: 0, storedEvents: [] };
+        }),
+    });
+    const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+      getProviders: Effect.succeed([codexProvider]),
+    });
+    const serviceLayer = ArchitectService.layer.pipe(
+      Layer.provide(ArchitectRepository.layer),
+      Layer.provideMerge(BoardRepository.layer),
+      Layer.provide(threads),
+      Layer.provide(providerRegistry),
+      Layer.provide(crypto),
+    );
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      const service = yield* ArchitectService.ArchitectService;
+      yield* service.answerReview(asThread(architectId), {
+        reviewId: "review:1",
+        disposition: "recommendation",
+        summary: "Looks safe.",
+        idempotencyKey: "ans:1",
+      });
+      const result = yield* service.publishHumanPublication({
+        reviewId: "review:1",
+        idempotencyKey: "human:1",
+      });
+      assert.equal(result.status, "published");
+      const wakes = createdCommands.filter(
+        (command) => (command as { type: string }).type === "message.dispatch",
+      );
+      assert.equal(wakes.length, 1);
+      const dispatched = wakes[0] as { threadId: ThreadId; text: string };
+      assert.equal(dispatched.threadId, parentId);
+      assert.include(dispatched.text, "Published by the human via the Publish button");
+      const sql = yield* SqlClient.SqlClient;
+      const stored =
+        (yield* sql`SELECT published_by FROM ft3_architect_review WHERE review_id = 'review:1'`)[0]!;
+      assert.equal(stored.published_by, "human");
+    }).pipe(Effect.provide(serviceLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory))));
+  });
+
+  it.effect("refuses a foreign coordinator thread from publishing", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* mark(otherId);
+      yield* seedArchitect;
+      yield* decodeAnswer(
+        (yield* call("architecture_review_answer", answerArgs(), asThread(architectId)))
+          .structuredContent,
+      );
+      assert.equal(
+        failure(yield* call("publish_to_coordinator", publishArgs(), asThread(otherId))).code,
+        "capability_denied",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("rejects secrets in prepared publications and stored publish text", () => {
+    const f = fixture();
+    const secret = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz123456";
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      assert.equal(
+        failure(
+          yield* call(
+            "prepare_coordinator_publication",
+            prepareArgs({ summary: `Token ${secret}` }),
+            asThread(architectId),
+          ),
+        ).code,
+        "author_text_rejected",
+      );
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO ft3_architect_review (review_id, binding_id, coordinator_thread_id, architect_thread_id, reason, question, refs_json, execution_posture, status, answer_disposition, answer_summary, request_idempotency_key, created_at, answered_at) VALUES ('review:secret', 'binding:1', ${parentId}, ${architectId}, 'direct-advice', 'Safe question?', '{}', 'continue', 'answered', 'recommendation', ${`Token ${secret}`}, 'req:secret', ${epoch}, ${epoch})`;
+      assert.equal(
+        failure(
+          yield* call(
+            "publish_to_coordinator",
+            publishArgs({ reviewId: "review:secret" }),
+            asThread(architectId),
+          ),
+        ).code,
+        "author_text_rejected",
+      );
+      assert.equal(f.createdCommands.length, 0);
+      const stored =
+        (yield* sql`SELECT status, last_publish_failure_reason FROM ft3_architect_review WHERE review_id = 'review:secret'`)[0]!;
+      assert.equal(stored.status, "answered");
+      assert.equal(stored.last_publish_failure_reason, "author_text_rejected");
     }).pipe(Effect.provide(f.layer));
   });
 
