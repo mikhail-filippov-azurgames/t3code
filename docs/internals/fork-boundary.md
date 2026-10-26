@@ -306,3 +306,22 @@ lets the Coordinator apply it under the routing policy.
 | `pnpm-lock.yaml`                                   | importer `packages/ft3-delegation` and the `apps/server` dependency                                                                                                                        | record the workspace link                                                        |
 
 New fork-owned tests: `apps/server/src/mcp/OrchestratorMcpService.delegationText.test.ts` and `apps/server/src/orchestration-v2/Ft3DelegationWakeText.test.ts`.
+
+## Delegation permission envelope (S)
+
+`packages/ft3-delegation` also owns the delegation permission envelope. Upstream
+V2 already places every child in the parent's project (`makeSubagentChildThread`),
+inherits the parent checkout unless `isolation: "worktree"` creates one from the
+project root, and refuses child runtime/interaction modes ranked above the parent
+(`resolveRuntimeMode`/`resolveInteractionMode`). The envelope adds only what
+those checks cannot see: provider instance configuration (launch arguments,
+OpenCode config content, driver-prefixed security environment variables) that
+makes the effective authority broader than the declared runtime mode. The
+boundary is the parent project, not the parent worktree, so worktree delegation
+stays allowed.
+
+| Upstream file                                   | Connection                                                                                                                       | Reason                                                                   |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `apps/server/src/mcp/OrchestratorMcpService.ts` | import `delegationPermissionDenial`; read settings and call it once before dispatch, then fail with the returned `code`/`reason` | refuse a child whose provider configuration outranks the parent envelope |
+
+New fork-owned tests: `packages/ft3-delegation/src/delegationPermissionEnvelope.test.ts` and `apps/server/src/mcp/OrchestratorMcpService.delegationEnvelope.test.ts`.

@@ -15,3 +15,18 @@ export type {
 } from "./secretTextPolicy.ts";
 export { delegationTextDecision } from "./delegationTextDecision.ts";
 export type { DelegationTextDecision } from "./delegationTextDecision.ts";
+export {
+  delegationPermissionDecision,
+  delegationPermissionDenial,
+  normalizeDelegationPermissionEnvelope,
+  tokenizeLaunchArgs,
+} from "./delegationPermissionEnvelope.ts";
+export type {
+  DelegationInteractionMode,
+  DelegationPermissionDecision,
+  DelegationPermissionDenial,
+  DelegationPermissionDenialInput,
+  DelegationPermissionEnvelope,
+  DelegationPermissionEnvelopeInput,
+  DelegationRuntimeMode,
+} from "./delegationPermissionEnvelope.ts";
