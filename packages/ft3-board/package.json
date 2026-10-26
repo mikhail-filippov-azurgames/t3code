@@ -18,6 +18,10 @@
     "./repository": {
       "types": "./src/BoardRepository.ts",
       "import": "./src/BoardRepository.ts"
+    },
+    "./authorTextPolicy": {
+      "types": "./src/authorTextPolicy.ts",
+      "import": "./src/authorTextPolicy.ts"
     }
   },
   "scripts": {

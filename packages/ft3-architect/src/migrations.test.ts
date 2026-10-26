@@ -72,6 +72,7 @@ describe("architect migrations through ft3-host", () => {
           "last_publish_failure_at",
           "origin",
           "published_by",
+          "request_wake_delivered_at",
         ],
       );
       assert.equal(
@@ -148,6 +149,7 @@ describe("architect migrations through ft3-host", () => {
         [2, "Board"],
         [3, "BoardReactor"],
         [4, "Architect"],
+        [5, "ArchitectReviewWake"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

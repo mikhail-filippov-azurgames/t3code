@@ -1,5 +1,12 @@
-import { CommandId, isProviderAvailable, type ModelSelection, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  isProviderAvailable,
+  MessageId,
+  type ModelSelection,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { OrchestrationV2ThreadShell } from "@t3tools/contracts";
+import { applyAuthorTextPolicy } from "@t3tools/ft3-board/authorTextPolicy";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -57,6 +64,18 @@ export class ArchitectService extends Context.Service<
       scope: Scope,
       input: Contracts.ArchitectDetachInput,
     ) => Effect.Effect<Contracts.ArchitectDetachResult, Contracts.ArchitectMcpFailure>;
+    readonly requestReview: (
+      scope: Scope,
+      input: Contracts.ArchitectReviewRequestInput,
+    ) => Effect.Effect<Contracts.ArchitectReviewRequestResult, Contracts.ArchitectMcpFailure>;
+    readonly answerReview: (
+      scope: Scope,
+      input: Contracts.ArchitectReviewAnswerInput,
+    ) => Effect.Effect<Contracts.ArchitectReviewAnswerResult, Contracts.ArchitectMcpFailure>;
+    readonly cancelReview: (
+      scope: Scope,
+      input: Contracts.ArchitectReviewCancelInput,
+    ) => Effect.Effect<Contracts.ArchitectReviewCancelResult, Contracts.ArchitectMcpFailure>;
   }
 >()("@t3tools/ft3-architect/ArchitectService") {}
 
@@ -147,7 +166,12 @@ const make = Effect.gen(function* () {
   const requireControlScope = Effect.fn("Ft3ArchitectService.requireControlScope")(function* (
     scope: Scope,
     coordinatorThreadId: ThreadId,
-    operation: "create an architect" | "replace the architect" | "detach the architect",
+    operation:
+      | "create an architect"
+      | "replace the architect"
+      | "detach the architect"
+      | "request an architecture review"
+      | "cancel architecture reviews",
   ) {
     if (!scope.capabilities.has("orchestration")) {
       return yield* new Contracts.ArchitectMcpFailure({
@@ -307,6 +331,85 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const validateAuthorText = Effect.fn("Ft3ArchitectService.validateAuthorText")((
+    field: "question" | "reason" | "summary",
+    text: string,
+  ): Effect.Effect<void, Contracts.ArchitectMcpFailure> => {
+    try {
+      if (applyAuthorTextPolicy(field, text)._tag === "Accepted") return Effect.void;
+    } catch {
+      // Reject when verification fails.
+    }
+    return Effect.fail(
+      new Contracts.ArchitectMcpFailure({
+        code: "author_text_rejected",
+        message: `The authored ${field} could not be confirmed secret-free. Remove sensitive values and try again.`,
+      }),
+    );
+  });
+
+  const requireAnswerScope = Effect.fn("Ft3ArchitectService.requireAnswerScope")(function* (
+    scope: Scope,
+    review: Contracts.ArchitectureReviewRecord,
+  ) {
+    if (!scope.capabilities.has("orchestration")) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "capability_denied",
+        message: "This credential cannot answer architecture reviews.",
+      });
+    }
+    const caller = yield* McpInvocationContext.requireThreadScope(scope, "Architect reviews");
+    const shell = yield* threads
+      .getThreadShell(caller.thread.threadId)
+      .pipe(Effect.mapError(unavailable));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "thread_not_found",
+        message: "The calling thread was not found.",
+      });
+    }
+    if (shell.lineage.relationshipToParent === "subagent") {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "delegated_executor_denied",
+        message: "Delegated executor threads cannot answer architecture reviews.",
+      });
+    }
+    const binding = yield* repo
+      .getActiveBindingByArchitect(caller.thread.threadId)
+      .pipe(Effect.mapError(unavailable));
+    if (binding === null || binding.bindingId !== review.bindingId) {
+      return yield* new Contracts.ArchitectMcpFailure({
+        code: "architect_denied",
+        message: "Only the bound architect thread may answer its own reviews.",
+      });
+    }
+    return caller;
+  });
+
+  const wakeArchitectForReview = Effect.fn("Ft3ArchitectService.wakeArchitectForReview")(function* (
+    review: Contracts.ArchitectureReviewRecord,
+    binding: Contracts.CoordinatorArchitectBinding,
+    at: string,
+  ) {
+    const wakeId = `arch:review-wake:${review.reviewId}`;
+    yield* threads
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(wakeId),
+        threadId: binding.architectThreadId,
+        messageId: MessageId.make(wakeId),
+        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator.`,
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "server",
+        dispatchMode: { type: "start_immediately" },
+      })
+      .pipe(Effect.mapError(unavailable));
+    yield* repo
+      .markReviewWakeDelivered({ reviewId: review.reviewId, deliveredAt: at })
+      .pipe(Effect.mapError(unavailable));
+  });
+
   return ArchitectService.of({
     getBinding: Effect.fn("Ft3ArchitectService.getBinding")(function* (scope, input) {
       yield* requireQueryScope(scope, input.coordinatorThreadId);
@@ -380,6 +483,7 @@ const make = Effect.gen(function* () {
         "replace the architect",
       );
       yield* validateArchitectSelection(input);
+      yield* validateAuthorText("reason", input.reason);
       const at = DateTime.formatIso(yield* DateTime.now);
       const coordinatorThreadId = input.coordinatorThreadId;
       const bindingId = `architect-binding:${(yield* hash(["architect-binding", coordinatorThreadId, input.idempotencyKey])).slice(0, 40)}`;
@@ -530,6 +634,7 @@ const make = Effect.gen(function* () {
     }),
     detach: Effect.fn("Ft3ArchitectService.detach")(function* (scope, input) {
       yield* requireControlScope(scope, input.coordinatorThreadId, "detach the architect");
+      yield* validateAuthorText("reason", input.reason);
       const coordinatorThreadId = input.coordinatorThreadId;
       const closeRequestFingerprint = yield* hash({ operation: "detach", reason: input.reason });
       const active = yield* repo
@@ -570,6 +675,137 @@ const make = Effect.gen(function* () {
       }
       yield* softDeleteArchitectThread(active.architectThreadId);
       return { binding: closed };
+    }),
+    requestReview: Effect.fn("Ft3ArchitectService.requestReview")(function* (scope, input) {
+      yield* requireControlScope(
+        scope,
+        input.coordinatorThreadId,
+        "request an architecture review",
+      );
+      yield* validateAuthorText("question", input.question);
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const binding = yield* repo
+        .getActiveBindingByCoordinator(input.coordinatorThreadId)
+        .pipe(Effect.mapError(unavailable));
+      if (binding === null) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "binding_not_found",
+          message: "No active architect binding for this coordinator.",
+        });
+      }
+      const reviewId = `arch:review:${(yield* hash(["architecture-review", input.coordinatorThreadId, input.idempotencyKey])).slice(0, 40)}`;
+      const refs = input.refs ?? {};
+      const outcome = yield* repo
+        .insertReview({
+          reviewId,
+          bindingId: binding.bindingId,
+          coordinatorThreadId: binding.coordinatorThreadId,
+          architectThreadId: binding.architectThreadId,
+          subjectChildThreadId: input.subjectChildThreadId ?? null,
+          reason: input.reason,
+          question: input.question,
+          refs,
+          executionPosture: input.executionPosture,
+          requestIdempotencyKey: input.idempotencyKey,
+          requestPayloadFingerprint: yield* hash({
+            subjectChildThreadId: input.subjectChildThreadId ?? null,
+            reason: input.reason,
+            question: input.question,
+            refs,
+            executionPosture: input.executionPosture,
+          }),
+          createdAt: at,
+        })
+        .pipe(Effect.mapError(repositoryFailure));
+      if (outcome.review.requestWakeDeliveredAt == null) {
+        yield* wakeArchitectForReview(outcome.review, binding, at);
+      }
+      return { reviewId: outcome.review.reviewId, status: "open" };
+    }),
+    answerReview: Effect.fn("Ft3ArchitectService.answerReview")(function* (scope, input) {
+      const review = yield* repo.getReviewById(input.reviewId).pipe(Effect.mapError(unavailable));
+      if (review === null) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "review_not_found",
+          message: "The architecture review was not found.",
+        });
+      }
+      yield* requireAnswerScope(scope, review);
+      yield* validateAuthorText("summary", input.summary);
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const transition = yield* repo
+        .answerReview({
+          reviewId: review.reviewId,
+          disposition: input.disposition,
+          summary: input.summary,
+          refs:
+            input.oclRefs === undefined
+              ? review.refs
+              : { ...review.refs, architectOclRefs: input.oclRefs },
+          answerIdempotencyKey: input.idempotencyKey,
+          answerPayloadFingerprint: yield* hash({
+            summary: input.summary,
+            disposition: input.disposition,
+            oclRefs: input.oclRefs ?? [],
+          }),
+          answeredAt: at,
+        })
+        .pipe(Effect.mapError(repositoryFailure));
+      if (transition._tag === "conflict") {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "idempotency_conflict",
+          message: "This answer key already stored a different answer payload.",
+        });
+      }
+      if (transition._tag === "state") {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "review_state_conflict",
+          message: "The review is no longer open for answering.",
+        });
+      }
+      return { reviewId: review.reviewId, status: "answered", disposition: input.disposition };
+    }),
+    cancelReview: Effect.fn("Ft3ArchitectService.cancelReview")(function* (scope, input) {
+      const review = yield* repo.getReviewById(input.reviewId).pipe(Effect.mapError(unavailable));
+      if (review === null) {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "review_not_found",
+          message: "The architecture review was not found.",
+        });
+      }
+      const { caller } = yield* requireControlScope(
+        scope,
+        review.coordinatorThreadId,
+        "cancel architecture reviews",
+      );
+      yield* validateAuthorText("reason", input.reason);
+      const at = DateTime.formatIso(yield* DateTime.now);
+      const transition = yield* repo
+        .cancelReview({
+          reviewId: review.reviewId,
+          reason: input.reason,
+          cancelIdempotencyKey: input.idempotencyKey,
+          cancelPayloadFingerprint: yield* hash({
+            reason: input.reason,
+            cancelledBy: caller.thread.threadId,
+          }),
+          cancelledAt: at,
+          cancelledBy: caller.thread.threadId,
+        })
+        .pipe(Effect.mapError(repositoryFailure));
+      if (transition._tag === "state") {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "review_state_conflict",
+          message: "Only open or answered reviews can be cancelled.",
+        });
+      }
+      if (transition._tag === "conflict") {
+        return yield* new Contracts.ArchitectMcpFailure({
+          code: "idempotency_conflict",
+          message: "This cancel key was already used with a different reason.",
+        });
+      }
+      return { reviewId: review.reviewId, status: "cancelled" };
     }),
   });
 });

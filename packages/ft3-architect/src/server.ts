@@ -45,6 +45,27 @@ const handlers = McpToolAccess.toLayer(toolkit, {
       return yield* service.detach(scope, input);
     }),
   ),
+  architecture_review_request: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.requestReview(scope, input);
+    }),
+  ),
+  architecture_review_answer: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.answerReview(scope, input);
+    }),
+  ),
+  architecture_review_cancel: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.cancelReview(scope, input);
+    }),
+  ),
 });
 
 export const layer = toolkitRegistration(toolkit, handlers).pipe(

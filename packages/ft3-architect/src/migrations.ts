@@ -89,4 +89,9 @@ const architect = Effect.gen(function* () {
   `;
 });
 
-export const migrations = { "4_Architect": architect };
+const reviewWake = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE ft3_architect_review ADD COLUMN request_wake_delivered_at TEXT`;
+});
+
+export const migrations = { "4_Architect": architect, "5_ArchitectReviewWake": reviewWake };
