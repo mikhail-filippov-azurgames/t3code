@@ -28,6 +28,7 @@ import {
   BOARD_ORCHESTRATOR_CARD_START_TEXT,
   BOARD_ORCHESTRATOR_TURN_TEXT,
 } from "./orchestration/boardWakePrompt.ts";
+import { AGENT_SKILLS_HINT } from "./orchestration/agentSkillsLocation.ts";
 import { makeBoardRpcHandlers, type BoardRpcDependencies } from "./ws.ts";
 
 const ORCHESTRATOR = ThreadId.make("orch-thread");
@@ -884,7 +885,7 @@ describe("board RPC handlers", () => {
           assert.include(wake.message.text, instruction);
         }
         assert.notInclude(wake.message.text, "notice above");
-        assert.notInclude(wake.message.text, ".agents/skills/");
+        assert.include(wake.message.text, AGENT_SKILLS_HINT);
       }
     }),
   );

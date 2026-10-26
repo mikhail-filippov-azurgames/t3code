@@ -52,6 +52,7 @@ import {
   reviewWakeDeliveredMarkerId,
   reviewWakeReviewIdFromMessageId,
 } from "../../../orchestration/coordinatorArchitect.ts";
+import { AGENT_SKILLS_HINT } from "../../../orchestration/agentSkillsLocation.ts";
 import { __testing, type OrchestratorMcpDependencies } from "./service.ts";
 
 const now = "2026-09-28T12:00:00.000Z";
@@ -1949,6 +1950,7 @@ describe("phase 1 coordinator/architect service", () => {
         architectWakeText,
         "Call publish_to_coordinator only if this answer should wake the Coordinator.",
       );
+      assert.include(architectWakeText, AGENT_SKILLS_HINT);
       // The coordinator aggregate carries the typed no-wake reference only:
       // no coordinator turn starts on request.
       assert.deepStrictEqual(

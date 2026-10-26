@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { AGENT_SKILLS_HINT } from "./agentSkillsLocation.ts";
 import {
   BOARD_ORCHESTRATOR_CARD_START_TEXT,
   BOARD_ORCHESTRATOR_TURN_TEXT,
@@ -151,6 +152,13 @@ describe("Coordinator board brief", () => {
       "label an inference as an inference",
     ]) {
       assert.include(BOARD_ORCHESTRATOR_TURN_TEXT, requirement);
+    }
+  });
+
+  it("tells the Coordinator where skill files live", () => {
+    for (const text of [BOARD_ORCHESTRATOR_TURN_TEXT, BOARD_ORCHESTRATOR_CARD_START_TEXT]) {
+      assert.include(text, AGENT_SKILLS_HINT);
+      assert.include(text, "SKILL.md");
     }
   });
 });

@@ -17,6 +17,7 @@ import {
   reviewWakeMessageId,
   reviewWakeTurnCommandId,
 } from "../../../orchestration/coordinatorArchitect.ts";
+import { AGENT_SKILLS_HINT } from "../../../orchestration/agentSkillsLocation.ts";
 import {
   ArchitectureReviewRefs,
   CommandId,
@@ -512,7 +513,7 @@ export function makeArchitectService(input: ArchitectServiceDependencies): Archi
         messageId: reviewWakeMessageId(review.reviewId),
         fallbackTurnCommandId: `arch:review-wake-turn:${binding.architectThreadId}:${review.reviewId}`,
         fallbackMessageId: `arch:review-wake:${binding.architectThreadId}:${review.reviewId}`,
-        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator. Call publish_to_coordinator only if this answer should wake the Coordinator.`,
+        text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator. Call publish_to_coordinator only if this answer should wake the Coordinator.\n\n${AGENT_SKILLS_HINT}`,
         modelSelection: shell.modelSelection,
         runtimeMode: shell.runtimeMode,
         interactionMode: shell.interactionMode,

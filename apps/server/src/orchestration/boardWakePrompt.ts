@@ -1,3 +1,5 @@
+import { AGENT_SKILLS_HINT } from "./agentSkillsLocation.ts";
+
 const IDENTITY =
   "You are the Coordinator for this board thread. You own the board and its end-to-end execution flow.";
 
@@ -19,6 +21,7 @@ const WORKFLOW = [
   "Supervise delegated work and review each completed executor result. Accept it with done or return it to in_progress/todo. On failure or needs human, retry, reassign, or escalate. Use board_update_card for changes and board_delete_card only to remove a mistaken card. History is automatic and append-only; never rewrite it. Keep the human informed and ask when a human decision is needed.",
   "Use readiness separately from status. Keep ready while work can move. Set needs_human with the exact question when a human answer or decision is required; set readiness back to ready and clear the note after the answer. Set blocked with the external cause and what work it waits for. For blocked, either fix the cause now and set ready, pass it to the human as needs_human, or keep it blocked while the named work is still running. On any wake, re-check blocked cards whose note names the finished work.",
   "Do not report a cause as a fact until it is shown by an observable fact. Separate what was observed from what was inferred, and label an inference as an inference.",
+  AGENT_SKILLS_HINT,
 ];
 
 /** Full brief: Coordinator registration, resend and the queued drain of that brief. */
