@@ -20,6 +20,7 @@ import {
 } from "@t3tools/contracts";
 import {
   ArchitectService as Ft3ArchitectService,
+  BoardDelegationService as Ft3BoardDelegationService,
   BoardService as Ft3BoardService,
   CommitHistoryService as Ft3CommitHistoryService,
 } from "@t3tools/ft3-host/rpc";
@@ -668,6 +669,7 @@ it.effect.each(["pending", "cached"] as const)(
             ),
         }),
         Layer.mock(Ft3BoardService)({}),
+        Layer.mock(Ft3BoardDelegationService)({}),
         Layer.mock(Ft3ArchitectService)({}),
         Layer.mock(Ft3CommitHistoryService)({}),
         Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),

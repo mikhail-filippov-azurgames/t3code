@@ -667,7 +667,7 @@ describe("ft3 board reactor", () => {
       const started = yield* Deferred.make<void>();
       const sink = yield* EventSink.EventSinkV2;
       yield* Layer.build(
-        Ft3Host.reactorLayer().pipe(
+        Ft3Host.boardReactorLayer().pipe(
           Layer.provide(
             ConfigProvider.layer(
               ConfigProvider.fromEnv({

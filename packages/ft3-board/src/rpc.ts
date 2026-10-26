@@ -3,11 +3,28 @@ export { FT3_BOARD_WS_METHODS, boardRpcs, boardRpcScopes } from "./rpc-contracts
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import * as DelegatedTaskSummaryRepository from "../../ft3-orchestration/src/DelegatedTaskSummaryRepository.ts";
+import * as TaskHandoffService from "../../ft3-orchestration/src/TaskHandoffService.ts";
+import * as TaskQueryService from "../../ft3-orchestration/src/TaskQueryService.ts";
+import * as BoardDelegationService from "./BoardDelegationService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
 import * as Contracts from "./contracts.ts";
 
-export const boardRpcServiceLayer = BoardService.layer.pipe(Layer.provide(BoardRepository.layer));
+const taskQueryLayer = TaskQueryService.layer.pipe(
+  Layer.provide(TaskHandoffService.layer),
+  Layer.provide(DelegatedTaskSummaryRepository.layer),
+);
+
+const boardDelegationServiceLayer = BoardDelegationService.layer.pipe(
+  Layer.provide(BoardRepository.layer),
+  Layer.provide(taskQueryLayer),
+);
+
+export const boardRpcServiceLayer = Layer.mergeAll(
+  BoardService.layer.pipe(Layer.provide(BoardRepository.layer)),
+  boardDelegationServiceLayer,
+);
 
 export const boardRpcHandlers = {
   [FT3_BOARD_WS_METHODS.boardOrchestratorsList]: () =>
@@ -36,6 +53,13 @@ export const boardRpcHandlers = {
     Effect.gen(function* () {
       const service = yield* BoardService.BoardService;
       return yield* service.resolveCards(input);
+    }),
+  [FT3_BOARD_WS_METHODS.boardExecutorDelegations]: (
+    input: Contracts.BoardExecutorDelegationsInput,
+  ) =>
+    Effect.gen(function* () {
+      const service = yield* BoardDelegationService.BoardDelegationService;
+      return yield* service.list(input);
     }),
   [FT3_BOARD_WS_METHODS.boardList]: (input: Contracts.BoardListInput) =>
     Effect.gen(function* () {
