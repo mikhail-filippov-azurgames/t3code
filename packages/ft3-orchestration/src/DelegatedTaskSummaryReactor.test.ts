@@ -26,7 +26,6 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -224,7 +223,7 @@ function fixture() {
   const support = Layer.mergeAll(
     textGeneration,
     ServerSettings.ServerSettingsService.layerTest(),
-    Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeed(Option.none()) }),
+    Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedNone }),
     Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:test")),
     }),

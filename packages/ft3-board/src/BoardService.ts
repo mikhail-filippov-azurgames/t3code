@@ -480,17 +480,14 @@ const make = Effect.gen(function* () {
             let card: Contracts.BoardCard | undefined;
             if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tokenText)) {
               card =
-                (yield* repo
-                  .getCard(Contracts.BoardCardId.make(tokenText.toLowerCase()))
-                  .pipe(Effect.mapError(unavailable))) ?? undefined;
+                (yield* repo.getCard(Contracts.BoardCardId.make(tokenText.toLowerCase()))) ??
+                undefined;
             } else {
-              const matches = yield* repo
-                .findCardsByPrefix(tokenText.toLowerCase())
-                .pipe(Effect.mapError(unavailable));
+              const matches = yield* repo.findCardsByPrefix(tokenText.toLowerCase());
               card = matches.length === 1 ? matches[0] : undefined;
             }
             return card === undefined ? undefined : { token, card };
-          }),
+          }).pipe(Effect.mapError(unavailable)),
         { concurrency: 8 },
       );
       const title = (owner: { readonly title: string } | null) =>
