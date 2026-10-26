@@ -2,6 +2,7 @@ import {
   CheckpointRef,
   IsoDateTime,
   MessageId,
+  ModelSelection,
   OrchestratorMcpFailure,
   PositiveInt,
   ProjectId,
@@ -165,12 +166,47 @@ export const ArchitectListArchitectureReviewsResult = Schema.Struct({
 export type ArchitectListArchitectureReviewsResult =
   typeof ArchitectListArchitectureReviewsResult.Type;
 
+export const ArchitectCreateOrGetInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+  taskEffort: ArchitectTaskEffort,
+  modelSelection: ModelSelection,
+  routingEvidence: CoordinatorArchitectRoutingEvidence,
+  idempotencyKey: BoundedIdempotencyKey,
+});
+export type ArchitectCreateOrGetInput = typeof ArchitectCreateOrGetInput.Type;
+
+export const ArchitectCreateOrGetResult = Schema.Struct({
+  architectThreadId: ThreadId,
+  created: Schema.Boolean,
+  binding: CoordinatorArchitectBinding,
+});
+export type ArchitectCreateOrGetResult = typeof ArchitectCreateOrGetResult.Type;
+
+export interface ArchitectCreateBindingInput {
+  readonly bindingId: string;
+  readonly coordinatorThreadId: ThreadId;
+  readonly architectThreadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly architectTaskEffort: ArchitectTaskEffort;
+  readonly routingEvidence: CoordinatorArchitectRoutingEvidence;
+  readonly createdAt: string;
+  readonly createdBy: ThreadId;
+  readonly createIdempotencyKey: string;
+  readonly createRequestFingerprint: string;
+}
+
 export class ArchitectMcpFailure extends Schema.TaggedError<ArchitectMcpFailure>()(
   "OrchestratorMcpFailure",
   {
     code: Schema.Union([
       OrchestratorMcpFailure.fields.code,
-      Schema.Literals(["architect_denied", "delegated_executor_denied"]),
+      Schema.Literals([
+        "architect_denied",
+        "delegated_executor_denied",
+        "routing_evidence_mismatch",
+        "idempotency_conflict",
+        "binding_not_found",
+      ]),
     ]),
     message: Schema.String,
   },

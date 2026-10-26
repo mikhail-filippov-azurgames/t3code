@@ -24,6 +24,13 @@ const handlers = McpToolAccess.toLayer(toolkit, {
       return yield* service.listReviews(scope, input);
     }),
   ),
+  architect_create_or_get: McpToolAccess.writes((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* ArchitectService.ArchitectService;
+      return yield* service.createOrGet(scope, input);
+    }),
+  ),
 });
 
 export const layer = toolkitRegistration(toolkit, handlers).pipe(
