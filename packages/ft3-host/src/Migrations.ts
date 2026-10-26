@@ -6,6 +6,7 @@ import { migrations as boardMigrations } from "@t3tools/ft3-board/migrations";
 import Ft3Meta from "./Migrations/001_Ft3Meta.ts";
 import Ft3DelegatedTaskSummaries from "./Migrations/006_Ft3DelegatedTaskSummaries.ts";
 import Ft3TaskHandoffs from "./Migrations/007_Ft3TaskHandoffs.ts";
+import Ft3DelegatedTaskSummaryReactor from "./Migrations/008_Ft3DelegatedTaskSummaryReactor.ts";
 
 const run = Migrator.make({});
 const loader = Migrator.fromRecord({
@@ -14,6 +15,7 @@ const loader = Migrator.fromRecord({
   ...architectMigrations,
   "6_Ft3DelegatedTaskSummaries": Ft3DelegatedTaskSummaries,
   "7_Ft3TaskHandoffs": Ft3TaskHandoffs,
+  "8_Ft3DelegatedTaskSummaryReactor": Ft3DelegatedTaskSummaryReactor,
 });
 
 export const runMigrations = Effect.fn("ft3.runMigrations")(function* () {

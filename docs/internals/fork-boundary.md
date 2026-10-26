@@ -76,6 +76,17 @@ SQL-каскад, поэтому `BoardReactor` (`packages/ft3-board/src/BoardRe
 `runtime-request.updated`), хранит курсор и очередь пробуждений в таблицах
 `ft3_board_reactor_*` и подключается в рантайм через `Ft3Host.reactorLayer()`.
 
+`packages/ft3-orchestration` хранит per-turn summaries делегированных задач в
+`ft3_delegated_task_summaries` (таблица и исторические записи импортёра) и
+`ft3_delegated_task_summary_reactor_cursor`. `DelegatedTaskSummaryReactor`
+подключается тем же `Ft3Host.reactorLayer()` и реагирует на terminal
+`provider-turn.updated` дочернего subagent-треда: детерминированный fallback
+пишется сразу, модель — через V2 `TextGeneration.generateCommitMessage` с
+`textGenerationModelSelection` из `resolveProjectSettings`; lease, watermark,
+stale, retry и fingerprint повторяют старый форк. `task_list`/`task_read`
+отдают `summary`, `task_summary_history` — страницы записей. Правок upstream для
+этого не требуется, кроме уже перечисленных подключений пакета.
+
 `packages/ft3-architect` хранит связку координатор/архитектор и запрошенные
 архитектурные ревью отдельно от журнала событий V2. Таблицы
 `ft3_architect_binding` и `ft3_architect_review` повторяют итоговую схему
@@ -281,3 +292,16 @@ keys are generated in `ft3-web`, while scope, binding and publication state stay
 server-authoritative. The old pin's provider picker is not transferred: Replace
 writes a reason-backed replace request into the coordinator's composer draft and
 lets the Coordinator apply it under the routing policy.
+
+## Delegation secret boundary (S)
+
+`packages/ft3-delegation` owns the secret scanner, the delegation input decision and the derived-text projection. `packages/ft3-board/authorTextPolicy` re-exports it.
+
+| Upstream file                                      | Connection                                                                                                                                                                                 | Reason                                                                           |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `apps/server/src/mcp/OrchestratorMcpService.ts`    | import `delegationTextDecision`/`projectDerivedText`; deny secret-bearing `delegate_task` input with `capability_denied`; project `summary`, `latestTerminalSummary` and `readThread` text | keep credentials out of delegated task text and agent reads                      |
+| `apps/server/src/orchestration-v2/Orchestrator.ts` | import `projectDerivedText`; project `task.result` in `delegatedCompletionWakeDetail`                                                                                                      | keep the parent wake free of credentials while the canonical result stays intact |
+| `apps/server/package.json`                         | add `@t3tools/ft3-delegation`                                                                                                                                                              | resolve the workspace package                                                    |
+| `pnpm-lock.yaml`                                   | importer `packages/ft3-delegation` and the `apps/server` dependency                                                                                                                        | record the workspace link                                                        |
+
+New fork-owned tests: `apps/server/src/mcp/OrchestratorMcpService.delegationText.test.ts` and `apps/server/src/orchestration-v2/Ft3DelegationWakeText.test.ts`.

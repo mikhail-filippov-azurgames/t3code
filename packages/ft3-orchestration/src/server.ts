@@ -6,6 +6,7 @@ import { toolkitRegistration } from "../../../apps/server/src/mcp/McpHttpServer.
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../apps/server/src/mcp/McpToolAccess.ts";
 import type * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import * as DelegatedTaskSummaryRepository from "./DelegatedTaskSummaryRepository.ts";
 import * as TaskHandoffService from "./TaskHandoffService.ts";
 import * as TaskQueryService from "./TaskQueryService.ts";
 import { toolkit } from "./tools.ts";
@@ -39,6 +40,13 @@ const handlers = McpToolAccess.toLayer(toolkit, {
       return yield* service.attach(scope, input);
     }),
   ),
+  task_summary_history: McpToolAccess.readsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* TaskQueryService.TaskQueryService;
+      return yield* service.history(scope, input);
+    }),
+  ),
 });
 
 export const layer: Layer.Layer<
@@ -48,4 +56,5 @@ export const layer: Layer.Layer<
 > = toolkitRegistration(toolkit, handlers).pipe(
   Layer.provide(TaskQueryService.layer),
   Layer.provide(TaskHandoffService.layer),
+  Layer.provide(DelegatedTaskSummaryRepository.layer),
 );

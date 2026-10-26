@@ -10,6 +10,7 @@ import {
   ProviderTurnId,
   ThreadId,
   TrimmedNonEmptyString,
+  TurnId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
@@ -96,6 +97,19 @@ export const TaskAttachHandoffResult = Schema.Struct({
 });
 export type TaskAttachHandoffResult = typeof TaskAttachHandoffResult.Type;
 
+const SUMMARY_SOURCE_TURN_IDS_MAX = 32;
+
+export const TaskSummary = Schema.Struct({
+  text: Schema.String,
+  source: Schema.Literals(["model", "deterministic"]),
+  sourceTurnIds: Schema.Array(TurnId).check(Schema.isMaxLength(SUMMARY_SOURCE_TURN_IDS_MAX)),
+  watermark: NonNegativeInt,
+  stale: Schema.Boolean,
+  state: Schema.Literals(["pending", "ready", "error"]),
+  error: Schema.NullOr(Schema.String),
+});
+export type TaskSummary = typeof TaskSummary.Type;
+
 const TaskMemoryEntry = Schema.Struct({
   taskId: NodeId,
   childThreadId: ThreadId,
@@ -105,7 +119,7 @@ const TaskMemoryEntry = Schema.Struct({
   latestTurnId: Schema.NullOr(ProviderTurnId),
   updatedAt: IsoDateTime,
   worktreePath: Schema.NullOr(Schema.String),
-  summary: Schema.Null,
+  summary: Schema.NullOr(TaskSummary),
   handoff: Schema.NullOr(TaskHandoff),
 });
 export type TaskMemoryEntry = typeof TaskMemoryEntry.Type;
@@ -121,6 +135,41 @@ export const TaskSearchResult = Schema.Struct({
   ...TaskListResult.fields,
 });
 export type TaskSearchResult = typeof TaskSearchResult.Type;
+
+export const TaskSummaryHistoryCursor = Schema.Struct({
+  completedAt: IsoDateTime,
+  childThreadId: ThreadId,
+  sourceTurnId: TurnId,
+});
+export type TaskSummaryHistoryCursor = typeof TaskSummaryHistoryCursor.Type;
+
+export const TaskSummaryHistoryInput = Schema.Struct({
+  limit: Schema.optional(PageLimit),
+  cursor: Schema.optional(TaskSummaryHistoryCursor),
+});
+export type TaskSummaryHistoryInput = typeof TaskSummaryHistoryInput.Type;
+
+const TaskSummaryHistoryRecord = Schema.Struct({
+  childThreadId: ThreadId,
+  sourceTurnId: TurnId,
+  completedAt: IsoDateTime,
+  summaryText: Schema.String,
+  summaryState: Schema.Literals(["pending", "ready", "error"]),
+  summaryWatermark: NonNegativeInt,
+  currentTurnId: Schema.NullOr(ProviderTurnId),
+  currentTurnState: Schema.NullOr(
+    Schema.Literals(["pending", "running", "interrupted", "completed", "error"]),
+  ),
+  currentWatermark: NonNegativeInt,
+  executorRole: Schema.String,
+  stale: Schema.Boolean,
+});
+
+export const TaskSummaryHistoryResult = Schema.Struct({
+  records: Schema.Array(TaskSummaryHistoryRecord).check(Schema.isMaxLength(100)),
+  nextCursor: Schema.NullOr(TaskSummaryHistoryCursor),
+});
+export type TaskSummaryHistoryResult = typeof TaskSummaryHistoryResult.Type;
 
 const TranscriptMessage = Schema.Struct({
   id: MessageId,
@@ -148,6 +197,7 @@ export const TaskReadResult = Schema.Struct({
   taskId: NodeId,
   title: Schema.String,
   handoff: Schema.NullOr(TaskHandoff),
+  summary: Schema.NullOr(TaskSummary),
   messages: Schema.Array(TranscriptMessage).check(Schema.isMaxLength(10_000)),
   activities: Schema.Array(TranscriptActivity).check(Schema.isMaxLength(10_000)),
   page: Schema.Struct({

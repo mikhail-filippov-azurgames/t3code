@@ -9,10 +9,25 @@ export { BoardRepository };
 
 export const layer = BoardRepository.layer;
 
-export const reactorLayer = () =>
+export const boardReactorLayer = () =>
   Layer.unwrap(
     Effect.promise(() => import("@t3tools/ft3-board/reactor")).pipe(
       Effect.map((module) => module.layerWorker(ARCHITECT_SKILL_PATH)),
+    ),
+  );
+
+export const reactorLayer = () =>
+  Layer.mergeAll(
+    boardReactorLayer(),
+    Layer.unwrap(
+      Effect.promise(() => import("@t3tools/ft3-architect/reactor")).pipe(
+        Effect.map((module) => module.layerWorker()),
+      ),
+    ),
+    Layer.unwrap(
+      Effect.promise(() => import("@t3tools/ft3-orchestration/reactor")).pipe(
+        Effect.map((module) => module.layerWorker()),
+      ),
     ),
   );
 
