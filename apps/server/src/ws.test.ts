@@ -700,6 +700,10 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
         resolveTargets: () => Effect.succeed([]),
       }),
+      Layer.mock(Ft3BoardService)({}),
+      Layer.mock(Ft3BoardDelegationService)({}),
+      Layer.mock(Ft3ArchitectService)({}),
+      Layer.mock(Ft3CommitHistoryService)({}),
       Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         scratchRoot: Effect.succeedNone,
