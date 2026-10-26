@@ -1,0 +1,37 @@
+{
+  "name": "@t3tools/ft3-vcs",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
+    },
+    "./service": {
+      "types": "./src/CommitHistoryService.ts",
+      "import": "./src/CommitHistoryService.ts"
+    },
+    "./contracts": {
+      "types": "./src/contracts.ts",
+      "import": "./src/contracts.ts"
+    },
+    "./rpc-contracts": {
+      "types": "./src/rpc-contracts.ts",
+      "import": "./src/rpc-contracts.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vp test run --config ../../vite.config.ts --dir ."
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/vitest": "catalog:",
+    "@t3tools/shared": "workspace:*",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

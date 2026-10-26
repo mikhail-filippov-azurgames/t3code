@@ -56,6 +56,8 @@ const stubs = {
     Effect.succeed({ binding: null, reviews: [], publishable: [] }),
   [FT3_WS_METHODS.publishArchitectPublication]: () =>
     Effect.succeed({ reviewId: "review", status: "published" as const }),
+  [FT3_WS_METHODS.vcsListCommitHistory]: () =>
+    Effect.succeed({ commits: [], isRepo: false, nextCursor: null }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -121,6 +123,9 @@ describe("FT3 RPC authorization", () => {
           idempotencyKey: "key",
         }),
       ).toEqual({ reviewId: "review", status: "published" });
+      expect(
+        yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo", limit: 10 }),
+      ).toEqual({ commits: [], isRepo: false, nextCursor: null });
     }).pipe(Effect.scoped),
   );
 
@@ -191,6 +196,9 @@ describe("FT3 RPC authorization", () => {
           idempotencyKey: "key",
         }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
+      expect(
+        yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
     }).pipe(Effect.scoped),
   );
 });
