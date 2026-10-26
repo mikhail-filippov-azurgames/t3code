@@ -622,6 +622,7 @@ const layerProviderInstallationRefresh = Layer.effectDiscard(
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Ft3Host.layer,
+  Ft3Host.reactorLayer().pipe(Layer.provide(RuntimeLayer.layerEventSink)),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,

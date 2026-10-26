@@ -14,6 +14,7 @@ describe("ft3 migrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), [
         [1, "Ft3Meta"],
         [2, "Board"],
+        [3, "BoardReactor"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
@@ -25,6 +26,10 @@ describe("ft3 migrations", () => {
           "ft3_board_card_events",
           "ft3_board_cards",
           "ft3_board_orchestrators",
+          "ft3_board_reactor_background",
+          "ft3_board_reactor_cursor",
+          "ft3_board_reactor_outcomes",
+          "ft3_board_reactor_wakes",
           "ft3_meta",
           "ft3_migrations",
         ],
@@ -33,6 +38,7 @@ describe("ft3 migrations", () => {
       assert.deepStrictEqual(journal, [
         { migration_id: 1, name: "Ft3Meta" },
         { migration_id: 2, name: "Board" },
+        { migration_id: 3, name: "BoardReactor" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -55,6 +61,7 @@ describe("ft3 migrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), [
         [1, "Ft3Meta"],
         [2, "Board"],
+        [3, "BoardReactor"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
       const ft3Before = yield* sql`SELECT * FROM ft3_migrations`;
@@ -83,6 +90,7 @@ describe("ft3 migrations", () => {
       assert.deepStrictEqual(yield* runMigrations(), [
         [1, "Ft3Meta"],
         [2, "Board"],
+        [3, "BoardReactor"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
