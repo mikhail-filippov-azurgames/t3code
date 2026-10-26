@@ -3,6 +3,7 @@ import {
   BoardCardId,
   BoardCardEventId,
   BoardCardStatus,
+  BoardDelegationStatus,
   type BoardCard,
   type BoardCardReadiness,
   type BoardCardEvent,
@@ -14,6 +15,8 @@ import { assert } from "vite-plus/test";
 import {
   addBoardStatusCounts,
   BOARD_COLUMNS,
+  boardDelegationStatusLabel,
+  boardDelegationSummaryText,
   boardEventsForCard,
   DEFAULT_BOARD_FILTERS,
   boardStatusLabel,
@@ -372,5 +375,16 @@ describe("boardEventsForCard", () => {
       boardEventsForCard(events, BoardCardId.make("a")).map((event) => event.entryId as string),
       ["first", "second"],
     );
+  });
+});
+
+describe("board delegation presentation", () => {
+  it("labels every status and hides a missing or blank summary", () => {
+    for (const status of BoardDelegationStatus.literals) {
+      assert.isString(boardDelegationStatusLabel(status));
+    }
+    assert.isNull(boardDelegationSummaryText(null));
+    assert.isNull(boardDelegationSummaryText("   "));
+    assert.strictEqual(boardDelegationSummaryText(" Probe passed. "), "Probe passed.");
   });
 });

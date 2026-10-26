@@ -13,6 +13,7 @@ export const FT3_BOARD_WS_METHODS = {
   boardOrchestratorRemove: "board.orchestrator.remove",
   boardOrchestratorResendBrief: "board.orchestrator.resendBrief",
   boardResolve: "board.resolve",
+  boardExecutorDelegations: "board.executorDelegations",
   boardList: "board.list",
   boardCreate: "board.create",
   boardStart: "board.start",
@@ -48,6 +49,11 @@ export const boardRpcs = [
     success: Contracts.BoardCardResolveResult,
     error: BoardRpcError,
   }),
+  Rpc.make(FT3_BOARD_WS_METHODS.boardExecutorDelegations, {
+    payload: Contracts.BoardExecutorDelegationsInput,
+    success: Contracts.BoardExecutorDelegationsResult,
+    error: BoardRpcError,
+  }),
   Rpc.make(FT3_BOARD_WS_METHODS.boardList, {
     payload: Contracts.BoardListInput,
     success: Contracts.BoardListResult,
@@ -79,6 +85,7 @@ export const boardRpcScopes = {
   [FT3_BOARD_WS_METHODS.boardOrchestratorsList]: AuthOrchestrationReadScope,
   [FT3_BOARD_WS_METHODS.boardList]: AuthOrchestrationReadScope,
   [FT3_BOARD_WS_METHODS.boardResolve]: AuthOrchestrationReadScope,
+  [FT3_BOARD_WS_METHODS.boardExecutorDelegations]: AuthOrchestrationReadScope,
   [FT3_BOARD_WS_METHODS.boardOrchestratorAdd]: AuthOrchestrationOperateScope,
   [FT3_BOARD_WS_METHODS.boardOrchestratorRemove]: AuthOrchestrationOperateScope,
   [FT3_BOARD_WS_METHODS.boardOrchestratorResendBrief]: AuthOrchestrationOperateScope,

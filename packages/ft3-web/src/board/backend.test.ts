@@ -76,6 +76,21 @@ const makeHarness = Effect.fn("Ft3BoardTest.makeHarness")(function* (
         matches: [],
         details: [{ card, orchestratorThreadTitle: "Coordinator", events: [] }],
       })),
+    "board.executorDelegations": (input: unknown) =>
+      record("board.executorDelegations", input, () => ({
+        delegations: [
+          {
+            taskId: "task:one",
+            childThreadId: ThreadId.make("executor-child"),
+            title: "Probe the parser",
+            latestStatus: "completed" as const,
+            latestTurnId: null,
+            updatedAt: card.updatedAt,
+            summary: null,
+          },
+        ],
+        nextCursor: null,
+      })),
     "board.orchestrator.add": (input: unknown) =>
       record("board.orchestrator.add", input, () => {
         const entry = { threadId, createdBy: "human" as const, createdAt: card.createdAt };
@@ -199,12 +214,19 @@ describe("FT3 board WS client", () => {
           { suspendOnWaiting: true },
         );
         expect(resolved.details[0]?.card).toEqual(card);
+        const delegations = yield* AtomRegistry.getResult(
+          registry,
+          atoms.delegations({ environmentId, input: { cardId: card.cardId } }),
+          { suspendOnWaiting: true },
+        );
+        expect(delegations.delegations[0]?.title).toBe("Probe the parser");
         expect(calls.map((call) => call.method)).toEqual([
           "board.orchestrator.add",
           "board.orchestrator.resendBrief",
           "board.start",
           "board.update",
           "board.resolve",
+          "board.executorDelegations",
         ]);
         expect(calls[3]?.input).toEqual({ cardId: card.cardId, archived: true });
       }),
