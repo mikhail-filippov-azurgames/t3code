@@ -1,3 +1,4 @@
+import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
 import { liveShellEnvironmentIdsAtom } from "../state/shell";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
@@ -3438,6 +3439,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           // Folders draw active rows in their own place below.
                           if (projectFolders !== null && item.section === "active") continue;
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          items.push(
+                            <ArchitectSidebarPin
+                              key={`architect-pin:${item.key}`}
+                              thread={threadByKey.get(item.key)!}
+                              onNavigate={navigateToThread}
+                            />,
+                          );
                           continue;
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {

@@ -26,6 +26,10 @@
     "./rpc-contracts": {
       "types": "./src/rpc-contracts.ts",
       "import": "./src/rpc-contracts.ts"
+    },
+    "./contracts": {
+      "types": "./src/contracts.ts",
+      "import": "./src/contracts.ts"
     }
   },
   "scripts": {
