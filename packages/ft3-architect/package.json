@@ -14,6 +14,14 @@
     "./skillLocation": {
       "types": "./src/skillLocation.ts",
       "import": "./src/skillLocation.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
+    },
+    "./service": {
+      "types": "./src/ArchitectService.ts",
+      "import": "./src/ArchitectService.ts"
     }
   },
   "scripts": {

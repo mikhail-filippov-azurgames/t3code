@@ -12,6 +12,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 export const ArchitectTaskEffort = Schema.Literals(["low", "medium", "high", "very-high"]);
@@ -292,6 +293,36 @@ export const ArchitectHumanPublicationInput = ArchitectPublishToCoordinatorInput
 export type ArchitectHumanPublicationInput = typeof ArchitectHumanPublicationInput.Type;
 export const ArchitectHumanPublicationResult = ArchitectPublishToCoordinatorResult;
 export type ArchitectHumanPublicationResult = typeof ArchitectHumanPublicationResult.Type;
+
+export const ArchitectPublishableRecord = Schema.Struct({
+  reviewId: TrimmedNonEmptyString,
+  origin: ArchitectureReviewOrigin,
+  summary: BoundedAnswerSummary,
+  disposition: ArchitectureReviewAnswerDisposition,
+  refs: ArchitectureReviewRefs,
+  question: Schema.optional(BoundedReviewQuestion),
+});
+export type ArchitectPublishableRecord = typeof ArchitectPublishableRecord.Type;
+
+export const ArchitectCoordinatorArchitectSidebarSnapshot = Schema.Struct({
+  binding: Schema.NullOr(CoordinatorArchitectBinding),
+  reviews: boundedArray(ArchitectureReviewRecord, 100),
+  publishable: boundedArray(ArchitectPublishableRecord, 100).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+});
+export type ArchitectCoordinatorArchitectSidebarSnapshot =
+  typeof ArchitectCoordinatorArchitectSidebarSnapshot.Type;
+
+export const ArchitectGetCoordinatorSidebarInput = Schema.Struct({
+  coordinatorThreadId: ThreadId,
+});
+export type ArchitectGetCoordinatorSidebarInput = typeof ArchitectGetCoordinatorSidebarInput.Type;
+
+export const ArchitectGetSidebarByArchitectInput = Schema.Struct({
+  architectThreadId: ThreadId,
+});
+export type ArchitectGetSidebarByArchitectInput = typeof ArchitectGetSidebarByArchitectInput.Type;
 
 export interface ArchitectInsertReviewInput {
   readonly reviewId: string;
