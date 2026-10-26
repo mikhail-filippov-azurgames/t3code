@@ -644,6 +644,7 @@ const layerServerRestart = Layer.effect(
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Ft3Host.layer,
+  Ft3Host.reactorLayer().pipe(Layer.provide(RuntimeLayer.layerEventSink)),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,

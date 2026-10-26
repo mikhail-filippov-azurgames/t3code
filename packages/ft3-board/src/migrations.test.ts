@@ -91,7 +91,10 @@ describe("board migrations through ft3-host", () => {
       yield* sql`INSERT INTO ft3_meta VALUES ('retained', 'value')`;
       yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY)`;
       yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES ('thread:retained')`;
-      assert.deepStrictEqual(yield* runMigrations(), [[2, "Board"]]);
+      assert.deepStrictEqual(yield* runMigrations(), [
+        [2, "Board"],
+        [3, "BoardReactor"],
+      ]);
       yield* sql`INSERT INTO ft3_board_orchestrators VALUES ('thread:retained', 'human', '2000-01-01')`;
       yield* sql`INSERT INTO ft3_board_cards (card_id, orchestrator_thread_id, title, body, status, created_by, executor_role, failure_streak, order_index, archived, created_at, updated_at) VALUES ('card:retained', 'thread:retained', 'Retain', 'Body', 'done', 'human', 'general', 0, 0, 1, '2000-01-01', '2000-01-02')`;
       const cardsBefore = yield* sql`SELECT * FROM ft3_board_cards`;
@@ -129,6 +132,7 @@ describe("board migrations through ft3-host", () => {
         assert.deepStrictEqual(yield* runMigrations(), [
           [1, "Ft3Meta"],
           [2, "Board"],
+          [3, "BoardReactor"],
         ]);
         assert.deepStrictEqual(yield* runMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

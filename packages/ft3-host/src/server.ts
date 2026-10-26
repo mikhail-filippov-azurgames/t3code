@@ -8,6 +8,13 @@ export { BoardRepository };
 
 export const layer = BoardRepository.layer;
 
+export const reactorLayer = (modelSelectionPolicyRef = "") =>
+  Layer.unwrap(
+    Effect.promise(() => import("@t3tools/ft3-board/reactor")).pipe(
+      Effect.map((module) => module.layerWorker(modelSelectionPolicyRef)),
+    ),
+  );
+
 // Load after upstream module initialization to avoid the server composition cycle.
 export const mcpToolkits = [
   Layer.unwrap(

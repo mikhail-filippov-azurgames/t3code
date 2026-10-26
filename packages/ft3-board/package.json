@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./reactor": {
+      "types": "./src/BoardReactor.ts",
+      "import": "./src/BoardReactor.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"
