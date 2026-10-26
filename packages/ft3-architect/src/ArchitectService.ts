@@ -111,6 +111,18 @@ export class ArchitectService extends Context.Service<
       Contracts.ArchitectPublishToCoordinatorResult,
       Contracts.ArchitectMcpFailure
     >;
+    readonly getCoordinatorArchitectSidebar: (
+      input: Contracts.ArchitectGetCoordinatorSidebarInput,
+    ) => Effect.Effect<
+      Contracts.ArchitectCoordinatorArchitectSidebarSnapshot,
+      Contracts.ArchitectMcpFailure
+    >;
+    readonly getCoordinatorArchitectSidebarByArchitect: (
+      input: Contracts.ArchitectGetSidebarByArchitectInput,
+    ) => Effect.Effect<
+      Contracts.ArchitectCoordinatorArchitectSidebarSnapshot,
+      Contracts.ArchitectMcpFailure
+    >;
   }
 >()("@t3tools/ft3-architect/ArchitectService") {}
 
@@ -682,6 +694,37 @@ const make = Effect.gen(function* () {
     return { reviewId: review.reviewId, status: "published" as const };
   });
 
+  const emptySidebarSnapshot = (): Contracts.ArchitectCoordinatorArchitectSidebarSnapshot => ({
+    binding: null,
+    reviews: [],
+    publishable: [],
+  });
+
+  const buildSidebarSnapshot = (
+    binding: Contracts.CoordinatorArchitectBinding,
+    reviews: ReadonlyArray<Contracts.ArchitectureReviewRecord>,
+  ): Contracts.ArchitectCoordinatorArchitectSidebarSnapshot => ({
+    binding,
+    reviews,
+    publishable: reviews.flatMap((review) =>
+      review.bindingId === binding.bindingId &&
+      review.status === "answered" &&
+      review.answerSummary !== null &&
+      review.answerDisposition !== null
+        ? [
+            {
+              reviewId: review.reviewId,
+              origin: review.origin,
+              summary: review.answerSummary,
+              disposition: review.answerDisposition,
+              refs: review.refs,
+              ...(review.origin === "coordinator-request" ? { question: review.question } : {}),
+            },
+          ]
+        : [],
+    ),
+  });
+
   return ArchitectService.of({
     getBinding: Effect.fn("Ft3ArchitectService.getBinding")(function* (scope, input) {
       yield* requireQueryScope(scope, input.coordinatorThreadId);
@@ -1181,6 +1224,30 @@ const make = Effect.gen(function* () {
         });
       },
     ),
+    getCoordinatorArchitectSidebar: Effect.fn("Ft3ArchitectService.getCoordinatorArchitectSidebar")(
+      function* (input) {
+        const binding = yield* repo
+          .getActiveBindingByCoordinator(input.coordinatorThreadId)
+          .pipe(Effect.mapError(unavailable));
+        if (binding === null) return emptySidebarSnapshot();
+        const reviews = yield* repo
+          .listReviewsByCoordinator({ coordinatorThreadId: input.coordinatorThreadId })
+          .pipe(Effect.mapError(unavailable));
+        return buildSidebarSnapshot(binding, reviews);
+      },
+    ),
+    getCoordinatorArchitectSidebarByArchitect: Effect.fn(
+      "Ft3ArchitectService.getCoordinatorArchitectSidebarByArchitect",
+    )(function* (input) {
+      const binding = yield* repo
+        .getActiveBindingByArchitect(input.architectThreadId)
+        .pipe(Effect.mapError(unavailable));
+      if (binding === null) return emptySidebarSnapshot();
+      const reviews = yield* repo
+        .listReviewsByCoordinator({ coordinatorThreadId: binding.coordinatorThreadId })
+        .pipe(Effect.mapError(unavailable));
+      return buildSidebarSnapshot(binding, reviews);
+    }),
   });
 });
 

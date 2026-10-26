@@ -6,6 +6,10 @@
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
     }
   },
   "scripts": {
@@ -13,6 +17,7 @@
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
+    "@t3tools/contracts": "workspace:*",
     "@t3tools/ft3-architect": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
     "@t3tools/ft3-orchestration": "workspace:*",

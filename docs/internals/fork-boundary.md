@@ -108,6 +108,24 @@ replace/detach. Срез 6 — публикация координатору: `p
 опубликовать advice отклоняется как `human_publish_required`. Политика
 секретов применяется и к тексту публикации (question/summary).
 
+## RPC-модуль ft3 для web (срез S1)
+
+WS RPC в V2 закрыт для пакетов, поэтому ft3 держит собственную группу
+`@t3tools/ft3-host/rpc` (`RpcGroup.make(...boardRpcs, ...architectRpcs)` со своим
+middleware `Ft3RpcScopeAuthorization`) и сливает её в серверную группу одной
+строкой — `WsRpcGroup` и `RpcAuthorization.ts`/`clientRpcPermissions.ts` не
+правятся. Права повторяют старый форк: доска и архитектор read →
+`orchestration:read`, запись/публикация → `orchestration:operate`. Обработчики
+вызывают сервисы `ft3-board`/`ft3-architect`; человек в web действует от своего
+имени — отметка оркестратора и публикация человеком через
+`publishHumanPublication`. Контракты методов (payload/success) перенесены из
+старого форка; `vcs.listCommitHistory` в этот срез не входит.
+
+| Upstream-файл                | Правка                                                                                                            | Зачем                                                 |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `apps/server/src/ws.ts`      | `WsRpcGroup.merge(Ft3Rpc.group)`, spread `...Ft3Rpc.handlers`, `Ft3Rpc.authorizationLayer`, `Ft3Rpc.serviceLayer` | подключение группы, обработчиков, прав и сервисов ft3 |
+| `apps/server/src/ws.test.ts` | mock `BoardService`/`ArchitectService` в config-RPC слое                                                          | серверный RPC-слой теперь требует ft3-сервисы         |
+
 ## Исправления Muse в стеке ft3
 
 Перед успешным завершением адаптер сверяет потоковый текст с `session/read`:

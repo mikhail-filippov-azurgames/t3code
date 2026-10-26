@@ -18,6 +18,10 @@ import {
   type ServerConfigStreamEvent,
   type ServerProvider,
 } from "@t3tools/contracts";
+import {
+  ArchitectService as Ft3ArchitectService,
+  BoardService as Ft3BoardService,
+} from "@t3tools/ft3-host/rpc";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -662,6 +666,8 @@ it.effect.each(["pending", "cached"] as const)(
               Effect.as(targets),
             ),
         }),
+        Layer.mock(Ft3BoardService)({}),
+        Layer.mock(Ft3ArchitectService)({}),
         Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           scratchRoot: Effect.succeedNone,

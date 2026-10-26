@@ -26,6 +26,18 @@
     "./routingPolicy": {
       "types": "./src/routingPolicy.ts",
       "import": "./src/routingPolicy.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
+    },
+    "./service": {
+      "types": "./src/BoardService.ts",
+      "import": "./src/BoardService.ts"
+    },
+    "./contracts": {
+      "types": "./src/contracts.ts",
+      "import": "./src/contracts.ts"
     }
   },
   "scripts": {

@@ -130,6 +130,114 @@ export const BoardListCardsResult = Schema.Struct({
 });
 export type BoardListCardsResult = typeof BoardListCardsResult.Type;
 
+export const BoardOrchestratorsListInput = Schema.Struct({});
+export type BoardOrchestratorsListInput = typeof BoardOrchestratorsListInput.Type;
+export const BoardOrchestratorsListResult = Schema.Struct({
+  orchestrators: Schema.Array(BoardOrchestrator),
+});
+export type BoardOrchestratorsListResult = typeof BoardOrchestratorsListResult.Type;
+
+export const BoardOrchestratorAddInput = Schema.Struct({ threadId: ThreadId });
+export type BoardOrchestratorAddInput = typeof BoardOrchestratorAddInput.Type;
+export const BoardOrchestratorAddResult = BoardOrchestrator;
+export type BoardOrchestratorAddResult = typeof BoardOrchestratorAddResult.Type;
+
+export const BoardOrchestratorRemoveInput = Schema.Struct({ threadId: ThreadId });
+export type BoardOrchestratorRemoveInput = typeof BoardOrchestratorRemoveInput.Type;
+export const BoardOrchestratorRemoveResult = Schema.Struct({});
+export type BoardOrchestratorRemoveResult = typeof BoardOrchestratorRemoveResult.Type;
+
+export const BoardOrchestratorResendBriefInput = Schema.Struct({ threadId: ThreadId });
+export type BoardOrchestratorResendBriefInput = typeof BoardOrchestratorResendBriefInput.Type;
+export const BoardOrchestratorResendBriefResult = Schema.Struct({});
+export type BoardOrchestratorResendBriefResult = typeof BoardOrchestratorResendBriefResult.Type;
+
+export const BoardListInput = Schema.Struct({
+  includeArchived: Schema.optional(Schema.Boolean),
+});
+export type BoardListInput = typeof BoardListInput.Type;
+export const BoardArchivedCount = Schema.Struct({
+  orchestratorThreadId: ThreadId,
+  status: BoardCardStatus,
+  count: NonNegativeInt,
+});
+export type BoardArchivedCount = typeof BoardArchivedCount.Type;
+export const BoardListResult = Schema.Struct({
+  cards: Schema.Array(BoardCard),
+  events: Schema.Array(BoardCardEvent),
+  archivedCounts: Schema.optional(Schema.Array(BoardArchivedCount)),
+});
+export type BoardListResult = typeof BoardListResult.Type;
+
+export const BoardCardLookupToken = Schema.String.check(
+  Schema.isPattern(
+    /^(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i,
+  ),
+).pipe(Schema.brand("BoardCardLookupToken"));
+export type BoardCardLookupToken = typeof BoardCardLookupToken.Type;
+export const BoardCardResolveInput = Schema.Struct({
+  tokens: Schema.Array(BoardCardLookupToken).check(Schema.isMaxLength(100)),
+  cardIds: Schema.Array(BoardCardId).check(Schema.isMaxLength(20)),
+});
+export type BoardCardResolveInput = typeof BoardCardResolveInput.Type;
+export const BoardCardLookupMatch = Schema.Struct({
+  token: BoardCardLookupToken,
+  card: BoardCard,
+  orchestratorThreadTitle: Schema.NullOr(TrimmedNonEmptyString),
+  recentEvents: Schema.Array(BoardCardEvent),
+});
+export type BoardCardLookupMatch = typeof BoardCardLookupMatch.Type;
+export const BoardCardLookupDetail = Schema.Struct({
+  card: BoardCard,
+  orchestratorThreadTitle: Schema.NullOr(TrimmedNonEmptyString),
+  events: Schema.Array(BoardCardEvent),
+});
+export type BoardCardLookupDetail = typeof BoardCardLookupDetail.Type;
+export const BoardCardResolveResult = Schema.Struct({
+  matches: Schema.Array(BoardCardLookupMatch),
+  details: Schema.Array(BoardCardLookupDetail),
+});
+export type BoardCardResolveResult = typeof BoardCardResolveResult.Type;
+
+export const BoardCreateInput = Schema.Struct({
+  orchestratorThreadId: ThreadId,
+  title: TrimmedNonEmptyString,
+  body: Schema.String,
+  executorRole: ExecutorRole,
+  assignee: Schema.optional(Schema.NullOr(ModelSelection)),
+});
+export type BoardCreateInput = typeof BoardCreateInput.Type;
+export const BoardCreateResult = BoardCard;
+export type BoardCreateResult = typeof BoardCreateResult.Type;
+
+export const BoardStartInput = Schema.Struct({ cardId: BoardCardId });
+export type BoardStartInput = typeof BoardStartInput.Type;
+export const BoardStartResult = BoardCard;
+export type BoardStartResult = typeof BoardStartResult.Type;
+
+export const BoardUpdateInput = Schema.Struct({
+  cardId: BoardCardId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  body: Schema.optional(Schema.String),
+  status: Schema.optional(BoardCardStatus),
+  executorRole: Schema.optional(ExecutorRole),
+  assignee: Schema.optional(Schema.NullOr(ModelSelection)),
+  executorThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  outcome: Schema.optional(Schema.NullOr(BoardCardOutcome)),
+  lastError: Schema.optional(Schema.NullOr(Schema.String)),
+  failureStreak: Schema.optional(NonNegativeInt),
+  order: Schema.optional(NonNegativeInt),
+  archived: Schema.optional(Schema.Boolean),
+});
+export type BoardUpdateInput = typeof BoardUpdateInput.Type;
+export const BoardUpdateResult = BoardCard;
+export type BoardUpdateResult = typeof BoardUpdateResult.Type;
+
+export const BoardDeleteInput = Schema.Struct({ cardId: BoardCardId });
+export type BoardDeleteInput = typeof BoardDeleteInput.Type;
+export const BoardDeleteResult = Schema.Struct({});
+export type BoardDeleteResult = typeof BoardDeleteResult.Type;
+
 export class BoardMcpFailure extends Schema.TaggedError<BoardMcpFailure>()(
   "OrchestratorMcpFailure",
   {
