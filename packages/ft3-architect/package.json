@@ -10,6 +10,10 @@
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"
+    },
+    "./skillLocation": {
+      "types": "./src/skillLocation.ts",
+      "import": "./src/skillLocation.ts"
     }
   },
   "scripts": {

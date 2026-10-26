@@ -18,6 +18,7 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,6 +40,7 @@ import { OrchestratorDispatchError } from "../../../apps/server/src/orchestratio
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
+import { ARCHITECT_SKILL_PATH } from "../../ft3-architect/src/skillLocation.ts";
 import * as BoardReactor from "./BoardReactor.ts";
 import * as Contracts from "./contracts.ts";
 import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
@@ -665,7 +667,14 @@ describe("ft3 board reactor", () => {
       const started = yield* Deferred.make<void>();
       const sink = yield* EventSink.EventSinkV2;
       yield* Layer.build(
-        Ft3Host.reactorLayer("policy:configured").pipe(
+        Ft3Host.reactorLayer().pipe(
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: { T3CODE_FT3_ROUTING_POLICY_REF: "policy:configured" },
+              }),
+            ),
+          ),
           Layer.provide(
             Layer.mock(EventSink.EventSinkV2)({
               ...sink,
@@ -689,12 +698,27 @@ describe("ft3 board reactor", () => {
       assert.equal((yield* projections.getThreadRecords(parentId, ["runs"])).runs.length, 1);
       assert.equal(f.delivered.length, 1);
       assert.include(f.delivered[0]!.text, "policy:configured");
+      assert.include(f.delivered[0]!.text, "create-orchestrator-architect");
+      assert.include(f.delivered[0]!.text, ARCHITECT_SKILL_PATH);
     }).pipe(Effect.scoped, Effect.provide(f.layer));
   });
 });
 
 it("uses the configured routing policy and has no embedded local document reference", () => {
-  assert.include(buildBoardWakePrompt("policy:configured", "Card context"), "policy:configured");
-  assert.notInclude(buildBoardWakePrompt("", "Card context"), "oc://");
-  assert.include(buildBoardWakePrompt("", "Card context"), "Current card context:\nCard context");
+  const skillPath = "/skills/create-orchestrator-architect/SKILL.md";
+  assert.include(
+    buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
+    "policy:configured",
+  );
+  assert.include(buildBoardWakePrompt("", skillPath, "Card context"), "no routing policy is set");
+  assert.include(buildBoardWakePrompt("", skillPath, "Card context"), skillPath);
+  assert.notInclude(buildBoardWakePrompt("", skillPath, "Card context"), "oc://");
+  assert.notInclude(
+    buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
+    ".opencontext",
+  );
+  assert.include(
+    buildBoardWakePrompt("", "", "Card context"),
+    "Current card context:\nCard context",
+  );
 });
