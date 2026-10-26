@@ -2,6 +2,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   type AuthEnvironmentScope,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as BoardContracts from "@t3tools/ft3-board/contracts";
@@ -34,6 +35,18 @@ const card = {
   updatedAt: "2026-10-26T00:00:00.000Z",
 };
 
+const piStatus = {
+  instanceId: "pi",
+  phase: "stopped" as const,
+  ready: false,
+  endpoint: "http://127.0.0.1:8080/v1",
+  model: null,
+  modelIds: [],
+  owned: false,
+  canStart: true,
+  error: null,
+};
+
 const stubs = {
   [FT3_WS_METHODS.boardOrchestratorsList]: () => Effect.succeed({ orchestrators: [] }),
   [FT3_WS_METHODS.boardOrchestratorAdd]: () =>
@@ -60,6 +73,9 @@ const stubs = {
     Effect.succeed({ reviewId: "review", status: "published" as const }),
   [FT3_WS_METHODS.vcsListCommitHistory]: () =>
     Effect.succeed({ commits: [], isRepo: false, nextCursor: null }),
+  [FT3_WS_METHODS.piInferenceServerStatus]: () => Effect.succeed(piStatus),
+  [FT3_WS_METHODS.piInferenceServerStart]: () => Effect.succeed(piStatus),
+  [FT3_WS_METHODS.piInferenceServerStop]: () => Effect.succeed(piStatus),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -132,6 +148,10 @@ describe("FT3 RPC authorization", () => {
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo", limit: 10 }),
       ).toEqual({ commits: [], isRepo: false, nextCursor: null });
+      const piInput = { instanceId: ProviderInstanceId.make("pi"), model: "bonsai-2-27b" };
+      expect(yield* client[FT3_WS_METHODS.piInferenceServerStatus](piInput)).toEqual(piStatus);
+      expect(yield* client[FT3_WS_METHODS.piInferenceServerStart](piInput)).toEqual(piStatus);
+      expect(yield* client[FT3_WS_METHODS.piInferenceServerStop](piInput)).toEqual(piStatus);
     }).pipe(Effect.scoped),
   );
 
@@ -208,6 +228,16 @@ describe("FT3 RPC authorization", () => {
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      const piInput = { instanceId: ProviderInstanceId.make("pi") };
+      expect(
+        yield* client[FT3_WS_METHODS.piInferenceServerStatus](piInput).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.piInferenceServerStart](piInput).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
+      expect(
+        yield* client[FT3_WS_METHODS.piInferenceServerStop](piInput).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
     }).pipe(Effect.scoped),
   );
 });

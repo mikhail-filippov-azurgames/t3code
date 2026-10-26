@@ -176,10 +176,16 @@ agent-dir (`<stateDir>/pi/<instanceId>/agent`) с `models.json` (`ft3-local/*`,
 сессии до открытия Pi-процесса и под режим хода перед каждым ходом (и compaction).
 `ensureReady(model)` берёт профиль llama-server из `inference-profiles.json` рядом с
 agent-dir (или `T3CODE_FT3_PI_INFERENCE_CONFIG`), поднимает один процесс на endpoint,
-ждёт `/health` и `/v1/models`. Слоты, ручной start/stop, импорт Codex-skills и
-блокировка launch-env (`NODE_*`, proxy, `PI_*`) не перенесены: upstream адаптер
-всегда досмешивает ambient env. Профили с `baseUrl` вне loopback и `.ps1`
-launchers отклоняются, а не запускаются.
+ждёт `/health` и `/v1/models`. Слоты запросов перенесены (`acquireRequestSlot`).
+Ручной start/stop/status llama-server идёт через группу ft3 RPC, без правок
+`ws.ts`: `packages/ft3-pi` объявляет контракты в `rpc-contracts`, `ft3-host`
+сливает их в свою группу, а `ft3-web` показывает статус и кнопку в composer для
+выбранного Pi-инстанса. Статус и запуск используют конфиг, который драйвер
+зарегистрировал при создании инстанса (`registeredConfig`); процесс
+останавливается только по сохранённому `ChildProcess`, без поиска по имени.
+Импорт Codex-skills и блокировка launch-env (`NODE_*`, proxy, `PI_*`) не
+перенесены: upstream адаптер всегда досмешивает ambient env. Профили с `baseUrl`
+вне loopback и `.ps1` launchers отклоняются, а не запускаются.
 
 `T3CODE_FT3_EXECUTOR_ONLY_INSTANCES` — список id инстансов через запятую; такие
 инстансы не получают capability `orchestration` ни в MCP-credential, ни в наборе
@@ -192,6 +198,17 @@ launchers отклоняются, а не запускаются.
 | `apps/server/src/mcp/McpSessionRegistry.ts:2,110-116`                  | импорт и то же условие вокруг `orchestration`                                         | registry выдаёт capability сам, поэтому одной правки в менеджере мало |
 | `apps/server/package.json:44`                                          | зависимость `@t3tools/ft3-pi: workspace:*`                                            | разрешение workspace-пакета                                           |
 | `pnpm-lock.yaml`                                                       | importer `packages/ft3-pi` и зависимость `apps/server`                                | воспроизводимое подключение                                           |
+
+Ручное управление llama-server (срез S) добавляет три метода в ту же группу ft3
+RPC (`pi.inferenceServer.status|start|stop`): статус читает
+`orchestration:read`, запуск и остановка — `orchestration:operate`, как в старом
+форке. Обработчики вызывают `makePiInferenceControl` из `ft3-pi` поверх
+process-wide менеджера, поэтому `ws.ts` и карта прав upstream не меняются.
+
+| Upstream-файл                                   | Правка                                                                                                                 | Зачем                                                      |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `apps/web/src/components/chat/ChatComposer.tsx` | импорт `PiInferenceServerControl` из `@t3tools/ft3-web/pi`; рендер рядом с publish-кнопкой, только для провайдера `pi` | start/stop и индикатор статуса llama-server в composer     |
+| `pnpm-lock.yaml`                                | зависимости `@t3tools/ft3-pi` у `packages/ft3-host` и `packages/ft3-web`                                               | браузерные контракты и серверная регистрация группы Pi RPC |
 
 ## Исправления Muse в стеке ft3
 

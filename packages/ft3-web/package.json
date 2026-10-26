@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     "./panels": "./src/panels.tsx",
-    "./architect": "./src/architect/index.ts"
+    "./architect": "./src/architect/index.ts",
+    "./pi": "./src/pi/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -16,6 +17,7 @@
     "@t3tools/contracts": "workspace:*",
     "@t3tools/ft3-architect": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
+    "@t3tools/ft3-pi": "workspace:*",
     "@t3tools/ft3-vcs": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@tanstack/react-router": "^1.160.2",

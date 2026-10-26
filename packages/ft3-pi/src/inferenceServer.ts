@@ -138,7 +138,7 @@ export async function loadPiInferenceConfig(filePath: string): Promise<PiInferen
   }
 }
 
-function resolvePiInferenceProfile(
+export function resolvePiInferenceProfile(
   config: PiInferenceConfig,
   selectedModel: string | undefined,
 ): PiInferenceProfile | undefined {
@@ -442,6 +442,8 @@ const defaultDependencies: PiInferenceServerDependencies = {
 export interface PiInferenceServerManager {
   /** Register or replace the managed config for one provider instance. */
   readonly registerInstance: (instanceId: string, config: PiInferenceConfig) => void;
+  /** Config the driver registered at instance creation, or undefined when unknown. */
+  readonly registeredConfig: (instanceId: string) => PiInferenceConfig | undefined;
   /** Auto-start on turn: start the selected profile when needed and wait for readiness. */
   readonly ensureReady: (instanceId: string, model: string | undefined) => Promise<void>;
   /** Manual UI start for the selected profile. */
@@ -937,6 +939,7 @@ export function makePiInferenceServerManager(
     registerInstance: (instanceId, config) => {
       configs.set(instanceId, config);
     },
+    registeredConfig: (instanceId) => configs.get(instanceId),
     ensureReady,
     start,
     stop,
