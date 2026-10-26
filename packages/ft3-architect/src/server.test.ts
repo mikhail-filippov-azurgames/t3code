@@ -1,9 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   type OrchestrationV2ThreadShell,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -15,6 +17,7 @@ import { McpSchema, McpServer } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
+import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
@@ -27,6 +30,7 @@ const childId = ThreadId.make("thread:executor");
 const epoch = "2026-10-26T00:00:00.000Z";
 const decodeGet = Schema.decodeUnknownEffect(Contracts.ArchitectGetCoordinatorBindingResult);
 const decodeList = Schema.decodeUnknownEffect(Contracts.ArchitectListArchitectureReviewsResult);
+const decodeCreate = Schema.decodeUnknownEffect(Contracts.ArchitectCreateOrGetResult);
 const decodeFailure = Schema.decodeUnknownSync(Contracts.ArchitectMcpFailure);
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:architect-test"),
@@ -56,9 +60,50 @@ const crypto = Layer.succeed(
   Crypto.Crypto,
   Crypto.make({
     randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
+    digest: (_algorithm, data) => Effect.succeed(data),
   }),
 );
+
+const codexProvider: ServerProvider = {
+  instanceId: ProviderInstanceId.make("codex"),
+  driver: ProviderDriverKind.make("codex"),
+  enabled: true,
+  installed: true,
+  version: "test",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: epoch,
+  models: [{ slug: "gpt-5", name: "GPT-5", isCustom: false, capabilities: null }],
+  slashCommands: [],
+  skills: [],
+};
+
+const createEvidence: Contracts.CoordinatorArchitectRoutingEvidence = {
+  policyRef: "policy",
+  policyRevision: 1,
+  role: "architecture",
+  taskEffort: "medium",
+  consideredCandidates: [
+    {
+      alias: "gpt-5",
+      providerInstanceId: ProviderInstanceId.make("codex"),
+      driverKind: ProviderDriverKind.make("codex"),
+      model: "gpt-5",
+      options: [],
+      disposition: "selected",
+      reason: "accepted",
+    },
+  ],
+};
+
+const createArgs = (overrides: Record<string, unknown> = {}) => ({
+  coordinatorThreadId: parentId,
+  taskEffort: "medium",
+  modelSelection: { instanceId: "codex", model: "gpt-5" },
+  routingEvidence: createEvidence,
+  idempotencyKey: "create:1",
+  ...overrides,
+});
 
 function fixture() {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
@@ -69,16 +114,29 @@ function fixture() {
     ...child,
     lineage: { parentThreadId: parentId, rootThreadId: parentId, relationshipToParent: "subagent" },
   });
+  const createdCommands = new Array<unknown>();
   const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
+    dispatch: (command) =>
+      Effect.sync(() => {
+        createdCommands.push(command);
+        if (command.type === "thread.create") {
+          shells.set(command.threadId, liveThreadShell(command.threadId));
+        }
+        return { sequence: 0, storedEvents: [] };
+      }),
+  });
+  const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
+    getProviders: Effect.succeed([codexProvider]),
   });
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits, Ft3Host.layer).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(threads),
+    Layer.provide(providerRegistry),
     Layer.provide(crypto),
   );
-  return { layer, shells };
+  return { layer, shells, createdCommands };
 }
 
 const seedThreads = Effect.gen(function* () {
@@ -328,6 +386,102 @@ describe("ft3 architect toolkit through ft3-host", () => {
       yield* sql`DELETE FROM orchestration_v2_projection_threads WHERE thread_id = ${parentId}`;
       assert.deepStrictEqual(yield* sql`SELECT * FROM ft3_architect_binding`, []);
       assert.deepStrictEqual(yield* sql`SELECT * FROM ft3_architect_review`, []);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("creates a binding and architect thread for a marked coordinator", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const result = yield* decodeCreate(
+        (yield* call("architect_create_or_get", createArgs())).structuredContent,
+      );
+      assert.equal(result.created, true);
+      assert.equal(result.binding.status, "active");
+      assert.equal(result.binding.coordinatorThreadId, parentId);
+      assert.equal(result.binding.architectThreadId, result.architectThreadId);
+      assert.equal(result.binding.architectTaskEffort, "medium");
+      assert.equal(result.binding.routingEvidence!.policyRef, "policy");
+      assert.isTrue(String(result.architectThreadId).startsWith("arch:"));
+      assert.equal(f.createdCommands.length, 1);
+      const command = f.createdCommands[0] as {
+        readonly type: string;
+        readonly threadId: ThreadId;
+      };
+      assert.equal(command.type, "thread.create");
+      assert.equal(command.threadId, result.architectThreadId);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("repeats an exact create idempotently", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const first = yield* decodeCreate(
+        (yield* call("architect_create_or_get", createArgs())).structuredContent,
+      );
+      const second = yield* decodeCreate(
+        (yield* call("architect_create_or_get", createArgs())).structuredContent,
+      );
+      assert.equal(first.created, true);
+      assert.equal(second.created, false);
+      assert.equal(second.binding.bindingId, first.binding.bindingId);
+      assert.equal(second.architectThreadId, first.architectThreadId);
+      assert.equal(f.createdCommands.length, 1);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses an unmarked coordinator", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      assert.equal(
+        failure(yield* call("architect_create_or_get", createArgs())).code,
+        "capability_denied",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses an unknown model", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const unknown = "gpt-unknown";
+      const evidence: Contracts.CoordinatorArchitectRoutingEvidence = {
+        ...createEvidence,
+        consideredCandidates: [{ ...createEvidence.consideredCandidates[0]!, model: unknown }],
+      };
+      assert.equal(
+        failure(
+          yield* call(
+            "architect_create_or_get",
+            createArgs({
+              modelSelection: { instanceId: "codex", model: unknown },
+              routingEvidence: evidence,
+            }),
+          ),
+        ).code,
+        "model_unavailable",
+      );
+      assert.equal(f.createdCommands.length, 0);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("an architect cannot create another architect", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      yield* seedArchitect;
+      assert.equal(
+        failure(yield* call("architect_create_or_get", createArgs(), asThread(architectId))).code,
+        "architect_denied",
+      );
+      assert.equal(f.createdCommands.length, 0);
     }).pipe(Effect.provide(f.layer));
   });
 
