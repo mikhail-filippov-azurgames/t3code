@@ -283,6 +283,7 @@ and only the bound Architect thread with unpublished records shows Publish.
 | Upstream file                                   | Connection                                                                             | Reason                                                     |
 | ----------------------------------------------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | `apps/web/src/components/Sidebar.tsx`           | import `ArchitectSidebarPin`; push one pin after each thread row                       | nest the Architect under its coordinator without row slots |
+| `apps/web/src/components/LegacySidebar.tsx`     | import `ArchitectSidebarPin`; push one pin after each thread row in legacy mode        | nest the Architect under its coordinator in legacy mode    |
 | `apps/web/src/components/chat/ChatComposer.tsx` | import `ArchitectPublishButton`; render it beside the attach button for server threads | publish Architect advice from the composer                 |
 | `pnpm-lock.yaml`                                | `@t3tools/ft3-architect` dependency of the `packages/ft3-web` importer                 | resolve the browser-safe architect contracts               |
 

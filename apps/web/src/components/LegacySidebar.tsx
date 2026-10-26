@@ -1,3 +1,4 @@
+import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/client-runtime/thread-pull-requests";
 import { Spinner } from "~/components/ui/spinner";
@@ -1015,7 +1016,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
       {shouldShowThreadPanel &&
         renderedThreads.map((thread) => {
           const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-          return (
+          return [
             <SidebarThreadRow
               key={threadKey}
               thread={thread}
@@ -1043,8 +1044,13 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               cancelRename={cancelRename}
               attemptArchiveThread={attemptArchiveThread}
               openPrLink={openPrLink}
-            />
-          );
+            />,
+            <ArchitectSidebarPin
+              key={`architect-pin:${threadKey}`}
+              thread={thread}
+              onNavigate={navigateToThread}
+            />,
+          ];
         })}
 
       {projectExpanded && hasOverflowingThreads && !isThreadListExpanded && (
