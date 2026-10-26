@@ -12,12 +12,14 @@ import {
 } from "./inferenceServer.ts";
 
 const MODEL = "bonsai-2-27b";
+const OTHER_MODEL = "qwen-3";
 const profile = {
   model: MODEL,
   baseUrl: "http://127.0.0.1:8080/v1",
   executablePath: "C:\\Bonsai\\bin\\llama-server.exe",
   modelPath: "C:\\Bonsai\\models\\bonsai.gguf",
 };
+const otherProfile = { ...profile, model: OTHER_MODEL };
 const config: PiInferenceConfig = {
   baseUrl: profile.baseUrl,
   apiKey: "local",
@@ -28,38 +30,52 @@ class FakeChild extends NodeEvents.EventEmitter {
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   readonly killSignals: Array<NodeJS.Signals | number | undefined> = [];
+  alive = true;
 
   kill(signal?: NodeJS.Signals | number): boolean {
     this.killSignals.push(signal);
+    if (!this.alive) return true;
+    this.alive = false;
     this.emit("close", 0, signal ?? null);
     return true;
   }
 }
 
-function dependencies(healthCallsBeforeReady: number): PiInferenceServerDependencies & {
+function makeFake(healthCallsBeforeReady: number): {
+  readonly deps: PiInferenceServerDependencies;
+  readonly children: ReadonlyArray<FakeChild>;
   readonly spawnArgs: Array<ReadonlyArray<string>>;
+  readonly state: { servedModel: string; healthy: boolean; started: boolean };
   readonly healthCalls: () => number;
 } {
   let healthCalls = 0;
   const children: Array<FakeChild> = [];
   const spawnArgs: Array<ReadonlyArray<string>> = [];
+  const state = { servedModel: MODEL, healthy: true, started: false };
   const fetcher = (async (input: Parameters<typeof fetch>[0]) => {
     const url = new URL(
       input instanceof URL ? input : typeof input === "string" ? input : input.url,
     );
     if (url.pathname === "/health") {
       healthCalls += 1;
-      if (healthCalls < healthCallsBeforeReady) return new Response("", { status: 503 });
+      if (!state.started || !state.healthy || healthCalls < healthCallsBeforeReady) {
+        return new Response("", { status: 503 });
+      }
       return new Response("ok", { status: 200 });
     }
-    return new Response(JSON.stringify({ data: [{ id: MODEL }] }), { status: 200 });
+    return new Response(JSON.stringify({ data: [{ id: state.servedModel }] }), { status: 200 });
   }) as typeof fetch;
-  return {
-    spawnArgs,
-    healthCalls: () => healthCalls,
-    spawn: (_command: string, args: ReadonlyArray<string>) => {
+  const deps: PiInferenceServerDependencies = {
+    spawn: (_command, args) => {
       spawnArgs.push([...args]);
+      const aliasIndex = args.indexOf("--alias");
+      state.servedModel = aliasIndex >= 0 ? (args[aliasIndex + 1] ?? MODEL) : MODEL;
+      state.healthy = true;
+      state.started = true;
       const child = new FakeChild();
+      child.on("close", () => {
+        if (children.every((candidate) => !candidate.alive)) state.started = false;
+      });
       children.push(child);
       return child as unknown as ReturnType<PiInferenceServerDependencies["spawn"]>;
     },
@@ -68,6 +84,22 @@ function dependencies(healthCallsBeforeReady: number): PiInferenceServerDependen
     now: () => 1,
     sleep: async () => undefined,
   };
+  return {
+    deps,
+    children,
+    spawnArgs,
+    state,
+    healthCalls: () => healthCalls,
+  };
+}
+
+async function failureOf(promise: Promise<unknown>): Promise<Error | undefined> {
+  try {
+    await promise;
+    return undefined;
+  } catch (cause) {
+    return cause instanceof Error ? cause : new Error(String(cause));
+  }
 }
 
 it("builds the fixed llama-server command line", () => {
@@ -80,42 +112,143 @@ it("builds the fixed llama-server command line", () => {
 });
 
 it("starts one process and waits for readiness before the turn", async () => {
-  const deps = dependencies(3);
-  const manager = makePiInferenceServerManager(config, deps);
+  const fake = makeFake(3);
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
 
-  await Promise.all([manager.ensureReady(`ft3-local/${MODEL}`), manager.ensureReady(MODEL)]);
+  await Promise.all([
+    manager.ensureReady("a", `ft3-local/${MODEL}`),
+    manager.ensureReady("a", MODEL),
+  ]);
 
-  assert.equal(deps.spawnArgs.length, 1);
-  assert.isAtLeast(deps.healthCalls(), 3);
+  assert.equal(fake.spawnArgs.length, 1);
+  assert.isAtLeast(fake.healthCalls(), 3);
 
-  await manager.ensureReady(MODEL);
-  assert.equal(deps.spawnArgs.length, 1);
+  await manager.ensureReady("a", MODEL);
+  assert.equal(fake.spawnArgs.length, 1);
 });
 
 it("does not start anything when the model has no managed profile", async () => {
-  const deps = dependencies(1);
-  const manager = makePiInferenceServerManager(config, deps);
-  await manager.ensureReady("some-other-model");
-  assert.equal(deps.spawnArgs.length, 0);
+  const fake = makeFake(1);
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
+  await manager.ensureReady("a", "some-other-model");
+  assert.equal(fake.spawnArgs.length, 0);
 });
 
 it("rejects a non-loopback endpoint instead of launching a remote server", async () => {
-  const deps = dependencies(1);
+  const fake = makeFake(1);
   const remote: PiInferenceConfig = {
     ...config,
     profiles: [{ ...profile, baseUrl: "https://example.com/v1" }],
   };
-  const manager = makePiInferenceServerManager(remote, deps);
-  let failure: unknown;
-  try {
-    await manager.ensureReady(MODEL);
-  } catch (cause) {
-    failure = cause;
-  }
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", remote);
+  const failure = await failureOf(manager.ensureReady("a", MODEL));
   assert.instanceOf(failure, Error);
-  assert.equal(deps.spawnArgs.length, 0);
+  assert.equal(fake.spawnArgs.length, 0);
 });
 
 it("rejects an invalid profile file", () => {
   assert.throws(() => parsePiInferenceConfig({ profiles: [{ model: "x" }] }));
+});
+
+it("refuses a second profile at an endpoint owned by another instance", async () => {
+  const fake = makeFake(1);
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
+  manager.registerInstance("b", {
+    ...config,
+    profiles: [{ ...otherProfile }],
+  });
+
+  await manager.ensureReady("a", MODEL);
+  const failure = await failureOf(manager.ensureReady("b", OTHER_MODEL));
+
+  assert.instanceOf(failure, Error);
+  assert.match(failure!.message, /different Pi model\/server profile|different server profile/);
+  assert.equal(fake.spawnArgs.length, 1);
+  assert.deepEqual(fake.children[0]!.killSignals, []);
+});
+
+it("switches the owned profile when the same instance selects another model", async () => {
+  const fake = makeFake(1);
+  const manager = makePiInferenceServerManager(fake.deps);
+  const configWithBoth: PiInferenceConfig = { ...config, profiles: [profile, otherProfile] };
+  manager.registerInstance("a", configWithBoth);
+
+  await manager.ensureReady("a", MODEL);
+  assert.equal(fake.spawnArgs.length, 1);
+  await manager.ensureReady("a", OTHER_MODEL);
+
+  assert.equal(fake.spawnArgs.length, 2);
+  assert.equal(fake.children[0]!.killSignals.length, 1);
+  const status = await manager.status("a", OTHER_MODEL);
+  assert.equal(status.model, OTHER_MODEL);
+  assert.isTrue(status.ready);
+  assert.isTrue(status.owned);
+});
+
+it("shares one endpoint between instances and only stops the last claim", async () => {
+  const fake = makeFake(1);
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
+  manager.registerInstance("b", config);
+
+  await manager.ensureReady("a", MODEL);
+  await manager.ensureReady("b", MODEL);
+  assert.equal(fake.spawnArgs.length, 1);
+
+  await manager.stop("a");
+  assert.equal(fake.children[0]!.killSignals.length, 0);
+
+  await manager.stop("b");
+  assert.equal(fake.children[0]!.killSignals.length, 1);
+  assert.equal(fake.spawnArgs.length, 1);
+});
+
+it("stops the owned server and reports the stopped phase", async () => {
+  const fake = makeFake(1);
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
+  await manager.ensureReady("a", MODEL);
+
+  const status = await manager.stop("a");
+  assert.equal(status.phase, "stopped");
+  assert.isFalse(status.ready);
+  assert.equal(fake.children[0]!.killSignals.length, 1);
+});
+
+it("rejects an external endpoint that serves a different model", async () => {
+  const fake = makeFake(1);
+  fake.state.servedModel = OTHER_MODEL;
+  fake.state.started = true;
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
+
+  const failure = await failureOf(manager.ensureReady("a", MODEL));
+  assert.instanceOf(failure, Error);
+  assert.match(failure!.message, /already serving a different model/);
+  assert.equal(fake.spawnArgs.length, 0);
+});
+
+it("serializes requests per endpoint through one slot", async () => {
+  const fake = makeFake(1);
+  const manager = makePiInferenceServerManager(fake.deps);
+  const queue: Array<string> = [];
+  const releaseFirst = await manager.acquireRequestSlot(profile.baseUrl);
+  queue.push("first");
+
+  const second = manager
+    .acquireRequestSlot(profile.baseUrl, { onQueued: () => queue.push("queued") })
+    .then((release) => {
+      queue.push("second");
+      return release;
+    });
+
+  assert.deepEqual(queue, ["first", "queued"]);
+  releaseFirst();
+  const releaseSecond = await second;
+  releaseSecond();
+  assert.deepEqual(queue, ["first", "queued", "second"]);
 });

@@ -10,6 +10,7 @@ const PI_INFERENCE_CONFIG_ENV = "T3CODE_FT3_PI_INFERENCE_CONFIG";
 const READINESS_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 2_000;
 const PROBE_INTERVAL_MS = 1_000;
+const STOP_TIMEOUT_MS = 5_000;
 
 export interface PiInferenceProfile {
   readonly model: string;
@@ -251,7 +252,7 @@ export type PiEndpointProbe =
   | { readonly ready: true; readonly modelIds: ReadonlyArray<string> }
   | { readonly ready: false; readonly modelIds: ReadonlyArray<string>; readonly reason: string };
 
-async function probePiInferenceEndpoint(
+export async function probePiInferenceEndpoint(
   input: { readonly baseUrl: string; readonly apiKey?: string | undefined },
   fetcher: typeof fetch = fetch,
   expectedModelId?: string,
@@ -283,8 +284,9 @@ async function probePiInferenceEndpoint(
           : "HTTP /health is not responding yet.",
     };
   }
-  if (!health.ok)
+  if (!health.ok) {
     return { ready: false, modelIds: [], reason: `HTTP /health returned ${health.status}.` };
+  }
 
   const modelsUrl = new URL(base);
   modelsUrl.pathname = `${base.pathname.replace(/\/+$/, "")}/models`;
@@ -370,22 +372,57 @@ export interface PiInferenceServerDependencies {
   readonly sleep: (milliseconds: number) => Promise<void>;
 }
 
+export type PiInferenceServerPhase = "stopped" | "starting" | "ready" | "failed";
+
+export interface PiInferenceServerStatus {
+  readonly instanceId: string;
+  readonly phase: PiInferenceServerPhase;
+  readonly ready: boolean;
+  readonly endpoint: string;
+  readonly model: string | undefined;
+  readonly modelIds: ReadonlyArray<string>;
+  readonly owned: boolean;
+  readonly error: string | null;
+}
+
+interface RequestSlot {
+  active: boolean;
+  waiters: Array<{
+    resolve: (release: () => void) => void;
+    signal?: AbortSignal;
+    abort?: () => void;
+  }>;
+}
+
 interface ServerOwner {
   readonly key: string;
-  readonly executablePath: string;
-  readonly launchArgs: ReadonlyArray<string>;
+  readonly endpoint: string;
+  readonly signature: string;
+  readonly profile: PiInferenceProfile;
+  readonly config: PiInferenceConfig;
   readonly child: ManagedChild;
   readonly readyPromise: Promise<void>;
+  readonly exitedPromise: Promise<void>;
   readonly rejectReady: (reason: Error) => void;
   readonly resolveReady: () => void;
+  readonly claims: Set<string>;
   alive: boolean;
-  ready: boolean;
+  phase: PiInferenceServerPhase;
+  error: string | null;
+  modelIds: ReadonlyArray<string>;
 }
 
 function endpointKey(url: URL): string {
   const normalized = new URL(url);
   if (normalized.hostname.toLowerCase() === "localhost") normalized.hostname = "127.0.0.1";
   return normalized.toString().replace(/\/$/, "");
+}
+
+function profileSignature(profile: PiInferenceProfile): string {
+  return JSON.stringify({
+    executablePath: NodePath.resolve(profile.executablePath),
+    args: buildPiInferenceServerArgs(profile),
+  });
 }
 
 const defaultDependencies: PiInferenceServerDependencies = {
@@ -403,31 +440,133 @@ const defaultDependencies: PiInferenceServerDependencies = {
 };
 
 export interface PiInferenceServerManager {
-  /** Start the configured profile when needed and resolve only after the endpoint serves it. */
-  readonly ensureReady: (model: string | undefined) => Promise<void>;
-  readonly stopAll: () => void;
+  /** Register or replace the managed config for one provider instance. */
+  readonly registerInstance: (instanceId: string, config: PiInferenceConfig) => void;
+  /** Auto-start on turn: start the selected profile when needed and wait for readiness. */
+  readonly ensureReady: (instanceId: string, model: string | undefined) => Promise<void>;
+  /** Manual UI start for the selected profile. */
+  readonly start: (
+    instanceId: string,
+    model: string | undefined,
+  ) => Promise<PiInferenceServerStatus>;
+  /** Manual UI stop; only processes owned through this instance claim are killed. */
+  readonly stop: (instanceId: string) => Promise<PiInferenceServerStatus>;
+  /** Manual UI status, including a pre-existing external endpoint. */
+  readonly status: (
+    instanceId: string,
+    model?: string | undefined,
+  ) => Promise<PiInferenceServerStatus>;
+  /** Release instance claims and kill servers that no other instance uses. */
+  readonly disposeInstance: (instanceId: string) => void;
+  /** Stop every FT3-owned inference server. */
+  readonly shutdown: () => void;
+  /** Serialize requests per endpoint, matching llama-server's default single slot. */
+  readonly acquireRequestSlot: (
+    baseUrl: string,
+    options?: {
+      readonly onQueued?: (() => void) | undefined;
+      readonly signal?: AbortSignal | undefined;
+    },
+  ) => Promise<() => void>;
 }
 
-/** Auto-start only: slots and manual start/stop belong to a later slice. */
 export function makePiInferenceServerManager(
-  config: PiInferenceConfig,
   overrideDependencies: Partial<PiInferenceServerDependencies> = {},
 ): PiInferenceServerManager {
   const deps: PiInferenceServerDependencies = { ...defaultDependencies, ...overrideDependencies };
+  const configs = new Map<string, PiInferenceConfig>();
   const owners = new Map<string, ServerOwner>();
-  const launches = new Map<string, Promise<void>>();
+  const instanceKeys = new Map<string, Set<string>>();
+  const activeKeyByInstance = new Map<string, string>();
+  const startFlights = new Map<string, Promise<void>>();
+  const lastFailures = new Map<string, string>();
+  const requestSlots = new Map<string, RequestSlot>();
 
-  const stopOwner = (owner: ServerOwner) => {
-    if (!owner.alive) return;
+  const requireConfig = (instanceId: string): PiInferenceConfig => {
+    const config = configs.get(instanceId);
+    if (!config) throw new Error(`Pi inference config for ${instanceId} is not registered.`);
+    return config;
+  };
+
+  const targetUrl = (config: PiInferenceConfig, profile: PiInferenceProfile | undefined) => {
+    const url = parsePiLocalEndpoint(profile?.baseUrl ?? config.baseUrl);
+    if (!url) throw new Error("The inference endpoint must use HTTP on a loopback address.");
+    return url;
+  };
+
+  const claim = (instanceId: string, owner: ServerOwner) => {
+    owner.claims.add(instanceId);
+    const keys = instanceKeys.get(instanceId) ?? new Set<string>();
+    keys.add(owner.key);
+    instanceKeys.set(instanceId, keys);
+    activeKeyByInstance.set(instanceId, owner.key);
+  };
+
+  const releaseClaim = (instanceId: string, owner: ServerOwner) => {
+    owner.claims.delete(instanceId);
+    const keys = instanceKeys.get(instanceId);
+    keys?.delete(owner.key);
+    if (keys?.size === 0) instanceKeys.delete(instanceId);
+    if (activeKeyByInstance.get(instanceId) === owner.key) {
+      activeKeyByInstance.delete(instanceId);
+    }
+  };
+
+  const soleClaim = (owner: ServerOwner, instanceId: string): boolean =>
+    owner.claims.size === 1 && owner.claims.has(instanceId);
+
+  const stopOwner = async (owner: ServerOwner) => {
+    if (!owner.alive) {
+      owners.delete(owner.key);
+      return;
+    }
     owner.alive = false;
+    owner.phase = "stopped";
+    owners.delete(owner.key);
+    for (const instanceId of Array.from(owner.claims)) releaseClaim(instanceId, owner);
+    owner.claims.clear();
     try {
       owner.child.kill();
     } catch {
       // Process already gone; the readiness wait reports the outcome.
     }
+    await Promise.race([owner.exitedPromise, deps.sleep(STOP_TIMEOUT_MS)]);
   };
 
-  const start = async (profile: PiInferenceProfile, key: string): Promise<ServerOwner> => {
+  const statusForOwner = (instanceId: string, owner: ServerOwner): PiInferenceServerStatus => ({
+    instanceId,
+    phase: owner.phase,
+    ready: owner.phase === "ready" && owner.alive,
+    endpoint: owner.endpoint,
+    model: owner.profile.model,
+    modelIds: owner.modelIds,
+    owned: true,
+    error: owner.error,
+  });
+
+  const stoppedStatus = (
+    instanceId: string,
+    config: PiInferenceConfig,
+    profile?: PiInferenceProfile | undefined,
+    error: string | null = null,
+  ): PiInferenceServerStatus => ({
+    instanceId,
+    phase: error ? "failed" : "stopped",
+    ready: false,
+    endpoint: profile?.baseUrl ?? config.baseUrl,
+    model: profile?.model,
+    modelIds: [],
+    owned: false,
+    error,
+  });
+
+  const spawnOwner = async (
+    instanceId: string,
+    config: PiInferenceConfig,
+    profile: PiInferenceProfile,
+    key: string,
+    signature: string,
+  ): Promise<ServerOwner> => {
     const executable = NodePath.resolve(profile.executablePath);
     const modelPath = NodePath.resolve(profile.modelPath);
     if (/\.ps1$/i.test(executable)) {
@@ -444,9 +583,13 @@ export function makePiInferenceServerManager(
     const args = buildPiInferenceServerArgs(profile);
     let resolveReady = () => {};
     let rejectReady = (_reason: Error) => {};
+    let resolveExited = () => {};
     const readyPromise = new Promise<void>((resolve, reject) => {
       resolveReady = resolve;
       rejectReady = reject;
+    });
+    const exitedPromise = new Promise<void>((resolve) => {
+      resolveExited = resolve;
     });
     void readyPromise.catch(() => undefined);
     const child = deps.spawn(executable, args, {
@@ -456,56 +599,68 @@ export function makePiInferenceServerManager(
     });
     const owner: ServerOwner = {
       key,
-      executablePath: executable,
-      launchArgs: args,
+      endpoint: profile.baseUrl,
+      signature,
+      profile,
+      config,
       child,
       readyPromise,
+      exitedPromise,
       rejectReady,
       resolveReady,
+      claims: new Set([instanceId]),
       alive: true,
-      ready: false,
+      phase: "starting",
+      error: null,
+      modelIds: [],
     };
     owners.set(key, owner);
+    activeKeyByInstance.set(instanceId, key);
+    const keys = instanceKeys.get(instanceId) ?? new Set<string>();
+    keys.add(key);
+    instanceKeys.set(instanceId, keys);
     child.on("error", (cause: unknown) => {
       owner.alive = false;
-      owner.rejectReady(
-        new Error(
-          `FT3 could not start the configured llama-server executable (${String((cause as { code?: unknown })?.code ?? cause)}).`,
-        ),
-      );
+      owner.phase = "failed";
+      owner.error = `FT3 could not start the configured llama-server executable (${String((cause as { code?: unknown })?.code ?? cause)}).`;
+      owner.rejectReady(new Error(owner.error));
+      resolveExited();
     });
     child.on("close", (code: number | null) => {
       owner.alive = false;
-      owner.rejectReady(
-        new Error(
-          `The FT3-owned inference process exited before readiness (code ${code === null ? "unknown" : code}).`,
-        ),
-      );
+      if (owner.phase !== "stopped") owner.phase = "failed";
+      const error = `The FT3-owned inference process exited before readiness (code ${code === null ? "unknown" : code}).`;
+      owner.rejectReady(new Error(error));
+      resolveExited();
     });
-    void watchReadiness(owner, profile);
+    void watchReadiness(owner);
     return owner;
   };
 
-  const watchReadiness = async (owner: ServerOwner, profile: PiInferenceProfile) => {
-    const expectedModelId = piModelIdFromSlug(profile.model);
+  const watchReadiness = async (owner: ServerOwner) => {
+    const expectedModelId = piModelIdFromSlug(owner.profile.model);
     const deadline = deps.now() + READINESS_TIMEOUT_MS;
     let reason = "The inference endpoint did not become ready.";
     while (owner.alive && deps.now() < deadline) {
       const probe = await probePiInferenceEndpoint(
-        { baseUrl: profile.baseUrl, apiKey: config.apiKey },
+        { baseUrl: owner.profile.baseUrl, apiKey: owner.config.apiKey },
         deps.fetch,
         expectedModelId,
       );
       if (probe.ready) {
-        owner.ready = true;
+        owner.phase = "ready";
+        owner.modelIds = probe.modelIds;
         owner.resolveReady();
         return;
       }
       reason = probe.reason;
+      owner.modelIds = probe.modelIds;
       await deps.sleep(PROBE_INTERVAL_MS);
     }
     if (owner.alive) {
       owner.alive = false;
+      owner.phase = "failed";
+      owner.error = reason;
       try {
         owner.child.kill();
       } catch {
@@ -515,43 +670,26 @@ export function makePiInferenceServerManager(
     owner.rejectReady(new Error(reason));
   };
 
-  const ensureReady = async (model: string | undefined): Promise<void> => {
-    const profile = resolvePiInferenceProfile(config, model);
-    if (!profile) return;
-    const url = parsePiLocalEndpoint(profile.baseUrl);
-    if (!url) throw new Error("The inference endpoint must use HTTP on a loopback address.");
-    const key = endpointKey(url);
-    const expectedModelId = piModelIdFromSlug(profile.model);
-    const existingProbe = await probePiInferenceEndpoint(
-      { baseUrl: profile.baseUrl, apiKey: config.apiKey },
-      deps.fetch,
-      expectedModelId,
-    );
-    if (existingProbe.ready) return;
-
-    const existing = owners.get(key);
-    if (existing?.alive) {
-      if (
-        existing.executablePath !== NodePath.resolve(profile.executablePath) ||
-        JSON.stringify(existing.launchArgs) !== JSON.stringify(buildPiInferenceServerArgs(profile))
-      ) {
-        throw new Error(
-          "A different Pi model/server profile is already running at this endpoint; stop it first.",
-        );
-      }
-      if (!existing.ready) {
-        await existing.readyPromise;
-        return;
-      }
-      throw new Error(
-        "The FT3-owned inference server was ready but stopped responding; restart the instance.",
-      );
-    }
-
-    const inFlight = launches.get(key);
+  const launch = async (
+    instanceId: string,
+    config: PiInferenceConfig,
+    profile: PiInferenceProfile,
+    key: string,
+    signature: string,
+  ): Promise<ServerOwner> => {
+    const inFlight = startFlights.get(key);
     if (inFlight) {
       await inFlight;
-      return;
+      const owner = owners.get(key);
+      if (!owner?.alive) throw new Error("The concurrent inference server start did not survive.");
+      if (owner.signature !== signature) {
+        throw new Error(
+          "A different Pi model/server profile is already starting at this endpoint; stop it first.",
+        );
+      }
+      claim(instanceId, owner);
+      await owner.readyPromise;
+      return owner;
     }
     let settle: () => void = () => {};
     let fail: (reason: Error) => void = () => {};
@@ -560,26 +698,254 @@ export function makePiInferenceServerManager(
       fail = reject;
     });
     void flight.catch(() => undefined);
-    launches.set(key, flight);
+    startFlights.set(key, flight);
     void (async () => {
       try {
-        const owner = await start(profile, key);
+        const owner = await spawnOwner(instanceId, config, profile, key, signature);
         await owner.readyPromise;
         settle();
       } catch (cause) {
         fail(cause instanceof Error ? cause : new Error(String(cause)));
       } finally {
-        launches.delete(key);
+        startFlights.delete(key);
       }
     })();
     await flight;
+    const owner = owners.get(key);
+    if (!owner?.alive) throw new Error("The inference server exited immediately after start.");
+    claim(instanceId, owner);
+    return owner;
+  };
+
+  const ensureReady = async (instanceId: string, model: string | undefined): Promise<void> => {
+    const config = requireConfig(instanceId);
+    const profile = resolvePiInferenceProfile(config, model);
+    if (!profile) return;
+    const url = targetUrl(config, profile);
+    const key = endpointKey(url);
+    const signature = profileSignature(profile);
+    const expectedModelId = piModelIdFromSlug(profile.model);
+    try {
+      const probe = await probePiInferenceEndpoint(
+        { baseUrl: profile.baseUrl, apiKey: config.apiKey },
+        deps.fetch,
+        expectedModelId,
+      );
+      if (probe.ready) {
+        const owner = owners.get(key);
+        if (owner?.alive) claim(instanceId, owner);
+        lastFailures.delete(instanceId);
+        return;
+      }
+
+      const existing = owners.get(key);
+      if (existing?.alive) {
+        if (existing.signature === signature) {
+          claim(instanceId, existing);
+          if (existing.phase === "ready") {
+            throw new Error(
+              "The FT3-owned inference server was ready but stopped responding; restart the instance.",
+            );
+          }
+          await existing.readyPromise;
+          lastFailures.delete(instanceId);
+          return;
+        }
+        if (!soleClaim(existing, instanceId)) {
+          throw new Error(
+            "The selected model needs a different server profile, but this endpoint is shared with another Pi instance. Stop or move that instance first.",
+          );
+        }
+        await stopOwner(existing);
+      } else if (probe.modelIds.length > 0) {
+        throw new Error(
+          `The endpoint is already serving a different model (${probe.modelIds.join(", ")}); stop it first.`,
+        );
+      }
+
+      await launch(instanceId, config, profile, key, signature);
+      lastFailures.delete(instanceId);
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      lastFailures.set(instanceId, message);
+      throw cause;
+    }
+  };
+
+  const status = async (
+    instanceId: string,
+    model?: string | undefined,
+  ): Promise<PiInferenceServerStatus> => {
+    const config = requireConfig(instanceId);
+    const profile = resolvePiInferenceProfile(config, model);
+    const key = activeKeyByInstance.get(instanceId);
+    const owner = key ? owners.get(key) : undefined;
+    if (owner?.alive) return statusForOwner(instanceId, owner);
+    targetUrl(config, profile);
+    const probe = await probePiInferenceEndpoint(
+      { baseUrl: profile?.baseUrl ?? config.baseUrl, apiKey: config.apiKey },
+      deps.fetch,
+      piModelIdFromSlug(profile?.model),
+    );
+    const failure = lastFailures.get(instanceId) ?? null;
+    if (probe.ready) {
+      return {
+        instanceId,
+        phase: "ready",
+        ready: true,
+        endpoint: profile?.baseUrl ?? config.baseUrl,
+        model: profile?.model,
+        modelIds: probe.modelIds,
+        owned: false,
+        error: null,
+      };
+    }
+    return {
+      instanceId,
+      phase: failure ? "failed" : "stopped",
+      ready: false,
+      endpoint: profile?.baseUrl ?? config.baseUrl,
+      model: profile?.model,
+      modelIds: probe.modelIds,
+      owned: false,
+      error: failure ?? (probe.modelIds.length > 0 ? probe.reason : null),
+    };
+  };
+
+  const start = async (
+    instanceId: string,
+    model: string | undefined,
+  ): Promise<PiInferenceServerStatus> => {
+    const config = requireConfig(instanceId);
+    const profile = resolvePiInferenceProfile(config, model);
+    if (!profile) throw new Error("The selected model has no managed inference profile.");
+    await ensureReady(instanceId, model);
+    return status(instanceId, model);
+  };
+
+  const stop = async (instanceId: string): Promise<PiInferenceServerStatus> => {
+    const config = requireConfig(instanceId);
+    const activeKey = activeKeyByInstance.get(instanceId);
+    const keys = [...(instanceKeys.get(instanceId) ?? [])];
+    for (const key of keys) {
+      const owner = owners.get(key);
+      if (!owner) continue;
+      releaseClaim(instanceId, owner);
+      if (owner.claims.size === 0) await stopOwner(owner);
+    }
+    instanceKeys.delete(instanceId);
+    activeKeyByInstance.delete(instanceId);
+    lastFailures.delete(instanceId);
+    const owner = activeKey ? owners.get(activeKey) : undefined;
+    return owner
+      ? statusForOwner(instanceId, owner)
+      : stoppedStatus(instanceId, config, resolvePiInferenceProfile(config, undefined));
+  };
+
+  const disposeInstance = (instanceId: string): void => {
+    const keys = [...(instanceKeys.get(instanceId) ?? [])];
+    for (const key of keys) {
+      const owner = owners.get(key);
+      if (!owner) continue;
+      releaseClaim(instanceId, owner);
+      if (owner.claims.size > 0) continue;
+      owner.alive = false;
+      owner.phase = "stopped";
+      owners.delete(key);
+      try {
+        owner.child.kill();
+      } catch {
+        // The process is already gone.
+      }
+    }
+    instanceKeys.delete(instanceId);
+    activeKeyByInstance.delete(instanceId);
+    lastFailures.delete(instanceId);
+  };
+
+  const shutdown = (): void => {
+    for (const owner of owners.values()) {
+      owner.alive = false;
+      owner.phase = "stopped";
+      try {
+        owner.child.kill();
+      } catch {
+        // The process is already gone.
+      }
+    }
+    owners.clear();
+    instanceKeys.clear();
+    activeKeyByInstance.clear();
+  };
+
+  const makeRelease = (slot: RequestSlot, key: string) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      while (slot.waiters.length > 0) {
+        const next = slot.waiters.shift()!;
+        if (next.signal?.aborted) continue;
+        if (next.abort) next.signal?.removeEventListener("abort", next.abort);
+        next.resolve(makeRelease(slot, key));
+        return;
+      }
+      slot.active = false;
+      requestSlots.delete(key);
+    };
+  };
+
+  const acquireRequestSlot = (
+    baseUrl: string,
+    options: {
+      readonly onQueued?: (() => void) | undefined;
+      readonly signal?: AbortSignal | undefined;
+    } = {},
+  ): Promise<() => void> => {
+    const url = parsePiLocalEndpoint(baseUrl);
+    if (!url) return Promise.resolve(() => undefined);
+    const key = endpointKey(url);
+    let slot = requestSlots.get(key);
+    if (!slot) {
+      slot = { active: false, waiters: [] };
+      requestSlots.set(key, slot);
+    }
+    if (!slot.active) {
+      slot.active = true;
+      return Promise.resolve(makeRelease(slot, key));
+    }
+    options.onQueued?.();
+    return new Promise<() => void>((resolve, reject) => {
+      if (options.signal?.aborted) {
+        reject(new Error("Inference request was interrupted while queued."));
+        return;
+      }
+      const waiter: (typeof slot.waiters)[number] = { resolve };
+      if (options.signal) waiter.signal = options.signal;
+      if (options.signal) {
+        waiter.abort = () => {
+          slot!.waiters = slot!.waiters.filter((candidate) => candidate !== waiter);
+          reject(new Error("Inference request was interrupted while queued."));
+        };
+        options.signal.addEventListener("abort", waiter.abort, { once: true });
+      }
+      slot!.waiters.push(waiter);
+    });
   };
 
   return {
-    ensureReady,
-    stopAll: () => {
-      for (const owner of owners.values()) stopOwner(owner);
-      owners.clear();
+    registerInstance: (instanceId, config) => {
+      configs.set(instanceId, config);
     },
+    ensureReady,
+    start,
+    stop,
+    status,
+    disposeInstance,
+    shutdown,
+    acquireRequestSlot,
   };
 }
+
+/** Process-wide manager so every provider instance sees the same endpoint claims. */
+export const piInferenceServerManager = makePiInferenceServerManager();
