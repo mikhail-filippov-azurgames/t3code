@@ -35,6 +35,12 @@ export class ArchitectRepository extends Context.Service<
       ReadonlyArray<Contracts.ArchitectureReviewRecord>,
       ArchitectRepositoryError
     >;
+    readonly createOrGetBinding: (
+      input: Contracts.ArchitectCreateBindingInput,
+    ) => Effect.Effect<
+      { readonly binding: Contracts.CoordinatorArchitectBinding; readonly created: boolean },
+      ArchitectRepositoryError | Contracts.ArchitectMcpFailure
+    >;
   }
 >()("@t3tools/ft3-architect/ArchitectRepository") {}
 
@@ -87,6 +93,9 @@ const ReviewRow = Schema.Struct({
 const decodeBindings = Schema.decodeUnknownEffect(Schema.Array(BindingRow));
 const decodeReviews = Schema.decodeUnknownEffect(Schema.Array(ReviewRow));
 const decodeRoutingEvidence = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Contracts.CoordinatorArchitectRoutingEvidence),
+);
+const encodeRoutingEvidence = Schema.encodeSync(
   Schema.fromJsonString(Contracts.CoordinatorArchitectRoutingEvidence),
 );
 const decodeRefs = Schema.decodeUnknownEffect(
@@ -233,6 +242,55 @@ const make = Effect.gen(function* () {
       },
       Effect.mapError(databaseError("list architecture reviews")),
     ),
+    createOrGetBinding: Effect.fn("Ft3ArchitectRepository.createOrGetBinding")(function* (input) {
+      const fingerprintByKey = sql<{ readonly fingerprint: string }>`
+        SELECT create_request_fingerprint AS fingerprint
+        FROM ft3_architect_binding
+        WHERE coordinator_thread_id = ${input.coordinatorThreadId}
+          AND create_idempotency_key = ${input.createIdempotencyKey}`;
+      const bindingByKey = sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE coordinator_thread_id = ${input.coordinatorThreadId} AND create_idempotency_key = ${input.createIdempotencyKey}`;
+      const active = sql`SELECT ${bindingSelect} FROM ft3_architect_binding WHERE coordinator_thread_id = ${input.coordinatorThreadId} AND status = 'active'`;
+      const conflict = () =>
+        new Contracts.ArchitectMcpFailure({
+          code: "idempotency_conflict",
+          message: "This create key was already used with a different model or routing evidence.",
+        });
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const priorFingerprint = yield* fingerprintByKey;
+            if (priorFingerprint[0] !== undefined) {
+              if (priorFingerprint[0].fingerprint !== input.createRequestFingerprint) {
+                return yield* conflict();
+              }
+              const prior = yield* bindingsFromRows(yield* bindingByKey);
+              return { binding: prior[0]!, created: false };
+            }
+            const activeRows = yield* active;
+            if (activeRows[0] !== undefined) {
+              const winner = yield* bindingsFromRows(activeRows);
+              return { binding: winner[0]!, created: false };
+            }
+            yield* sql`INSERT INTO ft3_architect_binding (binding_id, coordinator_thread_id, architect_thread_id, project_id, architect_task_effort, status, created_at, created_by, replaced_by_binding_id, detach_reason, create_idempotency_key, create_request_fingerprint, routing_evidence_json) VALUES (${input.bindingId}, ${input.coordinatorThreadId}, ${input.architectThreadId}, ${input.projectId}, ${input.architectTaskEffort}, 'active', ${input.createdAt}, ${input.createdBy}, NULL, NULL, ${input.createIdempotencyKey}, ${input.createRequestFingerprint}, ${encodeRoutingEvidence(input.routingEvidence)}) ON CONFLICT(coordinator_thread_id) WHERE status = 'active' DO NOTHING`;
+            const winnerRows = yield* active;
+            if (winnerRows[0] === undefined) {
+              return yield* new ArchitectRepositoryError({
+                operation: "create binding",
+                cause: new Error("ft3_architect_binding winner missing after insert"),
+              });
+            }
+            const winner = yield* bindingsFromRows(winnerRows);
+            return { binding: winner[0]!, created: winner[0]!.bindingId === input.bindingId };
+          }),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            error._tag === "OrchestratorMcpFailure" || error._tag === "ArchitectRepositoryError"
+              ? error
+              : databaseError("create architect binding")(error),
+          ),
+        );
+    }),
   });
 });
 
