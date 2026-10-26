@@ -1,4 +1,5 @@
 import { ArchitectPublishButton } from "@t3tools/ft3-web/architect";
+import { PiInferenceServerControl } from "@t3tools/ft3-web/pi";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
@@ -3506,6 +3507,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     threadRef={routeKind === "server" ? routeThreadRef : null}
                     compact={isComposerPrimaryActionsCompact}
                   />
+                  {selectedProvider === "pi" ? (
+                    <PiInferenceServerControl
+                      environmentId={environmentId}
+                      instanceId={selectedInstanceId}
+                      model={selectedModelForPicker}
+                    />
+                  ) : null}
                   <ComposerFooterPrimaryActions
                     compact={isComposerPrimaryActionsCompact}
                     canOperateThread={canOperateThread}
