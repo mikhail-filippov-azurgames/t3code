@@ -134,10 +134,17 @@ it.effect("runs the availability probe through the bundled launcher", () =>
       });
       yield* instance.snapshot.refresh;
       const snapshot = yield* instance.snapshot.getSnapshot;
+      const maintenance = yield* instance.snapshot.resolveMaintenance();
 
       assert.isTrue(yield* fileSystem.exists(launcher));
       assert.isTrue(snapshot.installed);
       assert.equal(snapshot.version, "0.87.1");
+      assert.isNull(maintenance.update);
+      assert.equal(maintenance.packageName, "@earendil-works/pi-coding-agent");
+      assert.match(
+        maintenance.installPath ?? "",
+        /pi-coding-agent[\\/]dist[\\/]bundle[\\/]cli\.js$/,
+      );
       assert.deepEqual(
         snapshot.models.map((model) => model.slug),
         ["default", "test/model"],
