@@ -20,6 +20,7 @@ describe("ft3 migrations", () => {
         [6, "Ft3DelegatedTaskSummaries"],
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
+        [9, "BoardRetention"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
@@ -54,6 +55,7 @@ describe("ft3 migrations", () => {
         { migration_id: 6, name: "Ft3DelegatedTaskSummaries" },
         { migration_id: 7, name: "Ft3TaskHandoffs" },
         { migration_id: 8, name: "Ft3DelegatedTaskSummaryReactor" },
+        { migration_id: 9, name: "BoardRetention" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -82,6 +84,7 @@ describe("ft3 migrations", () => {
         [6, "Ft3DelegatedTaskSummaries"],
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
+        [9, "BoardRetention"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
       const ft3Before = yield* sql`SELECT * FROM ft3_migrations`;
@@ -116,6 +119,7 @@ describe("ft3 migrations", () => {
         [6, "Ft3DelegatedTaskSummaries"],
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
+        [9, "BoardRetention"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

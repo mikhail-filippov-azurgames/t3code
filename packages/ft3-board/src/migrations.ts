@@ -89,4 +89,13 @@ const reactor = Effect.gen(function* () {
   `;
 });
 
-export const migrations = { "2_Board": board, "3_BoardReactor": reactor };
+const retention = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE INDEX idx_ft3_board_cards_retention ON ft3_board_cards(status, archived, updated_at)`;
+});
+
+export const migrations = {
+  "2_Board": board,
+  "3_BoardReactor": reactor,
+  "9_BoardRetention": retention,
+};

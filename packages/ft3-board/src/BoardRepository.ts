@@ -75,8 +75,56 @@ export class BoardRepository extends Context.Service<
     readonly findCardsByPrefix: (
       prefix: string,
     ) => Effect.Effect<ReadonlyArray<Contracts.BoardCard>, BoardRepositoryError>;
+    readonly listArchiveCandidates: (input: {
+      readonly cutoff: string;
+      readonly limit: number;
+    }) => Effect.Effect<
+      ReadonlyArray<{ readonly cardId: Contracts.BoardCardId }>,
+      BoardRepositoryError
+    >;
+    readonly listDeleteCandidates: (input: {
+      readonly cutoff: string;
+      readonly limit: number;
+    }) => Effect.Effect<
+      ReadonlyArray<{ readonly cardId: Contracts.BoardCardId }>,
+      BoardRepositoryError
+    >;
+    readonly listNudgeCandidateCards: () => Effect.Effect<
+      ReadonlyArray<Contracts.BoardCard>,
+      BoardRepositoryError
+    >;
+    readonly hasWorkingReadyCard: (
+      orchestratorThreadId: ThreadId,
+    ) => Effect.Effect<boolean, BoardRepositoryError>;
+    readonly hasCardEvent: (
+      entryId: Contracts.BoardCardEventId,
+    ) => Effect.Effect<boolean, BoardRepositoryError>;
+    readonly deleteCardWithRecord: (input: {
+      readonly card: Contracts.BoardCard;
+      readonly deletedAt: string;
+      readonly reason: "retention" | "executor-thread-deleted";
+    }) => Effect.Effect<void, BoardRepositoryError>;
   }
 >()("@t3tools/ft3-board/BoardRepository") {}
+
+export const buildBoardCardEvent = (
+  card: Contracts.BoardCard,
+  input: {
+    readonly at: string;
+    readonly body: string;
+    readonly entryId: Contracts.BoardCardEventId;
+  },
+): Contracts.BoardCardEvent => ({
+  entryId: input.entryId,
+  cardId: card.cardId,
+  at: input.at,
+  status: card.status,
+  executorRole: card.executorRole,
+  model: card.assignee?.model ?? null,
+  effort: null,
+  body: input.body,
+  source: "system",
+});
 
 const CardRow = Schema.Struct({
   ...Contracts.BoardCard.fields,
@@ -317,6 +365,80 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(databaseError("find cards by prefix")),
+    ),
+    listArchiveCandidates: Effect.fn("Ft3BoardRepository.listArchiveCandidates")(
+      function* (input) {
+        const rows = yield* sql<{ readonly cardId: string }>`
+          SELECT card_id AS "cardId" FROM ft3_board_cards
+          WHERE status = 'done' AND archived = 0 AND updated_at <= ${input.cutoff}
+          ORDER BY updated_at, card_id
+          LIMIT ${input.limit}
+        `;
+        return rows.map((row) => ({ cardId: Contracts.BoardCardId.make(row.cardId) }));
+      },
+      Effect.mapError(databaseError("list archive candidates")),
+    ),
+    listDeleteCandidates: Effect.fn("Ft3BoardRepository.listDeleteCandidates")(
+      function* (input) {
+        const rows = yield* sql<{ readonly cardId: string }>`
+          SELECT card_id AS "cardId" FROM ft3_board_cards
+          WHERE status = 'done' AND archived = 1 AND updated_at <= ${input.cutoff}
+          ORDER BY updated_at, card_id
+          LIMIT ${input.limit}
+        `;
+        return rows.map((row) => ({ cardId: Contracts.BoardCardId.make(row.cardId) }));
+      },
+      Effect.mapError(databaseError("list delete candidates")),
+    ),
+    listNudgeCandidateCards: Effect.fn("Ft3BoardRepository.listNudgeCandidateCards")(
+      function* () {
+        return yield* cardsFromRows(
+          yield* sql`SELECT ${columns} FROM ft3_board_cards
+            WHERE archived = 0
+              AND (status IN ('orchestrator', 'review', 'todo')
+                OR readiness = 'needs_human'
+                OR failure_streak >= 3)
+            ORDER BY orchestrator_thread_id, order_index, created_at, card_id`,
+        );
+      },
+      Effect.mapError(databaseError("list nudge candidates")),
+    ),
+    hasWorkingReadyCard: Effect.fn("Ft3BoardRepository.hasWorkingReadyCard")(
+      function* (orchestratorThreadId) {
+        const rows = yield* sql<{ readonly present: number }>`
+          SELECT 1 AS "present" FROM ft3_board_cards
+          WHERE orchestrator_thread_id = ${orchestratorThreadId}
+            AND archived = 0 AND readiness = 'ready'
+            AND status IN ('todo', 'orchestrator', 'in_progress', 'review')
+          LIMIT 1
+        `;
+        return rows.length > 0;
+      },
+      Effect.mapError(databaseError("check working ready card")),
+    ),
+    hasCardEvent: Effect.fn("Ft3BoardRepository.hasCardEvent")(
+      function* (entryId) {
+        const rows = yield* sql<{ readonly present: number }>`
+          SELECT 1 AS "present" FROM ft3_board_card_events WHERE entry_id = ${entryId} LIMIT 1
+        `;
+        return rows.length > 0;
+      },
+      Effect.mapError(databaseError("check card event")),
+    ),
+    deleteCardWithRecord: Effect.fn("Ft3BoardRepository.deleteCardWithRecord")(
+      function* (input) {
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO ft3_board_card_deletions (card_id, orchestrator_thread_id, deleted_at, reason, history_event_count)
+              SELECT card_id, orchestrator_thread_id, ${input.deletedAt}, ${input.reason},
+                (SELECT COUNT(*) FROM ft3_board_card_events e WHERE e.card_id = c.card_id)
+              FROM ft3_board_cards c WHERE card_id = ${input.card.cardId}
+              ON CONFLICT DO NOTHING`;
+            yield* sql`DELETE FROM ft3_board_cards WHERE card_id = ${input.card.cardId}`;
+          }),
+        );
+      },
+      Effect.mapError(databaseError("delete card with record")),
     ),
   });
 });
