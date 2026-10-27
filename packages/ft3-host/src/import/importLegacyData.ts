@@ -217,9 +217,43 @@ export const importLegacyDataSql = Effect.fn("importLegacyDataSql")(function* ()
 
       const stagingRows = yield* sql<StagingRow>`
         SELECT thread_id, created_at, payload_json FROM ${sql(STAGING_TABLE)}`;
-      const threadRows = yield* sql<{ readonly thread_id: string }>`
-        SELECT thread_id FROM orchestration_v2_projection_threads`;
+      const threadRows = yield* sql<{
+        readonly thread_id: string;
+        readonly root_thread_id: string | null;
+      }>`
+        SELECT thread_id,
+          json_extract(payload_json, '$.lineage.rootThreadId') AS root_thread_id
+        FROM orchestration_v2_projection_threads`;
       const existingThreads = new Set(threadRows.map((row) => row.thread_id));
+      const rootThreadIdByThreadId = new Map(
+        threadRows.map((row) => [row.thread_id, row.root_thread_id ?? row.thread_id] as const),
+      );
+      const parentByChildThreadId = new Map<string, string>();
+      for (const row of stagingRows) {
+        const payload = parseJson(row.payload_json);
+        const childThreadId =
+          typeof payload?.childThreadId === "string" ? payload.childThreadId : row.thread_id;
+        const parentThreadId =
+          typeof payload?.parentThreadId === "string" ? payload.parentThreadId : null;
+        if (
+          parentThreadId !== null &&
+          existingThreads.has(childThreadId) &&
+          existingThreads.has(parentThreadId)
+        ) {
+          parentByChildThreadId.set(childThreadId, parentThreadId);
+        }
+      }
+      const familyRootFor = (childThreadId: string, parentThreadId: string): string | null => {
+        let current = parentThreadId;
+        const seen = new Set([childThreadId]);
+        while (true) {
+          if (seen.has(current)) return null;
+          seen.add(current);
+          const parent = parentByChildThreadId.get(current);
+          if (parent === undefined) return rootThreadIdByThreadId.get(current) ?? current;
+          current = parent;
+        }
+      };
       let subagentSkipped = 0;
       let lineageRestored = 0;
       for (const row of stagingRows) {
@@ -233,6 +267,11 @@ export const importLegacyDataSql = Effect.fn("importLegacyDataSql")(function* ()
           !existingThreads.has(childThreadId) ||
           !existingThreads.has(parentThreadId)
         ) {
+          subagentSkipped += 1;
+          continue;
+        }
+        const rootThreadId = familyRootFor(childThreadId, parentThreadId);
+        if (rootThreadId === null) {
           subagentSkipped += 1;
           continue;
         }
@@ -285,7 +324,8 @@ export const importLegacyDataSql = Effect.fn("importLegacyDataSql")(function* ()
           SET payload_json = json_set(
             payload_json,
             '$.lineage.parentThreadId', ${parentThreadId},
-            '$.lineage.relationshipToParent', 'subagent'
+            '$.lineage.relationshipToParent', 'subagent',
+            '$.lineage.rootThreadId', ${rootThreadId}
           )
           WHERE thread_id = ${childThreadId}`;
         lineageRestored += 1;
