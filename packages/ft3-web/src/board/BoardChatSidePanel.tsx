@@ -53,10 +53,10 @@ import {
   removeBoardCardPin,
   subscribeBoardCardPins,
 } from "./boardCardPins";
-import type {
-  CoordinatorSummaryHistoryEntry,
-  CoordinatorSummaryHistoryLoader,
-  CoordinatorSummaryHistoryPage,
+import {
+  coordinatorSummaryExecutorLabel,
+  type CoordinatorSummaryHistoryEntry,
+  type CoordinatorSummaryHistoryPage,
 } from "./coordinatorSummaryHistory";
 import { useCoordinatorSummaryHistoryLoader } from "./useCoordinatorSummaryHistoryLoader";
 import { clearBoardCardMentionCache } from "../chat/boardCardMentions";
@@ -579,8 +579,16 @@ function HistoryEntry(props: {
               <dd className="text-foreground">{entry.summaryStatus}</dd>
             </div>
             <div className="flex gap-1">
+              <dt>Исполнитель:</dt>
+              <dd className="text-foreground">
+                {coordinatorSummaryExecutorLabel(entry) ?? "не задан"}
+              </dd>
+            </div>
+            <div className="flex gap-1">
               <dt>Роль исполнителя:</dt>
-              <dd className="text-foreground">{entry.executorRole}</dd>
+              <dd className="text-foreground capitalize">
+                {entry.executorRole === "" ? "не задана" : entry.executorRole}
+              </dd>
             </div>
           </dl>
         </>

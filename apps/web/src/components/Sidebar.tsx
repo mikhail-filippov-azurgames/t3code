@@ -1392,7 +1392,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       { section: "settled", threads: renderedSettledThreads },
     ],
     pool: threads,
-    sectionOfKey: (key) => sectionByThreadKey.get(key) ?? null,
     routeThreadKey,
     getLastVisitedAt: (thread) => thread.lastVisitedAt ?? undefined,
   });

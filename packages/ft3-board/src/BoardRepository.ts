@@ -37,6 +37,9 @@ export class BoardRepository extends Context.Service<
     readonly getCard: (
       cardId: Contracts.BoardCardId,
     ) => Effect.Effect<Contracts.BoardCard | null, BoardRepositoryError>;
+    readonly getCardByExecutorThreadId: (
+      threadId: ThreadId,
+    ) => Effect.Effect<Contracts.BoardCard | null, BoardRepositoryError>;
     readonly listCards: (
       orchestratorThreadId: ThreadId,
     ) => Effect.Effect<ReadonlyArray<Contracts.BoardCard>, BoardRepositoryError>;
@@ -205,6 +208,15 @@ const make = Effect.gen(function* () {
     },
     Effect.mapError(databaseError("read card")),
   );
+  const getCardByExecutorThreadId = Effect.fn("Ft3BoardRepository.getCardByExecutorThreadId")(
+    function* (threadId: ThreadId) {
+      const rows =
+        yield* sql`SELECT ${columns} FROM ft3_board_cards WHERE executor_thread_id = ${threadId} ORDER BY updated_at DESC LIMIT 1`;
+      const cards = yield* cardsFromRows(rows);
+      return cards[0] ?? null;
+    },
+    Effect.mapError(databaseError("read card by executor")),
+  );
   const insertEvents = Effect.fn("Ft3BoardRepository.insertEvents")(function* (
     events: ReadonlyArray<Contracts.BoardCardEvent>,
   ) {
@@ -258,6 +270,7 @@ const make = Effect.gen(function* () {
       ),
     ),
     getCard,
+    getCardByExecutorThreadId,
     listCards: Effect.fn("Ft3BoardRepository.listCards")(
       function* (threadId) {
         return yield* cardsFromRows(

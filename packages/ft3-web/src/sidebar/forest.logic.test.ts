@@ -5,6 +5,7 @@ import {
   collectUnseenDelegatedChildCounts,
   collectWorkingDelegatedChildCounts,
   filterCollapsedSidebarForest,
+  groupSidebarForestChildrenBySection,
   orderSidebarSectionForest,
   sidebarForestParentKey,
   sidebarSubagentParentKey,
@@ -27,11 +28,11 @@ const order = (threads: readonly ForestThread[], maxDepth?: number) =>
 describe("orderSidebarSectionForest", () => {
   it("nests children under parents in incoming order with depths", () => {
     const entries = order([
-      { id: "root-b", parent: null },
-      { id: "root-a", parent: null },
       { id: "child-a2", parent: "root-a" },
-      { id: "child-a1", parent: "root-a" },
+      { id: "root-b", parent: null },
       { id: "grandchild", parent: "child-a1" },
+      { id: "root-a", parent: null },
+      { id: "child-a1", parent: "root-a" },
     ]);
     expect(entries.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
       ["root-b", 0, null],
@@ -225,6 +226,66 @@ describe("sidebarForestParentKey", () => {
     expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
       [architectKey, 0, null],
     ]);
+  });
+});
+
+describe("groupSidebarForestChildrenBySection", () => {
+  type BoundThread = {
+    readonly environmentId: EnvironmentId;
+    readonly id: ThreadId;
+    readonly lineage: {
+      readonly parentThreadId: ThreadId | null;
+      readonly relationshipToParent: "fork" | "subagent" | null;
+    };
+  };
+  const environmentId = EnvironmentId.make("environment-architect-binding");
+  const coordinator: BoundThread = {
+    environmentId,
+    id: ThreadId.make("197154b1-09f3-437f-a483-a94a4aef0ab0"),
+    lineage: { parentThreadId: null, relationshipToParent: null },
+  };
+  const architect: BoundThread = {
+    environmentId,
+    id: ThreadId.make("arch:27ee0970b18c558369cb90424499dc5f7d7c68b6"),
+    lineage: { parentThreadId: null, relationshipToParent: null },
+  };
+  const architectChild: BoundThread = {
+    environmentId,
+    id: ThreadId.make("delegated-task:architect-child"),
+    lineage: { parentThreadId: architect.id, relationshipToParent: "subagent" },
+  };
+  const keyOf = (thread: BoundThread) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const coordinatorKey = keyOf(coordinator);
+  const architectKey = keyOf(architect);
+  const bindingParents = new Map([[architectKey, coordinatorKey]]);
+  const getParentKey = (thread: BoundThread) => sidebarForestParentKey(thread, bindingParents);
+
+  it("moves a bound Architect and its out-of-order child chain into the Coordinator section", () => {
+    const sections = groupSidebarForestChildrenBySection({
+      sections: [
+        { section: "active", threads: [coordinator] },
+        { section: "settled", threads: [architect] },
+      ],
+      pool: [architectChild, architect, coordinator],
+      getKey: keyOf,
+      getParentKey,
+    });
+    const active = sections.get("active") ?? [];
+    const forest = orderSidebarSectionForest({ threads: active, getKey: keyOf, getParentKey });
+
+    expect(sections.get("settled")).toEqual([]);
+    expect(forest.map((entry) => [entry.thread.id, entry.depth, entry.parentKey])).toEqual([
+      [coordinator.id, 0, null],
+      [architect.id, 1, coordinatorKey],
+      [architectChild.id, 2, architectKey],
+    ]);
+    expect(
+      filterCollapsedSidebarForest({
+        entries: forest,
+        collapsedKeys: new Set([coordinatorKey]),
+      }).map((entry) => entry.key),
+    ).toEqual([coordinatorKey]);
   });
 });
 
@@ -444,6 +505,86 @@ describe("collectWorkingDelegatedChildCounts", () => {
     });
     expect(counts.get(parentKey)).toBeUndefined();
     expect(counts.get(keyOf(middle))).toBe(1);
+  });
+});
+
+describe("imported delegated thread shapes", () => {
+  const stagedRows = [
+    {
+      parentEnvironmentId: "ed1b70d0-d277-40eb-8415-a34f4c23f084",
+      parentThreadId: "a20e700e-331a-4f93-bc85-a7a7800fc149",
+      childThreadId: "delegated-task:23e3ef9122188347823ff728ce3064da8b21b143",
+      role: "test",
+    },
+    {
+      parentEnvironmentId: "ed1b70d0-d277-40eb-8415-a34f4c23f084",
+      parentThreadId: "a20e700e-331a-4f93-bc85-a7a7800fc149",
+      childThreadId: "delegated-task:fa7ce4042bbb7bd9dc1df54a2c4e15ecf8f19527",
+      role: "implementation",
+    },
+  ] as const;
+  const environmentId = EnvironmentId.make(stagedRows[0].parentEnvironmentId);
+  const parentId = ThreadId.make(stagedRows[0].parentThreadId);
+  const parent: DelegateShell = {
+    environmentId,
+    id: parentId,
+    lineage: { parentThreadId: null, relationshipToParent: null },
+    latestRun: null,
+    runtime: null,
+  };
+  const importedChildren: DelegateShell[] = stagedRows.map((row, index) => ({
+    environmentId: EnvironmentId.make(row.parentEnvironmentId),
+    id: ThreadId.make(row.childThreadId),
+    lineage: {
+      parentThreadId: ThreadId.make(row.parentThreadId),
+      relationshipToParent: "subagent",
+    },
+    latestRun: {
+      completedAt: index === 0 ? null : "2026-10-27T01:35:30.461Z",
+    },
+    runtime: index === 0 ? { status: "running" } : null,
+  }));
+  const getKey = (thread: DelegateShell) =>
+    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+  const parentKey = getKey(parent);
+
+  it("maps staged parent ids to V2 lineage and working/returned counts", () => {
+    expect(sidebarSubagentParentKey(importedChildren[0]!)).toBe(parentKey);
+    const sections = groupSidebarForestChildrenBySection({
+      sections: [{ section: "active", threads: [parent] }],
+      pool: [...importedChildren, parent],
+      getKey,
+      getParentKey: (thread) => sidebarForestParentKey(thread, new Map()),
+    });
+    const forest = orderSidebarSectionForest({
+      threads: sections.get("active") ?? [],
+      getKey,
+      getParentKey: (thread) => sidebarForestParentKey(thread, new Map()),
+    });
+    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
+      [parentKey, 0, null],
+      [getKey(importedChildren[0]!), 1, parentKey],
+      [getKey(importedChildren[1]!), 1, parentKey],
+    ]);
+    expect(
+      filterCollapsedSidebarForest({ entries: forest, collapsedKeys: new Set([parentKey]) }).map(
+        (entry) => entry.key,
+      ),
+    ).toEqual([parentKey]);
+    expect(
+      collectWorkingDelegatedChildCounts({
+        threads: [parent, ...importedChildren],
+        getKey,
+      }).get(parentKey),
+    ).toBe(1);
+    expect(
+      collectUnseenDelegatedChildCounts({
+        threads: [parent, ...importedChildren],
+        getKey,
+        getLastVisitedAt: (thread) =>
+          thread.id === importedChildren[1]?.id ? "2026-10-27T01:35:29.000Z" : undefined,
+      }).get(parentKey),
+    ).toBe(1);
   });
 });
 

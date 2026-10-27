@@ -285,7 +285,7 @@ describe("CommitHistoryService.listRefs", () => {
 });
 
 describe("CommitHistoryService.getCommitDiff", () => {
-  it.effect("returns the patch for one commit from a real temporary repository", () =>
+  it.effect("returns one commit's patch against its first parent, not the branch diff", () =>
     Effect.gen(function* () {
       const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-diff-"));
       const git = (...args: ReadonlyArray<string>) =>
@@ -295,12 +295,20 @@ describe("CommitHistoryService.getCommitDiff", () => {
         git("config", "user.email", "author@example.com");
         git("config", "user.name", "Author");
         writeFileSync(join(cwd, "file.txt"), "one\n");
-        git("add", "file.txt");
+        writeFileSync(join(cwd, "extra.txt"), "base\n");
+        git("add", ".");
         git("commit", "-m", "first");
+        const first = git("rev-parse", "HEAD").stdout.trim();
         writeFileSync(join(cwd, "file.txt"), "two\n");
         git("add", "file.txt");
         git("commit", "-m", "second");
         const commit = git("rev-parse", "HEAD").stdout.trim();
+        writeFileSync(join(cwd, "file.txt"), "three\n");
+        git("add", "file.txt");
+        git("commit", "-m", "third");
+        writeFileSync(join(cwd, "extra.txt"), "master-only\n");
+        git("add", "extra.txt");
+        git("commit", "-m", "master tip");
 
         const process = VcsProcess.VcsProcess.of({
           run: (input) =>
@@ -318,17 +326,50 @@ describe("CommitHistoryService.getCommitDiff", () => {
               };
             }),
         });
-        const result = yield* Effect.gen(function* () {
-          const service = yield* CommitHistoryService.CommitHistoryService;
-          return yield* service.getCommitDiff({ cwd, commit });
-        }).pipe(
-          Effect.provide(CommitHistoryService.layer),
-          Effect.provideService(VcsProcess.VcsProcess, process),
-        );
+        const diffOf = (target: string) =>
+          Effect.gen(function* () {
+            const service = yield* CommitHistoryService.CommitHistoryService;
+            return yield* service.getCommitDiff({ cwd, commit: target });
+          }).pipe(
+            Effect.provide(CommitHistoryService.layer),
+            Effect.provideService(VcsProcess.VcsProcess, process),
+          );
 
+        const result = yield* diffOf(commit);
         expect(result).toMatchObject({ commit, truncated: false });
-        expect(result.patch).toContain("diff --git a/file.txt b/file.txt");
+        expect(result.patch).toBe(
+          git(
+            "diff",
+            "--no-ext-diff",
+            "--no-renames",
+            "--patch",
+            "--minimal",
+            "--no-color",
+            first,
+            commit,
+          ).stdout,
+        );
+        expect(result.patch).toContain("-one");
         expect(result.patch).toContain("+two");
+        expect(result.patch).not.toContain("+three");
+        expect(result.patch).not.toContain("master-only");
+
+        const root = yield* diffOf(first);
+        expect(root.patch).toBe(
+          git(
+            "diff-tree",
+            "--root",
+            "-r",
+            "--no-commit-id",
+            "--no-renames",
+            "--patch",
+            "--minimal",
+            "--no-color",
+            first,
+          ).stdout,
+        );
+        expect(root.patch).toContain("new file mode");
+        expect(root.patch).toContain("+one");
       } finally {
         rmSync(cwd, { recursive: true, force: true });
       }

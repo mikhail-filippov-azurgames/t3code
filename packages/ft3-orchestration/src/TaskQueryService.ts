@@ -9,6 +9,7 @@ import {
   type OrchestrationV2RunStatus,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadHistoryPage,
+  type OrchestrationV2ThreadShell,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -62,6 +63,29 @@ const historyTurnState = (
     case "failed":
       return "error";
     case "cancelled":
+      return "interrupted";
+    default:
+      return null;
+  }
+};
+
+/** Provider turns are pruned after retention; the child task record still knows its state. */
+const subagentHistoryState = (
+  status: OrchestrationV2Subagent["status"] | undefined,
+): TaskSummaryHistoryResult["records"][number]["currentTurnState"] => {
+  switch (status) {
+    case "idle":
+    case "pending":
+      return "pending";
+    case "running":
+    case "waiting":
+      return "running";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "error";
+    case "cancelled":
+    case "interrupted":
       return "interrupted";
     default:
       return null;
@@ -390,7 +414,7 @@ const make = Effect.gen(function* () {
       };
     }),
     history: Effect.fn("Ft3TaskQueryService.history")(function* (scope, input) {
-      const { parent } = yield* ownedTasks(scope);
+      const { parent, tasks } = yield* ownedTasks(scope);
       const limit = input.limit ?? 50;
       const rows = yield* summaries
         .listHistory({
@@ -400,21 +424,44 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.mapError(unavailable));
       const page = rows.slice(0, limit);
-      const records: TaskSummaryHistoryResult["records"][number][] = page.map((row) => ({
-        childThreadId: ThreadId.make(row.childThreadId),
-        sourceTurnId: TurnId.make(row.sourceTurnId),
-        completedAt: row.completedAt,
-        summaryText: safeSummaryText(row.summaryText),
-        summaryState: row.summaryState,
-        summaryWatermark: row.summaryWatermark,
-        currentTurnId: row.currentTurnId === null ? null : ProviderTurnId.make(row.currentTurnId),
-        currentTurnState: historyTurnState(row.currentTurnState),
-        currentWatermark: row.currentWatermark,
-        executorRole: "",
-        stale:
-          row.sourceTurnId !== (row.currentTurnId ?? "") ||
-          row.summaryWatermark !== row.currentWatermark,
-      }));
+      const shells = new Map<string, OrchestrationV2ThreadShell | null>();
+      const records: TaskSummaryHistoryResult["records"][number][] = [];
+      for (const row of page) {
+        let shell = shells.get(row.childThreadId);
+        if (shell === undefined) {
+          shell = yield* threads
+            .getThreadShell(ThreadId.make(row.childThreadId))
+            .pipe(Effect.mapError(unavailable));
+          shells.set(row.childThreadId, shell);
+        }
+        const subagent = tasks.find(
+          (task) => task.childThreadId !== null && String(task.childThreadId) === row.childThreadId,
+        );
+        records.push({
+          childThreadId: ThreadId.make(row.childThreadId),
+          sourceTurnId: TurnId.make(row.sourceTurnId),
+          completedAt: row.completedAt,
+          summaryText: safeSummaryText(row.summaryText),
+          summaryState: row.summaryState,
+          summaryWatermark: row.summaryWatermark,
+          currentTurnId: row.currentTurnId === null ? null : ProviderTurnId.make(row.currentTurnId),
+          currentTurnState:
+            historyTurnState(row.currentTurnState) ?? subagentHistoryState(subagent?.status),
+          currentWatermark: row.currentWatermark,
+          childTitle:
+            shell === null || shell.deletedAt !== null || shell.title.trim() === ""
+              ? null
+              : shell.title,
+          executorRole: "",
+          executorProviderInstanceId:
+            shell === null || shell.deletedAt !== null ? null : String(shell.providerInstanceId),
+          executorModel:
+            shell === null || shell.deletedAt !== null ? null : shell.modelSelection.model,
+          stale:
+            row.sourceTurnId !== (row.currentTurnId ?? "") ||
+            row.summaryWatermark !== row.currentWatermark,
+        });
+      }
       const last = page.at(-1);
       return {
         records,
