@@ -17,28 +17,16 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { isKimiAcpSettings } from "./settings.ts";
+import { kimiUsageReader, type KimiUsageReaderEnv } from "./usage.ts";
 import { probeKimiUsageLimits } from "./usageLimits.ts";
 
 /** The ACP probe already refreshes on its own schedule; limits only need to stay recent. */
 const USAGE_CACHE_TTL_MS = 60_000;
-const KIMI_AGENT_ID = "kimi";
-const KIMI_EXECUTABLE = "kimi";
 
 export type Ft3KimiDriverEnv = AcpRegistryDriverEnv | HttpClient.HttpClient;
 
-function executableStem(commandPath: string): string {
-  const normalized = commandPath.trim().replaceAll("\\", "/").toLowerCase();
-  const name = normalized.slice(normalized.lastIndexOf("/") + 1);
-  return name.replace(/\.(?:exe|cmd|bat|ps1)$/u, "");
-}
-
-/** Limits are Kimi-specific: only a Kimi ACP instance may publish them. */
-export function isKimiAcpSettings(config: AcpRegistrySettings): boolean {
-  if (config.source === "registry") {
-    return config.agentId.trim().toLowerCase() === KIMI_AGENT_ID;
-  }
-  return executableStem(config.commandPath) === KIMI_EXECUTABLE;
-}
+export { isKimiAcpSettings } from "./settings.ts";
 
 interface CachedLimits {
   readonly at: number;
@@ -89,11 +77,20 @@ export const withKimiUsageLimits = Effect.fn("Ft3KimiDriver.withUsageLimits")(fu
   };
 });
 
-export const Ft3KimiDriver: ProviderDriver<AcpRegistrySettings, Ft3KimiDriverEnv> = {
+export const Ft3KimiDriver: ProviderDriver<
+  AcpRegistrySettings,
+  Ft3KimiDriverEnv,
+  KimiUsageReaderEnv
+> = {
   ...AcpRegistryDriver,
+  usage: kimiUsageReader,
   create: Effect.fn("Ft3KimiDriver.create")(function* (input) {
-    const instance = yield* AcpRegistryDriver.create(input);
-    if (!isKimiAcpSettings(input.config)) {
+    const kimi = isKimiAcpSettings(input.config);
+    const instance = yield* AcpRegistryDriver.create({
+      ...input,
+      displayName: kimi ? (input.displayName ?? "Kimi") : input.displayName,
+    });
+    if (!kimi) {
       return instance;
     }
 
