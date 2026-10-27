@@ -7,7 +7,7 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import { ProviderDriverKind } from "@t3tools/contracts";
-import { isKimiProviderInstance, KimiIcon } from "@t3tools/ft3-web/kimi";
+import { isKimiProviderInstance, KimiProviderInstanceIcon } from "@t3tools/ft3-web/kimi";
 import { AntigravityIcon, ClaudeAI, Icon, OpenAI } from "../Icons";
 
 import { cn } from "~/lib/utils";
@@ -96,6 +96,24 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
     iconUrl: props.acpRegistryIconUrl,
   });
 
+  if (isKimi) {
+    return (
+      <KimiProviderInstanceIcon
+        displayName={props.displayName}
+        className={props.className}
+        iconClassName={iconClassName}
+        badgeClassName={props.badgeClassName}
+        statusDotClassName={props.statusDotClassName}
+        indicatorBackground={indicatorBackground}
+        size={props.size}
+        showBadge={props.showBadge}
+        badgeContent={badgeContent}
+        accentColor={accentColor}
+        accentStyle={accentStyle}
+      />
+    );
+  }
+
   return (
     <span
       className={cn(
@@ -105,28 +123,25 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-      <span className={isKimi ? "hidden" : undefined}>
-        {isAcpRegistry ? (
-          <AcpRegistryAgentIcon
-            className={cn("size-5 rounded-none bg-transparent", iconClassName)}
-            fallbackClassName="size-full"
-            icon={acpRegistryIconUrl}
-          />
-        ) : packageIcon ? (
-          <ProviderPackageIcon
-            icon={packageIcon}
-            className={cn("size-5 shrink-0", iconClassName)}
-            aria-hidden
-          />
-        ) : Icon ? (
-          <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-        ) : (
-          <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
-            {providerInstanceInitials(props.displayName)}
-          </span>
-        )}
-      </span>
-      {isKimi ? <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden /> : null}
+      {isAcpRegistry ? (
+        <AcpRegistryAgentIcon
+          className={cn("size-5 rounded-none bg-transparent", iconClassName)}
+          fallbackClassName="size-full"
+          icon={acpRegistryIconUrl}
+        />
+      ) : packageIcon ? (
+        <ProviderPackageIcon
+          icon={packageIcon}
+          className={cn("size-5 shrink-0", iconClassName)}
+          aria-hidden
+        />
+      ) : Icon ? (
+        <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+      ) : (
+        <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
+          {providerInstanceInitials(props.displayName)}
+        </span>
+      )}
       {props.statusDotClassName ? (
         <span
           className={cn(
