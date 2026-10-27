@@ -812,6 +812,47 @@ describe("ft3 task toolkit through ft3-host", () => {
     }).pipe(Effect.provide(f.layer));
   });
 
+  it.effect("keeps a credential out of task_read, task_list and task_search text", () => {
+    const f = fixture();
+    const token = `ghp_${"B".repeat(36)}`;
+    const projection = f.projections.get(f.aThreadId)!;
+    projection.visibleTurnItems = projection.visibleTurnItems.map((entry, index) =>
+      index === 0 && entry.item.type === "user_message"
+        ? { ...entry, item: { ...entry.item, text: `Report: ${token}` } }
+        : entry,
+    );
+    f.shells.set(f.aThreadId, {
+      ...f.shells.get(f.aThreadId)!,
+      title: `Parser ${token}`,
+    });
+    return Effect.gen(function* () {
+      const read = yield* decodeRead((yield* call("task_read", { taskId: aId })).structuredContent);
+      assert.equal(read.messages[0]!.text, "Report: [REDACTED]");
+      assert.isFalse(JSON.stringify(read).includes(token));
+      const listed = yield* decodeList((yield* call("task_list", {})).structuredContent);
+      assert.equal(listed.tasks.find((task) => task.taskId === aId)!.title, "Parser [REDACTED]");
+      assert.isFalse(JSON.stringify(listed).includes(token));
+      const searched = yield* decodeSearch(
+        (yield* call("task_search", { query: "Parser" })).structuredContent,
+      );
+      assert.isFalse(JSON.stringify(searched).includes(token));
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses a handoff that carries a credential", () => {
+    const f = fixture();
+    const token = `ghp_${"C".repeat(36)}`;
+    return Effect.gen(function* () {
+      const rejected = yield* call("task_attach_handoff", {
+        taskId: aId,
+        handoff: { ...handoff, acceptance: [`Ship it with ${token}`] },
+      });
+      assert.equal(failure(rejected).code, "capability_denied");
+      const listed = yield* decodeList((yield* call("task_list", {})).structuredContent);
+      assert.isNull(listed.tasks.find((task) => task.taskId === aId)!.handoff);
+    }).pipe(Effect.provide(f.layer));
+  });
+
   it("bounds legacy input limits and query strings", () => {
     assert.isFalse(isListInput({ limit: 101 }));
     assert.isFalse(isListInput({ limit: 0 }));
