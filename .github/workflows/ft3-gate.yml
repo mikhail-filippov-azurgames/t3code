@@ -108,7 +108,7 @@ jobs:
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed server files
         working-directory: apps/server
-        run: vp test run src/ws.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts
+        run: vp test run src/ws.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts src/cli/config.test.ts
 
       - name: Test changed desktop files
         working-directory: apps/desktop

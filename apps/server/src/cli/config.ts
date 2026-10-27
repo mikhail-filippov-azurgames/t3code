@@ -148,6 +148,11 @@ const EnvServerConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  // Headless launchers that already built a clean PATH skip Windows hydration.
+  shellEnvironmentPrepared: Config.Boolean("T3CODE_SHELL_ENVIRONMENT_PREPARED").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   autoBootstrapProjectFromCwd: Config.Boolean("T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -365,7 +370,8 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   );
   const desktopBootstrapToken = bootstrap?.desktopBootstrapToken;
   const desktopBootstrapSecret = bootstrap?.desktopBootstrapSecret;
-  const shellEnvironmentPrepared = bootstrap?.shellEnvironmentPrepared;
+  const shellEnvironmentPrepared =
+    bootstrap?.shellEnvironmentPrepared ?? env.shellEnvironmentPrepared;
   const desktopTelemetryFd = bootstrap?.desktopTelemetryFd;
   const desktopTelemetryControlFd = bootstrap?.desktopTelemetryControlFd;
   const desktopBrowserFd = bootstrap?.desktopBrowserFd;

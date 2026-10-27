@@ -817,3 +817,28 @@ New fork-owned tests: `packages/ft3-kimi/src/promptFailure.test.ts`.
 | Upstream-файл | Правка                                                                                       | Зачем                                                         |
 | ------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `AGENTS.md`   | одна строка после заголовка со ссылками на `docs/ft3/README.md` и `docs/ft3/contributing.md` | агент до начала работы видит границу форка и порядок проверок |
+
+## Headless PATH and bundled Pi updates
+
+The `ft3.ps1` v2 launcher now hands the server a prepared PATH: real
+`C:\Program Files\nodejs` first, `%TEMP%` Vite+ shim directories removed, and the
+stable Vite+ `npm.exe` trampoline kept because a shell-less Windows spawn resolves
+`npm` to `npm.exe` (the Node installer ships only `npm.cmd`). It also sets
+`T3CODE_SHELL_ENVIRONMENT_PREPARED=true`; without that flag `fixPath` re-reads PATH
+through `pwsh`, which moves the PowerShell package directory ahead of real Node and
+restores stale temp shims.
+
+| Upstream file                   | Change                                                                       | Reason                                                              |
+| ------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `apps/server/src/cli/config.ts` | `shellEnvironmentPrepared` falls back to `T3CODE_SHELL_ENVIRONMENT_PREPARED` | A headless launcher that already built a clean PATH skips hydration |
+
+Bundled Pi reports no update action at all. `packages/ft3-pi/src/bundledPiMaintenance.ts`
+wraps the managed snapshot from `PiDriver.create` (manual maintenance capabilities,
+`canUpdate: false`, `updateCommand: null`, message `Pi is bundled with ft3; it updates
+with ft3.`). Only the bundled runtime is affected; an explicit `binaryPath` keeps the
+upstream updater. `packages/provider-pi` is unchanged.
+
+Fork-owned tests: `packages/ft3-pi/src/bundledPiMaintenance.test.ts` and the bundled
+launcher case in `packages/ft3-pi/src/driver.test.ts`. The prepared-PATH test lives in
+`apps/server/src/cli/config.test.ts`, which the ft3 gate now runs with the other edited
+server tests.

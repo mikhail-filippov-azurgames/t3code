@@ -20,13 +20,18 @@ import {
   type PiAgentFilesInput,
 } from "./agentDir.ts";
 import {
+  disableBundledPiUpdate,
+  makeBundledPiMaintenanceCapabilities,
+  makeBundledPiSnapshot,
+} from "./bundledPiMaintenance.ts";
+import {
   loadPiInferenceConfig,
   piInferenceModelsBaseUrl,
   piInferenceServerManager,
   resolvePiInferenceConfigPath,
 } from "./inferenceServer.ts";
 import { applyLocalLlamaExtensionPolicy } from "./localLlamaExtension.ts";
-import { resolvePiBinaryPath } from "./piRuntime.ts";
+import { PI_RUNTIME_PACKAGE, resolvePiBinaryPath } from "./piRuntime.ts";
 import { defaultCodexImportPaths, importCodexResourcesIntoAgentDir } from "./skills.ts";
 
 export type Ft3PiDriverEnv = PiDriverEnv | FileSystem.FileSystem | Path.Path;
@@ -130,6 +135,17 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
       config: { ...input.config, binaryPath: piRuntime.binaryPath },
       environment,
     });
+    const bundledInstallPath = piRuntime.cliJs ?? piRuntime.binaryPath;
+    const bundledSnapshot = piRuntime.bundled
+      ? makeBundledPiSnapshot({
+          snapshot: instance.snapshot,
+          capabilities: makeBundledPiMaintenanceCapabilities({
+            provider: PiDriver.driverKind,
+            packageName: PI_RUNTIME_PACKAGE,
+            installPath: bundledInstallPath,
+          }),
+        })
+      : undefined;
 
     const writeAgentFiles = (runtimeMode: PiAgentFilesInput["runtimeMode"]) =>
       ensurePiAgentFiles(agentDir, buildAgentFiles(runtimeMode));
@@ -204,6 +220,16 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
         ),
     };
 
-    return { ...instance, orchestrationAdapter };
+    return {
+      ...instance,
+      ...(bundledSnapshot === undefined ? {} : { snapshot: bundledSnapshot }),
+      ...(bundledSnapshot === undefined || instance.snapshotForCwd === undefined
+        ? {}
+        : {
+            snapshotForCwd: (cwd: string) =>
+              instance.snapshotForCwd!(cwd).pipe(Effect.map(disableBundledPiUpdate)),
+          }),
+      orchestrationAdapter,
+    };
   }),
 };
