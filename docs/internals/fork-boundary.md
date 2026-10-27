@@ -369,14 +369,16 @@ lets the Coordinator apply it under the routing policy.
 
 `packages/ft3-delegation` owns the secret scanner, the delegation input decision and the derived-text projection. `packages/ft3-board/authorTextPolicy` re-exports it.
 
-| Upstream file                                      | Connection                                                                                                                                                                                 | Reason                                                                           |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| `apps/server/src/mcp/OrchestratorMcpService.ts`    | import `delegationTextDecision`/`projectDerivedText`; deny secret-bearing `delegate_task` input with `capability_denied`; project `summary`, `latestTerminalSummary` and `readThread` text | keep credentials out of delegated task text and agent reads                      |
-| `apps/server/src/orchestration-v2/Orchestrator.ts` | import `projectDerivedText`; project `task.result` in `delegatedCompletionWakeDetail`                                                                                                      | keep the parent wake free of credentials while the canonical result stays intact |
-| `apps/server/package.json`                         | add `@t3tools/ft3-delegation`                                                                                                                                                              | resolve the workspace package                                                    |
-| `pnpm-lock.yaml`                                   | importer `packages/ft3-delegation` and the `apps/server` dependency                                                                                                                        | record the workspace link                                                        |
+| Upstream file                                      | Connection                                                                                                                                                                                                                                       | Reason                                                                           |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `apps/server/src/mcp/OrchestratorMcpService.ts`    | import `delegationTextDecision`/`projectDerivedText`; deny secret-bearing `delegate_task` input and `t3_thread_send` follow-ups to delegated children with `capability_denied`; project `summary`, `latestTerminalSummary` and `readThread` text | keep credentials out of delegated task text and agent reads                      |
+| `apps/server/src/orchestration-v2/Orchestrator.ts` | import `projectDerivedText`; project `task.result` in `delegatedCompletionWakeDetail`                                                                                                                                                            | keep the parent wake free of credentials while the canonical result stays intact |
+| `apps/server/package.json`                         | add `@t3tools/ft3-delegation`                                                                                                                                                                                                                    | resolve the workspace package                                                    |
+| `pnpm-lock.yaml`                                   | importer `packages/ft3-delegation` and the `apps/server` dependency                                                                                                                                                                              | record the workspace link                                                        |
 
 New fork-owned tests: `apps/server/src/mcp/OrchestratorMcpService.delegationText.test.ts` and `apps/server/src/orchestration-v2/Ft3DelegationWakeText.test.ts`.
+
+The same policy covers the fork-owned task surface: `ft3-orchestration/TaskQueryService` projects `task_read` message, activity and payload strings and `task_list`/`task_search` titles, and `ft3-orchestration/TaskHandoffService` rejects a credential-bearing handoff before it is stored.
 
 ## Delegation permission envelope (S)
 
@@ -583,9 +585,23 @@ and never becomes the globally preferred editor.
 | `packages/contracts/src/editor.ts`                   | add the `typora` editor (`direct-path`)                                                                                                                                   | editor id crosses to the server launcher                                   |
 | `packages/shared/src/editor.ts`                      | resolve the Typora executable from its install paths on Windows and macOS                                                                                                 | Typora is not on `PATH` and has no VS Code-style bundle layout             |
 | `packages/shared/src/markdownPipeline.ts`            | allow the `oc` and `ocl` href protocols in the sanitize schema                                                                                                            | sanitize runs before the anchor renderer and would strip the document link |
+| `apps/web/src/markdown-clipboard.ts`                 | import the skip list, the anchor serializer and the rich-text chip exception from `@t3tools/ft3-web/chat-copy`                                                            | chat copy filters stay fork-owned and tested                               |
+
+Chat copy filters live in `packages/ft3-web/src/chat/chatCopyFilters.ts`: chrome
+(`button`, `input`, `script`, `style`, `template`, `svg`, `aria-hidden`,
+`select-none`, `sr-only`) is not copied, a chip's `data-markdown-copy` text wins
+over its chrome in the plain-text flavor, chip buttons are removed from the
+rich-text flavor except `chat-markdown-file-link`, and only `http(s)` anchors
+keep their destination, so `oc://`/`ocl://`/fragment references copy as labels.
+The filters match the old fork's chat copy behavior; commit SHAs, code blocks
+and the whole-message copy stay unfiltered. Old fork source:
+`apps/web/src/markdown-clipboard.ts`, `CommitMentionButton` in
+`apps/web/src/components/ChatMarkdown.tsx`.
 
 New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-web/src/chat/openContextDocLink.test.ts`,
+`packages/ft3-web/src/chat/chatCopyFilters.test.ts`,
+`packages/ft3-web/src/chat/chatCopyFilters.browser.test.tsx`,
 `packages/ft3-host/src/openContextDocs.test.ts`, and
 `apps/web/src/components/chat/OpenInPicker.test.ts`.
 
