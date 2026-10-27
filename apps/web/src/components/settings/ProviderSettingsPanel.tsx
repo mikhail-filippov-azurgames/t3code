@@ -1,3 +1,4 @@
+import { PiBonsaiPresetSection } from "@t3tools/ft3-web/pi";
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
@@ -1384,6 +1385,13 @@ function ProviderInstanceRow({
           <SettingsRow
             title="Cursor account"
             description="Using CURSOR_API_KEY. Remove it from this provider's environment to use browser sign-in."
+          />
+        ) : mode === "editor" && driver === "pi" ? (
+          <PiBonsaiPresetSection
+            key={`${environmentId}:${instanceId}`}
+            environmentId={environmentId}
+            instanceId={instanceId}
+            readOnly={readOnly}
           />
         ) : null
       }

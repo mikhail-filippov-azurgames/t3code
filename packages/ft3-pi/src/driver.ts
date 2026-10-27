@@ -53,25 +53,29 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
           cause,
         }),
     });
-    const models = resolvePiManagedModels({
-      configuredModel: undefined,
-      profileModels: inferenceConfig.profiles.map((profile) => profile.model),
-      customModels: input.config.customModels,
-    });
-    const defaultModel = models[0];
-    const agentFiles: PiAgentFilesInput = {
-      baseUrl: piInferenceModelsBaseUrl(inferenceConfig),
-      apiKey: inferenceConfig.apiKey,
-      models,
-      runtimeMode: "approval-required",
-      defaultModel,
-    };
     const environment = withPiAgentDir(input.environment, agentDir);
     const inference = piInferenceServerManager;
-    inference.registerInstance(instanceId, inferenceConfig);
+    inference.registerInstance(instanceId, inferenceConfig, configPath);
+
+    // Re-read the registered config so a preset applied after creation reaches models.json.
+    const buildAgentFiles = (runtimeMode: PiAgentFilesInput["runtimeMode"]): PiAgentFilesInput => {
+      const current = inference.registeredConfig(instanceId) ?? inferenceConfig;
+      const models = resolvePiManagedModels({
+        configuredModel: undefined,
+        profileModels: current.profiles.map((profile) => profile.model),
+        customModels: input.config.customModels,
+      });
+      return {
+        baseUrl: piInferenceModelsBaseUrl(current),
+        apiKey: current.apiKey,
+        models,
+        runtimeMode,
+        defaultModel: models[0],
+      };
+    };
     const codexPaths = defaultCodexImportPaths(processEnvironment);
 
-    yield* ensurePiAgentFiles(agentDir, agentFiles).pipe(
+    yield* ensurePiAgentFiles(agentDir, buildAgentFiles("approval-required")).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
@@ -102,7 +106,7 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
     const instance = yield* PiDriver.create({ ...input, environment });
 
     const writeAgentFiles = (runtimeMode: PiAgentFilesInput["runtimeMode"]) =>
-      ensurePiAgentFiles(agentDir, { ...agentFiles, runtimeMode });
+      ensurePiAgentFiles(agentDir, buildAgentFiles(runtimeMode));
 
     const prepareTurn = Effect.fn("Ft3PiDriver.prepareTurn")(function* (
       turn: ProviderAdapter.ProviderAdapterV2TurnInput,

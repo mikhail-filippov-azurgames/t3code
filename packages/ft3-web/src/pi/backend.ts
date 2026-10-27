@@ -26,5 +26,13 @@ export function createPiInferenceEnvironmentAtoms<R, E>(
       label: "environment-data:pi:inference-stop",
       tag: WS_METHODS.piInferenceServerStop,
     }),
+    detectBonsaiPreset: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pi:bonsai-preset-detect",
+      tag: WS_METHODS.piBonsaiPresetDetect,
+    }),
+    applyBonsaiPreset: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:pi:bonsai-preset-apply",
+      tag: WS_METHODS.piBonsaiPresetApply,
+    }),
   };
 }

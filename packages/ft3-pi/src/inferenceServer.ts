@@ -4,8 +4,13 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import { normalizePiBaseUrl, normalizePiApiKey, piModelIdFromSlug } from "./agentDir.ts";
+import type { PiBonsaiPreset } from "./rpc-contracts.ts";
 
 const PI_INFERENCE_CONFIG_ENV = "T3CODE_FT3_PI_INFERENCE_CONFIG";
+const PI_BONSAI_ENV_ROOT = "BONSAI_DEMO_HOME";
+
+export const PI_BONSAI_MODEL_ID = "bonsai-2-27b";
+const PI_BONSAI_BASE_URL = "http://127.0.0.1:8080/v1";
 
 const READINESS_TIMEOUT_MS = 10 * 60_000;
 const PROBE_TIMEOUT_MS = 2_000;
@@ -117,6 +122,78 @@ export function resolvePiInferenceConfigPath(input: {
   return override && override.length > 0
     ? NodePath.resolve(override)
     : NodePath.join(input.stateDir, "pi", input.instanceId, "inference-profiles.json");
+}
+
+/**
+ * Detect the Bonsai demo layout only where the user pointed us: an explicit root
+ * wins, then BONSAI_DEMO_HOME. No developer-specific paths are searched.
+ */
+export async function detectPiBonsaiPreset(
+  options: {
+    readonly isFile?: PiInferenceServerDependencies["isFile"];
+    readonly environment?: NodeJS.ProcessEnv;
+    readonly rootPath?: string;
+  } = {},
+): Promise<PiBonsaiPreset | null> {
+  const isFile =
+    options.isFile ??
+    (async (filePath) => {
+      try {
+        return (await NodeFSP.stat(filePath)).isFile();
+      } catch {
+        return false;
+      }
+    });
+  const environment = options.environment ?? process.env;
+  const selectedRoot = options.rootPath?.trim();
+  const configuredRoot = environment[PI_BONSAI_ENV_ROOT]?.trim();
+  const roots = selectedRoot ? [selectedRoot] : configuredRoot ? [configuredRoot] : [];
+  for (const root of roots) {
+    const join = NodePath.win32.isAbsolute(root) ? NodePath.win32.join : NodePath.join;
+    const executablePath = join(root, "bin", "cuda", "llama-server.exe");
+    const modelPath = join(
+      root,
+      "models",
+      "bonsai2-gguf",
+      "27B",
+      "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+    );
+    if ((await isFile(executablePath)) && (await isFile(modelPath))) {
+      return {
+        executablePath,
+        modelPath,
+        baseUrl: PI_BONSAI_BASE_URL,
+        model: PI_BONSAI_MODEL_ID,
+      };
+    }
+  }
+  return null;
+}
+
+/** Replace only the preset's own managed profile; other profiles keep their order. */
+export function applyPiBonsaiPresetToConfig(
+  config: PiInferenceConfig,
+  preset: PiBonsaiPreset,
+): PiInferenceConfig {
+  const model = preset.model.startsWith("ft3-local/") ? preset.model : `ft3-local/${preset.model}`;
+  const profile: PiInferenceProfile = {
+    model,
+    baseUrl: preset.baseUrl,
+    executablePath: preset.executablePath,
+    modelPath: preset.modelPath,
+  };
+  return {
+    ...config,
+    profiles: [...config.profiles.filter((candidate) => candidate.model !== model), profile],
+  };
+}
+
+export async function savePiInferenceConfig(
+  filePath: string,
+  config: PiInferenceConfig,
+): Promise<void> {
+  await NodeFSP.mkdir(NodePath.dirname(filePath), { recursive: true });
+  await NodeFSP.writeFile(filePath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
 }
 
 /** A missing config file means "no managed profiles", not a broken instance. */
@@ -441,9 +518,15 @@ const defaultDependencies: PiInferenceServerDependencies = {
 
 export interface PiInferenceServerManager {
   /** Register or replace the managed config for one provider instance. */
-  readonly registerInstance: (instanceId: string, config: PiInferenceConfig) => void;
+  readonly registerInstance: (
+    instanceId: string,
+    config: PiInferenceConfig,
+    configPath?: string,
+  ) => void;
   /** Config the driver registered at instance creation, or undefined when unknown. */
   readonly registeredConfig: (instanceId: string) => PiInferenceConfig | undefined;
+  /** On-disk config the driver registered, the only file FT3 may rewrite for a preset. */
+  readonly registeredConfigPath: (instanceId: string) => string | undefined;
   /** Auto-start on turn: start the selected profile when needed and wait for readiness. */
   readonly ensureReady: (instanceId: string, model: string | undefined) => Promise<void>;
   /** Manual UI start for the selected profile. */
@@ -477,6 +560,7 @@ export function makePiInferenceServerManager(
 ): PiInferenceServerManager {
   const deps: PiInferenceServerDependencies = { ...defaultDependencies, ...overrideDependencies };
   const configs = new Map<string, PiInferenceConfig>();
+  const configPaths = new Map<string, string>();
   const owners = new Map<string, ServerOwner>();
   const instanceKeys = new Map<string, Set<string>>();
   const activeKeyByInstance = new Map<string, string>();
@@ -936,10 +1020,12 @@ export function makePiInferenceServerManager(
   };
 
   return {
-    registerInstance: (instanceId, config) => {
+    registerInstance: (instanceId, config, configPath) => {
       configs.set(instanceId, config);
+      if (configPath !== undefined) configPaths.set(instanceId, configPath);
     },
     registeredConfig: (instanceId) => configs.get(instanceId),
+    registeredConfigPath: (instanceId) => configPaths.get(instanceId),
     ensureReady,
     start,
     stop,

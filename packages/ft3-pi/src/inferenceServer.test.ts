@@ -1,12 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off - Fake process handles are EventEmitters.
 import * as NodeEvents from "node:events";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
 
 import {
+  applyPiBonsaiPresetToConfig,
   buildPiInferenceServerArgs,
+  detectPiBonsaiPreset,
   makePiInferenceServerManager,
   parsePiInferenceConfig,
+  PI_BONSAI_MODEL_ID,
+  savePiInferenceConfig,
+  loadPiInferenceConfig,
   type PiInferenceConfig,
   type PiInferenceServerDependencies,
 } from "./inferenceServer.ts";
@@ -230,6 +238,84 @@ it("rejects an external endpoint that serves a different model", async () => {
   assert.instanceOf(failure, Error);
   assert.match(failure!.message, /already serving a different model/);
   assert.equal(fake.spawnArgs.length, 0);
+});
+
+const bonsaiPreset = {
+  executablePath: "C:\\root\\bin\\cuda\\llama-server.exe",
+  modelPath: "C:\\root\\models\\bonsai2-gguf\\27B\\Ternary-Bonsai-2-27B-PQ2_0.gguf",
+  baseUrl: "http://127.0.0.1:8080/v1",
+  model: PI_BONSAI_MODEL_ID,
+};
+
+it("offers a Bonsai preset only when both host files exist", async () => {
+  const files = new Set([bonsaiPreset.executablePath, bonsaiPreset.modelPath]);
+  const preset = await detectPiBonsaiPreset({
+    isFile: async (file) => files.has(file),
+    environment: { BONSAI_DEMO_HOME: "C:\\root" } as NodeJS.ProcessEnv,
+  });
+
+  assert.deepEqual(preset, bonsaiPreset);
+});
+
+it("does not search a Bonsai root without an explicit path or env value", async () => {
+  const checkedPaths: Array<string> = [];
+  const preset = await detectPiBonsaiPreset({
+    isFile: async (file) => {
+      checkedPaths.push(file);
+      return true;
+    },
+    environment: {},
+  });
+
+  assert.isNull(preset);
+  assert.deepEqual(checkedPaths, []);
+});
+
+it("keeps an invalid selected folder from falling back to the configured root", async () => {
+  const preset = await detectPiBonsaiPreset({
+    rootPath: "C:\\selected",
+    isFile: async (file) => file.startsWith("C:\\configured\\"),
+    environment: { BONSAI_DEMO_HOME: "C:\\configured" } as NodeJS.ProcessEnv,
+  });
+
+  assert.isNull(preset);
+});
+
+it("replaces only the preset model and keeps other managed profiles", () => {
+  const existing = { ...profile, model: "ft3-local/bonsai-2-27b" };
+  const other = { ...profile, model: "ft3-local/other" };
+  const next = applyPiBonsaiPresetToConfig(
+    { ...config, profiles: [other, existing] },
+    bonsaiPreset,
+  );
+
+  assert.deepEqual(next.profiles, [
+    other,
+    {
+      model: "ft3-local/bonsai-2-27b",
+      baseUrl: bonsaiPreset.baseUrl,
+      executablePath: bonsaiPreset.executablePath,
+      modelPath: bonsaiPreset.modelPath,
+    },
+  ]);
+});
+
+it("round-trips a saved inference config", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "ft3-pi-config-"));
+  const filePath = NodePath.join(root, "pi", "instance", "inference-profiles.json");
+  try {
+    await savePiInferenceConfig(filePath, config);
+    const loaded = await loadPiInferenceConfig(filePath);
+    assert.equal(loaded.baseUrl, config.baseUrl);
+    assert.equal(loaded.apiKey, config.apiKey);
+    assert.deepEqual(
+      loaded.profiles.map((entry) => entry.model),
+      [MODEL],
+    );
+    assert.equal(loaded.profiles[0]?.modelPath, profile.modelPath);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+  }
 });
 
 it("serializes requests per endpoint through one slot", async () => {
