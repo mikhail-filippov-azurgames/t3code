@@ -427,7 +427,12 @@ describe("mergeUsage", () => {
     expect(decoded.buckets.map((entry) => entry.model)).toEqual(["gpt-5", "gpt-5"]);
     const merged = mergeUsage([environment("env-a", decoded)], USAGE_CONTRACT_VERSION);
     expect(merged.models).toHaveLength(1);
-    expect(merged.models[0]).toMatchObject({ model: "gpt-5", costUsd: 20, totalTokens: 2320 });
+    expect(merged.models[0]).toMatchObject({
+      model: "gpt-5",
+      costUsd: 20,
+      totalTokens: 2320,
+      sessions: 2,
+    });
   });
 
   it("marks a model with no known rates as unpriced rather than free", () => {
