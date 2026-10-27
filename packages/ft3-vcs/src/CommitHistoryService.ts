@@ -56,6 +56,9 @@ export class CommitHistoryService extends Context.Service<
     readonly getCommitDiff: (
       input: Contracts.VcsCommitDiffInput,
     ) => Effect.Effect<Contracts.VcsCommitDiffResult, VcsError>;
+    readonly resolveCommitMentions: (
+      input: Contracts.VcsResolveCommitMentionsInput,
+    ) => Effect.Effect<Contracts.VcsResolveCommitMentionsResult, VcsError>;
   }
 >()("@t3tools/ft3-vcs/CommitHistoryService") {}
 export function classifyCommitHistoryRef(fullName: string): Contracts.VcsCommitHistoryRef {
@@ -151,6 +154,7 @@ export const make = Effect.gen(function* () {
       readonly allowNonZeroExit?: boolean;
       readonly timeoutMs?: number;
       readonly maxOutputBytes?: number;
+      readonly stdin?: string;
     },
   ) =>
     vcsProcess.run({
@@ -162,6 +166,7 @@ export const make = Effect.gen(function* () {
       ...(options?.allowNonZeroExit === true ? { allowNonZeroExit: true } : {}),
       ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
       ...(options?.maxOutputBytes === undefined ? {} : { maxOutputBytes: options.maxOutputBytes }),
+      ...(options?.stdin === undefined ? {} : { stdin: options.stdin }),
     });
 
   const isGitRepository = (cwd: string) =>
@@ -334,7 +339,42 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  return CommitHistoryService.of({ listCommitHistory, listRefs, getCommitDiff });
+  const resolveCommitMentions: CommitHistoryService["Service"]["resolveCommitMentions"] = Effect.fn(
+    "Ft3Vcs.resolveCommitMentions",
+  )(function* (input) {
+    const candidates = [...new Set(input.candidates.map((candidate) => candidate.toLowerCase()))];
+    if (candidates.length === 0 || !(yield* isGitRepository(input.cwd))) {
+      return { commits: [] };
+    }
+    const result = yield* runGit(
+      "Ft3Vcs.resolveCommitMentions.catFile",
+      input.cwd,
+      ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+      {
+        stdin: `${candidates.join("\n")}\n`,
+        maxOutputBytes: 16_384,
+      },
+    );
+    return {
+      commits: [
+        ...new Set(
+          result.stdout.split(/\r?\n/u).flatMap((line) => {
+            const [sha, type] = line.trim().split(/\s+/u);
+            return type === "commit" && sha !== undefined && COMMIT_ID_PATTERN.test(sha)
+              ? [sha.toLowerCase()]
+              : [];
+          }),
+        ),
+      ],
+    };
+  });
+
+  return CommitHistoryService.of({
+    listCommitHistory,
+    listRefs,
+    getCommitDiff,
+    resolveCommitMentions,
+  });
 });
 
 export const layer = Layer.effect(CommitHistoryService, make);

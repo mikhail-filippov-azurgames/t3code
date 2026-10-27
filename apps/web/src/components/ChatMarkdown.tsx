@@ -1744,6 +1744,7 @@ function ChatMarkdown({
 }: ChatMarkdownProps) {
   const ft3ChatText = useFt3ChatTextExtensions({
     text,
+    cwd: props.cwd,
     threadRef: props.threadRef,
     environmentId: props.threadRef?.environmentId ?? props.environmentId ?? null,
     isStreaming: props.isStreaming === true,

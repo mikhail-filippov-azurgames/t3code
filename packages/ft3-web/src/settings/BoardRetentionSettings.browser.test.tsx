@@ -1,4 +1,5 @@
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { DEFAULT_BOARD_AUTOMATION_SETTINGS } from "@t3tools/ft3-board/settings";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
@@ -50,8 +51,8 @@ describe("board retention settings", () => {
   it("defaults to 1 day before archive and 14 days before deletion", async () => {
     mocks.settings = {};
     await using screen = await render(<BoardRetentionSection />, { router: false });
-    expect(DEFAULT_UNIFIED_SETTINGS.boardArchiveAfterDays).toBe(1);
-    expect(DEFAULT_UNIFIED_SETTINGS.boardDeleteArchivedAfterDays).toBe(14);
+    expect(DEFAULT_BOARD_AUTOMATION_SETTINGS.boardArchiveAfterDays).toBe(1);
+    expect(DEFAULT_BOARD_AUTOMATION_SETTINGS.boardDeleteArchivedAfterDays).toBe(14);
     expect((screen.getByLabelText(ARCHIVE).element() as HTMLInputElement).value).toBe("1");
     expect((screen.getByLabelText(DELETE).element() as HTMLInputElement).value).toBe("14");
     expect(screen.container.querySelectorAll("button").length).toBe(0);
@@ -68,7 +69,7 @@ describe("board retention settings", () => {
   });
 
   it("shows stored values and saves only accepted values", async () => {
-    mocks.settings = { boardArchiveAfterDays: 7, boardDeleteArchivedAfterDays: 30 };
+    mocks.settings = { ft3: { boardArchiveAfterDays: 7, boardDeleteArchivedAfterDays: 30 } };
     mocks.update.mockReset();
     await using screen = await render(<BoardRetentionSection />, { router: false });
     const archive = screen.getByLabelText(ARCHIVE);
@@ -84,13 +85,12 @@ describe("board retention settings", () => {
   });
 
   it("offers a reset to the defaults only when something differs", async () => {
-    mocks.settings = { boardArchiveAfterDays: 7, boardDeleteArchivedAfterDays: 30 };
+    mocks.settings = { ft3: { boardArchiveAfterDays: 7, boardDeleteArchivedAfterDays: 30 } };
     mocks.update.mockReset();
     await using screen = await render(<BoardRetentionSection />, { router: false });
     await userEvent.click(screen.getByRole("button"));
     expect(mocks.update).toHaveBeenCalledWith({
-      boardArchiveAfterDays: 1,
-      boardDeleteArchivedAfterDays: 14,
+      ft3: { boardArchiveAfterDays: 1, boardDeleteArchivedAfterDays: 14 },
     });
   });
 });
@@ -99,7 +99,7 @@ describe("deleted thread purge settings", () => {
   it("defaults to 14 days and says erasure is permanent", async () => {
     mocks.settings = {};
     await using screen = await render(<DeletedThreadPurgeSection />, { router: false });
-    expect(DEFAULT_UNIFIED_SETTINGS.deletedThreadPurgeAfterDays).toBe(14);
+    expect(DEFAULT_BOARD_AUTOMATION_SETTINGS.deletedThreadPurgeAfterDays).toBe(14);
     expect((screen.getByLabelText(PURGE).element() as HTMLInputElement).value).toBe("14");
     expect(screen.container.textContent).toContain("erasure is permanent");
     expect(screen.container.textContent).toContain(
@@ -108,10 +108,10 @@ describe("deleted thread purge settings", () => {
   });
 
   it("offers a reset to the default only when it differs", async () => {
-    mocks.settings = { deletedThreadPurgeAfterDays: 30 };
+    mocks.settings = { ft3: { deletedThreadPurgeAfterDays: 30 } };
     mocks.update.mockReset();
     await using screen = await render(<DeletedThreadPurgeSection />, { router: false });
     await userEvent.click(screen.getByRole("button"));
-    expect(mocks.update).toHaveBeenCalledWith({ deletedThreadPurgeAfterDays: 14 });
+    expect(mocks.update).toHaveBeenCalledWith({ ft3: { deletedThreadPurgeAfterDays: 14 } });
   });
 });

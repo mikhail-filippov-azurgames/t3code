@@ -1,6 +1,6 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
-import { formatUsdPerSession, UsageModelTable } from "@t3tools/ft3-web/usage";
+import { formatUsdPerSession, providersForWindow, UsageModelTable } from "@t3tools/ft3-web/usage";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -94,7 +94,7 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersForWindow } from "./usageProviders";
+import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,

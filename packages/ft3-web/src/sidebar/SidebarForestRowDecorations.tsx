@@ -5,7 +5,15 @@ import { cn } from "~/lib/utils";
 import { BoardRoleIcon, OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "./boardRoleIcons.tsx";
 import type { SidebarRoleBadge } from "./roleBadges.ts";
 
-/** Per-row forest + role model the sidebar passes back from `useSidebarForests`. */
+export type SidebarRowStatusOverride = {
+  readonly status: "working";
+  readonly label: "Working";
+  readonly icon: "working";
+  readonly className: "text-info-foreground";
+  readonly startedAt: string;
+};
+
+/** Per-row forest and role data for sidebar slots. */
 export type SidebarForestRowModel = {
   readonly key: string;
   readonly depth: number;
@@ -15,10 +23,36 @@ export type SidebarForestRowModel = {
   readonly toggleKey: string | null;
   readonly workingCount: number;
   readonly returnedCount: number;
-  /** Earliest working child's start, for the parent row's own Working timer. */
-  readonly delegatedWorkingStartedAt: string | null;
+  readonly statusOverride: SidebarRowStatusOverride | null;
   readonly roleBadge: SidebarRoleBadge | null;
+  readonly isDelegatedChild: boolean;
 };
+
+/** Generic child marker in the time slot; the role glyph stays beside the provider below. */
+export function SidebarDelegationMarker(props: {
+  readonly model: SidebarForestRowModel | undefined;
+}) {
+  const model = props.model;
+  if (model?.isDelegatedChild !== true) return null;
+  const roleLabel = model.roleBadge?.kind === "role" ? model.roleBadge.label : null;
+  const label = roleLabel === null ? "Delegated subtask" : `${roleLabel} delegated subtask`;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            aria-label={label}
+            data-testid={`sidebar-delegated-child-marker-${model.key}`}
+            className="inline-flex shrink-0 items-center text-muted-foreground/65"
+          />
+        }
+      >
+        <CornerDownRightIcon aria-hidden className="size-3 shrink-0" />
+      </TooltipTrigger>
+      <TooltipPopup>{label}</TooltipPopup>
+    </Tooltip>
+  );
+}
 
 /**
  * Board role glyph for a sidebar row, rendered by the row's `metaDecorations`

@@ -29,6 +29,7 @@ import * as Contracts from "./contracts.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as CoordinatorBoardNudgeReactor from "./CoordinatorBoardNudgeReactor.ts";
+import { DEFAULT_BOARD_AUTOMATION_SETTINGS } from "./settings.ts";
 
 const NOW = "2026-01-15T13:00:00.000Z";
 const NOW_MS = Date.UTC(2026, 0, 15, 13, 0, 0);
@@ -41,8 +42,10 @@ function makeSettings(
 ): ServerSettings {
   return {
     ...DEFAULT_SERVER_SETTINGS,
-    coordinatorBoardNudgeIntervalMinutes: intervalMinutes,
-    coordinatorBoardNudgeActiveChildThreshold: activeChildThreshold,
+    ft3: {
+      coordinatorBoardNudgeIntervalMinutes: intervalMinutes,
+      coordinatorBoardNudgeActiveChildThreshold: activeChildThreshold,
+    },
   };
 }
 
@@ -201,7 +204,7 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
   it.effect("does no board reads while disabled by default", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW_MS);
-      assert.equal(DEFAULT_SERVER_SETTINGS.coordinatorBoardNudgeIntervalMinutes, null);
+      assert.equal(DEFAULT_BOARD_AUTOMATION_SETTINGS.coordinatorBoardNudgeIntervalMinutes, null);
       const harness = yield* makeHarness({}, DEFAULT_SERVER_SETTINGS).pipe(
         Effect.provide(BoardRepository.layer),
       );
@@ -377,6 +380,6 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
 
 describe("CoordinatorBoardNudgeReactor config", () => {
   it("defaults off", () => {
-    assert.equal(DEFAULT_SERVER_SETTINGS.coordinatorBoardNudgeIntervalMinutes, null);
+    assert.equal(DEFAULT_BOARD_AUTOMATION_SETTINGS.coordinatorBoardNudgeIntervalMinutes, null);
   });
 });

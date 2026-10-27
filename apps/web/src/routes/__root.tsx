@@ -22,6 +22,7 @@ import { AddProjectToMachineDialogHost } from "../components/AddProjectToMachine
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
 import { DevReplayHost } from "../components/DevReplayHost";
 import { SwitchProviderDialogHost } from "@t3tools/ft3-web/delegation";
+import { DelegationDialogHosts } from "@t3tools/ft3-web/delegation-dialogs";
 import { FirstRunGate } from "../components/onboarding/FirstRunGate";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
@@ -209,7 +210,7 @@ function RootRouteBranch() {
         <SnapShotCoordinator />
         <ReopenClosedViewShortcut />
         <ConfirmDialogHost />
-        <SwitchProviderDialogHost />
+        <DelegationDialogHosts />
         <CustomSnoozeDialogHost />
         <GuestShareDialogHost />
         <ProjectCloneToastCoordinator />

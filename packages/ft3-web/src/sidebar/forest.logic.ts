@@ -14,7 +14,7 @@ import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
  * render flat at the cap instead of nesting forever. Cycles, self-parents,
  * and parents outside the section detach to top level: no input row is ever
  * dropped by the ordering itself (the sidebar hides orphan subagents before
- * ordering; see `useSidebarForests`).
+ * ordering; see `useFt3SidebarRows`).
  */
 export type SidebarForestEntry<TThread> = {
   readonly key: string;

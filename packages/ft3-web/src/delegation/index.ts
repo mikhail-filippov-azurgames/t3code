@@ -13,12 +13,7 @@ export {
   type SwitchProviderTarget,
   type SwitchProviderTransport,
 } from "./switchProviderDialog.logic";
-export {
-  SwitchProviderDialogHost,
-  requestSwitchProviderTarget,
-  type SwitchProviderChoice,
-  type SwitchProviderDialogPurpose,
-} from "./SwitchProviderDialog";
+export { requestSwitchProviderTarget } from "./switchProviderStore";
 export {
   requestThreadChildrenDialog,
   respondToThreadChildrenDialog,
@@ -26,7 +21,6 @@ export {
   type ThreadChildrenDialogAnswer,
   type ThreadChildrenDialogRequest,
 } from "./threadChildrenDialog";
-export { ThreadChildrenDialogHost } from "./ThreadChildrenDialogHost";
 export {
   buildOldChildrenMenuItems,
   buildSwitchProviderMenuItem,
@@ -50,3 +44,5 @@ export {
   type DelegationMenuItemId,
   type StaleDelegatedChildren,
 } from "./delegatedChildren.logic";
+export { useDelegationThreadActions } from "./useDelegationThreadActions";
+export { useSwitchThreadProvider } from "./useSwitchThreadProvider";

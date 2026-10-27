@@ -2,9 +2,9 @@ import { FolderClosedIcon } from "lucide-react";
 import { describe, expect, it } from "vite-plus/test";
 
 import { REMOTE_CAPABLE_EDITOR_IDS, buildRemoteOpenUrl } from "@t3tools/contracts";
-import { resolvePreferredEditor } from "../../editorPreferences";
-import { FileExplorerIcon, FinderIcon, TyporaIcon } from "../Icons";
-import { resolveOpenInOptions } from "./OpenInPicker";
+import { resolvePreferredEditor } from "~/editorPreferences";
+import { FileExplorerIcon, FinderIcon, TyporaIcon } from "~/components/Icons";
+import { resolveOpenInOptions } from "~/components/chat/OpenInPicker";
 
 describe("resolveOpenInOptions", () => {
   it.each([

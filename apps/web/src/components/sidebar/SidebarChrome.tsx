@@ -231,6 +231,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       setOpenMobile(false);
     }
   };
+  const boardMenuItem = useFt3SidebarBoardMenuItem(closeMobileSidebar);
   const handlePullRequestsClick = () => {
     closeMobileSidebar();
     void navigate({
@@ -248,11 +249,6 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       setOpenMobile(false);
     }
     void navigate({ to: "/usage" });
-  };
-
-  const handleBoardClick = () => {
-    closeMobileSidebar();
-    void navigate({ to: "/board", search: {} });
   };
 
   const handleBackClick = () => {
@@ -288,11 +284,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Usage"
             onClick={handleUsageClick}
           />
-          <SidebarUtilityItem
-            icon={<SquareKanbanIcon />}
-            label="Board"
-            onClick={handleBoardClick}
-          />
+          <SidebarUtilityItem {...boardMenuItem} />
         </>
       )}
       <SidebarThreadUndoNotice />

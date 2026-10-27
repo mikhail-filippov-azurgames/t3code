@@ -376,3 +376,55 @@ describe("CommitHistoryService.getCommitDiff", () => {
     }),
   );
 });
+
+describe("CommitHistoryService.resolveCommitMentions", () => {
+  it.effect("resolves full and unique abbreviated SHAs from one cat-file batch", () =>
+    Effect.gen(function* () {
+      const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-mentions-"));
+      const git = (...args: ReadonlyArray<string>) =>
+        spawnSync("git", args, { cwd, encoding: "utf8" });
+      try {
+        git("init", "-b", "main");
+        git("config", "user.email", "author@example.com");
+        git("config", "user.name", "Author");
+        writeFileSync(join(cwd, "file.txt"), "one\n");
+        git("add", "file.txt");
+        git("commit", "-m", "first");
+        const commit = git("rev-parse", "HEAD").stdout.trim();
+        const short = commit.slice(0, 8);
+
+        const process = VcsProcess.VcsProcess.of({
+          run: (input) =>
+            Effect.sync(() => {
+              const result = spawnSync("git", [...input.args], {
+                cwd: input.spawnCwd ?? input.cwd,
+                encoding: "utf8",
+                ...(input.stdin === undefined ? {} : { input: input.stdin }),
+              });
+              return {
+                exitCode: (result.status ?? 0) as VcsProcess.VcsProcessOutput["exitCode"],
+                stdout: result.stdout,
+                stderr: result.stderr,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        });
+        const result = yield* Effect.gen(function* () {
+          const service = yield* CommitHistoryService.CommitHistoryService;
+          return yield* service.resolveCommitMentions({
+            cwd,
+            candidates: [short, commit, "deadbee"],
+          });
+        }).pipe(
+          Effect.provide(CommitHistoryService.layer),
+          Effect.provideService(VcsProcess.VcsProcess, process),
+        );
+
+        expect(result.commits).toEqual([commit]);
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }),
+  );
+});
