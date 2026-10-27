@@ -17,6 +17,7 @@ import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import { decorateKimiRuntime } from "./promptFailure.ts";
 import { isKimiAcpSettings } from "./settings.ts";
 import { kimiUsageReader, type KimiUsageReaderEnv } from "./usage.ts";
 import { probeKimiUsageLimits } from "./usageLimits.ts";
@@ -86,13 +87,6 @@ export const Ft3KimiDriver: ProviderDriver<
   usage: kimiUsageReader,
   create: Effect.fn("Ft3KimiDriver.create")(function* (input) {
     const kimi = isKimiAcpSettings(input.config);
-    const instance = yield* AcpRegistryDriver.create({
-      ...input,
-      displayName: kimi ? (input.displayName ?? "Kimi") : input.displayName,
-    });
-    if (!kimi) {
-      return instance;
-    }
 
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -105,6 +99,21 @@ export const Ft3KimiDriver: ProviderDriver<
       Effect.provideService(Path.Path, path),
       Effect.provideService(HttpClient.HttpClient, httpClient),
     );
+    const instance = yield* AcpRegistryDriver.create(
+      {
+        ...input,
+        displayName: kimi ? (input.displayName ?? "Kimi") : input.displayName,
+      },
+      kimi
+        ? {
+            decorateRuntime: (runtime) => decorateKimiRuntime({ runtime, limits: probe }),
+          }
+        : undefined,
+    );
+    if (!kimi) {
+      return instance;
+    }
+
     const snapshot = yield* withKimiUsageLimits({ snapshot: instance.snapshot, probe });
 
     return { ...instance, snapshot };
