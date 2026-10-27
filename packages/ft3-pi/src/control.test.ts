@@ -139,6 +139,80 @@ it("does not offer start when an external server is already ready", async () => 
   assert.equal(fake.spawnArgs.length, 0);
 });
 
+it("applies a detected preset to the registered config file and re-registers it", async () => {
+  const fake = makeFake();
+  const manager = makePiInferenceServerManager(fake.deps);
+  const configPath = "C:\\state\\pi\\a\\inference-profiles.json";
+  manager.registerInstance("a", config, configPath);
+  const preset = {
+    executablePath: "C:\\Bonsai\\bin\\llama-server.exe",
+    modelPath: "C:\\Bonsai\\models\\bonsai2-27b.gguf",
+    baseUrl: "http://127.0.0.1:8080/v1",
+    model: MODEL,
+  };
+  const writes: Array<{ readonly path: string; readonly config: PiInferenceConfig }> = [];
+  const control = makePiInferenceControl({
+    manager,
+    detectPreset: async () => preset,
+    readConfig: async () => config,
+    writeConfig: async (path, next) => {
+      writes.push({ path, config: next });
+    },
+  });
+
+  const applied = await control.applyPreset("a");
+
+  assert.deepEqual(applied, preset);
+  assert.equal(writes[0]?.path, configPath);
+  assert.deepEqual(writes[0]?.config.profiles.at(-1), {
+    model: `ft3-local/${MODEL}`,
+    baseUrl: preset.baseUrl,
+    executablePath: preset.executablePath,
+    modelPath: preset.modelPath,
+  });
+  assert.deepEqual(manager.registeredConfig("a"), writes[0]?.config);
+});
+
+it("does not write a preset that was not detected", async () => {
+  const fake = makeFake();
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config, "C:\\state\\pi\\a\\inference-profiles.json");
+  let writes = 0;
+  const control = makePiInferenceControl({
+    manager,
+    detectPreset: async () => null,
+    writeConfig: async () => {
+      writes += 1;
+    },
+  });
+
+  assert.isNull(await control.applyPreset("a", "C:\\missing"));
+  assert.equal(writes, 0);
+});
+
+it("reports a missing config path instead of guessing one", async () => {
+  const fake = makeFake();
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config);
+  const control = makePiInferenceControl({
+    manager,
+    detectPreset: async () => ({
+      executablePath: "C:\\Bonsai\\bin\\llama-server.exe",
+      modelPath: "C:\\Bonsai\\models\\bonsai2-27b.gguf",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      model: MODEL,
+    }),
+  });
+
+  let failure: unknown;
+  try {
+    await control.applyPreset("a");
+  } catch (cause) {
+    failure = cause;
+  }
+  assert.match(failure instanceof Error ? failure.message : "", /config path.*not registered/);
+});
+
 it("reports an unregistered instance instead of throwing", async () => {
   const { fake, control } = makeControl("a");
 
