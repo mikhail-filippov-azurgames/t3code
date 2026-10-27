@@ -1074,6 +1074,7 @@ export function GeneralSettingsPanel() {
           }
         />
       </SettingsSection>
+      <Ft3GeneralSettingsSections />
     </SettingsPageContainer>
   );
 }
@@ -1431,9 +1432,6 @@ export function DiffsSettingsPanel() {
         />
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
-
-      <Ft3GeneralSettingsSections />
-
     </SettingsPageContainer>
   );
 }
