@@ -4,8 +4,11 @@ export {
   orderSidebarSectionForest,
   sidebarForestParentKey,
   sidebarSubagentParentKey,
+  collectDelegatedWorkingStartedAt,
   collectUnseenDelegatedChildCounts,
   collectWorkingDelegatedChildCounts,
+  delegatedChildWorkingStartedAt,
+  resolveDelegatedWorkingStart,
 } from "./forest.logic.ts";
 export type {
   SidebarForestEntry,
@@ -14,7 +17,10 @@ export type {
 } from "./forest.logic.ts";
 export { useSidebarForests } from "./useSidebarForests.ts";
 export type { SidebarForestSectionInput, SidebarForests } from "./useSidebarForests.ts";
-export { SidebarForestRowDecorations } from "./SidebarForestRowDecorations.tsx";
+export {
+  SidebarForestRowDecorations,
+  SidebarRoleBadgeMarker,
+} from "./SidebarForestRowDecorations.tsx";
 export type { SidebarForestRowModel } from "./SidebarForestRowDecorations.tsx";
 export { resolveSidebarRoleBadge, useSidebarRoleBadges } from "./roleBadges.ts";
 export type { SidebarRoleBadge } from "./roleBadges.ts";

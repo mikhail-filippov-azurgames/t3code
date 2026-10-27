@@ -46,6 +46,13 @@ const make = Effect.gen(function* () {
       const result = yield* taskQueries
         .history(summaryHistoryScope(parentThreadId, yield* Clock.currentTimeMillis), page)
         .pipe(
+          // The panel also requests history for a draft the server has not persisted yet: no
+          // thread means no summaries, not a failure. Real read errors still surface.
+          Effect.catchIf(
+            (error) => error.code === "thread_not_found",
+            () =>
+              Effect.succeed({ records: [], nextCursor: null } satisfies TaskSummaryHistoryResult),
+          ),
           Effect.mapError(
             (error) => new Contracts.BoardMcpFailure({ code: error.code, message: error.message }),
           ),

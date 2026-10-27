@@ -1,6 +1,7 @@
 import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
 import {
   SidebarForestRowDecorations,
+  SidebarRoleBadgeMarker,
   useSidebarForests,
   type SidebarForests,
 } from "@t3tools/ft3-web/sidebar";
@@ -385,10 +386,11 @@ interface SidebarThreadRowProps {
     threadRef?: ScopedThreadRef,
   ) => boolean;
   onFileDropThreads: (threadRef: ScopedThreadRef, files: File[]) => void;
-  // ft3 sidebar forest: child-row indentation and the single decoration slot
-  // (collapse toggle, delegated child counters, board role badge).
+  // ft3 sidebar forest: child-row indentation, title decorations (collapse
+  // toggle, delegated child counters) and the board role glyph.
   depth?: number;
   decorations?: React.ReactNode;
+  metaDecorations?: React.ReactNode;
 }
 
 function checkTaskPermission(environmentId: EnvironmentId): boolean {
@@ -782,6 +784,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </Tooltip>
           )}
           {props.decorations}
+          {props.metaDecorations}
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-1.5">
           {canOperatePreview && discoveredPorts.length > 0 && (
@@ -1072,6 +1075,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
                   onToggleCollapse={sidebarForests.toggleCollapsed}
                 />
               }
+              metaDecorations={<SidebarRoleBadgeMarker model={forestModel} />}
             />,
             <ArchitectSidebarPin
               key={`architect-pin:${threadKey}`}

@@ -15,6 +15,7 @@ import {
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import { type EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
+import { resolveDelegatedWorkingStart } from "@t3tools/ft3-web/sidebar";
 import {
   formatWorkingDurationLabel,
   resolveThreadProviderStack,
@@ -545,6 +546,10 @@ type SidebarThreadRowProps = {
   // `@t3tools/ft3-web/sidebar`.
   depth?: number | undefined;
   decorations?: ReactNode | undefined;
+  /** Bottom meta-line slot (board role glyph); slim rows fold it into the title line. */
+  metaDecorations?: ReactNode | undefined;
+  /** Earliest working delegated child, for a parent whose own run already ended. */
+  delegatedWorkingStartedAt?: string | null | undefined;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
@@ -690,6 +695,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
+  // The parent's own run can end while its delegated fleet runs; the old fork
+  // read that as Working through background liveness.
+  const working = resolveDelegatedWorkingStart({
+    ownWorking: status === "working",
+    ownStartedAt: status === "working" ? resolveWorkingStartedAt(thread) : null,
+    delegatedStartedAt: props.delegatedWorkingStartedAt ?? null,
+  });
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -697,68 +709,67 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
   const shouldRecede = shouldRecedeSidebarThread({
-    status,
+    status: working.working ? "working" : status,
     isUnread,
     isWoke,
     isActive: props.isActive,
     isSelected,
   });
-  const topStatus =
-    status === "working"
+  const topStatus = working.working
+    ? {
+        label: status === "working" && thread.goal?.status === "active" ? "Goal" : "Working",
+        icon: "working" as const,
+        className: "text-info-foreground",
+      }
+    : status === "waiting"
       ? {
-          label: thread.goal?.status === "active" ? "Goal" : "Working",
-          icon: "working" as const,
-          className: "text-info-foreground",
+          label: "Waiting",
+          icon: "waiting" as const,
+          className: "text-muted-foreground",
         }
-      : status === "waiting"
+      : status === "approval"
         ? {
-            label: "Waiting",
-            icon: "waiting" as const,
-            className: "text-muted-foreground",
+            label: "Approval",
+            icon: "approval" as const,
+            className: "text-warning-foreground",
           }
-        : status === "approval"
+        : status === "input"
           ? {
-              label: "Approval",
-              icon: "approval" as const,
-              className: "text-warning-foreground",
+              label: "Input",
+              icon: "input" as const,
+              className: "text-indigo-600 dark:text-indigo-300",
             }
-          : status === "input"
+          : status === "request"
             ? {
-                label: "Input",
-                icon: "input" as const,
-                className: "text-indigo-600 dark:text-indigo-300",
+                label: "Request",
+                icon: "request" as const,
+                className: "text-guest-foreground",
               }
-            : status === "request"
+            : status === "limited"
               ? {
-                  label: "Request",
-                  icon: "request" as const,
-                  className: "text-guest-foreground",
+                  label: "Limited",
+                  icon: "failed" as const,
+                  className: "text-warning-foreground",
                 }
-              : status === "limited"
+              : status === "failed"
                 ? {
-                    label: "Limited",
+                    label: "Failed",
                     icon: "failed" as const,
-                    className: "text-warning-foreground",
+                    className: "text-error-foreground",
                   }
-                : status === "failed"
+                : isWoke
                   ? {
-                      label: "Failed",
-                      icon: "failed" as const,
-                      className: "text-error-foreground",
+                      label: "Woke",
+                      icon: "woke" as const,
+                      className: "text-warning-foreground",
                     }
-                  : isWoke
+                  : isUnread
                     ? {
-                        label: "Woke",
-                        icon: "woke" as const,
-                        className: "text-warning-foreground",
+                        label: "Done",
+                        icon: "done" as const,
+                        className: "text-success-foreground",
                       }
-                    : isUnread
-                      ? {
-                          label: "Done",
-                          icon: "done" as const,
-                          className: "text-success-foreground",
-                        }
-                      : null;
+                    : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1140,6 +1151,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             {draftIndicator}
             {title}
             {props.decorations}
+            {props.metaDecorations}
             {pinIndicator}
             {terminalStatusIcon}
             {isRegeneratingTitle ? (
@@ -1167,6 +1179,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       {/* The clock tells a wake time from an age at a glance. */}
                       <AlarmClockIcon aria-hidden className="size-3" />
                       {props.snoozeWakeLabelText}
+                    </span>
+                  ) : working.working ? (
+                    <span className="inline-flex items-center gap-1 text-xs font-medium text-info-foreground tabular-nums">
+                      <CircleDashedIcon aria-hidden className="size-3" />
+                      Working <WorkingDuration startedAt={working.startedAt} />
                     </span>
                   ) : isWoke ? (
                     <Tooltip>
@@ -1387,9 +1404,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           {topStatus.label}
-                          {status === "working" ? (
+                          {working.working ? (
                             <span aria-hidden>
-                              <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                              <WorkingDuration startedAt={working.startedAt} />
                             </span>
                           ) : status === "waiting" ? (
                             <span aria-hidden>
@@ -1478,6 +1495,17 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 </span>
               ) : null}
             </div>
+            {metaLineEmpty ? (
+              <>
+                <span aria-hidden className="inline-flex shrink-0">
+                  <SidebarProviderStack
+                    thread={thread}
+                    providerEntryByInstanceId={props.providerEntryByInstanceId}
+                  />
+                </span>
+                {props.metaDecorations}
+              </>
+            ) : null}
             {metaLineEmpty ? null : (
               <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
                 {thread.branch ? (
@@ -1511,6 +1539,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     </span>
                   </span>
                 ) : null}
+                {props.metaDecorations}
                 <span
                   aria-hidden
                   className="pointer-events-none ml-auto inline-flex shrink-0 items-center gap-1"
@@ -1530,8 +1559,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   />
                 </span>
               </div>
-            )}
-          </div>
+            )}          </div>
           {props.jumpLabel ? <JumpHintBadge label={props.jumpLabel} /> : null}
         </TooltipTrigger>
         {detailsTooltip}
