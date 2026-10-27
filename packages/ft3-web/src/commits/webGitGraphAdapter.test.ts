@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { VcsCommitHistoryResult } from "@t3tools/ft3-vcs/contracts";
+import type { VcsCommitHistoryResult, VcsRefEntry } from "@t3tools/ft3-vcs/contracts";
 
 import {
   createCommitsGraphProvider,
@@ -9,6 +9,7 @@ import {
   serializeCommitCursor,
   toGitGraphCommit,
   toGitGraphPage,
+  toGitGraphRefs,
 } from "./webGitGraphAdapter.ts";
 
 const oid = (n: number) => n.toString(16).padStart(40, "0");
@@ -112,5 +113,50 @@ describe("createCommitsGraphProvider", () => {
     const provider = createCommitsGraphProvider(fetcher);
     await provider.getHistory({ limit: 500, cursor: serializeCommitCursor(page.nextCursor)! });
     expect(fetcher).toHaveBeenCalledWith({ limit: 100, cursor: { id: oid(3), offset: 2 } });
+  });
+});
+
+describe("repository refs", () => {
+  const refs: VcsRefEntry[] = [
+    { refName: "refs/heads/main", name: "main", kind: "branch", target: oid(4), current: true },
+    {
+      refName: "refs/heads/outside",
+      name: "outside",
+      kind: "branch",
+      target: oid(5),
+      current: false,
+    },
+    {
+      refName: "refs/remotes/origin/main",
+      name: "origin/main",
+      kind: "remote",
+      target: oid(4),
+      current: false,
+    },
+    { refName: "refs/tags/v1", name: "v1", kind: "tag", target: oid(6), current: false },
+  ];
+
+  it("maps refs independently of the loaded page", () => {
+    expect(toGitGraphRefs(refs)).toEqual([
+      { name: "main", target: oid(4), kind: "current" },
+      { name: "outside", target: oid(5), kind: "head" },
+      { name: "origin/main", target: oid(4), kind: "remote" },
+      { name: "v1", target: oid(6), kind: "tag" },
+    ]);
+  });
+
+  it("merges repository refs over the decorated page refs", async () => {
+    const fetcher = vi.fn().mockResolvedValue({ ...page, nextCursor: null });
+    const provider = createCommitsGraphProvider(fetcher, refs);
+    const mapped = await provider.getHistory({ limit: 100 });
+
+    expect(mapped.refs).toEqual(
+      expect.arrayContaining([
+        { name: "main", target: oid(4), kind: "current" },
+        { name: "outside", target: oid(5), kind: "head" },
+        { name: "v1", target: oid(6), kind: "tag" },
+      ]),
+    );
+    expect(mapped.refs).not.toContainEqual({ name: "v1", target: oid(3), kind: "tag" });
   });
 });

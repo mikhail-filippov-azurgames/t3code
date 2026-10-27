@@ -5,6 +5,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
+import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 
 import { commitsEnvironment } from "./state.ts";
@@ -77,6 +78,10 @@ export function CommitsGraph({
   );
   const { resolvedTheme } = useTheme();
   const runListCommitHistory = useAtomCommand(commitsEnvironment.listCommitHistory);
+  const refsQuery = useEnvironmentQuery(
+    commitsEnvironment.listRefs({ environmentId, input: { cwd } }),
+  );
+  const repositoryRefs = refsQuery.data?.refs;
 
   useEffect(() => {
     errorHandlerRef.current = onError;
@@ -116,7 +121,10 @@ export function CommitsGraph({
     },
     [fetchPage, pageRequests],
   );
-  const provider = useMemo(() => createCommitsGraphProvider(fetcher), [fetcher]);
+  const provider = useMemo(
+    () => createCommitsGraphProvider(fetcher, repositoryRefs ?? []),
+    [fetcher, repositoryRefs],
+  );
 
   useEffect(() => {
     const host = hostRef.current;

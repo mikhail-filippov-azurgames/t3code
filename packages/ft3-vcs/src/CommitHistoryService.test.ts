@@ -1,5 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import * as CommitHistoryService from "./CommitHistoryService.ts";
 import type * as Contracts from "./contracts.ts";
@@ -154,6 +159,179 @@ describe("CommitHistoryService.listCommitHistory", () => {
         Effect.provideService(VcsProcess.VcsProcess, process),
       );
       expect(result).toEqual({ commits: [], isRepo: false, nextCursor: null });
+    }),
+  );
+});
+
+describe("parseRefsList", () => {
+  it("classifies refs, marks the checked-out branch and peels annotated tags", () => {
+    const refs = CommitHistoryService.parseRefsList(
+      [
+        `refs/heads/main\x1f${id(1)}\x1f\x1f*`,
+        `refs/heads/feature\x1f${id(1)}\x1f\x1f `,
+        `refs/remotes/origin/main\x1f${id(1)}\x1f\x1f `,
+        `refs/tags/light\x1f${id(2)}\x1f\x1f `,
+        `refs/tags/annotated\x1f${id(3)}\x1f${id(2)}\x1f `,
+        `refs/t3/checkpoints/turn\x1f${id(4)}\x1f\x1f `,
+        "malformed",
+      ].join("\n"),
+    );
+    expect(refs).toEqual([
+      { refName: "refs/heads/main", name: "main", kind: "branch", target: id(1), current: true },
+      {
+        refName: "refs/heads/feature",
+        name: "feature",
+        kind: "branch",
+        target: id(1),
+        current: false,
+      },
+      {
+        refName: "refs/remotes/origin/main",
+        name: "origin/main",
+        kind: "remote",
+        target: id(1),
+        current: false,
+      },
+      {
+        refName: "refs/tags/light",
+        name: "light",
+        kind: "tag",
+        target: id(2),
+        current: false,
+      },
+      {
+        refName: "refs/tags/annotated",
+        name: "annotated",
+        kind: "tag",
+        target: id(2),
+        current: false,
+      },
+    ]);
+  });
+});
+
+describe("CommitHistoryService.listRefs", () => {
+  it.effect("reads refs from a real temporary repository", () =>
+    Effect.gen(function* () {
+      const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-refs-"));
+      const git = (...args: ReadonlyArray<string>) =>
+        spawnSync("git", args, { cwd, encoding: "utf8" });
+      try {
+        git("init", "-b", "main");
+        git("config", "user.email", "author@example.com");
+        git("config", "user.name", "Author");
+        writeFileSync(join(cwd, "file.txt"), "one\n");
+        git("add", "file.txt");
+        git("commit", "-m", "first");
+        const commit = git("rev-parse", "HEAD").stdout.trim();
+        git("branch", "feature");
+        git("tag", "v1");
+
+        const process = VcsProcess.VcsProcess.of({
+          run: (input) =>
+            Effect.sync(() => {
+              const result = spawnSync("git", [...input.args], {
+                cwd: input.spawnCwd ?? input.cwd,
+                encoding: "utf8",
+              });
+              return {
+                exitCode: (result.status ?? 0) as VcsProcess.VcsProcessOutput["exitCode"],
+                stdout: result.stdout,
+                stderr: result.stderr,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        });
+        const result = yield* Effect.gen(function* () {
+          const service = yield* CommitHistoryService.CommitHistoryService;
+          return yield* service.listRefs({ cwd });
+        }).pipe(
+          Effect.provide(CommitHistoryService.layer),
+          Effect.provideService(VcsProcess.VcsProcess, process),
+        );
+
+        expect(result.isRepo).toBe(true);
+        expect(result.refs).toEqual(
+          expect.arrayContaining([
+            {
+              refName: "refs/heads/main",
+              name: "main",
+              kind: "branch",
+              target: commit,
+              current: true,
+            },
+            {
+              refName: "refs/heads/feature",
+              name: "feature",
+              kind: "branch",
+              target: commit,
+              current: false,
+            },
+            {
+              refName: "refs/tags/v1",
+              name: "v1",
+              kind: "tag",
+              target: commit,
+              current: false,
+            },
+          ]),
+        );
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    }),
+  );
+});
+
+describe("CommitHistoryService.getCommitDiff", () => {
+  it.effect("returns the patch for one commit from a real temporary repository", () =>
+    Effect.gen(function* () {
+      const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-diff-"));
+      const git = (...args: ReadonlyArray<string>) =>
+        spawnSync("git", args, { cwd, encoding: "utf8" });
+      try {
+        git("init", "-b", "main");
+        git("config", "user.email", "author@example.com");
+        git("config", "user.name", "Author");
+        writeFileSync(join(cwd, "file.txt"), "one\n");
+        git("add", "file.txt");
+        git("commit", "-m", "first");
+        writeFileSync(join(cwd, "file.txt"), "two\n");
+        git("add", "file.txt");
+        git("commit", "-m", "second");
+        const commit = git("rev-parse", "HEAD").stdout.trim();
+
+        const process = VcsProcess.VcsProcess.of({
+          run: (input) =>
+            Effect.sync(() => {
+              const result = spawnSync("git", [...input.args], {
+                cwd: input.spawnCwd ?? input.cwd,
+                encoding: "utf8",
+              });
+              return {
+                exitCode: (result.status ?? 0) as VcsProcess.VcsProcessOutput["exitCode"],
+                stdout: result.stdout,
+                stderr: result.stderr,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        });
+        const result = yield* Effect.gen(function* () {
+          const service = yield* CommitHistoryService.CommitHistoryService;
+          return yield* service.getCommitDiff({ cwd, commit });
+        }).pipe(
+          Effect.provide(CommitHistoryService.layer),
+          Effect.provideService(VcsProcess.VcsProcess, process),
+        );
+
+        expect(result).toMatchObject({ commit, truncated: false });
+        expect(result.patch).toContain("diff --git a/file.txt b/file.txt");
+        expect(result.patch).toContain("+two");
+      } finally {
+        rmSync(cwd, { recursive: true, force: true });
+      }
     }),
   );
 });

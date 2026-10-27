@@ -9,6 +9,7 @@ import type {
   VcsCommitHistoryEntry,
   VcsCommitHistoryRef,
   VcsCommitHistoryResult,
+  VcsRefEntry,
 } from "@t3tools/ft3-vcs/contracts";
 import type { GitGraphProvider } from "@web-git-graph/web";
 
@@ -103,6 +104,22 @@ export type CommitHistoryFetcher = (
   input: CommitHistoryFetcherInput,
 ) => Promise<VcsCommitHistoryResult>;
 
+/** Maps repository refs independently from the currently loaded history page. */
+export function toGitGraphRefs(refs: ReadonlyArray<VcsRefEntry>): GitGraphRef[] {
+  return refs.map((ref) => ({
+    name: ref.name,
+    target: ref.target,
+    kind:
+      ref.kind === "remote"
+        ? "remote"
+        : ref.kind === "branch"
+          ? ref.current
+            ? "current"
+            : "head"
+          : "tag",
+  }));
+}
+
 /** Loads pages in order until the requested SHA is present or history ends. */
 export async function loadHistoryUntilCommit(
   fetcher: CommitHistoryFetcher,
@@ -127,10 +144,13 @@ export async function loadHistoryUntilCommit(
 
 /**
  * Adapts our page-based `vcs.listCommitHistory` to the component's provider.
- * Ref badges come from the decorated `git log` output only; branch refs whose
- * heads sit outside a loaded page are not synthesised in V2.
+ * Repository refs are merged over the decorated page refs so branches and tags
+ * whose heads sit outside the loaded page still draw.
  */
-export function createCommitsGraphProvider(fetcher: CommitHistoryFetcher): GitGraphProvider {
+export function createCommitsGraphProvider(
+  fetcher: CommitHistoryFetcher,
+  repositoryRefs: ReadonlyArray<VcsRefEntry> = [],
+): GitGraphProvider {
   return {
     async getCapabilities() {
       return {
@@ -148,7 +168,12 @@ export function createCommitsGraphProvider(fetcher: CommitHistoryFetcher): GitGr
       const limit = Math.max(1, Math.min(request?.limit ?? COMMITS_PAGE_LIMIT, COMMITS_PAGE_LIMIT));
       const cursor = parseCommitCursor(request?.cursor);
       const result = await fetcher({ limit, ...(cursor === undefined ? {} : { cursor }) });
-      return toGitGraphPage(result);
+      const page = toGitGraphPage(result);
+      const refsByName = new Map(page.refs.map((ref) => [`${ref.kind}:${ref.name}`, ref]));
+      for (const ref of toGitGraphRefs(repositoryRefs)) {
+        refsByName.set(`${ref.kind}:${ref.name}`, ref);
+      }
+      return { ...page, refs: [...refsByName.values()] };
     },
   };
 }
