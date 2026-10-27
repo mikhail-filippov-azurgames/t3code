@@ -72,12 +72,17 @@ export function buildArchitectReplacePrompt(input: {
   readonly architectThreadId: string;
   readonly taskEffort: string;
   readonly reason: string;
+  readonly preferredTarget?: {
+    readonly instanceId: string;
+    readonly driverKind: string;
+    readonly model: string;
+  };
 }): string {
   return [
     "Replace the bound Architect using architect_replace after checking the accepted architecture routing policy and saving the selection rationale to OpenContext.",
     `Current Architect thread: ${input.architectThreadId}`,
     `Task effort: ${input.taskEffort}`,
-    "Human preferred target: unspecified",
+    `Human preferred target: ${input.preferredTarget?.instanceId ?? "unspecified"} (${input.preferredTarget?.driverKind ?? "unknown"}) / ${input.preferredTarget?.model ?? "unspecified"}`,
     `Reason: ${input.reason}`,
     "Verify that the preference is eligible for role=architecture and the live provider's read-only permission envelope. Replacement soft-deletes the prior binding and revokes its credential after the durable transition.",
     "Read the accepted architecture routing policy from OpenContext; its current accepted revision is authoritative.",

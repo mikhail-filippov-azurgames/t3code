@@ -330,6 +330,16 @@ const LegacyConfirmQuit = Schema.Boolean.pipe(
 
 const QuitConfirmationModeSetting = Schema.Union([QuitConfirmationMode, LegacyConfirmQuit]);
 
+/**
+ * What happens to a parent thread's delegated children when the parent is
+ * archived: "ask" runs the children dialog, "always-yes" cascades without
+ * asking, "always-no" touches only the parent. Deletion always removes the
+ * whole delegated subtree on the server, so there is no delete variant.
+ */
+export const ThreadChildrenAction = Schema.Literals(["ask", "always-yes", "always-no"]);
+export type ThreadChildrenAction = typeof ThreadChildrenAction.Type;
+const DEFAULT_THREAD_CHILDREN_ACTION: ThreadChildrenAction = "ask";
+
 export const FontFamilyPreference = Schema.String.check(Schema.isMaxLength(200));
 export type FontFamilyPreference = typeof FontFamilyPreference.Type;
 
@@ -468,6 +478,12 @@ export const ClientSettingsSchema = Schema.Struct({
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   confirmThreadUnpin: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  archiveThreadChildren: ThreadChildrenAction.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_THREAD_CHILDREN_ACTION)),
+  ),
+  dismissedProviderUpdateNotificationKeys: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   diffFilesCollapsed: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffIgnoreWhitespace: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   diffLayout: DiffLayout.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_LAYOUT))),
@@ -1844,6 +1860,7 @@ export const ClientSettingsPatch = Schema.Struct({
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
   confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
+  archiveThreadChildren: Schema.optionalKey(ThreadChildrenAction),
   diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
   diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
   diffLayout: Schema.optionalKey(DiffLayout),
