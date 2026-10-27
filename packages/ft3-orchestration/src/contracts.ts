@@ -161,7 +161,11 @@ const TaskSummaryHistoryRecord = Schema.Struct({
     Schema.Literals(["pending", "running", "interrupted", "completed", "error"]),
   ),
   currentWatermark: NonNegativeInt,
+  /** Human-facing name of the child; the client may not hold a shell for a delegated thread. */
+  childTitle: Schema.NullOr(Schema.String),
   executorRole: Schema.String,
+  executorProviderInstanceId: Schema.NullOr(Schema.String),
+  executorModel: Schema.NullOr(Schema.String),
   stale: Schema.Boolean,
 });
 

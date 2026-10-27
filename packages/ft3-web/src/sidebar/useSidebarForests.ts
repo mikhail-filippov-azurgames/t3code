@@ -9,6 +9,7 @@ import {
   collectUnseenDelegatedChildCounts,
   collectWorkingDelegatedChildCounts,
   filterCollapsedSidebarForest,
+  groupSidebarForestChildrenBySection,
   orderSidebarSectionForest,
   sidebarForestParentKey,
   sidebarSubagentParentKey,
@@ -44,17 +45,12 @@ export type SidebarForests = {
  * working/returned child counters plus board role badges for the rows.
  *
  * `pool` carries the unfiltered thread shells (including subagents) the
- * sections were drawn from; `sectionOfKey` resolves a parent key to the
- * section its row renders in, so a child only nests where its parent is.
+ * sections were drawn from. Parented rows join the section containing their
+ * visible parent, including an Architect that would otherwise be elsewhere.
  */
 export function useSidebarForests(input: {
   readonly sections: readonly SidebarForestSectionInput[];
   readonly pool: readonly EnvironmentThreadShell[];
-  /**
-   * Resolves a parent key to the section its row renders in; a subagent only
-   * nests where its parent is. Defaults to the sections' own thread keys.
-   */
-  readonly sectionOfKey?: ((key: string) => string | null) | undefined;
   readonly routeThreadKey: string | null;
   readonly getLastVisitedAt: (thread: EnvironmentThreadShell) => string | undefined;
 }): SidebarForests {
@@ -74,32 +70,12 @@ export function useSidebarForests(input: {
   const built = useMemo(() => {
     const getKey = (thread: EnvironmentThreadShell) =>
       scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-    const sectionOfKey =
-      input.sectionOfKey ??
-      ((key: string): string | null => {
-        for (const section of input.sections) {
-          if (section.threads.some((thread) => getKey(thread) === key)) return section.section;
-        }
-        return null;
-      });
-    const poolsBySection = new Map<string, EnvironmentThreadShell[]>();
-    for (const section of input.sections) poolsBySection.set(section.section, [...section.threads]);
-    // Subagent children join the section their parent row renders in; a
-    // parentless subagent (provider-internal runs, broken chains) stays
-    // hidden exactly as the V2-only filter kept it. Archived threads never
-    // render, so their children cannot attach either.
-    for (const thread of input.pool) {
-      if (thread.archivedAt !== null) continue;
-      const parentKey = sidebarSubagentParentKey(thread);
-      if (parentKey === null) continue;
-      const parentSection = sectionOfKey(parentKey);
-      if (parentSection === null) continue;
-      const candidates = poolsBySection.get(parentSection);
-      if (candidates === undefined) continue;
-      if (!candidates.some((candidate) => getKey(candidate) === getKey(thread))) {
-        candidates.push(thread);
-      }
-    }
+    const poolsBySection = groupSidebarForestChildrenBySection({
+      sections: input.sections,
+      pool: input.pool.filter((thread) => thread.archivedAt === null),
+      getKey,
+      getParentKey: (thread) => sidebarForestParentKey(thread, architectParentKeys),
+    });
     const forests = new Map<string, SidebarForestEntry<EnvironmentThreadShell>[]>();
     const parentByKey = new Map<string, string>();
     const candidates: EnvironmentThreadShell[] = [];
@@ -132,7 +108,7 @@ export function useSidebarForests(input: {
       getLastVisitedAt: input.getLastVisitedAt,
     });
     return { forests, parentByKey, workingCounts, unseenCounts };
-  }, [architectParentKeys, input.pool, input.sections, input.sectionOfKey, input.getLastVisitedAt]);
+  }, [architectParentKeys, input.pool, input.sections, input.getLastVisitedAt]);
 
   // A selected descendant temporarily expands its ancestor path.
   useEffect(() => {

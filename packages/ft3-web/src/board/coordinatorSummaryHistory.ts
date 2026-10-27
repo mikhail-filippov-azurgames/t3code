@@ -21,6 +21,8 @@ export interface CoordinatorSummaryHistoryEntry {
   readonly currentStatus: string;
   readonly summaryStatus: string;
   readonly executorRole: string;
+  readonly executorProviderInstanceId: string | null;
+  readonly executorModel: string | null;
   readonly stale: boolean;
 }
 
@@ -62,7 +64,7 @@ export function toCoordinatorSummaryHistoryEntry(
   return {
     id: `${record.childThreadId}:${record.sourceTurnId}`,
     summaryText: summaryTextFor(record),
-    child: childLabel ?? String(record.childThreadId),
+    child: record.childTitle ?? childLabel ?? String(record.childThreadId),
     turn: String(record.sourceTurnId),
     completedAt: record.completedAt,
     currentStatus:
@@ -71,8 +73,20 @@ export function toCoordinatorSummaryHistoryEntry(
         : CURRENT_STATUS_LABELS[record.currentTurnState],
     summaryStatus: SUMMARY_STATUS_LABELS[record.summaryState],
     executorRole: record.executorRole,
+    executorProviderInstanceId: record.executorProviderInstanceId,
+    executorModel: record.executorModel,
     stale: record.stale,
   };
+}
+
+/** Provider and model, or just the one part that is known. */
+export function coordinatorSummaryExecutorLabel(
+  entry: Pick<CoordinatorSummaryHistoryEntry, "executorProviderInstanceId" | "executorModel">,
+): string | null {
+  const parts = [entry.executorProviderInstanceId, entry.executorModel].filter(
+    (part): part is string => part !== null && part.trim() !== "",
+  );
+  return parts.length === 0 ? null : parts.join(" · ");
 }
 
 type HistoryQuery = (target: {

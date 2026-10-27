@@ -27,7 +27,10 @@ const boardDelegationServiceLayer = BoardDelegationService.layer.pipe(
 export const boardRpcServiceLayer = Layer.mergeAll(
   BoardService.layer.pipe(Layer.provide(BoardRepository.layer)),
   boardDelegationServiceLayer,
-  BoardSummaryHistoryService.layer.pipe(Layer.provide(taskQueryLayer)),
+  BoardSummaryHistoryService.layer.pipe(
+    Layer.provide(taskQueryLayer),
+    Layer.provide(BoardRepository.layer),
+  ),
 );
 
 export const boardRpcHandlers = {

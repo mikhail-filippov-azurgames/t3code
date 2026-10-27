@@ -11,6 +11,7 @@ import {
   AnthropicIcon,
   AntigravityIcon,
   ClaudeAI,
+  KimiIcon,
   Icon,
   OllamaIcon,
   OpenAI,
@@ -103,6 +104,10 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   const isAcpRegistry = props.driverKind === "acpRegistry";
   // A custom OpenAI-compatible endpoint has no brand: show its name, marked with the protocol.
   const isCustomEndpoint = props.driverKind === "openaiCompatible";
+  const isKimi =
+    isAcpRegistry &&
+    (props.acpRegistryAgentId?.trim().toLowerCase() === "kimi" ||
+      props.displayName.trim().toLowerCase() === "kimi");
   const acpRegistryIconUrl = resolveProviderInstanceAcpRegistryIconUrl({
     driverKind: props.driverKind,
     agentId: props.acpRegistryAgentId,
@@ -118,7 +123,9 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-      {isAcpRegistry ? (
+      {isKimi ? (
+        <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+      ) : isAcpRegistry ? (
         <AcpRegistryAgentIcon
           className={cn("size-5 rounded-none bg-transparent", iconClassName)}
           fallbackClassName="size-full"
