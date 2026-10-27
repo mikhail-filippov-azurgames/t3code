@@ -35,7 +35,7 @@ export async function runFt3SidebarDelegatedAction(input: {
   readonly confirmArchive: boolean;
   readonly confirmDelete: boolean;
   readonly confirm: (message: string, destructive?: boolean) => Promise<boolean>;
-}): Promise<void> {
+}): Promise<boolean> {
   if (input.action === "archive-old-children" || input.action === "delete-old-children") {
     const action = input.action === "delete-old-children" ? "delete" : "archive";
     const outcome = await runDelegatedChildrenCleanup({
@@ -69,7 +69,7 @@ export async function runFt3SidebarDelegatedAction(input: {
         outcome.error,
       );
     }
-    return;
+    return true;
   }
 
   if (input.action === "archive") {
@@ -77,6 +77,7 @@ export async function runFt3SidebarDelegatedAction(input: {
       parent: input.threadRef,
       threads: input.threads,
     });
+    if (children.length === 0) return false;
     const outcome = await runDelegatedChildrenAction({
       children,
       mode: input.archiveChildrenMode,
@@ -111,9 +112,12 @@ export async function runFt3SidebarDelegatedAction(input: {
     if (outcome.kind === "child-failed") {
       showActionError("Failed to archive delegated subtask", outcome.error);
     }
-    return;
+    return true;
   }
 
+  if (countDelegatedDescendants({ parent: input.threadRef, threads: input.threads }) === 0) {
+    return false;
+  }
   if (input.confirmDelete) {
     const descendantCount = countDelegatedDescendants({
       parent: input.threadRef,
@@ -131,7 +135,7 @@ export async function runFt3SidebarDelegatedAction(input: {
       ].join("\n"),
       true,
     );
-    if (!confirmed) return;
+    if (!confirmed) return true;
   }
   const result = await input.deleteThread(input.threadRef);
   if (
@@ -141,6 +145,7 @@ export async function runFt3SidebarDelegatedAction(input: {
   ) {
     showActionError("Failed to delete thread", squashAtomCommandFailure(result));
   }
+  return true;
 }
 
 function showActionError(title: string, error: unknown): void {

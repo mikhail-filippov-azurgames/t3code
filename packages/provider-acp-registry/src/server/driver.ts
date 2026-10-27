@@ -22,11 +22,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import {
-  AcpRegistryAdapterV2Driver,
-  type AcpRegistryAdapterV2DriverCreateOptions,
-  type AcpRegistryAdapterV2DriverEnv,
-} from "./adapter.ts";
+import { AcpRegistryAdapterV2Driver, type AcpRegistryAdapterV2DriverEnv } from "./adapter.ts";
+import type { AcpRegistryAdapterV2DriverCreateOptions } from "./adapter.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";

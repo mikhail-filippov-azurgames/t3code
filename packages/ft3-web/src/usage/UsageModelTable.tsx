@@ -2,7 +2,7 @@ import type { UsageProviderKind } from "@t3tools/contracts";
 import { formatCount, formatPercent, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
 import { isModelCostUnknown, type ModelTotals } from "@t3tools/shared/usageMerge";
 import { ArrowDownIcon, ArrowUpDownIcon, ArrowUpIcon } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { ProviderInstanceIcon } from "~/components/chat/ProviderInstanceIcon";
 import { PROVIDER_PRESENTATION } from "~/components/usage/usageProviders";
@@ -106,11 +106,15 @@ export function UsageModelTable({
   metric,
   loadingProviders,
   onSelectModel,
+  featureEnabled = true,
+  renderUpstream,
 }: {
   readonly models: readonly ModelTotals[];
   readonly metric: ModelSortMetric;
   readonly loadingProviders: ReadonlySet<UsageProviderKind>;
   readonly onSelectModel: (key: string) => void;
+  readonly featureEnabled?: boolean;
+  readonly renderUpstream?: (() => ReactNode) | undefined;
 }) {
   const { columns, setColumns } = useUsageModelColumns();
   const [modelSort, setModelSort] = useState<ModelSort | null>(null);
@@ -131,6 +135,8 @@ export function UsageModelTable({
         : { key, direction: "desc" },
     );
   };
+
+  if (!featureEnabled && renderUpstream !== undefined) return renderUpstream();
 
   return (
     <div className="flex flex-col gap-2">

@@ -719,10 +719,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
-  const statusOverride = status === "working" ? null : (props.statusOverride ?? null);
-  const isWorking = status === "working" || statusOverride !== null;
-  const workingStartedAt =
-    status === "working" ? resolveWorkingStartedAt(thread) : (statusOverride?.startedAt ?? null);
+  const statusOverride = props.statusOverride ?? null;
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -730,15 +727,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
   const shouldRecede = shouldRecedeSidebarThread({
-    status: isWorking ? "working" : status,
+    status,
     isUnread,
     isWoke,
     isActive: props.isActive,
     isSelected,
   });
   const topStatus =
-    statusOverride ??
-    (status === "working"
+    status === "working"
       ? {
           label: thread.goal?.status === "active" ? "Goal" : "Working",
           icon: "working" as const,
@@ -792,7 +788,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           icon: "done" as const,
                           className: "text-success-foreground",
                         }
-                      : null);
+                      : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1258,6 +1254,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     (!props.isActive || variantAction === "unsettle") &&
                       "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
                   )}
+                  style={{ columnGap: "0.25rem" }}
                 >
                   {props.project ? (
                     <ProjectFavicon project={props.project} className="size-4" />
@@ -1478,9 +1475,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       isWokeStatus
                         ? "pointer-events-auto"
                         : "pointer-events-none group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-any-hover/sidebar-row:absolute group-any-hover/sidebar-row:right-0 group-any-hover/sidebar-row:opacity-0",
-                      "flex items-center self-center justify-self-end gap-1 tabular-nums text-secondary-label",
+                      "flex items-center self-center justify-self-end tabular-nums text-secondary-label",
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
+                    style={{ columnGap: "0.25rem" }}
                   >
                     {props.topRightDecorations}
                     {topStatus ? (
@@ -1515,21 +1513,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           {/* Not a live region: a collapsed sidebar is inert, so
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
-                          {topStatus.label}
-                          {isWorking ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={workingStartedAt} />
-                            </span>
-                          ) : status === "waiting" ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={thread.latestRun?.completedAt ?? null} />
-                            </span>
-                          ) : null}
-                        </span>
-                      )
-                    ) : (
-                      <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
-                    )}
+                            {topStatus.label}
+                            {status === "working" ? (
+                              <span aria-hidden>
+                                <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                              </span>
+                            ) : status === "waiting" ? (
+                              <span aria-hidden>
+                                <WorkingDuration
+                                  startedAt={thread.latestRun?.completedAt ?? null}
+                                />
+                              </span>
+                            ) : null}
+                          </span>
+                        )
+                      ) : (
+                        <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
+                      )}
+                    </span>
                   </span>
                   {props.settlementSupported || showSnoozeButton || hasUnsentDraft ? (
                     <span

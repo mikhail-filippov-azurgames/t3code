@@ -1,15 +1,25 @@
-import {
-  CHAT_COPY_SANITIZED_HTML_SELECTOR,
-  isChatCopyChromeElement,
-  isChatCopyHtmlChipKept,
-} from "@t3tools/ft3-web/chat-copy";
+const SKIPPED_TAGS = new Set(["BUTTON", "INPUT", "SCRIPT", "STYLE", "TEMPLATE"]);
+const SKIPPED_CLASS_NAMES = ["select-none", "sr-only"];
+const SANITIZED_HTML_SELECTOR = [
+  "button",
+  "input",
+  "script",
+  "style",
+  "svg",
+  '[aria-hidden="true"]',
+  ...SKIPPED_CLASS_NAMES.map((className) => `.${className}`),
+].join(", ");
 
 export interface MarkdownClipboardPayload {
   text: string;
   html: string;
 }
 
-const isSkippedElement = isChatCopyChromeElement;
+function isSkippedElement(element: Element): boolean {
+  if (SKIPPED_TAGS.has(element.tagName) || element.localName === "svg") return true;
+  if (element.getAttribute("aria-hidden") === "true") return true;
+  return SKIPPED_CLASS_NAMES.some((className) => element.classList.contains(className));
+}
 
 function wrapInlineMarker(content: string, marker: string): string {
   const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(content);
@@ -386,8 +396,11 @@ function sanitizedHtmlFrom(container: Element): string {
   for (const wrapper of container.querySelectorAll(MATH_SELECTOR)) {
     wrapper.replaceWith(mathSourceElement(wrapper));
   }
-  for (const node of container.querySelectorAll(CHAT_COPY_SANITIZED_HTML_SELECTOR)) {
-    if (isChatCopyHtmlChipKept(node)) {
+  for (const node of container.querySelectorAll(SANITIZED_HTML_SELECTOR)) {
+    if (
+      node.classList.contains("chat-markdown-file-link") ||
+      node.closest(".chat-markdown-file-link")
+    ) {
       if (node.getAttribute("aria-hidden") === "true" || node.localName === "svg") {
         node.remove();
       }

@@ -105,27 +105,38 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-      {isKimi ? (
-        <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-      ) : isAcpRegistry ? (
-        <AcpRegistryAgentIcon
-          className={cn("size-5 rounded-none bg-transparent", iconClassName)}
-          fallbackClassName="size-full"
-          icon={acpRegistryIconUrl}
-        />
-      ) : packageIcon ? (
-        <ProviderPackageIcon
-          icon={packageIcon}
-          className={cn("size-5 shrink-0", iconClassName)}
+      <span className={isKimi ? "hidden" : undefined}>
+        {isAcpRegistry ? (
+          <AcpRegistryAgentIcon
+            className={cn("size-5 rounded-none bg-transparent", iconClassName)}
+            fallbackClassName="size-full"
+            icon={acpRegistryIconUrl}
+          />
+        ) : packageIcon ? (
+          <ProviderPackageIcon
+            icon={packageIcon}
+            className={cn("size-5 shrink-0", iconClassName)}
+            aria-hidden
+          />
+        ) : Icon ? (
+          <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+        ) : (
+          <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
+            {providerInstanceInitials(props.displayName)}
+          </span>
+        )}
+      </span>
+      {isKimi ? <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden /> : null}
+      {props.statusDotClassName ? (
+        <span
+          className={cn(
+            "pointer-events-none absolute -left-0.5 -top-0.5 z-10 size-2 rounded-full",
+            props.statusDotClassName,
+          )}
+          style={{ boxShadow: `0 0 0 2px ${indicatorBackground}` }}
           aria-hidden
         />
-      ) : Icon ? (
-        <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-      ) : (
-        <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
-          {providerInstanceInitials(props.displayName)}
-        </span>
-      )}
+      ) : null}
       {props.showBadge ? (
         <span
           className={cn(

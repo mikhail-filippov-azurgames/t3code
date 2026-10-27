@@ -512,6 +512,14 @@ function useChatMarkdownState({
   sourceControlMedia = false,
   renderMarkdownLink,
 }: ChatMarkdownProps) {
+  const ft3ChatText = useFt3ChatTextExtensions({
+    text,
+    cwd,
+    threadRef,
+    environmentId: threadRef?.environmentId ?? explicitEnvironmentId ?? null,
+    isStreaming,
+  });
+  const ft3RenderMarkdownLink = renderMarkdownLink ?? ft3ChatText.renderMarkdownLink;
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
   const mediaRequestId = useRef(0);
@@ -909,7 +917,7 @@ function useChatMarkdownState({
     fileLinkChip,
     sourceControlMedia,
     renderContextReference,
-    renderMarkdownLink,
+    renderMarkdownLink: ft3RenderMarkdownLink,
     headingLevelOffset,
     imageBaseDir,
     workspaceMutationId,
@@ -941,6 +949,7 @@ function useChatMarkdownState({
     markdownRef,
     localMediaPreview,
     closeLocalMediaPreview,
+    ft3ChatText,
   };
 }
 
@@ -1742,20 +1751,14 @@ function ChatMarkdown({
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
-  const ft3ChatText = useFt3ChatTextExtensions({
-    text,
-    cwd: props.cwd,
-    threadRef: props.threadRef,
-    environmentId: props.threadRef?.environmentId ?? props.environmentId ?? null,
-    isStreaming: props.isStreaming === true,
-  });
-  const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
-    useChatMarkdownState({
-      text,
-      inline,
-      ...props,
-      renderMarkdownLink: ft3ChatText.renderMarkdownLink,
-    });
+  const {
+    componentState,
+    handleCopy,
+    markdownRef,
+    localMediaPreview,
+    closeLocalMediaPreview,
+    ft3ChatText,
+  } = useChatMarkdownState({ text, inline, ...props });
   const ft3RemarkPlugins = ft3ChatText.remarkPlugins as PluggableList;
   // Streaming re-renders only the last block; offsets for task edits need the whole text.
   const streamingBlocks =
