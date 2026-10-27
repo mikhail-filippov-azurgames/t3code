@@ -381,3 +381,172 @@ ACP не отдаёт квоты, поэтому wrapper читает OAuth-то
 Новые тесты форка: `packages/ft3-kimi/src/usageLimits.test.ts` (мок HTTP и
 временный файл credentials, реальный `~/.kimi-code` не читается) и
 `packages/ft3-kimi/src/driver.test.ts`.
+
+## Board: полная страница /board (порт UI старого форка)
+
+`packages/ft3-web/src/board` владеет полной страницей доски, портированной из
+старого форка (`apps/web/src/components/board/*` ветки
+`feat/ocl-cross-provider-delegation`): `BoardPage` (шапка с Refresh / Add
+Coordinator / Needs human, строка фильтров, чипы координаторов с счётчиками,
+6 колонок `md:grid-cols-3 xl:grid-cols-6`, компактные карточки с клэмпом),`AddOrchestratorDialog`, `boardPreferences`, `useBoardBackend`, а также
+`boardThreadActions.logic` / `useBoardThreadActions` /
+`BoardThreadActionsControl` для сайдбара и шапки чата. Логика доски
+(`board.logic`), диалоги карточек и иконки ролей перенесены ранее и
+переиспользуются без изменений. Узкий `BoardPanel` в правой панели сохранён
+как компактный вид (те же данные и фильтры, карточки в стиле полной доски,
+кнопка «Open board» ведёт на `/board`). Данные идут через существующие
+атомы `boardEnvironment` (`ft3-web/src/board/state.ts`) поверх RPC
+`ft3-host`; отметка «новый чат» в `AddOrchestratorDialog` использует штатные
+`threadEnvironment.create`/`startTurn` V2. Адаптации порта: фильтр
+кандидатов читает `shell.lineage.parentThreadId` вместо старого
+`delegationParent`, настройки пикера собираются из
+`useEnvironmentSettings` + `resolveProjectSettings` (в V2 нет
+`serverConfigs.providers` — провайдеры читаются через
+`useEnvironmentProviders`). Панель делегированных-summary и граф коммитов —
+отдельные поверхности, в страницу доски не входят.
+
+| Upstream-файл                                       | Правка                                                                                                                                         | Зачем                                                                   |
+| --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `apps/web/src/routes/board.tsx`                     | новый файл маршрута: гейт авторизации как у чатов, `validateSearch` (`orchestrator`, `create`), рендер `BoardPage` из `@t3tools/ft3-web/board` | полная страница доска по `/board` и deep links `?orchestrator=&create=` |
+| `apps/web/src/routeTree.gen.ts`                     | перегенерирован `@tanstack/router-generator` после добавления маршрута                                                                         | регистрация `/board` в дереве маршрутов                                 |
+| `apps/web/src/components/sidebar/SidebarChrome.tsx` | импорт `SquareKanbanIcon`; пункт «Board» в `SidebarUtilityMenu` футера с навигацией на `/board`                                                | вход на доску из футера сайдбара, как в старом форке                    |
+| `packages/ft3-web/package.json`                     | экспорт `./board` → `./src/board/BoardPage.tsx`                                                                                                | разрешение импорта страницы из `apps/web`                               |
+
+Тесты форка: `packages/ft3-web/src/board/boardThreadActions.logic.test.ts`
+(порт тестов логики действий координатора из старого форка; тесты `board.logic`
+перенесены ранее). Поведение не перенесено: delegated-summary history в панели
+и пин провайдера в диалоге архитектора — отдельные срезы.
+
+## Usage page: model columns, sorting and per-session cost (S)
+
+`packages/ft3-web/src/usage` owns the column picker, column persistence, sort
+logic, the model table and the per-session formatter. Upstream `UsagePage` keeps
+its own metric/window controls, provider filter, chart, totals and time
+breakdown; it only mounts the table and formats two extra figures. V2 already
+ships the pooled limits view (`UsageLimitsPooled` with `collectLimitPools`), so
+the old fork's pooled component is not ported.
+
+`packages/shared/src/usageMerge.ts` gains `ModelTotals.sessions`, summed from
+bucket session counts. A session using several models or days counts under each,
+because buckets do not carry session ids.
+
+| Upstream file                                          | Connection                                                                                                                                     | Reason                                                                         |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `apps/web/src/components/usage/UsagePage.tsx`          | import `UsageModelTable`/`formatUsdPerSession`; mount the table in the model branch; append `$/session` to provider rows; add the average tile | keep columns, sorting and cost-per-session in `ft3-web` with a thin connection |
+| `apps/web/src/components/usage/usageBreakdown.ts`      | remove `sortModelsByTokens`/`modelShare`                                                                                                       | model sorting and share now live in `ft3-web`                                  |
+| `apps/web/src/components/usage/usageBreakdown.test.ts` | add `sessions` to the `ModelTotals` fixture                                                                                                    | follow the additive model field                                                |
+| `packages/shared/src/usageMerge.ts`                    | add `ModelTotals.sessions` from bucket counts                                                                                                  | V2 exposed session counts for providers but not for models                     |
+| `packages/shared/src/usageMerge.test.ts`               | assert per-model session sums                                                                                                                  | cover the new additive field                                                   |
+| `packages/ft3-web/package.json`                        | export `./usage`                                                                                                                               | expose the extension entry                                                     |
+
+New fork-owned tests: `packages/ft3-web/src/usage/*.test.ts` and
+`apps/web/src/components/usage/usageModelTable.test.tsx`.
+
+## Sidebar: лес делегирования, роль-бейджи и пин архитектора (порт старого форка)
+
+`packages/ft3-web/src/sidebar` владеет лесом делегирования сайдбара,
+портированным из старого форка (`Sidebar.logic.ts`/`Sidebar.tsx` ветки
+`feat/ocl-cross-provider-delegation`): чистая логика (`forest.logic.ts` —
+`orderSidebarSectionForest`, `filterCollapsedSidebarForest`,
+`sidebarSubagentParentKey`/`sidebarForestParentKey`, счётчики working/returned
+на `latestRun`/`runtime` V2), индекс связки архитектора
+(`architectBindingIndex.ts`), роль-бейджи (`roleBadge.logic.ts`,
+`roleBadges.ts`, `boardRoleIcons.tsx` — данные с primary-окружения через те же
+атомы `boardEnvironment`: orchestrators list + cards по `executorThreadId`),
+хук `useSidebarForests` (сворачивание в localStorage, авто-раскрытие пути
+роута, скрытие сирот-субагентов — V2 раньше прятал все subagent-треды) и
+единый слот декораций строки `SidebarForestRowDecorations` (шеврон сворачивания,
+счётчики, бейдж роли). Дочерние subagent-треды V2 несут `lineage.parentThreadId`
+(общее окружение с родителем); перекрёстно-окружной ключ родителя из старого
+форка не нужен.
+
+Upstream-правки — только подключение (каждая по одному вызову/пропу):
+
+| Upstream-файл                                   | Правка                                                                                                                  | Зачем                                                                 |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `apps/web/src/components/Sidebar.tsx`           | вызов `useSidebarForests` (секции + pool + `sectionOfKey`); `rowsOf` маппит записи леса; строке и пину передаются `depth`/`decorations` | дерево дочерних тредов в новом сайдбаре                                  |
+| `apps/web/src/components/LegacySidebar.tsx`     | вызов `useSidebarForests` в `SidebarProjectItem` (pool — `sidebarThreads` проекта); проп `sidebarForests` в список; `depth`/`decorations` строке и пину | то же в легаси-сайдбаре                                                  |
+| `apps/web/src/components/sidebar/SidebarThreadRow.tsx` | опциональные пропы `depth` (отступ корня строки) и `decorations` (слот после заголовка в обоих вариантах)             | отступ вложенных строк и слот декораций                                  |
+| `apps/web/src/components/Sidebar.logic.ts`      | в `SidebarListItem`-ветку `thread` добавлены опциональные `thread`/`depth`/`descendantCount`                                   | записи леса несут свои shell (дочерние треды вне upstream `threadByKey`) |
+| `apps/web/vite.config.ts`                       | алиас `@betteroffice/fonts-cjk` через `NodeURL.fileURLToPath` вместо `new URL(...).pathname`                                   | `pathname` оставляет `%20`, Node отклоняет путь с пробелом — падали все unit-тесты apps/web |
+
+`packages/ft3-web/src/architect/ArchitectSidebarPin.tsx` (пакет ft3-web,
+не upstream): пин репортит активную связку в `architectBindingIndex` (лес
+вкладывает реальный тред архитектора под координатора), принимает `depth`,
+прячет Open/Replace при `architectShell.deletedAt != null` (показывает
+«Deleted») и обновляет снапшот по сигнатуре списка тредов + updatedAt/deletedAt
+архитектора, а не только по updatedAt координатора. Тесты порта —
+`packages/ft3-web/src/sidebar/forest.logic.test.ts`.
+
+## Board automation (retention, nudge, deleted-thread purge)
+
+`packages/ft3-board` owns three V2 reactors started by `Ft3Host.reactorLayer()`:
+`BoardRetentionReactor` archives old done cards and deletes archived done cards with a
+deletion record, `CoordinatorBoardNudgeReactor` wakes an idle coordinator with its next
+eligible card, and `DeletedThreadPurge` physically erases soft-deleted threads at server
+start. V2 had no native deleted-thread erasure, so the purge covers `orchestration_v2_*`,
+`ft3_board_*`, `ft3_architect_*`, delegated-summary, handoff, and scheduled-task rows.
+The settings live in the upstream server settings schema because V2's settings file rejects
+unknown keys; the UI sections are ft3-web components mounted once in General settings.
+
+| Upstream file | Connection | Reason |
+| --- | --- | --- |
+| `packages/contracts/src/settings.ts` | add `coordinatorBoardNudge*`, `boardArchiveAfterDays`, `boardDeleteArchivedAfterDays`, `deletedThreadPurgeAfterDays` schemas, defaults, and patch keys | keep retention and nudge configuration in the existing settings service instead of a parallel store |
+| `apps/web/src/components/settings/SettingsPanels.tsx` | import and render `CoordinatorBoardNudgeSection`, `BoardRetentionSection`, `DeletedThreadPurgeSection` in General | the only upstream mount for the ft3 settings UI |
+| `apps/web/src/components/settings/settingsSearch.ts` | add search items and anchor ids for the three sections | settings search must find the ft3 rows without touching core settings |
+| `packages/ft3-host/src/server.ts` | merge `@t3tools/ft3-board/automation` into `reactorLayer()` | start the three reactors beside the board, architect, and orchestration workers |
+
+New fork-owned tests: `packages/ft3-board/src/BoardRetentionReactor.test.ts`,
+`CoordinatorBoardNudgeReactor.test.ts`, `DeletedThreadPurge.test.ts`, and
+`packages/ft3-web/src/settings/*.browser.test.tsx`. Migration `9_BoardRetention` adds one
+retention index and updates the migration-list expectations in ft3-host, ft3-board, and
+ft3-architect.
+
+## Pi Bonsai preset
+
+`packages/ft3-pi` detects the Bonsai demo layout (`bin/cuda/llama-server.exe` plus
+`models/bonsai2-gguf/27B/Ternary-Bonsai-2-27B-PQ2_0.gguf`) only from an explicit
+`rootPath` or `BONSAI_DEMO_HOME`, and applies the preset into the instance's own
+`inference-profiles.json` (the driver registers its path on instance creation). The
+new `pi.bonsaiPreset.detect` and `pi.bonsaiPreset.apply` methods stay in the existing
+ft3-pi RPC group; detect is `orchestration:read`, apply is `orchestration:operate`.
+The settings UI lives in `packages/ft3-web/src/pi` and needs no new upstream contract.
+
+| Upstream file | Connection | Reason |
+| --- | --- | --- |
+| `apps/web/src/components/settings/ProviderSettingsPanel.tsx` | import `PiBonsaiPresetSection` from `@t3tools/ft3-web/pi`; render it in `setup` for `driver === "pi"` | the only upstream mount for the Bonsai preset row |
+
+New fork-owned tests: `packages/ft3-pi/src/inferenceServer.test.ts`,
+`packages/ft3-pi/src/control.test.ts`, and
+`packages/ft3-web/src/pi/PiBonsaiPresetSection.test.tsx`. They use fake `isFile`,
+temporary config files, and command mocks; no llama-server or Pi process is spawned.
+
+## Chat text chips and Typora
+
+`packages/ft3-web/src/chat` owns board-card mention chips (`card-…`/UUID tokens
+resolved through `board.resolve`) and OpenContext document chips (`oc://doc/<id>`
+and `ocl://doc/<id>`). One hook, `useFt3ChatTextExtensions`, supplies the remark
+plugin, the chip renderer, and the extra allowed href schemes; upstream
+`ChatMarkdown` only calls it and gives it two slots. OpenContext resolution is a
+new `openContext.resolveDoc` method in the existing ft3-host RPC group, with the
+store snapshot scanner in `packages/ft3-host/src/openContextDocs.ts` (the same
+package that already composes the server RPC group), so no core contracts or
+`ws.ts` handler is added. Typora joins the shared editor list so the Markdown
+file preview can offer it, but it is filtered out of every other open-with menu
+and never becomes the globally preferred editor.
+
+| Upstream file | Connection | Reason |
+| --- | --- | --- |
+| `apps/web/src/components/ChatMarkdown.tsx` | import `useFt3ChatTextExtensions`; spread its remark plugins, pass its renderer and href predicate into `useChatMarkdownState`, and try the renderer in the anchor branch | one mount point for both chip kinds without copying link logic |
+| `apps/web/src/components/Icons.tsx` | add `TyporaIcon` | brand icon for the open-with row |
+| `apps/web/src/components/chat/OpenInPicker.tsx` | `allowTypora` prop filters and prefers the editor; export `resolveOpenInOptions` for its test | Typora belongs to Markdown preview only |
+| `apps/web/src/editorPreferences.ts` | `resolvePreferredEditor(..., allowTypora)`; `usePreferredEditor` takes the flag | a hidden editor must not be persisted as the default from another menu |
+| `apps/web/src/components/files/FilePreviewPanel.tsx` | pass `allowTypora={isMarkdown}` | the only surface that offers Typora |
+| `packages/contracts/src/editor.ts` | add the `typora` editor (`direct-path`) | editor id crosses to the server launcher |
+| `packages/shared/src/editor.ts` | resolve the Typora executable from its install paths on Windows and macOS | Typora is not on `PATH` and has no VS Code-style bundle layout |
+| `packages/shared/src/markdownPipeline.ts` | allow the `oc` and `ocl` href protocols in the sanitize schema | sanitize runs before the anchor renderer and would strip the document link |
+
+New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
+`packages/ft3-web/src/chat/openContextDocLink.test.ts`,
+`packages/ft3-host/src/openContextDocs.test.ts`, and
+`apps/web/src/components/chat/OpenInPicker.test.ts`.
