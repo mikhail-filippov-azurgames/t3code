@@ -24,6 +24,7 @@ import {
   piInferenceServerManager,
   resolvePiInferenceConfigPath,
 } from "./inferenceServer.ts";
+import { resolvePiBinaryPath } from "./piRuntime.ts";
 import { defaultCodexImportPaths, importCodexResourcesIntoAgentDir } from "./skills.ts";
 
 export type Ft3PiDriverEnv = PiDriverEnv | FileSystem.FileSystem | Path.Path;
@@ -38,6 +39,21 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
     const agentDir = path.join(host.paths.stateDir, "pi", instanceId, "agent");
     const processEnvironment: NodeJS.ProcessEnv = { ...process.env };
     for (const entry of input.environment) processEnvironment[entry.name] = entry.value;
+    const piRuntime = yield* resolvePiBinaryPath({
+      binaryPath: input.config.binaryPath,
+      environment: processEnvironment,
+      launcherDir: path.join(host.paths.stateDir, "pi", instanceId, "runtime"),
+    }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ProviderDriverError({
+            driver: PiDriver.driverKind,
+            instanceId,
+            detail: "Failed to resolve the pinned Pi runtime.",
+            cause,
+          }),
+      ),
+    );
     const configPath = resolvePiInferenceConfigPath({
       stateDir: host.paths.stateDir,
       instanceId,
@@ -103,7 +119,11 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => inference.disposeInstance(instanceId)));
 
-    const instance = yield* PiDriver.create({ ...input, environment });
+    const instance = yield* PiDriver.create({
+      ...input,
+      config: { ...input.config, binaryPath: piRuntime.binaryPath },
+      environment,
+    });
 
     const writeAgentFiles = (runtimeMode: PiAgentFilesInput["runtimeMode"]) =>
       ensurePiAgentFiles(agentDir, buildAgentFiles(runtimeMode));
