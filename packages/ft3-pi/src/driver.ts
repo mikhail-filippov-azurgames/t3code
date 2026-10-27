@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { setPiExtensionSourceTransform } from "../../provider-pi/src/server/mcpExtensionSource.ts";
 import {
   ensurePiAgentFiles,
   resolvePiManagedModels,
@@ -24,6 +25,7 @@ import {
   piInferenceServerManager,
   resolvePiInferenceConfigPath,
 } from "./inferenceServer.ts";
+import { applyLocalLlamaExtensionPolicy } from "./localLlamaExtension.ts";
 import { resolvePiBinaryPath } from "./piRuntime.ts";
 import { defaultCodexImportPaths, importCodexResourcesIntoAgentDir } from "./skills.ts";
 
@@ -32,6 +34,7 @@ export type Ft3PiDriverEnv = PiDriverEnv | FileSystem.FileSystem | Path.Path;
 export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> = {
   ...PiDriver,
   create: Effect.fn("Ft3PiDriver.create")(function* (input) {
+    setPiExtensionSourceTransform(applyLocalLlamaExtensionPolicy);
     const host = yield* ProviderHost.ProviderHost;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
