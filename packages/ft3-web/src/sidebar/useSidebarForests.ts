@@ -6,6 +6,7 @@ import { useEffect, useMemo } from "react";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useArchitectParentKeys } from "./architectBindingIndex.ts";
 import {
+  collectDelegatedWorkingStartedAt,
   collectUnseenDelegatedChildCounts,
   collectWorkingDelegatedChildCounts,
   filterCollapsedSidebarForest,
@@ -102,12 +103,13 @@ export function useSidebarForests(input: {
       }
     }
     const workingCounts = collectWorkingDelegatedChildCounts({ threads: candidates, getKey });
+    const workingStartedAt = collectDelegatedWorkingStartedAt({ threads: candidates, getKey });
     const unseenCounts = collectUnseenDelegatedChildCounts({
       threads: candidates,
       getKey,
       getLastVisitedAt: input.getLastVisitedAt,
     });
-    return { forests, parentByKey, workingCounts, unseenCounts };
+    return { forests, parentByKey, workingCounts, workingStartedAt, unseenCounts };
   }, [architectParentKeys, input.pool, input.sections, input.getLastVisitedAt]);
 
   // A selected descendant temporarily expands its ancestor path.
@@ -167,12 +169,20 @@ export function useSidebarForests(input: {
           toggleKey: entry.descendantCount > 0 ? entry.key : null,
           workingCount: built.workingCounts.get(entry.key) ?? 0,
           returnedCount: built.unseenCounts.get(entry.key) ?? 0,
+          delegatedWorkingStartedAt: built.workingStartedAt.get(entry.key) ?? null,
           roleBadge: roleBadges.get(entry.key) ?? null,
         });
       }
     }
     return models;
-  }, [built.unseenCounts, built.workingCounts, expandedForestKeySet, roleBadges, visibleThreads]);
+  }, [
+    built.unseenCounts,
+    built.workingCounts,
+    built.workingStartedAt,
+    expandedForestKeySet,
+    roleBadges,
+    visibleThreads,
+  ]);
 
   return {
     entriesBySection: visibleThreads.entriesBySection,

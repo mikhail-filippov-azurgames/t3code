@@ -248,7 +248,11 @@ export function filterCollapsedSidebarForest<TThread>(input: {
 // V2 run-state inputs for the delegated child counters. A child's own row
 // uses the same predicates, so opening the child clears both together.
 export type SidebarForestThreadStatus = {
-  readonly latestRun: { readonly completedAt: string | null } | null;
+  readonly latestRun: {
+    readonly startedAt?: string | null | undefined;
+    readonly requestedAt?: string | null | undefined;
+    readonly completedAt: string | null;
+  } | null;
   readonly runtime: { readonly status: string } | null;
   readonly lastVisitedAt?: string | null | undefined;
 };
@@ -274,6 +278,68 @@ function isDelegatedChildWorking(thread: Pick<SidebarForestThreadStatus, "runtim
     status === "running" ||
     status === "waiting"
   );
+}
+
+function firstValidTimestamp(
+  ...candidates: ReadonlyArray<string | null | undefined>
+): string | null {
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    if (!Number.isNaN(Date.parse(candidate))) return candidate;
+  }
+  return null;
+}
+
+/**
+ * When a working delegated child started, for the parent row's own Working
+ * timer. A parent that finished its turn while its fleet runs is idle on the
+ * shell, so its timer has to come from the child, and this is the family copy
+ * the sidebar already holds.
+ */
+export function delegatedChildWorkingStartedAt(
+  thread: Pick<SidebarForestThreadStatus, "runtime" | "latestRun">,
+): string | null {
+  if (!isDelegatedChildWorking(thread)) return null;
+  return firstValidTimestamp(thread.latestRun?.startedAt, thread.latestRun?.requestedAt);
+}
+
+/** Earliest working direct child per parent key; the row's timer counts from there. */
+export function collectDelegatedWorkingStartedAt<
+  TThread extends SidebarForestThread & SidebarForestThreadStatus,
+>(input: {
+  readonly threads: readonly TThread[];
+  readonly getKey: (thread: TThread) => string;
+}): ReadonlyMap<string, string> {
+  const startedAtByParent = new Map<string, string>();
+  for (const thread of input.threads) {
+    const parentKey = sidebarSubagentParentKey(thread);
+    if (parentKey === null) continue;
+    const startedAt = delegatedChildWorkingStartedAt(thread);
+    if (startedAt === null) continue;
+    const existing = startedAtByParent.get(parentKey);
+    if (existing === undefined || Date.parse(startedAt) < Date.parse(existing)) {
+      startedAtByParent.set(parentKey, startedAt);
+    }
+  }
+  return startedAtByParent;
+}
+
+/**
+ * A row shows Working when its own run is live or when its delegated children
+ * are: the old fork read the parent as working through background liveness,
+ * while V2 reports an idle runtime once the parent's own turn ended.
+ */
+export function resolveDelegatedWorkingStart(input: {
+  readonly ownWorking: boolean;
+  readonly ownStartedAt: string | null;
+  readonly delegatedStartedAt: string | null;
+}): { readonly working: boolean; readonly startedAt: string | null } {
+  if (input.ownWorking) {
+    return { working: true, startedAt: input.ownStartedAt ?? input.delegatedStartedAt };
+  }
+  return input.delegatedStartedAt === null
+    ? { working: false, startedAt: null }
+    : { working: true, startedAt: input.delegatedStartedAt };
 }
 
 /**
