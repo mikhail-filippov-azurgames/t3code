@@ -160,27 +160,37 @@ export function SidebarForestRowDecorations(props: {
           ·{model.descendantCount}
         </span>
       ) : null}
-      {model.toggleKey !== null ? (
-        <button
-          type="button"
-          aria-label={
-            model.collapsed
-              ? `Expand ${model.descendantCount} subtasks`
-              : `Collapse ${model.descendantCount} subtasks`
-          }
-          aria-expanded={!model.collapsed}
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onToggleCollapse(model.toggleKey!);
-          }}
-          className="inline-flex shrink-0 cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <ChevronDownIcon
-            aria-hidden
-            className={cn("size-3 shrink-0 transition-transform", model.collapsed && "-rotate-90")}
-          />
-        </button>
-      ) : null}
     </>
+  );
+}
+
+/** Forest collapse toggle, rendered leftmost in the row's top line as in v1. */
+export function SidebarForestToggle(props: {
+  readonly model: SidebarForestRowModel | undefined;
+  readonly onToggleCollapse: (key: string) => void;
+}) {
+  const model = props.model;
+  const toggleKey = model?.toggleKey ?? null;
+  if (model === undefined || toggleKey === null) return null;
+  return (
+    <button
+      type="button"
+      aria-label={
+        model.collapsed
+          ? `Expand ${model.descendantCount} subtasks`
+          : `Collapse ${model.descendantCount} subtasks`
+      }
+      aria-expanded={!model.collapsed}
+      onClick={(event) => {
+        event.stopPropagation();
+        props.onToggleCollapse(toggleKey);
+      }}
+      className="inline-flex shrink-0 cursor-pointer items-center rounded-sm text-muted-foreground/65 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <ChevronDownIcon
+        aria-hidden
+        className={cn("size-3 shrink-0 transition-transform", model.collapsed && "-rotate-90")}
+      />
+    </button>
   );
 }
