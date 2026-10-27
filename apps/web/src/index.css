@@ -2587,7 +2587,7 @@ code {
   display: none;
 }
 /* ft3 sidebar status override: the native status stays mounted but hidden. */
-[data-ft3-status-override] > [data-ft3-status-variant] {
+[data-ft3-status-variant] {
   display: none;
 }
 [data-ft3-status-override][data-ft3-status-slim] > [data-ft3-status-variant="slim"],
