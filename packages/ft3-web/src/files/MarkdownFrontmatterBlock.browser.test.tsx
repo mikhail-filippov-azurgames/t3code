@@ -6,7 +6,7 @@ import { MarkdownFrontmatterBlock } from "./MarkdownFrontmatterBlock.tsx";
 describe("MarkdownFrontmatterBlock", () => {
   it("shows YAML without its fence separators", async () => {
     await using screen = await render(
-      <MarkdownFrontmatterBlock frontmatter="status: agreed\nrevision: 6" />,
+      <MarkdownFrontmatterBlock frontmatter={"status: agreed\nrevision: 6"} />,
       { router: false },
     );
 
