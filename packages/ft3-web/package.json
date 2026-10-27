@@ -5,6 +5,7 @@
   "exports": {
     "./panels": "./src/panels.tsx",
     "./chat": "./src/chat/index.ts",
+    "./chat-copy": "./src/chat/chatCopyFilters.ts",
     "./files": "./src/files/index.ts",
     "./settings": "./src/settings/index.ts",
     "./board": "./src/board/BoardPage.tsx",
