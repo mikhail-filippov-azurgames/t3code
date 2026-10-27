@@ -137,6 +137,14 @@
       // These workspace packages are private to this monorepo.
       "includeEntryExports": true,
     },
+    "packages/ft3-host": {
+      // Maintainer import CLIs are invoked directly with Node by source path.
+      "entry": ["src/import/*Cli.ts"],
+    },
+    "packages/ft3-pi": {
+      // piRuntime resolves the runtime package from PI_RUNTIME_PACKAGE by name.
+      "ignoreDependencies": ["@earendil-works/pi-coding-agent"],
+    },
     "packages/effect-acp": {
       "includeEntryExports": true,
       "entry": ["test/fixtures/*.ts"],
