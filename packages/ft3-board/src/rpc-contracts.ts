@@ -6,6 +6,7 @@ import {
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as Contracts from "./contracts.ts";
+import { TaskSummaryHistoryResult } from "../../ft3-orchestration/src/contracts.ts";
 
 export const FT3_BOARD_WS_METHODS = {
   boardOrchestratorsList: "board.orchestrators.list",
@@ -14,6 +15,7 @@ export const FT3_BOARD_WS_METHODS = {
   boardOrchestratorResendBrief: "board.orchestrator.resendBrief",
   boardResolve: "board.resolve",
   boardExecutorDelegations: "board.executorDelegations",
+  boardDelegatedTaskSummaryHistory: "board.delegatedTaskSummaryHistory",
   boardList: "board.list",
   boardCreate: "board.create",
   boardStart: "board.start",
@@ -54,6 +56,11 @@ export const boardRpcs = [
     success: Contracts.BoardExecutorDelegationsResult,
     error: BoardRpcError,
   }),
+  Rpc.make(FT3_BOARD_WS_METHODS.boardDelegatedTaskSummaryHistory, {
+    payload: Contracts.BoardDelegatedTaskSummaryHistoryInput,
+    success: TaskSummaryHistoryResult,
+    error: BoardRpcError,
+  }),
   Rpc.make(FT3_BOARD_WS_METHODS.boardList, {
     payload: Contracts.BoardListInput,
     success: Contracts.BoardListResult,
@@ -86,6 +93,7 @@ export const boardRpcScopes = {
   [FT3_BOARD_WS_METHODS.boardList]: AuthOrchestrationReadScope,
   [FT3_BOARD_WS_METHODS.boardResolve]: AuthOrchestrationReadScope,
   [FT3_BOARD_WS_METHODS.boardExecutorDelegations]: AuthOrchestrationReadScope,
+  [FT3_BOARD_WS_METHODS.boardDelegatedTaskSummaryHistory]: AuthOrchestrationReadScope,
   [FT3_BOARD_WS_METHODS.boardOrchestratorAdd]: AuthOrchestrationOperateScope,
   [FT3_BOARD_WS_METHODS.boardOrchestratorRemove]: AuthOrchestrationOperateScope,
   [FT3_BOARD_WS_METHODS.boardOrchestratorResendBrief]: AuthOrchestrationOperateScope,
