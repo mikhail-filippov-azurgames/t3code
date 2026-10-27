@@ -193,7 +193,16 @@ export function sidebarMarkerId(marker: SidebarListMarker): string {
 }
 
 export type SidebarListItem =
-  | { readonly kind: "thread"; readonly key: string; readonly section: SidebarSection }
+  | {
+      readonly kind: "thread";
+      readonly key: string;
+      readonly section: SidebarSection;
+      // ft3 forest: delegated child rows come from the forest, not the
+      // sidebar's own threadByKey; depth feeds the row indent and pin.
+      readonly thread?: SidebarThreadSummary;
+      readonly depth?: number;
+      readonly descendantCount?: number;
+    }
   | { readonly kind: "marker"; readonly marker: SidebarListMarker };
 
 export function sidebarListItemId(item: SidebarListItem): string {
