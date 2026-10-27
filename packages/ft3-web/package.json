@@ -7,11 +7,14 @@
     "./chat": "./src/chat/index.ts",
     "./settings": "./src/settings/index.ts",
     "./board": "./src/board/BoardPage.tsx",
+    "./board-chat": "./src/board/BoardChatSidePanel.tsx",
+    "./board-header": "./src/board/boardHeader.ts",
     "./commits": "./src/commits/CommitDiffPanel.tsx",
     "./architect": "./src/architect/index.ts",
     "./pi": "./src/pi/index.ts",
     "./sidebar": "./src/sidebar/index.ts",
-    "./usage": "./src/usage/index.ts"
+    "./usage": "./src/usage/index.ts",
+    "./delegation": "./src/delegation/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -1,5 +1,16 @@
 import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
 import { SidebarForestRowDecorations, useSidebarForests } from "@t3tools/ft3-web/sidebar";
+import {
+  canSwitchThreadProvider,
+  collectDelegatedChildRefs,
+  countDelegatedDescendants,
+  requestSwitchProviderTarget,
+  requestThreadChildrenDialog,
+  runDelegatedChildrenAction,
+  runDelegatedChildrenCleanup,
+  selectStaleDelegatedChildren,
+} from "@t3tools/ft3-web/delegation";
+import { useSwitchThreadProvider } from "../hooks/useSwitchThreadProvider";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
@@ -128,6 +139,7 @@ import {
 } from "../state/environments";
 import {
   readThreadShell,
+  readThreadShells,
   useAllEnvironmentProjectSnapshotsReady,
   useProjects,
   useServerConfigs,
@@ -798,7 +810,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
+  const archiveThreadChildren = useClientSettings((s) => s.archiveThreadChildren);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  const { attemptSwitchProvider } = useSwitchThreadProvider();
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -2408,6 +2422,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   }
                 : null,
               isPinned,
+              canSwitchProvider: canSwitchThreadProvider(thread),
+              staleDelegatedChildCount: selectStaleDelegatedChildren({
+                parent: threadRef,
+                threads: readThreadShells(),
+              }).stale.length,
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
               isSnoozed,
@@ -2492,6 +2511,28 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           case "unpin":
             attemptUnpin(threadRef);
             return;
+          case "switch-provider": {
+            // Target + optional reason come from the picker dialog; the
+            // attempt persists the model selection and reports handoff
+            // failures (including provider_handoff_unsupported) as a visible
+            // toast.
+            const choice = await requestSwitchProviderTarget({
+              environmentId: threadRef.environmentId,
+              currentInstanceId: thread.modelSelection.instanceId,
+              currentModel: thread.modelSelection.model,
+            });
+            if (!choice) return;
+            await attemptSwitchProvider(
+              threadRef,
+              {
+                providerInstanceId: choice.instanceId,
+                driverKind: choice.driverKind,
+                model: choice.model,
+              },
+              choice.reason,
+            );
+            return;
+          }
           case "auto-settle:enabled":
           case "auto-settle:disabled": {
             const result = await setThreadAutoSettle(
@@ -2558,41 +2599,130 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
-          case "archive": {
-            if (confirmThreadArchive) {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(`Archive thread "${thread.title}"?`),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            let didArchive = false;
-            const result = await archiveThread(threadRef, {
-              onArchived: () => {
-                didArchive = true;
+          case "archive-old-children":
+          case "delete-old-children": {
+            const cleanupAction = clicked.value === "delete-old-children" ? "delete" : "archive";
+            const outcome = await runDelegatedChildrenCleanup({
+              action: cleanupAction,
+              parent: threadRef,
+              threads: readThreadShells(),
+              confirm: async (message) => {
+                const confirmed = await settlePromise(() =>
+                  api.dialogs.confirm(
+                    message,
+                    cleanupAction === "delete" ? { variant: "destructive" } : undefined,
+                  ),
+                );
+                return confirmed._tag === "Success" && confirmed.value;
+              },
+              runChild: async (childRef, staleKeys) => {
+                if (cleanupAction === "archive") {
+                  const result = await archiveThread(childRef);
+                  return result._tag === "Failure" && !isAtomCommandInterrupted(result)
+                    ? { ok: false, error: squashAtomCommandFailure(result) }
+                    : { ok: true };
+                }
+                const result = await deleteThread(childRef, { deletedThreadKeys: staleKeys });
+                if (
+                  result._tag === "Failure" &&
+                  !isAtomCommandInterrupted(result) &&
+                  readThreadShell(childRef) !== null
+                ) {
+                  return { ok: false, error: squashAtomCommandFailure(result) };
+                }
+                return { ok: true };
               },
             });
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
+            if (outcome.kind === "child-failed") {
+              const error = outcome.error;
               toastManager.add(
                 stackedThreadToast({
                   type: "error",
-                  title: didArchive
-                    ? "Thread archived, but navigation failed"
-                    : "Failed to archive thread",
+                  title:
+                    cleanupAction === "delete"
+                      ? "Failed to delete old delegated subtask"
+                      : "Failed to archive old delegated subtask",
                   description: error instanceof Error ? error.message : "An error occurred.",
                 }),
               );
-              return;
+            }
+            return;
+          }
+          case "archive": {
+            const children = collectDelegatedChildRefs({
+              parent: threadRef,
+              threads: readThreadShells(),
+            });
+            const outcome = await runDelegatedChildrenAction({
+              children,
+              mode: archiveThreadChildren,
+              ask: () =>
+                requestThreadChildrenDialog({ action: "archive", childCount: children.length }),
+              runChild: async (childRef) => {
+                const result = await archiveThread(childRef);
+                return result._tag === "Success"
+                  ? { ok: true }
+                  : { ok: false, error: squashAtomCommandFailure(result) };
+              },
+              runParent: async ({ cascadeConfirmed }) => {
+                if (!cascadeConfirmed && confirmThreadArchive) {
+                  const confirmed = await settlePromise(() =>
+                    api.dialogs.confirm(`Archive thread "${thread.title}"?`),
+                  );
+                  if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
+                }
+                let didArchive = false;
+                const result = await archiveThread(threadRef, {
+                  onArchived: () => {
+                    didArchive = true;
+                  },
+                });
+                if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+                  const error = squashAtomCommandFailure(result);
+                  toastManager.add(
+                    stackedThreadToast({
+                      type: "error",
+                      title: didArchive
+                        ? "Thread archived, but navigation failed"
+                        : "Failed to archive thread",
+                      description: error instanceof Error ? error.message : "An error occurred.",
+                    }),
+                  );
+                  return { ok: false };
+                }
+                return { ok: true };
+              },
+            });
+            if (outcome.kind === "child-failed") {
+              const error = outcome.error;
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to archive delegated subtask",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
             }
             return;
           }
           case "delete": {
+            // The server deletes the whole delegated subtree, so the client
+            // only confirms (naming the cascade) and deletes the thread.
             if (confirmThreadDelete) {
+              const descendantCount = countDelegatedDescendants({
+                parent: threadRef,
+                threads: readThreadShells(),
+              });
               const confirmed = await settlePromise(() =>
                 api.dialogs.confirm(
                   [
                     `Delete thread "${thread.title}"?`,
                     "This permanently clears conversation history for this thread.",
+                    ...(descendantCount > 0
+                      ? [
+                          `${descendantCount} delegated subtask${descendantCount === 1 ? "" : "s"} under it will also be deleted.`,
+                        ]
+                      : []),
                   ].join("\n"),
                   { variant: "destructive" },
                 ),
@@ -2600,7 +2730,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               if (confirmed._tag === "Failure" || !confirmed.value) return;
             }
             const result = await deleteThread(threadRef);
-            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+            if (
+              result._tag === "Failure" &&
+              !isAtomCommandInterrupted(result) &&
+              // A failure with the thread already gone is worktree cleanup
+              // failing after a successful delete; deleteThread has toasted
+              // that itself.
+              readThreadShell(threadRef) !== null
+            ) {
               const error = squashAtomCommandFailure(result);
               toastManager.add(
                 stackedThreadToast({

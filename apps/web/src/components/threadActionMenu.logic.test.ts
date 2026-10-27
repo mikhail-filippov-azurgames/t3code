@@ -7,6 +7,8 @@ const baseState: ThreadActionMenuState = {
   branch: null,
   projectFilter: null,
   isPinned: false,
+  canSwitchProvider: false,
+  staleDelegatedChildCount: 0,
   isSettled: false,
   autoSettleEnabled: true,
   isSnoozed: false,

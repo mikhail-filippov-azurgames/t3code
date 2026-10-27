@@ -15,6 +15,7 @@ import { useThreadShell, useThreadShells, useThreadUpdatedAt } from "~/state/ent
 import { useEnvironmentQuery } from "~/state/query";
 import { Button } from "~/components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { requestSwitchProviderTarget } from "../delegation/SwitchProviderDialog";
 import {
   architectRouteLabel,
   buildArchitectReplacePrompt,
@@ -84,15 +85,33 @@ export function ArchitectSidebarPin({ thread, depth = 0, onNavigate }: Architect
   const attention = resolveArchitectReviewAttention(query.data?.reviews ?? []);
   const architectIsWorking = threadRuntimeIsActive(architectShell?.runtime);
 
-  const replace = () => {
-    const reason = window.prompt("Reason for replacing this Architect:");
-    if (!reason?.trim()) return;
+  const replace = async () => {
+    // Target + reason come from the same provider picker the thread menu
+    // uses; the preferred target rides into the replace prompt for the
+    // routing-policy check.
+    const choice = await requestSwitchProviderTarget({
+      environmentId: thread.environmentId,
+      purpose: {
+        title: "Replace Architect",
+        description: "Pick the provider and model the replacement Architect should run on.",
+        reasonLabel: "Reason (required)",
+        reasonPlaceholder: "Why is this Architect being replaced?",
+        submitLabel: "Replace",
+        requireReason: true,
+      },
+    });
+    if (!choice) return;
     useComposerDraftStore.getState().setPrompt(
       coordinatorRef,
       buildArchitectReplacePrompt({
         architectThreadId: binding.architectThreadId,
         taskEffort: binding.architectTaskEffort,
-        reason: reason.trim(),
+        reason: choice.reason ?? "",
+        preferredTarget: {
+          instanceId: choice.instanceId,
+          driverKind: choice.driverKind,
+          model: choice.model,
+        },
       }),
     );
     onNavigate(coordinatorRef);

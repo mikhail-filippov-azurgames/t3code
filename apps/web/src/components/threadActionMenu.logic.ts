@@ -1,5 +1,10 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
+import {
+  buildOldChildrenMenuItems,
+  buildSwitchProviderMenuItem,
+  type DelegationMenuItemId,
+} from "@t3tools/ft3-web/delegation";
 
 export type ThreadActionMenuId =
   | "new-thread-on-branch"
@@ -7,6 +12,7 @@ export type ThreadActionMenuId =
   | "project-settings"
   | "pin"
   | "unpin"
+  | DelegationMenuItemId
   | "settle"
   | "unsettle"
   | "auto-settle"
@@ -72,6 +78,18 @@ export interface ThreadActionMenuState {
     readonly isActive: boolean;
   } | null;
   readonly isPinned: boolean;
+  /**
+   * Whether the thread can move to another provider through the native
+   * handoff: delegated subagent threads and started threads with provider
+   * work behind them. Callers compute it with `canSwitchThreadProvider`.
+   */
+  readonly canSwitchProvider: boolean;
+  /**
+   * Delegated children the "keep the newest N" cleanup actions would touch.
+   * Zero hides both entries; callers compute it with
+   * `selectStaleDelegatedChildren` at menu-open time.
+   */
+  readonly staleDelegatedChildCount: number;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
   readonly isSnoozed: boolean;
@@ -125,6 +143,10 @@ export function buildThreadActionMenuItems(
             : { id: "pin" as const, label: "Pin thread", icon: "pin" },
         ]
       : []),
+    // Provider switch rides on the server's native handoff for delegated
+    // threads and for started threads with provider work behind them, so the
+    // entry stays hidden everywhere else.
+    ...buildSwitchProviderMenuItem(state.canSwitchProvider),
     ...(state.supports.settlement
       ? [
           state.isSettled
@@ -212,6 +234,7 @@ export function buildThreadActionMenuItems(
       ],
     },
     { id: "project-settings", label: "Project settings", icon: "settings" },
+    ...buildOldChildrenMenuItems(state.staleDelegatedChildCount),
     {
       id: "archive",
       label: "Archive thread",

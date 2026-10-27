@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 
+import { ThreadChildrenDialogHost } from "@t3tools/ft3-web/delegation";
 import {
   completeConfirmDialogClose,
   readConfirmDialogState,
@@ -63,31 +64,34 @@ export function ConfirmDialogHost() {
   const onConfirm = () => respondToConfirmDialog(true);
 
   return (
-    <AlertDialog
-      open={state.status === "confirming"}
-      onOpenChange={(open) => {
-        if (!open) onCancel();
-      }}
-      onOpenChangeComplete={(open) => {
-        if (!open) completeConfirmDialogClose();
-      }}
-    >
-      <AlertDialogPopup>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{copy.title}</AlertDialogTitle>
-          {copy.description ? (
-            <AlertDialogDescription className="whitespace-pre-line">
-              {copy.description}
-            </AlertDialogDescription>
-          ) : null}
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-          <Button variant={confirmVariant} onClick={onConfirm}>
-            Confirm
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogPopup>
-    </AlertDialog>
+    <>
+      <AlertDialog
+        open={state.status === "confirming"}
+        onOpenChange={(open) => {
+          if (!open) onCancel();
+        }}
+        onOpenChangeComplete={(open) => {
+          if (!open) completeConfirmDialogClose();
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{copy.title}</AlertDialogTitle>
+            {copy.description ? (
+              <AlertDialogDescription className="whitespace-pre-line">
+                {copy.description}
+              </AlertDialogDescription>
+            ) : null}
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+            <Button variant={confirmVariant} onClick={onConfirm}>
+              Confirm
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
+      <ThreadChildrenDialogHost />
+    </>
   );
 }
