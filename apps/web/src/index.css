@@ -2589,3 +2589,7 @@ code {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 }
+/* The ft3 pool heading carries the instance name; the native heading stays mounted behind it. */
+[data-ft3-pool-heading] + h2 {
+  display: none;
+}

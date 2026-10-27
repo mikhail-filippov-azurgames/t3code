@@ -14,7 +14,7 @@ import {
   paceRemainingPercent,
   remainingPercent,
 } from "@t3tools/shared/usageLimits";
-import { limitPoolDisplayName } from "@t3tools/ft3-web/usage";
+import { limitPoolDisplayName, UsageLimitsPoolHeading } from "@t3tools/ft3-web/usage";
 import type { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import { AlertTriangleIcon, ExternalLinkIcon, TicketIcon } from "lucide-react";
@@ -577,27 +577,16 @@ function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: nu
   const windows = displayLimitWindows(pool);
   return (
     <section className="flex flex-col gap-3">
+      {ft3Label === null ? null : <UsageLimitsPoolHeading pool={pool} label={ft3Label} />}
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-        {ft3Label !== null ? (
-          <ProviderInstanceIcon
-            driverKind={pool.driver}
-            displayName={ft3Label}
-            indicatorBackground="var(--background)"
-            className="size-5"
-            iconClassName="size-4 text-foreground/80"
-          />
-        ) : null}
-        <span className={ft3Label !== null ? "hidden" : undefined}>
-          <ProviderInstanceIcon
-            driverKind={pool.driver}
-            displayName={label}
-            indicatorBackground="var(--background)"
-            className="size-5"
-            iconClassName="size-4 text-foreground/80"
-          />
-        </span>
-        {ft3Label !== null ? <span>{ft3Label}</span> : null}
-        <span className={ft3Label !== null ? "hidden" : undefined}>{label}</span>
+        <ProviderInstanceIcon
+          driverKind={pool.driver}
+          displayName={label}
+          indicatorBackground="var(--background)"
+          className="size-5"
+          iconClassName="size-4 text-foreground/80"
+        />
+        {label}
       </h2>
       {windows.map((window) => {
         const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;
