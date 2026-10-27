@@ -148,7 +148,7 @@ import {
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
-import { threadEnvironment } from "../state/threads";
+import { sidebarThreadFamilyRoots, threadEnvironment, useThreadFamilies } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
@@ -1162,14 +1162,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // ft3 delegation forest: subagent children nest under their parent row in
   // the parent's section and the bound Architect row nests through the
   // binding index. Upstream only supplies the section lists and the pool.
+  const sidebarSections = [
+    { section: "pinned", threads: pinnedThreads },
+    { section: "active", threads: activeThreads },
+    { section: "working", threads: visibleWorkingThreads },
+    { section: "snoozed", threads: visibleSnoozedThreads },
+    { section: "settled", threads: renderedSettledThreads },
+  ] as const;
+  // The shell omits idle subagents, so visible roots mount their families here.
+  useThreadFamilies(
+    sidebarThreadFamilyRoots(sidebarSections.flatMap((section) => section.threads)),
+  );
   const sidebarForests = useSidebarForests({
-    sections: [
-      { section: "pinned", threads: pinnedThreads },
-      { section: "active", threads: activeThreads },
-      { section: "working", threads: visibleWorkingThreads },
-      { section: "snoozed", threads: visibleSnoozedThreads },
-      { section: "settled", threads: renderedSettledThreads },
-    ],
+    sections: sidebarSections,
     pool: threads,
     routeThreadKey,
     getLastVisitedAt: (thread) => thread.lastVisitedAt ?? undefined,

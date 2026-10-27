@@ -42,15 +42,52 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   snapshotAtom: threadEnvironment.snapshotAtom,
 });
 
-/** Keeps the subagent tree under `rootThreadId` in the thread list while the caller shows it. */
+export type ThreadFamilyRoot = {
+  readonly environmentId: EnvironmentId;
+  readonly rootThreadId: ThreadId;
+};
+
+export function sidebarThreadFamilyRoots(
+  threads: readonly {
+    readonly environmentId: EnvironmentId;
+    readonly lineage: { readonly rootThreadId: ThreadId };
+  }[],
+): ThreadFamilyRoot[] {
+  const roots = new Map<string, ThreadFamilyRoot>();
+  for (const thread of threads) {
+    const root = {
+      environmentId: thread.environmentId,
+      rootThreadId: thread.lineage.rootThreadId,
+    };
+    roots.set(JSON.stringify([root.environmentId, root.rootThreadId]), root);
+  }
+  return [...roots.values()];
+}
+
+/** Keeps each listed thread family in the merged shell until its roots leave the sidebar. */
+export function useThreadFamilies(roots: readonly ThreadFamilyRoot[]): void {
+  const rootsKey = JSON.stringify(
+    [
+      ...new Set(roots.map((root) => JSON.stringify([root.environmentId, root.rootThreadId]))),
+    ].sort(),
+  );
+  useEffect(() => {
+    const releases = (JSON.parse(rootsKey) as string[]).map((key) => {
+      const [environmentId, rootThreadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
+      return threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId);
+    });
+    return () => releases.forEach((release) => release());
+  }, [rootsKey]);
+}
+
+/** Keeps the open thread's subagent tree in the merged shell. */
 export function useThreadFamily(
   environmentId: EnvironmentId | null,
   rootThreadId: ThreadId | null,
 ): void {
-  useEffect(() => {
-    if (environmentId === null || rootThreadId === null) return;
-    return threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId);
-  }, [environmentId, rootThreadId]);
+  useThreadFamilies(
+    environmentId === null || rootThreadId === null ? [] : [{ environmentId, rootThreadId }],
+  );
 }
 
 const EMPTY_THREAD_STATE_ATOM = Atom.make(AsyncResult.success(EMPTY_ENVIRONMENT_THREAD_STATE)).pipe(

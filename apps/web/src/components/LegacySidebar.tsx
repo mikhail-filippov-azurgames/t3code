@@ -141,7 +141,12 @@ import { useDesktopUpdateState } from "../state/desktopUpdate";
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { projectEnvironment } from "../state/projects";
-import { threadEnvironment, useEnvironmentThread } from "../state/threads";
+import {
+  sidebarThreadFamilyRoots,
+  threadEnvironment,
+  useEnvironmentThread,
+  useThreadFamilies,
+} from "../state/threads";
 import { readUnloadedThreadCount } from "../state/olderSettledShelf";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
@@ -1425,6 +1430,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   // ft3 delegation forest for this project's thread list: subagent children
   // nest under their parent row, the bound Architect row nests through the
   // binding index, and rows get working/returned counters and role badges.
+  useThreadFamilies(sidebarThreadFamilyRoots(renderedThreads));
   const sidebarForests = useSidebarForests({
     sections: [{ section: "project", threads: renderedThreads }],
     pool: sidebarThreads,

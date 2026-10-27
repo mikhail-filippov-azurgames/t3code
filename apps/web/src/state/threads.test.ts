@@ -14,7 +14,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
-import { createRunningThreadKeepAliveAtom } from "./threads";
+import { createRunningThreadKeepAliveAtom, sidebarThreadFamilyRoots } from "./threads";
 
 const LOCAL = EnvironmentId.make("local");
 const REMOTE = EnvironmentId.make("remote");
@@ -109,6 +109,23 @@ function makeHarness() {
     },
   };
 }
+
+describe("sidebarThreadFamilyRoots", () => {
+  it("deduplicates families by environment and root thread", () => {
+    const root = ThreadId.make("root");
+    const row = (environmentId: EnvironmentId, rootThreadId: ThreadId) => ({
+      environmentId,
+      lineage: { rootThreadId },
+    });
+
+    expect(
+      sidebarThreadFamilyRoots([row(LOCAL, root), row(LOCAL, root), row(REMOTE, root)]),
+    ).toEqual([
+      { environmentId: LOCAL, rootThreadId: root },
+      { environmentId: REMOTE, rootThreadId: root },
+    ]);
+  });
+});
 
 describe("createRunningThreadKeepAliveAtom", () => {
   it("keeps running threads open across shell updates and thread view visits", () => {
