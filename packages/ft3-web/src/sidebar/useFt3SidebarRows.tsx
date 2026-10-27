@@ -24,6 +24,7 @@ import {
   SidebarForestToggle,
   SidebarRoleBadgeMarker,
 } from "./SidebarForestRowDecorations.tsx";
+import { SidebarStatusOverride } from "./SidebarStatusOverride.tsx";
 import type {
   SidebarForestRowModel,
   SidebarRowStatusOverride,
@@ -252,7 +253,12 @@ export function useFt3SidebarRows(input: {
           <SidebarForestToggle model={model} onToggleCollapse={toggleCollapsed} />
         ),
         metaDecorations: <SidebarRoleBadgeMarker model={model} />,
-        topRightDecorations: <SidebarDelegationMarker model={model} />,
+        topRightDecorations: (
+          <>
+            <SidebarDelegationMarker model={model} />
+            <SidebarStatusOverride override={model.statusOverride} />
+          </>
+        ),
       });
     }
     return rowProps;

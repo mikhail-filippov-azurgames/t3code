@@ -43,7 +43,8 @@ export function SidebarDelegationMarker(props: {
           <span
             aria-label={label}
             data-testid={`sidebar-delegated-child-marker-${model.key}`}
-            className="inline-flex shrink-0 items-center text-muted-foreground/65"
+            data-ft3-status-keep=""
+            className="me-1 inline-flex shrink-0 items-center text-muted-foreground/65"
           />
         }
       >

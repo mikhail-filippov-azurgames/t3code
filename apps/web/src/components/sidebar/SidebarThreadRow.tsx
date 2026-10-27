@@ -1222,7 +1222,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         data-thread-item={threadKey}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
-        style={forestIndent}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]",
           metaLine !== null && multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
@@ -1262,12 +1261,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {accessibleTitle}
               {inFolder ? null : (
                 <span
+                  data-ft3-status-override={statusOverride !== null ? "" : undefined}
+                  data-ft3-status-slim=""
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
                     (!props.isActive || variantAction === "unsettle") &&
                       "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
                   )}
-                  style={{ columnGap: "0.25rem" }}
                 >
                   {props.project ? (
                     <ProjectFavicon project={props.project} className="size-4" />
@@ -1277,7 +1277,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {draftIndicator}
               {title}
               {props.decorations}
-              {props.metaDecorations}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1486,6 +1485,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   )}
                 >
                   <span
+                    data-ft3-status-override={statusOverride !== null ? "" : undefined}
                     className={cn(
                       isWokeStatus
                         ? "pointer-events-auto"
@@ -1493,7 +1493,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       "flex items-center self-center justify-self-end tabular-nums text-secondary-label",
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
-                    style={{ columnGap: "0.25rem" }}
                   >
                     {props.topRightDecorations}
                     {topStatus ? (
