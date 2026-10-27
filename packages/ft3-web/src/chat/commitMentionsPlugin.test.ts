@@ -32,6 +32,50 @@ describe("remarkLinkifyCommitMentions", () => {
     ]);
   });
 
+  it("links a commit that is the entire inline code span", () => {
+    const tree: Node = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [
+            { type: "text", value: "Fixed in " },
+            { type: "inlineCode", value: SHORT },
+            { type: "text", value: "." },
+          ],
+        },
+      ],
+    };
+
+    remarkLinkifyCommitMentions(new Map([[SHORT, FULL_SHA]]))(tree);
+
+    expect(tree.children?.[0]?.children).toEqual([
+      { type: "text", value: "Fixed in " },
+      {
+        type: "link",
+        url: `${COMMIT_MENTION_HREF_PREFIX}${FULL_SHA}`,
+        children: [{ type: "text", value: SHORT }],
+      },
+      { type: "text", value: "." },
+    ]);
+  });
+
+  it("leaves a token inside longer inline code plain", () => {
+    const tree: Node = {
+      type: "root",
+      children: [
+        {
+          type: "paragraph",
+          children: [{ type: "inlineCode", value: `fix ${SHORT}` }],
+        },
+      ],
+    };
+
+    remarkLinkifyCommitMentions(new Map([[SHORT, FULL_SHA]]))(tree);
+
+    expect(tree.children?.[0]?.children).toEqual([{ type: "inlineCode", value: `fix ${SHORT}` }]);
+  });
+
   it("leaves unresolved tokens and non-prose nodes untouched", () => {
     const tree: Node = {
       type: "root",

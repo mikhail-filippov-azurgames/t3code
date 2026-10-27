@@ -101,8 +101,15 @@ export const VcsResolveCommitMentionsInput = Schema.Struct({
 });
 export type VcsResolveCommitMentionsInput = typeof VcsResolveCommitMentionsInput.Type;
 
+/** A resolved mention plus the repository that actually holds the commit. */
+export const VcsResolvedCommitMention = Schema.Struct({
+  commit: VcsCommitHistoryId,
+  cwd: TrimmedNonEmptyString,
+});
+export type VcsResolvedCommitMention = typeof VcsResolvedCommitMention.Type;
+
 export const VcsResolveCommitMentionsResult = Schema.Struct({
-  commits: Schema.Array(VcsCommitHistoryId),
+  commits: Schema.Array(VcsResolvedCommitMention),
 });
 export type VcsResolveCommitMentionsResult = typeof VcsResolveCommitMentionsResult.Type;
 

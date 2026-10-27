@@ -1,4 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { VcsResolvedCommitMention } from "@t3tools/ft3-vcs/contracts";
 
 import {
   selectThreadDiffPanelSelection,
@@ -23,6 +24,15 @@ export function selectCommitFromGraph(input: {
 }) {
   input.selectCommit(input.threadRef, input.commitId);
   input.openDiffPanel(input.threadRef);
+}
+
+/** A mentioned commit may live in a repository nested under the thread cwd. */
+export function findResolvedCommit(input: {
+  readonly commitId: string;
+  readonly commits: ReadonlyArray<VcsResolvedCommitMention>;
+}): VcsResolvedCommitMention | null {
+  const commitId = input.commitId.toLowerCase();
+  return input.commits.find((mention) => mention.commit.startsWith(commitId)) ?? null;
 }
 
 /**

@@ -1,7 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off -- repository discovery is a bounded synchronous directory walk.
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import { VcsProcessExitError, type VcsError } from "@t3tools/contracts";
 import * as VcsProcess from "../../../apps/server/src/vcs/VcsProcess.ts";
@@ -26,6 +29,24 @@ const REFS_LIST_ARGS = [
 ] as const;
 const COMMIT_DIFF_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const COMMIT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const NESTED_REPOSITORY_MAX_DEPTH = 3;
+const NESTED_REPOSITORY_MAX_COUNT = 32;
+const REPOSITORY_DISCOVERY_TTL_MS = 30_000;
+// Walking is bounded and stops at a detected repository, so only heavy or
+// generated trees need an explicit skip.
+const NESTED_REPOSITORY_SKIP_NAMES = new Set([
+  ".cache",
+  ".git",
+  ".repos",
+  ".t3",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "target",
+  "vendor",
+]);
 // `--exclude` only applies to the next `--all`, so it has to stay in front of it.
 const COMMIT_HISTORY_REV_ARGS = [
   "--topo-order",
@@ -43,6 +64,34 @@ const COMMIT_HISTORY_LOG_ARGS = [
   `--format=%H%x1f%P%x1f%an%x1f%ae%x1f%ct%x1f%D%x1f%s`,
   ...COMMIT_HISTORY_REV_ARGS,
 ] as const;
+
+/** Repositories under `root`, including `root` itself when git can read it. */
+function discoverRepositories(root: string): ReadonlyArray<string> {
+  const normalizedRoot = NodePath.resolve(root);
+  const found: string[] = [];
+  const visit = (directory: string, depth: number): void => {
+    if (found.length >= NESTED_REPOSITORY_MAX_COUNT) return;
+    let entries: ReadonlyArray<NodeFS.Dirent>;
+    try {
+      entries = NodeFS.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    const isRepository = entries.some((entry) => entry.name === ".git");
+    if (isRepository) {
+      found.push(directory);
+      if (directory !== normalizedRoot) return;
+    }
+    if (depth >= NESTED_REPOSITORY_MAX_DEPTH) return;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      if (NESTED_REPOSITORY_SKIP_NAMES.has(entry.name)) continue;
+      visit(NodePath.join(directory, entry.name), depth + 1);
+    }
+  };
+  visit(normalizedRoot, 0);
+  return found;
+}
 
 export class CommitHistoryService extends Context.Service<
   CommitHistoryService,
@@ -145,6 +194,25 @@ export function parseRefsList(stdout: string): Contracts.VcsRefEntry[] {
 
 export const make = Effect.gen(function* () {
   const vcsProcess = yield* VcsProcess.VcsProcess;
+  const repositoryCache = new Map<
+    string,
+    { readonly expiresAt: number; readonly repositories: ReadonlyArray<string> }
+  >();
+
+  const repositoriesFor = (root: string): ReadonlyArray<string> => {
+    const key = NodePath.resolve(root);
+    const now = performance.now();
+    const cached = repositoryCache.get(key);
+    if (cached !== undefined && cached.expiresAt > now) return cached.repositories;
+    // `root` stays first even without its own `.git`: git -C works from a
+    // subdirectory of a work tree, and the thread cwd must win over nested repos.
+    const repositories = [key, ...discoverRepositories(key).filter((repo) => repo !== key)];
+    repositoryCache.set(key, {
+      expiresAt: now + REPOSITORY_DISCOVERY_TTL_MS,
+      repositories,
+    });
+    return repositories;
+  };
 
   const runGit = (
     operation: string,
@@ -343,30 +411,49 @@ export const make = Effect.gen(function* () {
     "Ft3Vcs.resolveCommitMentions",
   )(function* (input) {
     const candidates = [...new Set(input.candidates.map((candidate) => candidate.toLowerCase()))];
-    if (candidates.length === 0 || !(yield* isGitRepository(input.cwd))) {
-      return { commits: [] };
+    if (candidates.length === 0) return { commits: [] };
+    const repositories = yield* Effect.sync(() => repositoriesFor(input.cwd));
+    const remaining = new Set(candidates);
+    const seen = new Set<string>();
+    const commits: Array<Contracts.VcsResolvedCommitMention> = [];
+    for (const repository of repositories) {
+      if (remaining.size === 0) break;
+      const batch = [...remaining];
+      const result = yield* runGit(
+        "Ft3Vcs.resolveCommitMentions.catFile",
+        repository,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        {
+          stdin: `${batch.join("\n")}\n`,
+          allowNonZeroExit: true,
+          timeoutMs: 5_000,
+          maxOutputBytes: 16_384,
+        },
+      );
+      if (result.exitCode !== 0) continue;
+      const lines = result.stdout.split(/\r?\n/u);
+      for (let index = 0; index < batch.length; index += 1) {
+        const candidate = batch[index]!;
+        const [sha, type] = (lines[index] ?? "").trim().split(/\s+/u);
+        if (
+          type === "commit" &&
+          sha !== undefined &&
+          COMMIT_ID_PATTERN.test(sha) &&
+          sha.toLowerCase().startsWith(candidate)
+        ) {
+          remaining.delete(candidate);
+          const commit = sha.toLowerCase();
+          if (!seen.has(commit)) {
+            seen.add(commit);
+            commits.push({ commit, cwd: repository });
+          }
+        } else if (type !== undefined && type !== "missing") {
+          // `ambiguous` or a non-commit object cannot name a commit anywhere.
+          remaining.delete(candidate);
+        }
+      }
     }
-    const result = yield* runGit(
-      "Ft3Vcs.resolveCommitMentions.catFile",
-      input.cwd,
-      ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-      {
-        stdin: `${candidates.join("\n")}\n`,
-        maxOutputBytes: 16_384,
-      },
-    );
-    return {
-      commits: [
-        ...new Set(
-          result.stdout.split(/\r?\n/u).flatMap((line) => {
-            const [sha, type] = line.trim().split(/\s+/u);
-            return type === "commit" && sha !== undefined && COMMIT_ID_PATTERN.test(sha)
-              ? [sha.toLowerCase()]
-              : [];
-          }),
-        ),
-      ],
-    };
+    return { commits };
   });
 
   return CommitHistoryService.of({
