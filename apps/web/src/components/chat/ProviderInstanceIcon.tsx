@@ -7,6 +7,7 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import { ProviderDriverKind } from "@t3tools/contracts";
+<<<<<<< HEAD
 import { isKimiProviderInstance, KimiIcon } from "@t3tools/ft3-web/kimi";
 import {
   AnthropicIcon,
@@ -17,6 +18,10 @@ import {
   OpenAI,
   OpenRouterIcon,
 } from "../Icons";
+=======
+import { isKimiProviderInstance, KimiProviderInstanceIcon } from "@t3tools/ft3-web/kimi";
+import { AntigravityIcon, ClaudeAI, Icon, OpenAI } from "../Icons";
+>>>>>>> 0c21013d27 (refactor(ft3-web): restore upstream ProviderInstanceIcon behind a seam)
 
 import { cn } from "~/lib/utils";
 import { providerClients } from "../settings/providerDriverMeta";
@@ -115,6 +120,24 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
     iconUrl: props.acpRegistryIconUrl,
   });
 
+  if (isKimi) {
+    return (
+      <KimiProviderInstanceIcon
+        displayName={props.displayName}
+        className={props.className}
+        iconClassName={iconClassName}
+        badgeClassName={props.badgeClassName}
+        statusDotClassName={props.statusDotClassName}
+        indicatorBackground={indicatorBackground}
+        size={props.size}
+        showBadge={props.showBadge}
+        badgeContent={badgeContent}
+        accentColor={accentColor}
+        accentStyle={accentStyle}
+      />
+    );
+  }
+
   return (
     <span
       className={cn(
@@ -124,6 +147,7 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
+<<<<<<< HEAD
       <span className={isKimi ? "hidden" : undefined}>
         {isAcpRegistry ? (
           <AcpRegistryAgentIcon
@@ -169,6 +193,27 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
         )}
       </span>
       {isKimi ? <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden /> : null}
+=======
+      {isAcpRegistry ? (
+        <AcpRegistryAgentIcon
+          className={cn("size-5 rounded-none bg-transparent", iconClassName)}
+          fallbackClassName="size-full"
+          icon={acpRegistryIconUrl}
+        />
+      ) : packageIcon ? (
+        <ProviderPackageIcon
+          icon={packageIcon}
+          className={cn("size-5 shrink-0", iconClassName)}
+          aria-hidden
+        />
+      ) : Icon ? (
+        <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+      ) : (
+        <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
+          {providerInstanceInitials(props.displayName)}
+        </span>
+      )}
+>>>>>>> 0c21013d27 (refactor(ft3-web): restore upstream ProviderInstanceIcon behind a seam)
       {props.statusDotClassName ? (
         <span
           className={cn(
