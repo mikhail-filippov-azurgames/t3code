@@ -568,6 +568,8 @@ type SidebarThreadRowProps = {
   timestampFormat: TimestampFormat;
   depth?: number | undefined;
   decorations?: ReactNode | undefined;
+  /** Leftmost slot of the top line (forest collapse toggle). */
+  leadingDecorations?: ReactNode | undefined;
   /** Bottom meta-line slot (board role glyph); slim rows fold it into the title line. */
   metaDecorations?: ReactNode | undefined;
   /** Child lineage marker in the top-right time/status slot. */
@@ -1445,6 +1447,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             )}
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
+              {props.leadingDecorations}
               {draftIndicator}
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />

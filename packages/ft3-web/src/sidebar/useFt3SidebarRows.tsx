@@ -21,6 +21,7 @@ import { useSidebarRoleBadges } from "./roleBadges.ts";
 import {
   SidebarDelegationMarker,
   SidebarForestRowDecorations,
+  SidebarForestToggle,
   SidebarRoleBadgeMarker,
 } from "./SidebarForestRowDecorations.tsx";
 import type {
@@ -57,6 +58,7 @@ export type Ft3SidebarRows = {
 export type Ft3SidebarRowProps = {
   readonly depth: number;
   readonly decorations: ReactNode;
+  readonly leadingDecorations: ReactNode;
   readonly metaDecorations: ReactNode;
   readonly topRightDecorations: ReactNode;
 };
@@ -245,6 +247,9 @@ export function useFt3SidebarRows(input: {
         depth: model.depth,
         decorations: (
           <SidebarForestRowDecorations model={model} onToggleCollapse={toggleCollapsed} />
+        ),
+        leadingDecorations: (
+          <SidebarForestToggle model={model} onToggleCollapse={toggleCollapsed} />
         ),
         metaDecorations: <SidebarRoleBadgeMarker model={model} />,
         topRightDecorations: <SidebarDelegationMarker model={model} />,
