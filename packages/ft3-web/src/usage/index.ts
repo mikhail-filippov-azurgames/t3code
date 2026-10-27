@@ -1,3 +1,4 @@
+export { UsageLimitsPoolHeading } from "./UsageLimitsPoolHeading.tsx";
 export { UsageModelTable } from "./UsageModelTable.tsx";
 export {
   DEFAULT_MODEL_COLUMNS,
