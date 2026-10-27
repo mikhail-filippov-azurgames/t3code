@@ -3,7 +3,12 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import { normalizePiBaseUrl, normalizePiApiKey, piModelIdFromSlug } from "./agentDir.ts";
+import {
+  normalizePiApiKey,
+  normalizePiBaseUrl,
+  normalizePiModelSlug,
+  piModelIdFromSlug,
+} from "./agentDir.ts";
 import type { PiBonsaiPreset } from "./rpc-contracts.ts";
 
 const PI_INFERENCE_CONFIG_ENV = "T3CODE_FT3_PI_INFERENCE_CONFIG";
@@ -111,6 +116,79 @@ export function parsePiInferenceConfig(value: unknown): PiInferenceConfig {
     apiKey,
     profiles: (rawProfiles ?? []).map((profile, index) => parseProfile(profile, index, baseUrl)),
   };
+}
+
+/**
+ * V1 kept the default llama-server settings and extra per-model profiles in two
+ * places. V2 reads one profile file, so fold both into a single ordered list.
+ */
+export function derivePiInferenceConfigFromLegacySettings(
+  value: unknown,
+  options: { readonly fallbackBaseUrl?: string | undefined } = {},
+): PiInferenceConfig | undefined {
+  const config = record(value);
+  if (!config) return undefined;
+  const configBaseUrl = normalizePiBaseUrl(optionalString(config.baseUrl));
+  const baseUrl = normalizePiBaseUrl(optionalString(options.fallbackBaseUrl) ?? configBaseUrl);
+  const apiKey = normalizePiApiKey(optionalString(config.apiKey));
+  const profiles: Array<PiInferenceProfile> = [];
+  const seen = new Set<string>();
+  const push = (profile: PiInferenceProfile | undefined) => {
+    if (!profile) return;
+    const model = normalizePiModelSlug(profile.model);
+    if (!model) return;
+    const id = piModelIdFromSlug(model) ?? model;
+    if (seen.has(id)) return;
+    seen.add(id);
+    profiles.push({ ...profile, model });
+  };
+
+  const explicit = new Map<string, PiInferenceProfile>();
+  for (const entry of Array.isArray(config.inferenceServerProfiles)
+    ? config.inferenceServerProfiles
+    : []) {
+    try {
+      const profile = parseProfile(entry, explicit.size, configBaseUrl);
+      const id = piModelIdFromSlug(normalizePiModelSlug(profile.model)) ?? profile.model;
+      explicit.set(id, profile);
+    } catch {
+      // A malformed legacy profile is skipped; the remaining ones still migrate.
+    }
+  }
+
+  const configuredModel = optionalString(config.model);
+  const executablePath = optionalString(config.inferenceServerExecutablePath);
+  const modelPath = optionalString(config.inferenceServerModelPath);
+  if (configuredModel && executablePath && modelPath) {
+    const id = piModelIdFromSlug(normalizePiModelSlug(configuredModel)) ?? configuredModel;
+    const explicitProfile = explicit.get(id);
+    push(
+      explicitProfile ?? {
+        model: configuredModel,
+        baseUrl: configBaseUrl,
+        executablePath,
+        modelPath,
+        gpuLayers: optionalNumber(config.inferenceServerGpuLayers),
+        contextSize: optionalNumber(config.inferenceServerContextSize),
+        parallel: optionalNumber(config.inferenceServerParallel),
+        temperature: optionalNumber(config.inferenceServerTemperature),
+        topP: optionalNumber(config.inferenceServerTopP),
+        topK: optionalNumber(config.inferenceServerTopK),
+        minP: optionalNumber(config.inferenceServerMinP),
+        flashAttention: optionalBoolean(config.inferenceServerFlashAttention),
+        cacheTypeK: optionalString(config.inferenceServerCacheTypeK),
+        cacheTypeV: optionalString(config.inferenceServerCacheTypeV),
+        jinja: optionalBoolean(config.inferenceServerJinja),
+        reasoning: optionalBoolean(config.inferenceServerReasoning),
+        reasoningEffort: optionalString(config.inferenceServerReasoningEffort),
+      },
+    );
+    explicit.delete(id);
+  }
+  for (const profile of explicit.values()) push(profile);
+
+  if (profiles.length === 0) return undefined;
+  return { baseUrl, apiKey, profiles };
 }
 
 export function resolvePiInferenceConfigPath(input: {

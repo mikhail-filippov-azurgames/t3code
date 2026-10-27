@@ -9,6 +9,7 @@ import { assert, it } from "@effect/vitest";
 import {
   applyPiBonsaiPresetToConfig,
   buildPiInferenceServerArgs,
+  derivePiInferenceConfigFromLegacySettings,
   detectPiBonsaiPreset,
   makePiInferenceServerManager,
   parsePiInferenceConfig,
@@ -298,6 +299,76 @@ it("replaces only the preset model and keeps other managed profiles", () => {
       modelPath: bonsaiPreset.modelPath,
     },
   ]);
+});
+
+it("folds legacy default settings and extra profiles into one config", () => {
+  const derived = derivePiInferenceConfigFromLegacySettings(
+    {
+      baseUrl: "http://127.0.0.1:8081/v1",
+      apiKey: "local",
+      model: "ternary-bonsai-8b",
+      inferenceServerExecutablePath: "D:\\Bonsai\\bin\\llama-server.exe",
+      inferenceServerModelPath: "D:\\Bonsai\\models\\ternary-gguf\\8B\\Ternary.gguf",
+      inferenceServerGpuLayers: 99,
+      inferenceServerContextSize: 32768,
+      inferenceServerReasoningEffort: "medium",
+      inferenceServerProfiles: [
+        {
+          model: "bonsai-2-27b",
+          baseUrl: "http://127.0.0.1:8080/v1",
+          executablePath: "D:\\Bonsai\\bin\\llama-server.exe",
+          modelPath: "D:\\Bonsai\\models\\bonsai2-gguf\\27B\\Ternary-Bonsai-2-27B-PQ2_0.gguf",
+        },
+      ],
+    },
+    { fallbackBaseUrl: "http://127.0.0.1:8080/v1" },
+  );
+
+  assert.isDefined(derived);
+  assert.equal(derived?.baseUrl, "http://127.0.0.1:8080/v1");
+  assert.equal(derived?.apiKey, "local");
+  assert.deepEqual(
+    derived?.profiles.map((entry) => entry.model),
+    ["ft3-local/ternary-bonsai-8b", "ft3-local/bonsai-2-27b"],
+  );
+  assert.equal(derived?.profiles[0]?.baseUrl, "http://127.0.0.1:8081/v1");
+  assert.equal(derived?.profiles[0]?.gpuLayers, 99);
+  assert.equal(derived?.profiles[0]?.contextSize, 32768);
+  assert.equal(derived?.profiles[0]?.reasoningEffort, "medium");
+  assert.equal(derived?.profiles[1]?.baseUrl, "http://127.0.0.1:8080/v1");
+});
+
+it("prefers an explicit profile over the legacy default for the same model", () => {
+  const derived = derivePiInferenceConfigFromLegacySettings({
+    baseUrl: "http://127.0.0.1:8081/v1",
+    model: "bonsai-2-27b",
+    inferenceServerExecutablePath: "C:\\old\\llama-server.exe",
+    inferenceServerModelPath: "C:\\old\\model.gguf",
+    inferenceServerProfiles: [profile],
+  });
+
+  assert.isDefined(derived);
+  assert.equal(derived?.profiles.length, 1);
+  assert.equal(derived?.profiles[0]?.model, "ft3-local/bonsai-2-27b");
+  assert.equal(derived?.profiles[0]?.baseUrl, profile.baseUrl);
+  assert.equal(derived?.profiles[0]?.modelPath, profile.modelPath);
+});
+
+it("ignores an incomplete legacy config and malformed profiles", () => {
+  assert.isUndefined(
+    derivePiInferenceConfigFromLegacySettings({
+      model: "bonsai-2-27b",
+      inferenceServerExecutablePath: "C:\\llama-server.exe",
+    }),
+  );
+  const derived = derivePiInferenceConfigFromLegacySettings({
+    baseUrl: "http://127.0.0.1:8081/v1",
+    inferenceServerProfiles: [{ model: "missing-paths" }, otherProfile],
+  });
+  assert.deepEqual(
+    derived?.profiles.map((entry) => entry.model),
+    ["ft3-local/qwen-3"],
+  );
 });
 
 it("round-trips a saved inference config", async () => {

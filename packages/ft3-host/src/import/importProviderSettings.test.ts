@@ -72,6 +72,7 @@ describe("importProviderSettings", () => {
       customModels: [],
     });
     assert.strictEqual(instances.kimi?.driver, "acpRegistry");
+    assert.strictEqual(instances.kimi?.displayName, "Kimi");
     assert.deepStrictEqual(instances.kimi?.config, {
       source: "local",
       agentId: "kimi",
