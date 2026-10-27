@@ -1,7 +1,8 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useArchitectParentKeys } from "./architectBindingIndex.ts";
@@ -17,7 +18,17 @@ import {
 } from "./forest.logic.ts";
 import type { SidebarForestEntry } from "./forest.logic.ts";
 import { useSidebarRoleBadges } from "./roleBadges.ts";
-import type { SidebarForestRowModel } from "./SidebarForestRowDecorations.tsx";
+import {
+  SidebarDelegationMarker,
+  SidebarForestRowDecorations,
+  SidebarRoleBadgeMarker,
+} from "./SidebarForestRowDecorations.tsx";
+import type {
+  SidebarForestRowModel,
+  SidebarRowStatusOverride,
+} from "./SidebarForestRowDecorations.tsx";
+import { sidebarThreadFamilyRoots, type ThreadFamilyRoot } from "./familyRoots.ts";
+import { ArchitectSidebarPin } from "./ArchitectSidebarPin.tsx";
 
 const EXPANDED_FOREST_KEYS_KEY = "t3code:sidebar:forest-expanded";
 
@@ -26,15 +37,26 @@ export type SidebarForestSectionInput = {
   readonly threads: readonly EnvironmentThreadShell[];
 };
 
-export type SidebarForests = {
+export type Ft3SidebarRows = {
   /** Visible (collapse-filtered) entries per section, in render order. */
   readonly entriesBySection: ReadonlyMap<
     string,
     readonly SidebarForestEntry<EnvironmentThreadShell>[]
   >;
-  /** Row decoration model per visible row key. */
-  readonly modelByKey: ReadonlyMap<string, SidebarForestRowModel>;
-  readonly toggleCollapsed: (key: string) => void;
+  /** Visible rows indexed by their scoped thread key. */
+  readonly entryByKey: ReadonlyMap<string, SidebarForestEntry<EnvironmentThreadShell>>;
+  readonly rowPropsByKey: ReadonlyMap<string, Ft3SidebarRowProps>;
+  readonly afterRowByKey: ReadonlyMap<string, ReactNode>;
+  readonly statusOverrideByKey: ReadonlyMap<string, SidebarRowStatusOverride>;
+  /** Roots that must stay mounted while their rows are visible. */
+  readonly familyRoots: readonly ThreadFamilyRoot[];
+};
+
+export type Ft3SidebarRowProps = {
+  readonly depth: number;
+  readonly decorations: ReactNode;
+  readonly metaDecorations: ReactNode;
+  readonly topRightDecorations: ReactNode;
 };
 
 /**
@@ -49,12 +71,13 @@ export type SidebarForests = {
  * sections were drawn from. Parented rows join the section containing their
  * visible parent, including an Architect that would otherwise be elsewhere.
  */
-export function useSidebarForests(input: {
+export function useFt3SidebarRows(input: {
   readonly sections: readonly SidebarForestSectionInput[];
   readonly pool: readonly EnvironmentThreadShell[];
   readonly routeThreadKey: string | null;
   readonly getLastVisitedAt: (thread: EnvironmentThreadShell) => string | undefined;
-}): SidebarForests {
+  readonly onNavigate: (threadRef: ScopedThreadRef) => void;
+}): Ft3SidebarRows {
   const architectParentKeys = useArchitectParentKeys();
   const [expandedForestKeys, setExpandedForestKeys] = useLocalStorage(
     EXPANDED_FOREST_KEYS_KEY,
@@ -62,11 +85,16 @@ export function useSidebarForests(input: {
     Schema.Array(Schema.String),
   );
   const expandedForestKeySet = useMemo(() => new Set(expandedForestKeys), [expandedForestKeys]);
-  const toggleCollapsed = (key: string) => {
-    setExpandedForestKeys((current) =>
-      current.includes(key) ? current.filter((candidate) => candidate !== key) : [...current, key],
-    );
-  };
+  const toggleCollapsed = useCallback(
+    (key: string) => {
+      setExpandedForestKeys((current) =>
+        current.includes(key)
+          ? current.filter((candidate) => candidate !== key)
+          : [...current, key],
+      );
+    },
+    [setExpandedForestKeys],
+  );
 
   const built = useMemo(() => {
     const getKey = (thread: EnvironmentThreadShell) =>
@@ -154,6 +182,19 @@ export function useSidebarForests(input: {
     return { entriesBySection, visible };
   }, [built.forests, expandedForestKeySet]);
 
+  const entryByKey = useMemo(() => {
+    const entries = new Map<string, SidebarForestEntry<EnvironmentThreadShell>>();
+    for (const forest of visibleThreads.entriesBySection.values()) {
+      for (const entry of forest) entries.set(entry.key, entry);
+    }
+    return entries;
+  }, [visibleThreads.entriesBySection]);
+
+  const familyRoots = useMemo(
+    () => sidebarThreadFamilyRoots(input.sections.flatMap((section) => section.threads)),
+    [input.sections],
+  );
+
   const roleBadges = useSidebarRoleBadges(visibleThreads.visible);
 
   const modelByKey = useMemo(() => {
@@ -161,6 +202,7 @@ export function useSidebarForests(input: {
     for (const forest of visibleThreads.entriesBySection.values()) {
       for (const entry of forest) {
         const collapsed = entry.descendantCount > 0 && !expandedForestKeySet.has(entry.key);
+        const workingStartedAt = built.workingStartedAt.get(entry.key) ?? null;
         models.set(entry.key, {
           key: entry.key,
           depth: entry.depth,
@@ -169,7 +211,17 @@ export function useSidebarForests(input: {
           toggleKey: entry.descendantCount > 0 ? entry.key : null,
           workingCount: built.workingCounts.get(entry.key) ?? 0,
           returnedCount: built.unseenCounts.get(entry.key) ?? 0,
-          delegatedWorkingStartedAt: built.workingStartedAt.get(entry.key) ?? null,
+          isDelegatedChild: sidebarSubagentParentKey(entry.thread) !== null,
+          statusOverride:
+            workingStartedAt === null
+              ? null
+              : {
+                  status: "working",
+                  label: "Working",
+                  icon: "working",
+                  className: "text-info-foreground",
+                  startedAt: workingStartedAt,
+                },
           roleBadge: roleBadges.get(entry.key) ?? null,
         });
       }
@@ -184,9 +236,51 @@ export function useSidebarForests(input: {
     visibleThreads,
   ]);
 
+  const rowPropsByKey = useMemo(() => {
+    const rowProps = new Map<string, Ft3SidebarRowProps>();
+    for (const [key, model] of modelByKey) {
+      rowProps.set(key, {
+        depth: model.depth,
+        decorations: (
+          <SidebarForestRowDecorations model={model} onToggleCollapse={toggleCollapsed} />
+        ),
+        metaDecorations: <SidebarRoleBadgeMarker model={model} />,
+        topRightDecorations: <SidebarDelegationMarker model={model} />,
+      });
+    }
+    return rowProps;
+  }, [modelByKey, toggleCollapsed]);
+
+  const statusOverrideByKey = useMemo(() => {
+    const overrides = new Map<string, SidebarRowStatusOverride>();
+    for (const [key, model] of modelByKey) {
+      if (model.statusOverride !== null) overrides.set(key, model.statusOverride);
+    }
+    return overrides;
+  }, [modelByKey]);
+
+  const afterRowByKey = useMemo(() => {
+    const rows = new Map<string, ReactNode>();
+    for (const entry of entryByKey.values()) {
+      rows.set(
+        entry.key,
+        <ArchitectSidebarPin
+          key={`architect-pin:${entry.key}`}
+          thread={entry.thread}
+          depth={entry.depth}
+          onNavigate={input.onNavigate}
+        />,
+      );
+    }
+    return rows;
+  }, [entryByKey, input.onNavigate]);
+
   return {
     entriesBySection: visibleThreads.entriesBySection,
-    modelByKey,
-    toggleCollapsed,
+    entryByKey,
+    rowPropsByKey,
+    afterRowByKey,
+    statusOverrideByKey,
+    familyRoots,
   };
 }

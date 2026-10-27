@@ -7,7 +7,8 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import { ProviderDriverKind } from "@t3tools/contracts";
-import { AntigravityIcon, ClaudeAI, Icon, KimiIcon, OpenAI } from "../Icons";
+import { isKimiProviderInstance, KimiIcon } from "@t3tools/ft3-web/kimi";
+import { AntigravityIcon, ClaudeAI, Icon, OpenAI } from "../Icons";
 
 import { cn } from "~/lib/utils";
 import { providerClients } from "../settings/providerDriverMeta";
@@ -85,10 +86,11 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   const badgeContent = props.badgeContent ?? "initials";
   const iconClassName = cn(props.size === "compact" && "size-3.5", props.iconClassName);
   const isAcpRegistry = props.driverKind === "acpRegistry";
-  const isKimi =
-    isAcpRegistry &&
-    (props.acpRegistryAgentId?.trim().toLowerCase() === "kimi" ||
-      props.displayName.trim().toLowerCase() === "kimi");
+  const isKimi = isKimiProviderInstance({
+    driverKind: props.driverKind,
+    agentId: props.acpRegistryAgentId,
+    displayName: props.displayName,
+  });
   const acpRegistryIconUrl = resolveProviderInstanceAcpRegistryIconUrl({
     driverKind: props.driverKind,
     agentId: props.acpRegistryAgentId,

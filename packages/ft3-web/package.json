@@ -5,18 +5,22 @@
   "exports": {
     "./panels": "./src/panels.tsx",
     "./chat": "./src/chat/index.ts",
+    "./chat-composer": "./src/chat/ComposerFt3Actions.tsx",
     "./chat-copy": "./src/chat/chatCopyFilters.ts",
     "./files": "./src/files/index.ts",
     "./settings": "./src/settings/index.ts",
-    "./board": "./src/board/BoardPage.tsx",
+    "./settings-search": "./src/settings/searchItems.ts",
+    "./board": "./src/board/index.ts",
     "./board-chat": "./src/board/BoardChatSidePanel.tsx",
     "./board-header": "./src/board/boardHeader.ts",
-    "./commits": "./src/commits/CommitDiffPanel.tsx",
+    "./commits": "./src/commits/index.ts",
     "./architect": "./src/architect/index.ts",
     "./pi": "./src/pi/index.ts",
     "./sidebar": "./src/sidebar/index.ts",
     "./usage": "./src/usage/index.ts",
-    "./delegation": "./src/delegation/index.ts"
+    "./kimi": "./src/kimi/index.ts",
+    "./delegation": "./src/delegation/index.ts",
+    "./delegation-dialogs": "./src/delegation/dialogs.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

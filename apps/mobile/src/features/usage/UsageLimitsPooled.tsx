@@ -26,7 +26,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
 import { ResetCredits } from "./UsageLimitsSection";
-import { usageProviderKind, useProviderColors } from "./usageProviders";
+import { poolDisplayName, usageProviderKind, useProviderColors } from "./usageProviders";
 
 const DRIVER_LABEL: Partial<Record<string, string>> = {
   codex: "Codex",
@@ -323,13 +323,17 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool, index) => {
         const windows = displayLimitWindows(pool);
-        const label = pool.displayName ?? DRIVER_LABEL[pool.driver] ?? pool.driver;
+        const label = poolDisplayName(pool) ?? DRIVER_LABEL[pool.driver] ?? pool.driver;
         return (
           <Fragment key={pool.driver}>
             {index === cursorPromptAt ? cursorPrompt : null}
             <View className="gap-3">
               <View className="flex-row items-center gap-2 px-1">
-                <ProviderIcon provider={pool.driver} displayName={pool.displayName} size={18} />
+                <ProviderIcon
+                  provider={pool.driver}
+                  displayName={poolDisplayName(pool)}
+                  size={18}
+                />
                 <Text className="text-base font-t3-medium text-foreground">{label}</Text>
               </View>
               {windows.map((window) => {

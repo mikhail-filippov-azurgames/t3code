@@ -20,9 +20,9 @@ import {
   architectRouteLabel,
   buildArchitectReplacePrompt,
   resolveArchitectReviewAttention,
-} from "./architect.logic.ts";
-import { architectEnvironment } from "./state.ts";
-import { reportActiveArchitectChild } from "../sidebar/architectBindingIndex.ts";
+} from "../architect/architect.logic.ts";
+import { architectEnvironment } from "../architect/state.ts";
+import { reportActiveArchitectChild } from "./architectBindingIndex.ts";
 
 export interface ArchitectSidebarPinProps {
   readonly thread: Pick<EnvironmentThreadShell, "environmentId" | "id" | "title">;

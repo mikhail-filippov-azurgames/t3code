@@ -334,7 +334,6 @@ export interface LimitPoolWindow {
 
 export interface LimitPool {
   readonly driver: ServerProvider["driver"];
-  readonly displayName: string | null;
   readonly accounts: readonly LimitAccount[];
   readonly windows: readonly LimitPoolWindow[];
 }
@@ -377,7 +376,6 @@ export function collectLimitPools(
     else byDriver.set(account.driver, [account]);
   }
   return [...byDriver].map(([driver, members]) => {
-    const displayName = poolDisplayName(driver, members);
     const orderWindow = members
       .flatMap((account) => account.limits.windows)
       .sort((left, right) => WINDOW_KIND_ORDER[left.kind] - WINDOW_KIND_ORDER[right.kind])[0];
@@ -396,28 +394,8 @@ export function collectLimitPools(
         accountSortName(left).localeCompare(accountSortName(right)) ||
         left.key.localeCompare(right.key),
     );
-    return {
-      driver,
-      displayName,
-      accounts: sorted,
-      windows: poolWindows(sorted, now),
-    };
+    return { driver, accounts: sorted, windows: poolWindows(sorted, now) };
   });
-}
-
-/** The ACP driver kind is generic, so only its instances can name the agent behind a pool. */
-function poolDisplayName(
-  driver: ServerProvider["driver"],
-  accounts: readonly LimitAccount[],
-): string | null {
-  if (driver !== "acpRegistry") return null;
-  const names = new Set(
-    accounts.flatMap((account) => {
-      const name = account.displayName?.trim();
-      return name ? [name] : [];
-    }),
-  );
-  return names.size === 1 ? ([...names][0] as string) : null;
 }
 
 function accountSortName(account: LimitAccount): string {

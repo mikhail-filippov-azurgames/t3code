@@ -1,5 +1,4 @@
 import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -7,6 +6,7 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { drainProcessOutput } from "@t3tools/ft3-host/process-output";
 
 import {
   type CodexSettings,
@@ -66,19 +66,6 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverConfig = yield* Effect.service(ServerConfig.ServerConfig);
   const resolvedEnvironment = environment ?? process.env;
-
-  const readStreamInto = <E>(
-    operation: string,
-    stream: Stream.Stream<Uint8Array, E>,
-    onChunk: (chunk: string) => void,
-  ): Effect.Effect<void, TextGenerationError> =>
-    stream.pipe(
-      Stream.decodeText(),
-      Stream.runForEach((chunk) => Effect.sync(() => onChunk(chunk))),
-      Effect.mapError((cause) =>
-        normalizeCliError("codex", operation, cause, "Failed to collect process output"),
-      ),
-    );
 
   const removeTempFileDir = (filePath: string): Effect.Effect<void, never> =>
     fileSystem.remove(path.dirname(filePath), { recursive: true }).pipe(Effect.ignore);
@@ -233,8 +220,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     const outputPath = yield* writeTempFile(operation, "codex-output", "").pipe(
       Effect.onError(() => removeTempFileDir(schemaPath)),
     );
-    let stdout = "";
-    let stderr = "";
+    const capturedOutput = { stdout: "", stderr: "" };
 
     const runCodexCommand = Effect.fn("runCodexJson.runCodexCommand")(function* () {
       const resolved = resolveRuntime
@@ -323,28 +309,23 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
           ),
         );
 
-      const outputDrained = yield* Effect.all(
-        [
-          readStreamInto(operation, child.stdout, (chunk) => {
-            stdout += chunk;
-          }),
-          readStreamInto(operation, child.stderr, (chunk) => {
-            stderr += chunk;
-          }),
-        ],
-        { concurrency: "unbounded", discard: true },
-      ).pipe(Effect.forkScoped);
-      const exitCode = yield* child.exitCode.pipe(
-        Effect.mapError((cause) =>
-          normalizeCliError("codex", operation, cause, "Failed to read Codex CLI exit code"),
+      const exitCode = yield* drainProcessOutput({
+        output: capturedOutput,
+        stdout: child.stdout,
+        stderr: child.stderr,
+        exitCode: child.exitCode.pipe(
+          Effect.mapError((cause) =>
+            normalizeCliError("codex", operation, cause, "Failed to read Codex CLI exit code"),
+          ),
         ),
-      );
-      // Codex can leave helpers holding the inherited pipes after it exits, so EOF is not reliable.
-      yield* Fiber.join(outputDrained).pipe(Effect.timeoutOption(CODEX_OUTPUT_DRAIN_MS));
+        onStreamError: (cause) =>
+          normalizeCliError("codex", operation, cause, "Failed to collect process output"),
+        drainMs: CODEX_OUTPUT_DRAIN_MS,
+      });
 
       if (exitCode !== 0) {
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
+        const stderrDetail = capturedOutput.stderr.trim();
+        const stdoutDetail = capturedOutput.stdout.trim();
         const detail = stderrDetail.length > 0 ? stderrDetail : stdoutDetail;
         return yield* new TextGenerationError({
           operation,
@@ -367,7 +348,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
         Effect.flatMap(
           Option.match({
             onNone: () => {
-              const stderrTail = stderr.trim().slice(-CODEX_TIMEOUT_STDERR_CHARS);
+              const stderrTail = capturedOutput.stderr.trim().slice(-CODEX_TIMEOUT_STDERR_CHARS);
               return Effect.fail(
                 new TextGenerationError({
                   operation,

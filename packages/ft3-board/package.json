@@ -23,6 +23,10 @@
       "types": "./src/BoardRepository.ts",
       "import": "./src/BoardRepository.ts"
     },
+    "./settings": {
+      "types": "./src/settings.ts",
+      "import": "./src/settings.ts"
+    },
     "./authorTextPolicy": {
       "types": "./src/authorTextPolicy.ts",
       "import": "./src/authorTextPolicy.ts"

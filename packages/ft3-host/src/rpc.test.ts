@@ -95,6 +95,7 @@ const stubs = {
     Effect.succeed({ reviewId: "review", status: "published" as const }),
   [FT3_WS_METHODS.vcsListCommitHistory]: () =>
     Effect.succeed({ commits: [], isRepo: false, nextCursor: null }),
+  [FT3_WS_METHODS.vcsResolveCommitMentions]: () => Effect.succeed({ commits: [] }),
   [FT3_WS_METHODS.vcsListRefs]: () => Effect.succeed({ refs: [], isRepo: false }),
   [FT3_WS_METHODS.vcsGetCommitDiff]: () =>
     Effect.succeed({ commit: "0".repeat(40), patch: "", truncated: false }),

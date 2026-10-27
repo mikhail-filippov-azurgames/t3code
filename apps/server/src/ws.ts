@@ -2066,6 +2066,27 @@ export const layerWsRpc = (
                 ),
             ),
           ),
+        [ORCHESTRATION_V2_WS_METHODS.getDelegatedSubagentRoles]: (input) =>
+          Effect.annotateCurrentSpan({ "orchestration_v2.thread_id": input.threadId }).pipe(
+            Effect.andThen(
+              threadManagement.getThreadRecords(input.threadId, ["subagents"]).pipe(
+                Effect.map(({ subagents }) => ({
+                  subagents: subagents.map(({ childThreadId, role }) => ({
+                    childThreadId,
+                    role: role ?? null,
+                  })),
+                })),
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationV2GetThreadProjectionError({
+                      threadId: input.threadId,
+                      message: `Failed to load delegated roles for thread ${input.threadId}`,
+                      cause,
+                    }),
+                ),
+              ),
+            ),
+          ),
         [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": input.commandId,

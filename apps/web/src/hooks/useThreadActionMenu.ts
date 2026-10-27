@@ -13,6 +13,11 @@ import {
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
+import {
+  canSwitchThreadProvider,
+  selectStaleDelegatedChildren,
+  useDelegationThreadActions,
+} from "@t3tools/ft3-web/delegation";
 import { useRouter } from "@tanstack/react-router";
 
 import { resolveSnoozePresets } from "../components/Sidebar.snooze";
@@ -38,16 +43,6 @@ import {
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
 import {
-  canSwitchThreadProvider,
-  collectDelegatedChildRefs,
-  countDelegatedDescendants,
-  requestSwitchProviderTarget,
-  requestThreadChildrenDialog,
-  runDelegatedChildrenAction,
-  runDelegatedChildrenCleanup,
-  selectStaleDelegatedChildren,
-} from "@t3tools/ft3-web/delegation";
-import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
   selectProjectGroupingSettings,
@@ -57,7 +52,6 @@ import { threadRuntimeCanArchive } from "@t3tools/client-runtime/state/models";
 import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
-import { useSwitchThreadProvider } from "./useSwitchThreadProvider";
 import { useThreadActions } from "./useThreadActions";
 
 function failureToast(title: string, error: unknown) {
@@ -98,14 +92,13 @@ export function useThreadActionMenu(input: {
     deleteThread,
     markThreadUnread,
   } = useThreadActions();
+  const delegation = useDelegationThreadActions({ archiveThread, deleteThread });
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const handleNewThread = useNewThreadHandler();
-  const { attemptSwitchProvider } = useSwitchThreadProvider();
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
-  const archiveThreadChildren = useClientSettings((s) => s.archiveThreadChildren);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
@@ -177,6 +170,7 @@ export function useThreadActionMenu(input: {
         );
         return;
       }
+      if (await delegation(action, thread, threadRef)) return;
       if (action.startsWith("snooze:")) {
         const preset =
           action === "snooze:custom"
@@ -244,27 +238,6 @@ export function useThreadActionMenu(input: {
           await reportFailure("Failed to unpin thread", () => confirmAndUnpinThread(threadRef));
           return;
         }
-        case "switch-provider": {
-          // Target + optional reason come from the picker dialog; the attempt
-          // persists the model selection and reports handoff failures
-          // (including provider_handoff_unsupported) as a visible toast.
-          const choice = await requestSwitchProviderTarget({
-            environmentId: threadRef.environmentId,
-            currentInstanceId: thread.modelSelection.instanceId,
-            currentModel: thread.modelSelection.model,
-          });
-          if (!choice) return;
-          await attemptSwitchProvider(
-            threadRef,
-            {
-              providerInstanceId: choice.instanceId,
-              driverKind: choice.driverKind,
-              model: choice.model,
-            },
-            choice.reason,
-          );
-          return;
-        }
         case "auto-settle:enabled":
         case "auto-settle:disabled":
           await reportFailure("Failed to update auto-settle", () =>
@@ -312,115 +285,37 @@ export function useThreadActionMenu(input: {
         case "copy-thread-id":
           copyThreadIdToClipboard(thread.id, { threadId: thread.id });
           return;
-        case "archive-old-children":
-        case "delete-old-children": {
-          const cleanupAction = action === "delete-old-children" ? "delete" : "archive";
-          const outcome = await runDelegatedChildrenCleanup({
-            action: cleanupAction,
-            parent: threadRef,
-            threads: readThreadShells(),
-            confirm: async (message) => {
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  message,
-                  cleanupAction === "delete" ? { variant: "destructive" } : undefined,
-                ),
-              );
-              return confirmed._tag === "Success" && confirmed.value;
-            },
-            runChild: async (childRef, staleKeys) => {
-              if (cleanupAction === "archive") {
-                const result = await archiveThread(childRef);
-                return result._tag === "Failure" && !isAtomCommandInterrupted(result)
-                  ? { ok: false, error: squashAtomCommandFailure(result) }
-                  : { ok: true };
-              }
-              const result = await deleteThread(childRef, { deletedThreadKeys: staleKeys });
-              if (
-                result._tag === "Failure" &&
-                !isAtomCommandInterrupted(result) &&
-                readThreadShell(childRef) !== null
-              ) {
-                return { ok: false, error: squashAtomCommandFailure(result) };
-              }
-              return { ok: true };
+        case "archive": {
+          if (confirmThreadArchive) {
+            const confirmed = await settlePromise(() =>
+              api.dialogs.confirm(`Archive thread "${thread.title}"?`),
+            );
+            if (confirmed._tag === "Failure" || !confirmed.value) return;
+          }
+          let didArchive = false;
+          const result = await archiveThread(threadRef, {
+            onArchived: () => {
+              didArchive = true;
             },
           });
-          if (outcome.kind === "child-failed") {
+          if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
             failureToast(
-              cleanupAction === "delete"
-                ? "Failed to delete old delegated subtask"
-                : "Failed to archive old delegated subtask",
-              outcome.error,
+              didArchive ? "Thread archived, but navigation failed" : "Failed to archive thread",
+              squashAtomCommandFailure(result),
             );
           }
           return;
         }
-        case "archive": {
-          const children = collectDelegatedChildRefs({
-            parent: threadRef,
-            threads: readThreadShells(),
-          });
-          const outcome = await runDelegatedChildrenAction({
-            children,
-            mode: archiveThreadChildren,
-            ask: () =>
-              requestThreadChildrenDialog({ action: "archive", childCount: children.length }),
-            runChild: async (childRef) => {
-              const result = await archiveThread(childRef);
-              return result._tag === "Success"
-                ? { ok: true }
-                : { ok: false, error: squashAtomCommandFailure(result) };
-            },
-            runParent: async ({ cascadeConfirmed }) => {
-              if (!cascadeConfirmed && confirmThreadArchive) {
-                const confirmed = await settlePromise(() =>
-                  api.dialogs.confirm(`Archive thread "${thread.title}"?`),
-                );
-                if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
-              }
-              let didArchive = false;
-              const result = await archiveThread(threadRef, {
-                onArchived: () => {
-                  didArchive = true;
-                },
-              });
-              if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-                failureToast(
-                  didArchive
-                    ? "Thread archived, but navigation failed"
-                    : "Failed to archive thread",
-                  squashAtomCommandFailure(result),
-                );
-                return { ok: false };
-              }
-              return { ok: true };
-            },
-          });
-          if (outcome.kind === "child-failed") {
-            failureToast("Failed to archive delegated subtask", outcome.error);
-          }
-          return;
-        }
         case "delete": {
-          // The server deletes the whole delegated subtree, so the client
-          // only confirms (naming the cascade) and deletes the thread.
           if (confirmThreadDelete) {
-            const descendantCount = countDelegatedDescendants({
-              parent: threadRef,
-              threads: readThreadShells(),
-            });
-            const lines = [
-              `Delete thread "${thread.title}"?`,
-              "This permanently clears conversation history for this thread.",
-            ];
-            if (descendantCount > 0) {
-              lines.push(
-                `${descendantCount} delegated subtask${descendantCount === 1 ? "" : "s"} under it will also be deleted.`,
-              );
-            }
             const confirmed = await settlePromise(() =>
-              api.dialogs.confirm(lines.join("\n"), { variant: "destructive" }),
+              api.dialogs.confirm(
+                [
+                  `Delete thread "${thread.title}"?`,
+                  "This permanently clears conversation history for this thread.",
+                ].join("\n"),
+                { variant: "destructive" },
+              ),
             );
             if (confirmed._tag === "Failure" || !confirmed.value) return;
           }
@@ -428,9 +323,7 @@ export function useThreadActionMenu(input: {
           if (
             deleted._tag === "Failure" &&
             !isAtomCommandInterrupted(deleted) &&
-            // A failure with the thread already gone is worktree cleanup
-            // failing after a successful delete — deleteThread has toasted
-            // that itself, and "Failed to delete thread" would be a lie.
+            // A missing thread means cleanup failed after deletion; deleteThread already toasted that failure.
             readThreadShell(threadRef) !== null
           ) {
             failureToast("Failed to delete thread", squashAtomCommandFailure(deleted));

@@ -1,17 +1,7 @@
-import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
-import {
-  SidebarForestRowDecorations,
-  SidebarRoleBadgeMarker,
-  useSidebarForests,
-} from "@t3tools/ft3-web/sidebar";
+import { useFt3SidebarRows, runFt3SidebarDelegatedAction } from "@t3tools/ft3-web/sidebar";
 import {
   canSwitchThreadProvider,
-  collectDelegatedChildRefs,
-  countDelegatedDescendants,
   requestSwitchProviderTarget,
-  requestThreadChildrenDialog,
-  runDelegatedChildrenAction,
-  runDelegatedChildrenCleanup,
   selectStaleDelegatedChildren,
 } from "@t3tools/ft3-web/delegation";
 import { useSwitchThreadProvider } from "../hooks/useSwitchThreadProvider";
@@ -152,7 +142,7 @@ import {
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
-import { sidebarThreadFamilyRoots, threadEnvironment, useThreadFamilies } from "../state/threads";
+import { threadEnvironment, useThreadFamilies } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
@@ -1163,9 +1153,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
   // already shown keep their places while slower environments answer.
-  // ft3 delegation forest: subagent children nest under their parent row in
-  // the parent's section and the bound Architect row nests through the
-  // binding index. Upstream only supplies the section lists and the pool.
   const sidebarSections = [
     { section: "pinned", threads: pinnedThreads },
     { section: "active", threads: activeThreads },
@@ -1173,16 +1160,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     { section: "snoozed", threads: visibleSnoozedThreads },
     { section: "settled", threads: renderedSettledThreads },
   ] as const;
-  // The shell omits idle subagents, so visible roots mount their families here.
-  useThreadFamilies(
-    sidebarThreadFamilyRoots(sidebarSections.flatMap((section) => section.threads)),
-  );
-  const sidebarForests = useSidebarForests({
+  const sidebarRows = useFt3SidebarRows({
     sections: sidebarSections,
     pool: threads,
     routeThreadKey,
     getLastVisitedAt: (thread) => thread.lastVisitedAt ?? undefined,
+    onNavigate: (threadRef) => navigateToThread(threadRef),
   });
+  useThreadFamilies(sidebarRows.familyRoots);
   const threadByMatchKey =
     threadSearch.matches.length === 0
       ? null
@@ -1733,13 +1718,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
     const rowsOf = (section: SidebarSection): SidebarListItem[] =>
-      (sidebarForests.entriesBySection.get(section) ?? []).map((entry) => ({
+      (sidebarRows.entriesBySection.get(section) ?? []).map((entry) => ({
         kind: "thread",
         key: entry.key,
         section,
-        thread: entry.thread,
-        depth: entry.depth,
-        descendantCount: entry.descendantCount,
       }));
     if (
       pinnedThreads.length +
@@ -2466,6 +2448,32 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           if (preset) attemptSnooze(threadRef, preset);
           return;
         }
+        if (
+          clicked.value === "archive" ||
+          clicked.value === "delete" ||
+          clicked.value === "archive-old-children" ||
+          clicked.value === "delete-old-children"
+        ) {
+          await runFt3SidebarDelegatedAction({
+            action: clicked.value,
+            thread,
+            threadRef,
+            threads: readThreadShells(),
+            archiveThread,
+            deleteThread,
+            getThread: readThreadShell,
+            archiveChildrenMode: archiveThreadChildren,
+            confirmArchive: confirmThreadArchive,
+            confirmDelete: confirmThreadDelete,
+            confirm: async (message, destructive) => {
+              const result = await settlePromise(() =>
+                api.dialogs.confirm(message, destructive ? { variant: "destructive" } : undefined),
+              );
+              return result._tag === "Success" && result.value;
+            },
+          });
+          return;
+        }
         switch (clicked.value) {
           case "filter-by-project":
             if (threadProjectGroup) {
@@ -2607,157 +2615,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
-          case "archive-old-children":
-          case "delete-old-children": {
-            const cleanupAction = clicked.value === "delete-old-children" ? "delete" : "archive";
-            const outcome = await runDelegatedChildrenCleanup({
-              action: cleanupAction,
-              parent: threadRef,
-              threads: readThreadShells(),
-              confirm: async (message) => {
-                const confirmed = await settlePromise(() =>
-                  api.dialogs.confirm(
-                    message,
-                    cleanupAction === "delete" ? { variant: "destructive" } : undefined,
-                  ),
-                );
-                return confirmed._tag === "Success" && confirmed.value;
-              },
-              runChild: async (childRef, staleKeys) => {
-                if (cleanupAction === "archive") {
-                  const result = await archiveThread(childRef);
-                  return result._tag === "Failure" && !isAtomCommandInterrupted(result)
-                    ? { ok: false, error: squashAtomCommandFailure(result) }
-                    : { ok: true };
-                }
-                const result = await deleteThread(childRef, { deletedThreadKeys: staleKeys });
-                if (
-                  result._tag === "Failure" &&
-                  !isAtomCommandInterrupted(result) &&
-                  readThreadShell(childRef) !== null
-                ) {
-                  return { ok: false, error: squashAtomCommandFailure(result) };
-                }
-                return { ok: true };
-              },
-            });
-            if (outcome.kind === "child-failed") {
-              const error = outcome.error;
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title:
-                    cleanupAction === "delete"
-                      ? "Failed to delete old delegated subtask"
-                      : "Failed to archive old delegated subtask",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            }
-            return;
-          }
-          case "archive": {
-            const children = collectDelegatedChildRefs({
-              parent: threadRef,
-              threads: readThreadShells(),
-            });
-            const outcome = await runDelegatedChildrenAction({
-              children,
-              mode: archiveThreadChildren,
-              ask: () =>
-                requestThreadChildrenDialog({ action: "archive", childCount: children.length }),
-              runChild: async (childRef) => {
-                const result = await archiveThread(childRef);
-                return result._tag === "Success"
-                  ? { ok: true }
-                  : { ok: false, error: squashAtomCommandFailure(result) };
-              },
-              runParent: async ({ cascadeConfirmed }) => {
-                if (!cascadeConfirmed && confirmThreadArchive) {
-                  const confirmed = await settlePromise(() =>
-                    api.dialogs.confirm(`Archive thread "${thread.title}"?`),
-                  );
-                  if (confirmed._tag === "Failure" || !confirmed.value) return { ok: false };
-                }
-                let didArchive = false;
-                const result = await archiveThread(threadRef, {
-                  onArchived: () => {
-                    didArchive = true;
-                  },
-                });
-                if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
-                  const error = squashAtomCommandFailure(result);
-                  toastManager.add(
-                    stackedThreadToast({
-                      type: "error",
-                      title: didArchive
-                        ? "Thread archived, but navigation failed"
-                        : "Failed to archive thread",
-                      description: error instanceof Error ? error.message : "An error occurred.",
-                    }),
-                  );
-                  return { ok: false };
-                }
-                return { ok: true };
-              },
-            });
-            if (outcome.kind === "child-failed") {
-              const error = outcome.error;
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Failed to archive delegated subtask",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            }
-            return;
-          }
-          case "delete": {
-            // The server deletes the whole delegated subtree, so the client
-            // only confirms (naming the cascade) and deletes the thread.
-            if (confirmThreadDelete) {
-              const descendantCount = countDelegatedDescendants({
-                parent: threadRef,
-                threads: readThreadShells(),
-              });
-              const confirmed = await settlePromise(() =>
-                api.dialogs.confirm(
-                  [
-                    `Delete thread "${thread.title}"?`,
-                    "This permanently clears conversation history for this thread.",
-                    ...(descendantCount > 0
-                      ? [
-                          `${descendantCount} delegated subtask${descendantCount === 1 ? "" : "s"} under it will also be deleted.`,
-                        ]
-                      : []),
-                  ].join("\n"),
-                  { variant: "destructive" },
-                ),
-              );
-              if (confirmed._tag === "Failure" || !confirmed.value) return;
-            }
-            const result = await deleteThread(threadRef);
-            if (
-              result._tag === "Failure" &&
-              !isAtomCommandInterrupted(result) &&
-              // A failure with the thread already gone is worktree cleanup
-              // failing after a successful delete; deleteThread has toasted
-              // that itself.
-              readThreadShell(threadRef) !== null
-            ) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Failed to delete thread",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-              return;
-            }
-            return;
-          }
           default:
             return;
         }
@@ -3113,7 +2970,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
-                        forest?: { depth: number; descendantCount: number },
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
@@ -3121,23 +2977,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
                         const rowVariant = isCard ? "card" : "slim";
-                        const forestModel = sidebarForests.modelByKey.get(threadKey);
+                        const rowProps = sidebarRows.rowPropsByKey.get(threadKey);
                         return (
                           <SortableThreadRow
                             key={threadKey}
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
-                            depth={forest?.depth ?? 0}
-                            delegatedWorkingStartedAt={
-                              forestModel?.delegatedWorkingStartedAt ?? null
-                            }
-                            decorations={
-                              <SidebarForestRowDecorations
-                                model={forestModel}
-                                onToggleCollapse={sidebarForests.toggleCollapsed}
-                              />
-                            }
-                            metaDecorations={<SidebarRoleBadgeMarker model={forestModel} />}
+                            {...rowProps}
+                            statusOverride={sidebarRows.statusOverrideByKey.get(threadKey) ?? null}
                             sortableDisabled={
                               renamingThreadKey === threadKey ||
                               !draggableThreadKeys.has(threadKey) ||
@@ -3249,21 +3096,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
-                          const thread = item.thread ?? threadByKey.get(item.key)!;
-                          items.push(
-                            renderThreadRow(thread, item.section, {
-                              depth: item.depth ?? 0,
-                              descendantCount: item.descendantCount ?? 0,
-                            }),
-                          );
-                          items.push(
-                            <ArchitectSidebarPin
-                              key={`architect-pin:${item.key}`}
-                              thread={thread}
-                              depth={item.depth ?? 0}
-                              onNavigate={navigateToThread}
-                            />,
-                          );
+                          const forestEntry = sidebarRows.entryByKey.get(item.key);
+                          const thread = forestEntry?.thread ?? threadByKey.get(item.key)!;
+                          items.push(renderThreadRow(thread, item.section));
+                          items.push(sidebarRows.afterRowByKey.get(item.key));
                           continue;
                         }
                         switch (item.marker) {

@@ -91,6 +91,21 @@ export const VcsRefsListResult = Schema.Struct({
 });
 export type VcsRefsListResult = typeof VcsRefsListResult.Type;
 
+export const VCS_COMMIT_MENTIONS_MAX_CANDIDATES = 100;
+
+export const VcsResolveCommitMentionsInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  candidates: Schema.Array(
+    Schema.String.pipe(Schema.check(Schema.isPattern(/^[0-9a-f]{7,40}$/i))),
+  ).pipe(Schema.check(Schema.isMaxLength(VCS_COMMIT_MENTIONS_MAX_CANDIDATES))),
+});
+export type VcsResolveCommitMentionsInput = typeof VcsResolveCommitMentionsInput.Type;
+
+export const VcsResolveCommitMentionsResult = Schema.Struct({
+  commits: Schema.Array(VcsCommitHistoryId),
+});
+export type VcsResolveCommitMentionsResult = typeof VcsResolveCommitMentionsResult.Type;
+
 export const VcsCommitDiffInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   commit: VcsCommitHistoryId,

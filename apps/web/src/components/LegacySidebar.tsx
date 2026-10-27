@@ -1,10 +1,4 @@
-import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
-import {
-  SidebarForestRowDecorations,
-  SidebarRoleBadgeMarker,
-  useSidebarForests,
-  type SidebarForests,
-} from "@t3tools/ft3-web/sidebar";
+import { useFt3SidebarRows, type Ft3SidebarRows } from "@t3tools/ft3-web/sidebar";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { resolveThreadCurrentPullRequestLink } from "@t3tools/client-runtime/thread-pull-requests";
 import { Spinner } from "~/components/ui/spinner";
@@ -142,12 +136,7 @@ import { useDesktopUpdateState } from "../state/desktopUpdate";
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { projectEnvironment } from "../state/projects";
-import {
-  sidebarThreadFamilyRoots,
-  threadEnvironment,
-  useEnvironmentThread,
-  useThreadFamilies,
-} from "../state/threads";
+import { threadEnvironment, useEnvironmentThread, useThreadFamilies } from "../state/threads";
 import { readUnloadedThreadCount } from "../state/olderSettledShelf";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
@@ -391,6 +380,7 @@ interface SidebarThreadRowProps {
   depth?: number;
   decorations?: React.ReactNode;
   metaDecorations?: React.ReactNode;
+  topRightDecorations?: React.ReactNode;
 }
 
 function checkTaskPermission(environmentId: EnvironmentId): boolean {
@@ -909,6 +899,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       isHighlighted ? "text-foreground" : "text-secondary-label"
                     }`}
                   >
+                    {props.topRightDecorations}
                     <RelativeTime
                       timestamp={thread.latestUserMessageAt ?? thread.updatedAt ?? thread.createdAt}
                     />
@@ -930,7 +921,7 @@ interface SidebarProjectThreadListProps {
   hiddenThreadStatus: ThreadStatusPill | null;
   orderedProjectThreadKeys: readonly string[];
   renderedThreads: readonly SidebarThreadSummary[];
-  sidebarForests: SidebarForests;
+  sidebarRows: Ft3SidebarRows;
   showEmptyThreadState: boolean;
   shouldShowThreadPanel: boolean;
   isThreadListExpanded: boolean;
@@ -986,7 +977,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
     hasOverflowingThreads,
     hiddenThreadStatus,
     orderedProjectThreadKeys,
-    sidebarForests,
+    sidebarRows,
     showEmptyThreadState,
     shouldShowThreadPanel,
     isThreadListExpanded,
@@ -1036,10 +1027,10 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
         </SidebarMenuSubItem>
       ) : null}
       {shouldShowThreadPanel &&
-        (sidebarForests.entriesBySection.get("project") ?? []).map((entry) => {
+        (sidebarRows.entriesBySection.get("project") ?? []).map((entry) => {
           const thread = entry.thread;
           const threadKey = entry.key;
-          const forestModel = sidebarForests.modelByKey.get(threadKey);
+          const rowProps = sidebarRows.rowPropsByKey.get(threadKey);
           return [
             <SidebarThreadRow
               key={threadKey}
@@ -1068,21 +1059,9 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
               cancelRename={cancelRename}
               attemptArchiveThread={attemptArchiveThread}
               openPrLink={openPrLink}
-              depth={entry.depth}
-              decorations={
-                <SidebarForestRowDecorations
-                  model={forestModel}
-                  onToggleCollapse={sidebarForests.toggleCollapsed}
-                />
-              }
-              metaDecorations={<SidebarRoleBadgeMarker model={forestModel} />}
+              {...rowProps}
             />,
-            <ArchitectSidebarPin
-              key={`architect-pin:${threadKey}`}
-              thread={thread}
-              depth={entry.depth}
-              onNavigate={navigateToThread}
-            />,
+            sidebarRows.afterRowByKey.get(threadKey),
           ];
         })}
 
@@ -1431,11 +1410,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     projectExpanded,
     isThreadListExpanded,
   });
-  // ft3 delegation forest for this project's thread list: subagent children
-  // nest under their parent row, the bound Architect row nests through the
-  // binding index, and rows get working/returned counters and role badges.
-  useThreadFamilies(sidebarThreadFamilyRoots(renderedThreads));
-  const sidebarForests = useSidebarForests({
+  const sidebarRows = useFt3SidebarRows({
     sections: [{ section: "project", threads: renderedThreads }],
     pool: sidebarThreads,
     routeThreadKey: activeRouteThreadKey,
@@ -1443,7 +1418,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
       lastVisitedAtByThreadKey.get(
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
       ),
+    onNavigate: (threadRef) => navigateToThread(threadRef),
   });
+  useThreadFamilies(sidebarRows.familyRoots);
 
   const handleProjectButtonClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (suppressProjectClickForContextMenuRef.current) {
@@ -2445,7 +2422,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
         hiddenThreadStatus={hiddenThreadStatus}
         orderedProjectThreadKeys={orderedProjectThreadKeys}
         renderedThreads={renderedThreads}
-        sidebarForests={sidebarForests}
+        sidebarRows={sidebarRows}
         showEmptyThreadState={showEmptyThreadState}
         shouldShowThreadPanel={shouldShowThreadPanel}
         isThreadListExpanded={isThreadListExpanded}

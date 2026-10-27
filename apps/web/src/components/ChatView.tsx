@@ -123,7 +123,8 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { isElectron } from "../env";
-import { prepareDiffSelectionForPanelOpen, useDiffPanelStore } from "../diffPanelStore";
+import { prepareDiffSelectionForPanelOpen } from "@t3tools/ft3-web/commits";
+import { useDiffPanelStore } from "../diffPanelStore";
 import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
 import { composerRequiresModifier } from "../composer-logic";
 import {

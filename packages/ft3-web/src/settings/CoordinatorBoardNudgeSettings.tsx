@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import {
-  DEFAULT_UNIFIED_SETTINGS,
+  DEFAULT_BOARD_AUTOMATION_SETTINGS,
   MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
   MAX_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES,
   MIN_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
   MIN_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES,
-} from "@t3tools/contracts/settings";
+  readBoardAutomationSettings,
+} from "@t3tools/ft3-board/settings";
 
 import { Input } from "~/components/ui/input";
 import { ScopedSwitch } from "~/components/settings/ScopedSwitch";
@@ -18,7 +19,7 @@ import {
   SettingsRow,
   SettingsSection,
 } from "~/components/settings/settingsLayout";
-import { searchableSetting } from "~/components/settings/settingsSearch";
+import { ft3SearchableSetting } from "./searchItems.ts";
 
 const ENABLE_DEFAULT_INTERVAL_MINUTES = 15;
 
@@ -67,9 +68,10 @@ export function BoundedIntegerInput({
 export function CoordinatorBoardNudgeSection() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
-  const interval = settings.coordinatorBoardNudgeIntervalMinutes;
-  const threshold = settings.coordinatorBoardNudgeActiveChildThreshold;
-  const defaults = DEFAULT_UNIFIED_SETTINGS;
+  const automation = readBoardAutomationSettings(settings.ft3);
+  const interval = automation.coordinatorBoardNudgeIntervalMinutes;
+  const threshold = automation.coordinatorBoardNudgeActiveChildThreshold;
+  const defaults = DEFAULT_BOARD_AUTOMATION_SETTINGS;
   const isDirty =
     interval !== defaults.coordinatorBoardNudgeIntervalMinutes ||
     threshold !== defaults.coordinatorBoardNudgeActiveChildThreshold;
@@ -78,11 +80,8 @@ export function CoordinatorBoardNudgeSection() {
     <SettingsSection id="coordinators" title="Coordinators">
       <SettingsRow
         serverScoped
-        settingKeys={[
-          "coordinatorBoardNudgeIntervalMinutes",
-          "coordinatorBoardNudgeActiveChildThreshold",
-        ]}
-        {...searchableSetting("coordinator-board-nudge")}
+        settingKeys={["ft3"]}
+        {...ft3SearchableSetting("coordinator-board-nudge")}
         description="Off by default. When on, the server periodically checks each coordinator, and one that is not busy enough is sent a message to take a card from the board. The coordinator then starts new work on its own, without anyone asking it to."
         resetAction={
           isDirty ? (
@@ -90,10 +89,12 @@ export function CoordinatorBoardNudgeSection() {
               label="coordinator board nudge"
               onClick={() =>
                 updateSettings({
-                  coordinatorBoardNudgeIntervalMinutes:
-                    defaults.coordinatorBoardNudgeIntervalMinutes,
-                  coordinatorBoardNudgeActiveChildThreshold:
-                    defaults.coordinatorBoardNudgeActiveChildThreshold,
+                  ft3: {
+                    coordinatorBoardNudgeIntervalMinutes:
+                      defaults.coordinatorBoardNudgeIntervalMinutes,
+                    coordinatorBoardNudgeActiveChildThreshold:
+                      defaults.coordinatorBoardNudgeActiveChildThreshold,
+                  },
                 })
               }
             />
@@ -101,13 +102,15 @@ export function CoordinatorBoardNudgeSection() {
         }
         control={
           <ScopedSwitch
-            settingKeys={["coordinatorBoardNudgeIntervalMinutes"]}
+            settingKeys={["ft3"]}
             checked={interval !== null}
             onCheckedChange={(checked) =>
               updateSettings({
-                coordinatorBoardNudgeIntervalMinutes: checked
-                  ? ENABLE_DEFAULT_INTERVAL_MINUTES
-                  : null,
+                ft3: {
+                  coordinatorBoardNudgeIntervalMinutes: checked
+                    ? ENABLE_DEFAULT_INTERVAL_MINUTES
+                    : null,
+                },
               })
             }
             aria-label="Nudge idle coordinators toward board cards"
@@ -118,8 +121,8 @@ export function CoordinatorBoardNudgeSection() {
         <>
           <SettingsRow
             serverScoped
-            settingKeys={["coordinatorBoardNudgeIntervalMinutes"]}
-            title={searchableSetting("coordinator-board-nudge-interval").title}
+            settingKeys={["ft3"]}
+            title={ft3SearchableSetting("coordinator-board-nudge-interval").title}
             description="Minutes between checks."
             control={
               <BoundedIntegerInput
@@ -127,7 +130,7 @@ export function CoordinatorBoardNudgeSection() {
                 min={MIN_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES}
                 max={MAX_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES}
                 onCommit={(minutes) =>
-                  updateSettings({ coordinatorBoardNudgeIntervalMinutes: minutes })
+                  updateSettings({ ft3: { coordinatorBoardNudgeIntervalMinutes: minutes } })
                 }
                 ariaLabel="Minutes between coordinator board checks"
               />
@@ -135,8 +138,8 @@ export function CoordinatorBoardNudgeSection() {
           />
           <SettingsRow
             serverScoped
-            settingKeys={["coordinatorBoardNudgeActiveChildThreshold"]}
-            title={searchableSetting("coordinator-board-nudge-threshold").title}
+            settingKeys={["ft3"]}
+            title={ft3SearchableSetting("coordinator-board-nudge-threshold").title}
             description="A coordinator with fewer active child tasks than this is nudged. 1 nudges only a coordinator with no child tasks."
             control={
               <BoundedIntegerInput
@@ -144,7 +147,7 @@ export function CoordinatorBoardNudgeSection() {
                 min={MIN_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD}
                 max={MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD}
                 onCommit={(count) =>
-                  updateSettings({ coordinatorBoardNudgeActiveChildThreshold: count })
+                  updateSettings({ ft3: { coordinatorBoardNudgeActiveChildThreshold: count } })
                 }
                 ariaLabel="Active child tasks that count as busy"
               />

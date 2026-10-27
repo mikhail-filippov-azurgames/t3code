@@ -2,7 +2,6 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import { resolveUserDataPath } from "./DesktopUserData.ts";
@@ -46,13 +45,21 @@ it.effect("overrides the user data directory name when configured", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const previous = process.env.T3CODE_DESKTOP_USER_DATA_DIR;
+    process.env.T3CODE_DESKTOP_USER_DATA_DIR = " ft3-v2 ";
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-v2-override-" });
     const resolved = yield* resolveUserDataPath({
       appDataDirectory: directory,
       isDevelopment: false,
       platform: "darwin",
-      userDataDirectoryOverride: Option.some("ft3-v2"),
-    });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env.T3CODE_DESKTOP_USER_DATA_DIR;
+          else process.env.T3CODE_DESKTOP_USER_DATA_DIR = previous;
+        }),
+      ),
+    );
     assert.equal(resolved, path.join(directory, "ft3-v2"));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -78,17 +78,9 @@ export interface ThreadActionMenuState {
     readonly isActive: boolean;
   } | null;
   readonly isPinned: boolean;
-  /**
-   * Whether the thread can move to another provider through the native
-   * handoff: delegated subagent threads and started threads with provider
-   * work behind them. Callers compute it with `canSwitchThreadProvider`.
-   */
+  /** A native provider handoff can happen for this thread. */
   readonly canSwitchProvider: boolean;
-  /**
-   * Delegated children the "keep the newest N" cleanup actions would touch.
-   * Zero hides both entries; callers compute it with
-   * `selectStaleDelegatedChildren` at menu-open time.
-   */
+  /** Old delegated children bulk cleanup would touch; 0 hides the entries. */
   readonly staleDelegatedChildCount: number;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
@@ -143,9 +135,6 @@ export function buildThreadActionMenuItems(
             : { id: "pin" as const, label: "Pin thread", icon: "pin" },
         ]
       : []),
-    // Provider switch rides on the server's native handoff for delegated
-    // threads and for started threads with provider work behind them, so the
-    // entry stays hidden everywhere else.
     ...buildSwitchProviderMenuItem(state.canSwitchProvider),
     ...(state.supports.settlement
       ? [

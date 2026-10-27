@@ -15,7 +15,7 @@ import {
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 import { resolveSettledThreadTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 import { type EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
-import { resolveDelegatedWorkingStart } from "@t3tools/ft3-web/sidebar";
+import type { SidebarRowStatusOverride } from "@t3tools/ft3-web/sidebar";
 import {
   formatWorkingDurationLabel,
   resolveThreadProviderStack,
@@ -541,15 +541,14 @@ type SidebarThreadRowProps = {
   projectDisplayName: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
   timestampFormat: TimestampFormat;
-  // ft3 sidebar forest: child-row indentation and the single decoration slot
-  // (collapse toggle, delegated child counters, board role badge) rendered by
-  // `@t3tools/ft3-web/sidebar`.
   depth?: number | undefined;
   decorations?: ReactNode | undefined;
   /** Bottom meta-line slot (board role glyph); slim rows fold it into the title line. */
   metaDecorations?: ReactNode | undefined;
-  /** Earliest working delegated child, for a parent whose own run already ended. */
-  delegatedWorkingStartedAt?: string | null | undefined;
+  /** Child lineage marker in the top-right time/status slot. */
+  topRightDecorations?: ReactNode | undefined;
+  /** Optional status supplied by a sidebar extension. */
+  statusOverride?: SidebarRowStatusOverride | null | undefined;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
   onThreadActivate: (threadRef: ScopedThreadRef) => void;
   onStartRename: (threadRef: ScopedThreadRef, title: string) => void;
@@ -695,13 +694,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
-  // The parent's own run can end while its delegated fleet runs; the old fork
-  // read that as Working through background liveness.
-  const working = resolveDelegatedWorkingStart({
-    ownWorking: status === "working",
-    ownStartedAt: status === "working" ? resolveWorkingStartedAt(thread) : null,
-    delegatedStartedAt: props.delegatedWorkingStartedAt ?? null,
-  });
+  const statusOverride = status === "working" ? null : (props.statusOverride ?? null);
+  const isWorking = status === "working" || statusOverride !== null;
+  const workingStartedAt =
+    status === "working" ? resolveWorkingStartedAt(thread) : (statusOverride?.startedAt ?? null);
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -709,67 +705,69 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
   const shouldRecede = shouldRecedeSidebarThread({
-    status: working.working ? "working" : status,
+    status: isWorking ? "working" : status,
     isUnread,
     isWoke,
     isActive: props.isActive,
     isSelected,
   });
-  const topStatus = working.working
-    ? {
-        label: status === "working" && thread.goal?.status === "active" ? "Goal" : "Working",
-        icon: "working" as const,
-        className: "text-info-foreground",
-      }
-    : status === "waiting"
+  const topStatus =
+    statusOverride ??
+    (status === "working"
       ? {
-          label: "Waiting",
-          icon: "waiting" as const,
-          className: "text-muted-foreground",
+          label: thread.goal?.status === "active" ? "Goal" : "Working",
+          icon: "working" as const,
+          className: "text-info-foreground",
         }
-      : status === "approval"
+      : status === "waiting"
         ? {
-            label: "Approval",
-            icon: "approval" as const,
-            className: "text-warning-foreground",
+            label: "Waiting",
+            icon: "waiting" as const,
+            className: "text-muted-foreground",
           }
-        : status === "input"
+        : status === "approval"
           ? {
-              label: "Input",
-              icon: "input" as const,
-              className: "text-indigo-600 dark:text-indigo-300",
+              label: "Approval",
+              icon: "approval" as const,
+              className: "text-warning-foreground",
             }
-          : status === "request"
+          : status === "input"
             ? {
-                label: "Request",
-                icon: "request" as const,
-                className: "text-guest-foreground",
+                label: "Input",
+                icon: "input" as const,
+                className: "text-indigo-600 dark:text-indigo-300",
               }
-            : status === "limited"
+            : status === "request"
               ? {
-                  label: "Limited",
-                  icon: "failed" as const,
-                  className: "text-warning-foreground",
+                  label: "Request",
+                  icon: "request" as const,
+                  className: "text-guest-foreground",
                 }
-              : status === "failed"
+              : status === "limited"
                 ? {
-                    label: "Failed",
+                    label: "Limited",
                     icon: "failed" as const,
-                    className: "text-error-foreground",
+                    className: "text-warning-foreground",
                   }
-                : isWoke
+                : status === "failed"
                   ? {
-                      label: "Woke",
-                      icon: "woke" as const,
-                      className: "text-warning-foreground",
+                      label: "Failed",
+                      icon: "failed" as const,
+                      className: "text-error-foreground",
                     }
-                  : isUnread
+                  : isWoke
                     ? {
-                        label: "Done",
-                        icon: "done" as const,
-                        className: "text-success-foreground",
+                        label: "Woke",
+                        icon: "woke" as const,
+                        className: "text-warning-foreground",
                       }
-                    : null;
+                    : isUnread
+                      ? {
+                          label: "Done",
+                          icon: "done" as const,
+                          className: "text-success-foreground",
+                        }
+                      : null);
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1170,20 +1168,21 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               >
                 <span
                   className={cn(
-                    "inline-flex justify-end tabular-nums text-secondary-label transition-opacity",
+                    "inline-flex justify-end gap-1 tabular-nums text-secondary-label transition-opacity",
                     !isWoke && "group-any-hover/sidebar-row:opacity-0",
                   )}
                 >
+                  {props.topRightDecorations}
                   {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
                     <span className="inline-flex items-center gap-1 text-xs text-info-foreground tabular-nums">
                       {/* The clock tells a wake time from an age at a glance. */}
                       <AlarmClockIcon aria-hidden className="size-3" />
                       {props.snoozeWakeLabelText}
                     </span>
-                  ) : working.working ? (
+                  ) : isWorking ? (
                     <span className="inline-flex items-center gap-1 text-xs font-medium text-info-foreground tabular-nums">
                       <CircleDashedIcon aria-hidden className="size-3" />
-                      Working <WorkingDuration startedAt={working.startedAt} />
+                      Working <WorkingDuration startedAt={workingStartedAt} />
                     </span>
                   ) : isWoke ? (
                     <Tooltip>
@@ -1353,10 +1352,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       isWokeStatus
                         ? "pointer-events-auto"
                         : "pointer-events-none group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-any-hover/sidebar-row:absolute group-any-hover/sidebar-row:right-0 group-any-hover/sidebar-row:opacity-0",
-                      "flex items-center self-center justify-self-end tabular-nums text-secondary-label",
+                      "flex items-center self-center justify-self-end gap-1 tabular-nums text-secondary-label",
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
                   >
+                    {props.topRightDecorations}
                     {topStatus ? (
                       isWokeStatus ? (
                         <Tooltip>
@@ -1404,9 +1404,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
                           {topStatus.label}
-                          {working.working ? (
+                          {isWorking ? (
                             <span aria-hidden>
-                              <WorkingDuration startedAt={working.startedAt} />
+                              <WorkingDuration startedAt={workingStartedAt} />
                             </span>
                           ) : status === "waiting" ? (
                             <span aria-hidden>

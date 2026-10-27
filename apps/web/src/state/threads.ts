@@ -15,6 +15,7 @@ import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3too
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect } from "react";
+import type { ThreadFamilyRoot } from "@t3tools/ft3-web/sidebar";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -42,28 +43,6 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   snapshotAtom: threadEnvironment.snapshotAtom,
 });
 
-export type ThreadFamilyRoot = {
-  readonly environmentId: EnvironmentId;
-  readonly rootThreadId: ThreadId;
-};
-
-export function sidebarThreadFamilyRoots(
-  threads: readonly {
-    readonly environmentId: EnvironmentId;
-    readonly lineage: { readonly rootThreadId: ThreadId };
-  }[],
-): ThreadFamilyRoot[] {
-  const roots = new Map<string, ThreadFamilyRoot>();
-  for (const thread of threads) {
-    const root = {
-      environmentId: thread.environmentId,
-      rootThreadId: thread.lineage.rootThreadId,
-    };
-    roots.set(JSON.stringify([root.environmentId, root.rootThreadId]), root);
-  }
-  return [...roots.values()];
-}
-
 /** Keeps each listed thread family in the merged shell until its roots leave the sidebar. */
 export function useThreadFamilies(roots: readonly ThreadFamilyRoot[]): void {
   const rootsKey = JSON.stringify(
@@ -85,9 +64,10 @@ export function useThreadFamily(
   environmentId: EnvironmentId | null,
   rootThreadId: ThreadId | null,
 ): void {
-  useThreadFamilies(
-    environmentId === null || rootThreadId === null ? [] : [{ environmentId, rootThreadId }],
-  );
+  useEffect(() => {
+    if (environmentId === null || rootThreadId === null) return;
+    return threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId);
+  }, [environmentId, rootThreadId]);
 }
 
 const EMPTY_THREAD_STATE_ATOM = Atom.make(AsyncResult.success(EMPTY_ENVIRONMENT_THREAD_STATE)).pipe(

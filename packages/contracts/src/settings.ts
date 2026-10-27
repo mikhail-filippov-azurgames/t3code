@@ -92,56 +92,6 @@ export const SidebarAutoSettleAfterDays = Schema.Number.check(
 );
 export type SidebarAutoSettleAfterDays = typeof SidebarAutoSettleAfterDays.Type;
 const DEFAULT_SIDEBAR_AUTO_SETTLE_AFTER_DAYS: SidebarAutoSettleAfterDays = 3;
-export const MIN_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES = 5;
-export const MAX_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES = 1440;
-export const CoordinatorBoardNudgeIntervalMinutes = Schema.Int.check(
-  Schema.isBetween({
-    minimum: MIN_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES,
-    maximum: MAX_COORDINATOR_BOARD_NUDGE_INTERVAL_MINUTES,
-  }),
-);
-export type CoordinatorBoardNudgeIntervalMinutes = typeof CoordinatorBoardNudgeIntervalMinutes.Type;
-export const MIN_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD = 1;
-export const MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD = 20;
-export const CoordinatorBoardNudgeActiveChildThreshold = Schema.Int.check(
-  Schema.isBetween({
-    minimum: MIN_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
-    maximum: MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
-  }),
-);
-export type CoordinatorBoardNudgeActiveChildThreshold =
-  typeof CoordinatorBoardNudgeActiveChildThreshold.Type;
-const DEFAULT_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD: CoordinatorBoardNudgeActiveChildThreshold = 1;
-export const MIN_BOARD_ARCHIVE_AFTER_DAYS = 1;
-export const MAX_BOARD_ARCHIVE_AFTER_DAYS = 3650;
-export const BoardArchiveAfterDays = Schema.Int.check(
-  Schema.isBetween({
-    minimum: MIN_BOARD_ARCHIVE_AFTER_DAYS,
-    maximum: MAX_BOARD_ARCHIVE_AFTER_DAYS,
-  }),
-);
-export type BoardArchiveAfterDays = typeof BoardArchiveAfterDays.Type;
-const DEFAULT_BOARD_ARCHIVE_AFTER_DAYS: BoardArchiveAfterDays = 1;
-export const MIN_BOARD_DELETE_ARCHIVED_AFTER_DAYS = 1;
-export const MAX_BOARD_DELETE_ARCHIVED_AFTER_DAYS = 3650;
-export const BoardDeleteArchivedAfterDays = Schema.Int.check(
-  Schema.isBetween({
-    minimum: MIN_BOARD_DELETE_ARCHIVED_AFTER_DAYS,
-    maximum: MAX_BOARD_DELETE_ARCHIVED_AFTER_DAYS,
-  }),
-);
-export type BoardDeleteArchivedAfterDays = typeof BoardDeleteArchivedAfterDays.Type;
-const DEFAULT_BOARD_DELETE_ARCHIVED_AFTER_DAYS: BoardDeleteArchivedAfterDays = 14;
-export const MIN_DELETED_THREAD_PURGE_AFTER_DAYS = 1;
-export const MAX_DELETED_THREAD_PURGE_AFTER_DAYS = 3650;
-export const DeletedThreadPurgeAfterDays = Schema.Int.check(
-  Schema.isBetween({
-    minimum: MIN_DELETED_THREAD_PURGE_AFTER_DAYS,
-    maximum: MAX_DELETED_THREAD_PURGE_AFTER_DAYS,
-  }),
-);
-export type DeletedThreadPurgeAfterDays = typeof DeletedThreadPurgeAfterDays.Type;
-const DEFAULT_DELETED_THREAD_PURGE_AFTER_DAYS: DeletedThreadPurgeAfterDays = 14;
 export const MIN_GLASS_OPACITY = 40;
 export const MAX_GLASS_OPACITY = 100;
 export const GlassOpacity = Schema.Int.check(
@@ -1233,22 +1183,9 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   sidebarAutoSettleOnMerge: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
-  coordinatorBoardNudgeIntervalMinutes: Schema.NullOr(CoordinatorBoardNudgeIntervalMinutes).pipe(
-    Schema.withDecodingDefault(Effect.succeed(null)),
-  ),
-  coordinatorBoardNudgeActiveChildThreshold: CoordinatorBoardNudgeActiveChildThreshold.pipe(
-    Schema.withDecodingDefault(
-      Effect.succeed(DEFAULT_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD),
-    ),
-  ),
-  boardArchiveAfterDays: BoardArchiveAfterDays.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_ARCHIVE_AFTER_DAYS)),
-  ),
-  boardDeleteArchivedAfterDays: BoardDeleteArchivedAfterDays.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_BOARD_DELETE_ARCHIVED_AFTER_DAYS)),
-  ),
-  deletedThreadPurgeAfterDays: DeletedThreadPurgeAfterDays.pipe(
-    Schema.withDecodingDefault(Effect.succeed(DEFAULT_DELETED_THREAD_PURGE_AFTER_DAYS)),
+  /** Fork-owned settings namespace; its typed schema lives in `@t3tools/ft3-board/settings`. */
+  ft3: Schema.Record(Schema.String, Schema.Unknown).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
   ),
   backgroundActivity: BackgroundActivitySettings,
 
@@ -1588,15 +1525,7 @@ export const ServerSettingsPatch = Schema.Struct({
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleOnMerge: Schema.optionalKey(Schema.Boolean),
-  coordinatorBoardNudgeIntervalMinutes: Schema.optionalKey(
-    Schema.NullOr(CoordinatorBoardNudgeIntervalMinutes),
-  ),
-  coordinatorBoardNudgeActiveChildThreshold: Schema.optionalKey(
-    CoordinatorBoardNudgeActiveChildThreshold,
-  ),
-  boardArchiveAfterDays: Schema.optionalKey(BoardArchiveAfterDays),
-  boardDeleteArchivedAfterDays: Schema.optionalKey(BoardDeleteArchivedAfterDays),
-  deletedThreadPurgeAfterDays: Schema.optionalKey(DeletedThreadPurgeAfterDays),
+  ft3: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
   autoResumeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   snoozeLimitedThreads: Schema.optionalKey(Schema.Boolean),
   guestSharingEnabled: Schema.optionalKey(Schema.Boolean),

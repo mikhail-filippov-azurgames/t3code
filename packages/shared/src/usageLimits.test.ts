@@ -695,42 +695,6 @@ describe("pools", () => {
   });
 });
 
-describe("pool display name", () => {
-  const named = (driver: ServerProvider["driver"], displayName: string): LimitAccount => ({
-    key: `${driver}:${displayName}`,
-    driver,
-    displayName,
-    email: undefined,
-    plan: undefined,
-    accentColor: undefined,
-    environments: [],
-    sourceLabel: null,
-    redeem: null,
-    limits: { checkedAt: "2026-09-03T11:00:00.000Z", windows: [window] },
-  });
-
-  it("names an ACP pool after its Kimi instance", () => {
-    const [pool] = collectLimitPools([named(ProviderDriverKind.make("acpRegistry"), "Kimi")], now);
-    expect(pool?.displayName).toBe("Kimi");
-  });
-
-  it("keeps the generic ACP name when instances disagree", () => {
-    const [pool] = collectLimitPools(
-      [
-        named(ProviderDriverKind.make("acpRegistry"), "Kimi"),
-        named(ProviderDriverKind.make("acpRegistry"), "Devin"),
-      ],
-      now,
-    );
-    expect(pool?.displayName).toBeNull();
-  });
-
-  it("keeps branded drivers on their own label", () => {
-    const [pool] = collectLimitPools([named(ProviderDriverKind.make("codex"), "Work")], now);
-    expect(pool?.displayName).toBeNull();
-  });
-});
-
 describe("pooled account columns", () => {
   const weekly = {
     ...window,

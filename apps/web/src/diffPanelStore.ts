@@ -176,13 +176,3 @@ export function selectThreadDiffPanelSelection(
   if (!ref) return DEFAULT_SELECTION;
   return byThreadKey[scopedThreadKey(ref)] ?? DEFAULT_SELECTION;
 }
-
-/**
- * Opening the panel starts at the branch diff, except for a commit picked in the
- * graph: that selection is the reason the panel opened and must survive.
- */
-export function prepareDiffSelectionForPanelOpen(ref: ScopedThreadRef): void {
-  const state = useDiffPanelStore.getState();
-  if (selectThreadDiffPanelSelection(state.byThreadKey, ref).kind === "commit") return;
-  state.selectGitScope(ref, "branch");
-}

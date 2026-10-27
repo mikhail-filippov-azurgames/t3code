@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { render } from "../../../../apps/web/test/render";
 import {
+  SidebarDelegationMarker,
   SidebarForestRowDecorations,
   SidebarRoleBadgeMarker,
   type SidebarForestRowModel,
@@ -16,8 +17,9 @@ const model: SidebarForestRowModel = {
   toggleKey: null,
   workingCount: 1,
   returnedCount: 0,
-  delegatedWorkingStartedAt: null,
+  statusOverride: null,
   roleBadge: { kind: "role", role: "implementation", label: "Implementation" },
+  isDelegatedChild: true,
 };
 
 describe("sidebar row decorations", () => {
@@ -53,5 +55,16 @@ describe("sidebar row decorations", () => {
       </TooltipProvider>,
     );
     expect(screen.getByLabelText("Coordinator")).toBeTruthy();
+  });
+
+  it("renders a generic child arrow in the top-right time slot", async () => {
+    await using screen = await render(
+      <TooltipProvider>
+        <SidebarDelegationMarker model={model} />
+      </TooltipProvider>,
+    );
+
+    expect(screen.getByLabelText("Implementation delegated subtask")).toBeTruthy();
+    expect(screen.getByTestId("sidebar-delegated-child-marker-thread:row").element()).toBeTruthy();
   });
 });

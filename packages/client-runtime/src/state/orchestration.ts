@@ -75,6 +75,12 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
         staleTimeMs: 0,
         idleTtlMs: 0,
       }),
+      delegatedSubagentRoles: createEnvironmentRpcQueryAtomFamily(runtime, {
+        label: "environment-data:orchestration-v2:delegated-subagent-roles",
+        tag: ORCHESTRATION_V2_WS_METHODS.getDelegatedSubagentRoles,
+        staleTimeMs: 0,
+        idleTtlMs: 0,
+      }),
       shell: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
         label: "environment-data:orchestration-v2:shell",
         tag: ORCHESTRATION_V2_WS_METHODS.subscribeShell,

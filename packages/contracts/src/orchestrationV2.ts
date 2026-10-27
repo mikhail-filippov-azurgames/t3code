@@ -780,6 +780,18 @@ export const OrchestrationV2SubagentWorkflow = Schema.Struct({
 });
 export type OrchestrationV2SubagentWorkflow = typeof OrchestrationV2SubagentWorkflow.Type;
 
+/** Role requested for a delegated child. `design` remains for existing MCP callers. */
+export const OrchestrationV2DelegatedTaskRole = Schema.Literals([
+  "architecture",
+  "implementation",
+  "review",
+  "test",
+  "research",
+  "general",
+  "design",
+]);
+export type OrchestrationV2DelegatedTaskRole = typeof OrchestrationV2DelegatedTaskRole.Type;
+
 /**
  * Wire-only, for clients that opted in with `acceptDedupedBodies` or `dedupeBodies=1`: the field
  * was blanked because an earlier record on the same response or stream holds the same value.
@@ -801,6 +813,8 @@ export const OrchestrationV2Subagent = Schema.Struct({
   childThreadId: Schema.NullOr(ThreadId),
   nativeTaskRef: Schema.NullOr(OrchestrationV2ProviderRef),
   prompt: Schema.String,
+  /** Requested delegate role, retained in the projection for child sidebar badges. */
+  role: Schema.optional(Schema.String),
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
   modelSelection: Schema.optional(ModelSelection),
@@ -3170,6 +3184,7 @@ export const OrchestrationV2Command = Schema.Union([
     parentRunId: RunId,
     parentNodeId: NodeId,
     task: TrimmedNonEmptyString,
+    role: Schema.optional(OrchestrationV2DelegatedTaskRole),
     title: Schema.optional(TrimmedNonEmptyString),
     modelSelection: ModelSelection,
     runtimeMode: RuntimeMode,
@@ -3328,6 +3343,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getWorktreeThreadIds: "orchestration.getWorktreeThreadIds",
   getOlderSettledThreads: "orchestration.getOlderSettledThreads",
   getThreadProjection: "orchestration.getThreadProjection",
+  getDelegatedSubagentRoles: "orchestration.getDelegatedSubagentRoles",
   getWorkflowScript: "orchestration.getWorkflowScript",
   stopWorkflow: "orchestration.stopWorkflow",
   getTurnItem: "orchestration.getTurnItem",
@@ -3432,6 +3448,25 @@ export const OrchestrationV2GetThreadProjectionInput = Schema.Struct({
 });
 export type OrchestrationV2GetThreadProjectionInput =
   typeof OrchestrationV2GetThreadProjectionInput.Type;
+
+export const OrchestrationV2GetDelegatedSubagentRolesInput = Schema.Struct({
+  threadId: ThreadId,
+});
+export type OrchestrationV2GetDelegatedSubagentRolesInput =
+  typeof OrchestrationV2GetDelegatedSubagentRolesInput.Type;
+
+export const OrchestrationV2DelegatedSubagentRoleRecord = Schema.Struct({
+  childThreadId: Schema.NullOr(ThreadId),
+  role: Schema.NullOr(Schema.String),
+});
+export type OrchestrationV2DelegatedSubagentRoleRecord =
+  typeof OrchestrationV2DelegatedSubagentRoleRecord.Type;
+
+export const OrchestrationV2GetDelegatedSubagentRolesResult = Schema.Struct({
+  subagents: Schema.Array(OrchestrationV2DelegatedSubagentRoleRecord),
+});
+export type OrchestrationV2GetDelegatedSubagentRolesResult =
+  typeof OrchestrationV2GetDelegatedSubagentRolesResult.Type;
 
 export const OrchestrationV2SubscribeShellInput = Schema.Struct({
   afterSequence: Schema.optionalKey(NonNegativeInt),
@@ -3924,6 +3959,10 @@ export const OrchestrationV2RpcSchemas = {
   getThreadProjection: {
     input: OrchestrationV2GetThreadProjectionInput,
     output: OrchestrationV2ThreadProjection,
+  },
+  getDelegatedSubagentRoles: {
+    input: OrchestrationV2GetDelegatedSubagentRolesInput,
+    output: OrchestrationV2GetDelegatedSubagentRolesResult,
   },
   stopWorkflow: {
     input: OrchestrationV2StopWorkflowInput,

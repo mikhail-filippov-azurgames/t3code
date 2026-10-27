@@ -12,6 +12,7 @@ export const FT3_VCS_WS_METHODS = {
   vcsListCommitHistory: "vcs.listCommitHistory",
   vcsListRefs: "vcs.listRepositoryRefs",
   vcsGetCommitDiff: "vcs.getCommitDiff",
+  vcsResolveCommitMentions: "vcs.resolveCommitMentions",
 } as const;
 
 const VcsRpcError = Schema.Union([VcsError, EnvironmentAuthorizationError]);
@@ -32,10 +33,16 @@ export const ft3VcsRpcs = [
     success: Contracts.VcsCommitDiffResult,
     error: VcsRpcError,
   }),
+  Rpc.make(FT3_VCS_WS_METHODS.vcsResolveCommitMentions, {
+    payload: Contracts.VcsResolveCommitMentionsInput,
+    success: Contracts.VcsResolveCommitMentionsResult,
+    error: VcsRpcError,
+  }),
 ] as const;
 
 export const ft3VcsRpcScopes = {
   [FT3_VCS_WS_METHODS.vcsListCommitHistory]: AuthOrchestrationReadScope,
   [FT3_VCS_WS_METHODS.vcsListRefs]: AuthOrchestrationReadScope,
   [FT3_VCS_WS_METHODS.vcsGetCommitDiff]: AuthOrchestrationReadScope,
+  [FT3_VCS_WS_METHODS.vcsResolveCommitMentions]: AuthOrchestrationReadScope,
 } as const;

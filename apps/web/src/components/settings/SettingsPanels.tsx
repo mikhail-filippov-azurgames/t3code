@@ -98,11 +98,7 @@ import { BackgroundActivitySettingsRow } from "./BackgroundActivitySettings";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { PullRequestLinksOpenInAppSetting } from "./IntegrationsSettings";
 import { StorageCleanupSections } from "./StorageSettings";
-import {
-  BoardRetentionSection,
-  CoordinatorBoardNudgeSection,
-  DeletedThreadPurgeSection,
-} from "@t3tools/ft3-web/settings";
+import { Ft3GeneralSettingsSections } from "@t3tools/ft3-web/settings";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: "Wait for the full response",
@@ -1423,9 +1419,7 @@ export function DiffsSettingsPanel() {
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
 
-      <CoordinatorBoardNudgeSection />
-      <BoardRetentionSection />
-      <DeletedThreadPurgeSection />
+      <Ft3GeneralSettingsSections />
 
     </SettingsPageContainer>
   );

@@ -9,6 +9,7 @@ import {
   type SourceControlDefinition,
 } from "@t3tools/client-runtime/source-control-clients";
 import { DEFAULT_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { FT3_SETTINGS_SEARCH_ITEMS } from "@t3tools/ft3-web/settings-search";
 import * as Schema from "effect/Schema";
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
 import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
@@ -204,6 +205,7 @@ const SOURCE_CONTROL_HOST_TERMS = sourceControlClients.definitions
   .join(" ");
 
 export const SETTINGS_SEARCH_ITEMS = [
+  ...FT3_SETTINGS_SEARCH_ITEMS,
   {
     id: "storage-worktree-keep-when",
     targetId: "storage-worktrees",
@@ -456,67 +458,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["thread timeout activity sidebar"],
     requiresThreadAutoSettlement: true,
     scope: "project-defaults",
-  },
-  {
-    id: "coordinator-board-nudge",
-    title: "Nudge idle coordinators toward board cards",
-    to: "/settings/general",
-    searchTerms: ["coordinator board cards automatically idle take work autonomous"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "coordinator-board-nudge-interval",
-    title: "Minutes between coordinator board checks",
-    to: "/settings/general",
-    targetId: "coordinator-board-nudge",
-    searchTerms: ["coordinator board nudge interval frequency"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "coordinator-board-nudge-threshold",
-    title: "Active child tasks that count as busy",
-    to: "/settings/general",
-    targetId: "coordinator-board-nudge",
-    searchTerms: ["coordinator board nudge threshold child tasks busy"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "board-retention",
-    title: "Archive finished board cards automatically",
-    to: "/settings/general",
-    searchTerms: ["coordinator board archive retention delete finished done history"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "board-retention-archive-after",
-    title: "Days before a finished card is archived",
-    to: "/settings/general",
-    targetId: "board-retention",
-    searchTerms: ["coordinator board archive days finished automatic"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "board-retention-delete-after",
-    title: "Days before an archived finished card is deleted",
-    to: "/settings/general",
-    targetId: "board-retention",
-    searchTerms: ["coordinator board delete retention archived days history permanent"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "deleted-thread-purge",
-    title: "Erase deleted threads automatically",
-    to: "/settings/general",
-    searchTerms: ["thread delete retention erase purge permanent startup"],
-    scope: "environment-defaults",
-  },
-  {
-    id: "deleted-thread-purge-after",
-    title: "Days before a deleted thread is erased",
-    to: "/settings/general",
-    targetId: "deleted-thread-purge",
-    searchTerms: ["thread delete days erased purge permanent startup"],
-    scope: "environment-defaults",
   },
   {
     id: "thread-notifications",

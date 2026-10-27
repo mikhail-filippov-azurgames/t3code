@@ -1,4 +1,5 @@
-import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon, SquareKanbanIcon } from "lucide-react";
+import { ArrowLeftIcon, ChartNoAxesColumnIcon, SettingsIcon } from "lucide-react";
+import { useFt3SidebarBoardMenuItem } from "@t3tools/ft3-web/sidebar";
 import type { ReactNode } from "react";
 import { memo } from "react";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
@@ -169,6 +170,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       setOpenMobile(false);
     }
   };
+  const boardMenuItem = useFt3SidebarBoardMenuItem(closeMobileSidebar);
   const handlePullRequestsClick = () => {
     closeMobileSidebar();
     void navigate({
@@ -186,11 +188,6 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
       setOpenMobile(false);
     }
     void navigate({ to: "/usage" });
-  };
-
-  const handleBoardClick = () => {
-    closeMobileSidebar();
-    void navigate({ to: "/board", search: {} });
   };
 
   const handleBackClick = () => {
@@ -226,11 +223,7 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
             label="Usage"
             onClick={handleUsageClick}
           />
-          <SidebarUtilityItem
-            icon={<SquareKanbanIcon />}
-            label="Board"
-            onClick={handleBoardClick}
-          />
+          <SidebarUtilityItem {...boardMenuItem} />
         </>
       )}
       <SidebarUpdatePill />

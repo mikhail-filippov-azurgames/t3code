@@ -14,6 +14,10 @@
     "./rpc-contracts": {
       "types": "./src/rpc-contracts.ts",
       "import": "./src/rpc-contracts.ts"
+    },
+    "./process-output": {
+      "types": "./src/processOutput.ts",
+      "import": "./src/processOutput.ts"
     }
   },
   "scripts": {

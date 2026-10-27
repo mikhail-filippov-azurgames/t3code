@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { providersForWindow } from "./usageProviders";
+import { providersForWindow } from "./usageProviders.ts";
 
 describe("providersForWindow", () => {
   it("keeps an OpenCode source visible across a 90-day window with no events", () => {

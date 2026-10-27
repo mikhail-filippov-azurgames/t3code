@@ -7245,6 +7245,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         childThreadId,
         nativeTaskRef: null,
         prompt: command.task,
+        ...(command.role === undefined ? {} : { role: command.role }),
         title: command.title ?? null,
         model: command.modelSelection.model,
         ...(command.completionWake === undefined ? {} : { completionWake: command.completionWake }),

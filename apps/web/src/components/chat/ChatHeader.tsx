@@ -13,7 +13,6 @@ import { ChevronDownIcon } from "lucide-react";
 import {
   memo,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -21,19 +20,10 @@ import {
 } from "react";
 import { isTrailingDoubleClick } from "../Sidebar.logic";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { Badge } from "../ui/badge";
 import { toastManager } from "../ui/toast";
-import {
-  BoardThreadActionsControl,
-  OrchestratorIcon,
-  ORCHESTRATOR_ICON_CLASS,
-  resolveBoardThreadActionsControlModel,
-  useBoardOrchestratorThreadKeys,
-  useBoardThreadActions,
-} from "@t3tools/ft3-web/board-header";
+import { ChatHeaderBoardActions, CoordinatorBadge } from "@t3tools/ft3-web/board-header";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
-import { usePrimaryEnvironmentId } from "~/state/environments";
 import { threadEnvironment } from "../../state/threads";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
 import { useAtomValue } from "@effect/atom-react";
@@ -92,28 +82,6 @@ export const ChatHeader = memo(function ChatHeader({
   onNewThreadInProject,
   onOpenProjectSettings,
 }: ChatHeaderProps) {
-  const primaryEnvironmentId = usePrimaryEnvironmentId();
-  const orchestratorThreadKeys = useBoardOrchestratorThreadKeys();
-  const isOrchestrator = orchestratorThreadKeys.has(activeThreadId as string);
-  // The toolbar control and the sidebar menu share one item set and one handler.
-  const runBoardThreadAction = useBoardThreadActions();
-  const boardThreadActions = useMemo(
-    () =>
-      resolveBoardThreadActionsControlModel({
-        isServerThread,
-        environmentId: activeThreadEnvironmentId,
-        primaryEnvironmentId,
-        isCoordinator: isOrchestrator,
-        hasDelegationParent,
-      }),
-    [
-      activeThreadEnvironmentId,
-      hasDelegationParent,
-      isOrchestrator,
-      isServerThread,
-      primaryEnvironmentId,
-    ],
-  );
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
@@ -442,18 +410,15 @@ export const ChatHeader = memo(function ChatHeader({
               <TooltipPopup side="top">{activeThreadTitle}</TooltipPopup>
             </Tooltip>
           )}
-          {isServerThread && isOrchestrator ? (
-            <Badge variant="secondary" size="sm" className="ml-1 shrink-0 gap-1">
-              <OrchestratorIcon aria-hidden className={`size-3 ${ORCHESTRATOR_ICON_CLASS}`} />
-              Coordinator
-            </Badge>
-          ) : null}
+          <CoordinatorBadge activeThreadId={activeThreadId} isServerThread={isServerThread} />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
-      <BoardThreadActionsControl
-        model={boardThreadActions}
-        onSelect={(actionId) => void runBoardThreadAction(actionId, activeThreadId)}
+      <ChatHeaderBoardActions
+        activeThreadId={activeThreadId}
+        environmentId={activeThreadEnvironmentId}
+        isServerThread={isServerThread}
+        hasDelegationParent={hasDelegationParent}
       />
     </div>
   );

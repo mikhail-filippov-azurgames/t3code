@@ -1,14 +1,6 @@
-import type { RunId, ScopedThreadRef } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
-import {
-  prepareDiffSelectionForPanelOpen,
-  selectThreadDiffPanelSelection,
-  useDiffPanelSessionStore,
-  useDiffPanelStore,
-} from "./diffPanelStore";
-
-const threadRef = { environmentId: "environment-1", threadId: "thread-1" } as ScopedThreadRef;
+import { useDiffPanelSessionStore, useDiffPanelStore } from "./diffPanelStore";
 
 describe("diffPanelStore", () => {
   beforeEach(() => {
@@ -17,27 +9,6 @@ describe("diffPanelStore", () => {
       branchBaseRefByThreadKey: {},
     });
     useDiffPanelSessionStore.setState({ collapsedFileKeysByScopeKey: {} });
-  });
-
-  it("keeps the commit chosen in the graph when the diff panel opens", () => {
-    const commitId = "a".repeat(40);
-    useDiffPanelStore.getState().selectCommit(threadRef, commitId);
-
-    prepareDiffSelectionForPanelOpen(threadRef);
-
-    expect(
-      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, threadRef),
-    ).toEqual({ kind: "commit", commitId });
-  });
-
-  it("starts an ordinary panel opening on the branch diff", () => {
-    useDiffPanelStore.getState().selectTurn(threadRef, "run-1" as RunId);
-
-    prepareDiffSelectionForPanelOpen(threadRef);
-
-    expect(
-      selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, threadRef),
-    ).toEqual({ kind: "branch", baseRef: null });
   });
 
   it("retains fold choices when a panel consumer returns with fresh defaults", () => {

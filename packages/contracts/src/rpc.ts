@@ -1716,6 +1716,15 @@ const WsOrchestrationV2GetThreadProjectionRpc = Rpc.make(
   },
 );
 
+const WsOrchestrationV2GetDelegatedSubagentRolesRpc = Rpc.make(
+  ORCHESTRATION_V2_WS_METHODS.getDelegatedSubagentRoles,
+  {
+    payload: OrchestrationV2RpcSchemas.getDelegatedSubagentRoles.input,
+    success: OrchestrationV2RpcSchemas.getDelegatedSubagentRoles.output,
+    error: Schema.Union([OrchestrationV2GetThreadProjectionError, EnvironmentAuthorizationError]),
+  },
+);
+
 const WsOrchestrationV2StopWorkflowRpc = Rpc.make(ORCHESTRATION_V2_WS_METHODS.stopWorkflow, {
   payload: OrchestrationV2RpcSchemas.stopWorkflow.input,
   success: OrchestrationV2RpcSchemas.stopWorkflow.output,
@@ -2113,6 +2122,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2GetWorktreeThreadIdsRpc,
   WsOrchestrationV2GetOlderSettledThreadsRpc,
   WsOrchestrationV2GetThreadProjectionRpc,
+  WsOrchestrationV2GetDelegatedSubagentRolesRpc,
   WsOrchestrationV2LaunchThreadRpc,
   WsOrchestrationV2SubscribeArchivedShellRpc,
   WsOrchestrationV2SubscribeShellRpc,
