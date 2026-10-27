@@ -2571,23 +2571,16 @@ code {
   outline-offset: -2px;
 }
 
-/* Shared six-column grid for the usage totals extension and its skeleton. */
-.ft3-usage-metric-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 1.5rem;
-  row-gap: 1rem;
-  padding-block: 0.25rem;
-}
-
-.ft3-usage-metric-grid > div {
-  display: contents;
-}
-
+/* The ft3 average-per-session tile joins the upstream totals grid as a sixth cell. */
 @media (min-width: 768px) {
-  .ft3-usage-metric-grid {
+  .grid:has(> [data-ft3-usage-metric]) {
     grid-template-columns: repeat(6, minmax(0, 1fr));
   }
+}
+
+/* The ft3 model table owns the model breakdown while upstream's table stays mounted. */
+[data-ft3-model-table] + table {
+  display: none;
 }
 /* The ft3 pool heading carries the instance name; the native heading stays mounted behind it. */
 [data-ft3-pool-heading] + h2 {
