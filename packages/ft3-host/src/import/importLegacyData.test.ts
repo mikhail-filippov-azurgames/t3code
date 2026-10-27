@@ -21,6 +21,9 @@ const CHILD_B = "thread:child-b";
 const BOARD_THREAD = "thread:board";
 const ARCH_COORD = "thread:arch-coord";
 const ARCH_ARCH = "thread:arch-arch";
+const IMPORTED_COORDINATOR = "a20e700e-331a-4f93-bc85-a7a7800fc149";
+const IMPORTED_CHILD = "delegated-task:ed72f885689c1769ad2f71b9897ddb0562f7ce1d";
+const IMPORTED_NESTED_CHILD = "delegated-task:e2b70996c46609d4aea1ff887b625bc04229348c";
 
 const createTargetSchema = (sql: SqlClient.SqlClient) =>
   Effect.gen(function* () {
@@ -337,6 +340,111 @@ const seed = (sql: SqlClient.SqlClient) =>
   });
 
 describe("importLegacyData", () => {
+  it.effect("restores the family root for imported V1 delegated threads", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* createTargetSchema(sql);
+      yield* createSourceSchema(sql);
+      yield* sql`INSERT INTO orchestration_v2_projection_threads (
+        thread_id, project_id, title, payload_json
+      ) VALUES
+        (${IMPORTED_COORDINATOR}, 'project:1', 'Coordinator', ${JSON.stringify({
+          historyOrigin: "v1_import",
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: IMPORTED_COORDINATOR,
+          },
+        })}),
+        (${IMPORTED_CHILD}, 'project:1', 'Imported child', ${JSON.stringify({
+          historyOrigin: "v1_import",
+          modelSelection: {
+            providerInstanceId: "opencode",
+            model: "opencode-go/deepseek-v4.1-flash",
+          },
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: IMPORTED_CHILD,
+          },
+        })}),
+        (${IMPORTED_NESTED_CHILD}, 'project:1', 'Imported nested child', ${JSON.stringify({
+          historyOrigin: "v1_import",
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: IMPORTED_NESTED_CHILD,
+          },
+        })})`;
+      yield* sql`INSERT INTO ${sql(STAGING_TABLE)} (thread_id, created_at, payload_json) VALUES
+        (${IMPORTED_CHILD}, '2026-10-13T09:40:30.685Z', ${JSON.stringify({
+          parentThreadId: IMPORTED_COORDINATOR,
+          childThreadId: IMPORTED_CHILD,
+        })}),
+        (${IMPORTED_NESTED_CHILD}, '2026-10-13T09:40:31.095Z', ${JSON.stringify({
+          parentThreadId: IMPORTED_CHILD,
+          childThreadId: IMPORTED_NESTED_CHILD,
+        })})`;
+      yield* sql`INSERT INTO orchestration_v2_projection_subagents (
+        subagent_id, thread_id, parent_node_id, provider, child_thread_id, origin, status,
+        started_at, completed_at, updated_at, payload_json, driver, provider_instance_id
+      ) VALUES
+        (${SUBAGENT_ID_PREFIX + IMPORTED_CHILD}, ${IMPORTED_COORDINATOR},
+          ${`ft3:node:${IMPORTED_CHILD}`}, 'opencode', ${IMPORTED_CHILD}, 'app_owned', 'completed',
+          '2026-10-13T09:40:30.685Z', NULL, '2026-10-13T09:40:30.685Z',
+          ${JSON.stringify({ childThreadId: IMPORTED_CHILD })}, 'opencode', 'opencode'),
+        (${SUBAGENT_ID_PREFIX + IMPORTED_NESTED_CHILD}, ${IMPORTED_CHILD},
+          ${`ft3:node:${IMPORTED_NESTED_CHILD}`}, 'opencode', ${IMPORTED_NESTED_CHILD},
+          'app_owned', 'completed', '2026-10-13T09:40:31.095Z', NULL,
+          '2026-10-13T09:40:31.095Z', ${JSON.stringify({ childThreadId: IMPORTED_NESTED_CHILD })},
+          'opencode', 'opencode')`;
+
+      const result = yield* importLegacyDataSql();
+      assert.strictEqual(result.lineageRestored, 2);
+      const rows = yield* sql<{ readonly thread_id: string; readonly payload_json: string }>`
+        SELECT thread_id, payload_json FROM orchestration_v2_projection_threads
+        WHERE thread_id IN (${IMPORTED_CHILD}, ${IMPORTED_NESTED_CHILD})
+        ORDER BY thread_id`;
+      const lineageByThread = new Map(
+        rows.map((row) => [
+          row.thread_id,
+          JSON.parse(row.payload_json) as {
+            readonly historyOrigin: string;
+            readonly modelSelection?: {
+              readonly providerInstanceId: string;
+              readonly model: string;
+            };
+            readonly lineage: {
+              readonly parentThreadId: string;
+              readonly relationshipToParent: string;
+              readonly rootThreadId: string;
+            };
+          },
+        ]),
+      );
+      assert.deepStrictEqual(lineageByThread.get(IMPORTED_CHILD), {
+        historyOrigin: "v1_import",
+        modelSelection: {
+          providerInstanceId: "opencode",
+          model: "opencode-go/deepseek-v4.1-flash",
+        },
+        lineage: {
+          parentThreadId: IMPORTED_COORDINATOR,
+          relationshipToParent: "subagent",
+          rootThreadId: IMPORTED_COORDINATOR,
+        },
+      });
+      assert.deepStrictEqual(lineageByThread.get(IMPORTED_NESTED_CHILD), {
+        historyOrigin: "v1_import",
+        lineage: {
+          parentThreadId: IMPORTED_CHILD,
+          relationshipToParent: "subagent",
+          rootThreadId: IMPORTED_COORDINATOR,
+        },
+      });
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("copies legacy tables and builds subagents, lineage and scheduled tasks", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

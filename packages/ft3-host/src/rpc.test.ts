@@ -47,6 +47,26 @@ const piStatus = {
   error: null,
 };
 
+const piProfile = {
+  model: "ft3-local/bonsai-2-27b",
+  baseUrl: "http://127.0.0.1:8080/v1",
+  executablePath: "C:\\Bonsai\\bin\\llama-server.exe",
+  modelPath: "C:\\Bonsai\\models\\bonsai.gguf",
+  gpuLayers: 48,
+  contextSize: 81_920,
+  parallel: 1,
+  temperature: 1,
+  topP: 0.95,
+  topK: 20,
+  minP: 0.05,
+  flashAttention: true,
+  cacheTypeK: "q4_0" as const,
+  cacheTypeV: "q4_0" as const,
+  jinja: true,
+  reasoning: true,
+  reasoningEffort: "medium" as const,
+};
+
 const stubs = {
   [FT3_WS_METHODS.boardOrchestratorsList]: () => Effect.succeed({ orchestrators: [] }),
   [FT3_WS_METHODS.boardOrchestratorAdd]: () =>
@@ -81,6 +101,8 @@ const stubs = {
   [FT3_WS_METHODS.piInferenceServerStatus]: () => Effect.succeed(piStatus),
   [FT3_WS_METHODS.piInferenceServerStart]: () => Effect.succeed(piStatus),
   [FT3_WS_METHODS.piInferenceServerStop]: () => Effect.succeed(piStatus),
+  [FT3_WS_METHODS.piInferenceProfileGet]: () => Effect.succeed(piProfile),
+  [FT3_WS_METHODS.piInferenceProfileSave]: () => Effect.succeed(piProfile),
   [FT3_WS_METHODS.piBonsaiPresetDetect]: () => Effect.succeed(null),
   [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
   [FT3_WS_METHODS.openContextResolveDoc]: () => Effect.succeed({ status: "not_found" as const }),
@@ -172,6 +194,13 @@ describe("FT3 RPC authorization", () => {
       expect(yield* client[FT3_WS_METHODS.piInferenceServerStatus](piInput)).toEqual(piStatus);
       expect(yield* client[FT3_WS_METHODS.piInferenceServerStart](piInput)).toEqual(piStatus);
       expect(yield* client[FT3_WS_METHODS.piInferenceServerStop](piInput)).toEqual(piStatus);
+      expect(yield* client[FT3_WS_METHODS.piInferenceProfileGet](piInput)).toEqual(piProfile);
+      expect(
+        yield* client[FT3_WS_METHODS.piInferenceProfileSave]({
+          instanceId: ProviderInstanceId.make("pi"),
+          profile: piProfile,
+        }),
+      ).toEqual(piProfile);
     }).pipe(Effect.scoped),
   );
 
@@ -271,6 +300,18 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
       expect(
         yield* client[FT3_WS_METHODS.piInferenceServerStop](piInput).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
+      expect(
+        yield* client[FT3_WS_METHODS.piInferenceProfileGet]({
+          ...piInput,
+          model: "bonsai-2-27b",
+        }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.piInferenceProfileSave]({
+          instanceId: ProviderInstanceId.make("pi"),
+          profile: piProfile,
+        }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
     }).pipe(Effect.scoped),
   );
