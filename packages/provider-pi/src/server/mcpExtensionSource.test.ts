@@ -81,6 +81,16 @@ describe("Pi orchestration prompt section", () => {
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
     }
   });
+
+  it("applies a registered extension source transform", () => {
+    try {
+      setPiExtensionSourceTransform((source) => source + "\nconst TRANSFORMED = true;");
+      assert.include(piT3McpExtensionSource(), "const TRANSFORMED = true;");
+    } finally {
+      setPiExtensionSourceTransform(undefined);
+      assert.notInclude(piT3McpExtensionSource(), "const TRANSFORMED = true;");
+    }
+  });
 });
 
 describe("Pi project trust", () => {
