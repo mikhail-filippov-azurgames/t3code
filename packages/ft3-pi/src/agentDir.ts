@@ -39,7 +39,7 @@ function resolvePiToolsForRuntimeMode(runtimeMode: RuntimeMode): ReadonlyArray<P
 }
 
 /** Convert an endpoint model ID into Pi's provider/model slug. */
-function normalizePiModelSlug(model: string | undefined): string | undefined {
+export function normalizePiModelSlug(model: string | undefined): string | undefined {
   const normalized = model?.trim() ?? "";
   if (normalized.length === 0) return undefined;
   const providerPrefix = `${PI_BUNDLED_PROVIDER_ID}/`;
