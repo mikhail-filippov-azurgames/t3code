@@ -2593,3 +2593,14 @@ code {
 [data-ft3-pool-heading] + h2 {
   display: none;
 }
+/* ft3 sidebar status override: the native status stays mounted but hidden. */
+[data-ft3-status-override] > [data-ft3-status-variant] {
+  display: none;
+}
+[data-ft3-status-override][data-ft3-status-slim] > [data-ft3-status-variant="slim"],
+[data-ft3-status-override]:not([data-ft3-status-slim]) > [data-ft3-status-variant="full"] {
+  display: inline-flex;
+}
+[data-ft3-status-override] > :not([data-ft3-status-keep]) {
+  display: none;
+}
