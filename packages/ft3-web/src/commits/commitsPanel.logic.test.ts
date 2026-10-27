@@ -1,7 +1,11 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { selectCommitFromGraph, selectedCommitId } from "./commitsPanel.logic.ts";
+import {
+  findResolvedCommit,
+  selectCommitFromGraph,
+  selectedCommitId,
+} from "./commitsPanel.logic.ts";
 
 const threadRef = { environmentId: "env-1", threadId: "thread-1" } as ScopedThreadRef;
 
@@ -21,6 +25,23 @@ describe("selectCommitFromGraph", () => {
     expect(selectCommit).toHaveBeenCalledWith(threadRef, "a".repeat(40));
     expect(openDiffPanel).toHaveBeenCalledWith(threadRef);
     expect(calls).toEqual(["select", "open"]);
+  });
+});
+
+describe("findResolvedCommit", () => {
+  const commit = "a".repeat(40);
+
+  it("returns the repository where the server found the commit", () => {
+    expect(
+      findResolvedCommit({
+        commitId: commit.slice(0, 9),
+        commits: [{ commit, cwd: "/project/nested" }],
+      }),
+    ).toEqual({ commit, cwd: "/project/nested" });
+  });
+
+  it("returns null for an unresolved commit", () => {
+    expect(findResolvedCommit({ commitId: commit, commits: [] })).toBeNull();
   });
 });
 

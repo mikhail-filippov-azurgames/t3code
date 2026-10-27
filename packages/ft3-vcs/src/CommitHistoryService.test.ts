@@ -1,10 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as CommitHistoryService from "./CommitHistoryService.ts";
 import type * as Contracts from "./contracts.ts";
@@ -213,14 +213,14 @@ describe("parseRefsList", () => {
 describe("CommitHistoryService.listRefs", () => {
   it.effect("reads refs from a real temporary repository", () =>
     Effect.gen(function* () {
-      const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-refs-"));
+      const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ft3-vcs-refs-"));
       const git = (...args: ReadonlyArray<string>) =>
-        spawnSync("git", args, { cwd, encoding: "utf8" });
+        NodeChildProcess.spawnSync("git", args, { cwd, encoding: "utf8" });
       try {
         git("init", "-b", "main");
         git("config", "user.email", "author@example.com");
         git("config", "user.name", "Author");
-        writeFileSync(join(cwd, "file.txt"), "one\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "file.txt"), "one\n");
         git("add", "file.txt");
         git("commit", "-m", "first");
         const commit = git("rev-parse", "HEAD").stdout.trim();
@@ -230,7 +230,7 @@ describe("CommitHistoryService.listRefs", () => {
         const process = VcsProcess.VcsProcess.of({
           run: (input) =>
             Effect.sync(() => {
-              const result = spawnSync("git", [...input.args], {
+              const result = NodeChildProcess.spawnSync("git", [...input.args], {
                 cwd: input.spawnCwd ?? input.cwd,
                 encoding: "utf8",
               });
@@ -278,7 +278,7 @@ describe("CommitHistoryService.listRefs", () => {
           ]),
         );
       } finally {
-        rmSync(cwd, { recursive: true, force: true });
+        NodeFS.rmSync(cwd, { recursive: true, force: true });
       }
     }),
   );
@@ -287,33 +287,33 @@ describe("CommitHistoryService.listRefs", () => {
 describe("CommitHistoryService.getCommitDiff", () => {
   it.effect("returns one commit's patch against its first parent, not the branch diff", () =>
     Effect.gen(function* () {
-      const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-diff-"));
+      const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ft3-vcs-diff-"));
       const git = (...args: ReadonlyArray<string>) =>
-        spawnSync("git", args, { cwd, encoding: "utf8" });
+        NodeChildProcess.spawnSync("git", args, { cwd, encoding: "utf8" });
       try {
         git("init", "-b", "main");
         git("config", "user.email", "author@example.com");
         git("config", "user.name", "Author");
-        writeFileSync(join(cwd, "file.txt"), "one\n");
-        writeFileSync(join(cwd, "extra.txt"), "base\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "file.txt"), "one\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "extra.txt"), "base\n");
         git("add", ".");
         git("commit", "-m", "first");
         const first = git("rev-parse", "HEAD").stdout.trim();
-        writeFileSync(join(cwd, "file.txt"), "two\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "file.txt"), "two\n");
         git("add", "file.txt");
         git("commit", "-m", "second");
         const commit = git("rev-parse", "HEAD").stdout.trim();
-        writeFileSync(join(cwd, "file.txt"), "three\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "file.txt"), "three\n");
         git("add", "file.txt");
         git("commit", "-m", "third");
-        writeFileSync(join(cwd, "extra.txt"), "master-only\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "extra.txt"), "master-only\n");
         git("add", "extra.txt");
         git("commit", "-m", "master tip");
 
         const process = VcsProcess.VcsProcess.of({
           run: (input) =>
             Effect.sync(() => {
-              const result = spawnSync("git", [...input.args], {
+              const result = NodeChildProcess.spawnSync("git", [...input.args], {
                 cwd: input.spawnCwd ?? input.cwd,
                 encoding: "utf8",
               });
@@ -371,7 +371,7 @@ describe("CommitHistoryService.getCommitDiff", () => {
         expect(root.patch).toContain("new file mode");
         expect(root.patch).toContain("+one");
       } finally {
-        rmSync(cwd, { recursive: true, force: true });
+        NodeFS.rmSync(cwd, { recursive: true, force: true });
       }
     }),
   );
@@ -380,14 +380,14 @@ describe("CommitHistoryService.getCommitDiff", () => {
 describe("CommitHistoryService.resolveCommitMentions", () => {
   it.effect("resolves full and unique abbreviated SHAs from one cat-file batch", () =>
     Effect.gen(function* () {
-      const cwd = mkdtempSync(join(tmpdir(), "ft3-vcs-mentions-"));
+      const cwd = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ft3-vcs-mentions-"));
       const git = (...args: ReadonlyArray<string>) =>
-        spawnSync("git", args, { cwd, encoding: "utf8" });
+        NodeChildProcess.spawnSync("git", args, { cwd, encoding: "utf8" });
       try {
         git("init", "-b", "main");
         git("config", "user.email", "author@example.com");
         git("config", "user.name", "Author");
-        writeFileSync(join(cwd, "file.txt"), "one\n");
+        NodeFS.writeFileSync(NodePath.join(cwd, "file.txt"), "one\n");
         git("add", "file.txt");
         git("commit", "-m", "first");
         const commit = git("rev-parse", "HEAD").stdout.trim();
@@ -396,7 +396,7 @@ describe("CommitHistoryService.resolveCommitMentions", () => {
         const process = VcsProcess.VcsProcess.of({
           run: (input) =>
             Effect.sync(() => {
-              const result = spawnSync("git", [...input.args], {
+              const result = NodeChildProcess.spawnSync("git", [...input.args], {
                 cwd: input.spawnCwd ?? input.cwd,
                 encoding: "utf8",
                 ...(input.stdin === undefined ? {} : { input: input.stdin }),
@@ -421,9 +421,67 @@ describe("CommitHistoryService.resolveCommitMentions", () => {
           Effect.provideService(VcsProcess.VcsProcess, process),
         );
 
-        expect(result.commits).toEqual([commit]);
+        expect(result.commits).toEqual([{ commit, cwd: NodePath.resolve(cwd) }]);
       } finally {
-        rmSync(cwd, { recursive: true, force: true });
+        NodeFS.rmSync(cwd, { recursive: true, force: true });
+      }
+    }),
+  );
+
+  it.effect("falls back to a nested repository and reports where the commit lives", () =>
+    Effect.gen(function* () {
+      const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ft3-vcs-mentions-nested-"));
+      const nested = NodePath.join(root, "nested");
+      const git = (cwd: string, ...args: ReadonlyArray<string>) =>
+        NodeChildProcess.spawnSync("git", args, { cwd, encoding: "utf8" });
+      try {
+        NodeFS.mkdirSync(nested);
+        git(root, "init", "-b", "main");
+        git(root, "config", "user.email", "author@example.com");
+        git(root, "config", "user.name", "Author");
+        NodeFS.writeFileSync(NodePath.join(root, "root.txt"), "root\n");
+        git(root, "add", "root.txt");
+        git(root, "commit", "-m", "root");
+
+        git(nested, "init", "-b", "main");
+        git(nested, "config", "user.email", "author@example.com");
+        git(nested, "config", "user.name", "Author");
+        NodeFS.writeFileSync(NodePath.join(nested, "file.txt"), "one\n");
+        git(nested, "add", "file.txt");
+        git(nested, "commit", "-m", "nested");
+        const commit = git(nested, "rev-parse", "HEAD").stdout.trim();
+
+        const process = VcsProcess.VcsProcess.of({
+          run: (input) =>
+            Effect.sync(() => {
+              const result = NodeChildProcess.spawnSync("git", [...input.args], {
+                cwd: input.spawnCwd ?? input.cwd,
+                encoding: "utf8",
+                ...(input.stdin === undefined ? {} : { input: input.stdin }),
+              });
+              return {
+                exitCode: (result.status ?? 0) as VcsProcess.VcsProcessOutput["exitCode"],
+                stdout: result.stdout,
+                stderr: result.stderr,
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        });
+        const result = yield* Effect.gen(function* () {
+          const service = yield* CommitHistoryService.CommitHistoryService;
+          return yield* service.resolveCommitMentions({
+            cwd: root,
+            candidates: [commit.slice(0, 9)],
+          });
+        }).pipe(
+          Effect.provide(CommitHistoryService.layer),
+          Effect.provideService(VcsProcess.VcsProcess, process),
+        );
+
+        expect(result.commits).toEqual([{ commit, cwd: NodePath.resolve(nested) }]);
+      } finally {
+        NodeFS.rmSync(root, { recursive: true, force: true });
       }
     }),
   );

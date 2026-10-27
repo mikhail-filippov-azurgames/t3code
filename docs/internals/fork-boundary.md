@@ -607,7 +607,7 @@ resolved through `board.resolve`), commit chips (7-40 hex tokens resolved throug
 `vcs.resolveCommitMentions`) and OpenContext document chips (`oc://doc/<id>` and
 `ocl://doc/<id>`). One hook, `useFt3ChatTextExtensions`, supplies the remark
 plugin, the chip renderer, and the extra allowed href schemes; upstream
-`ChatMarkdown` only calls it and gives it two slots plus `cwd`, which names the
+`ChatMarkdown` only calls it and gives it two slots plus `cwd`, the first
 repository a commit SHA is resolved against. A chip click reuses the commit
 graph selection path (`selectCommitFromGraph`): the diff panel opens on
 `{ kind: "commit" }`, so the graph highlights the same commit. OpenContext
@@ -615,8 +615,12 @@ resolution is a new `openContext.resolveDoc` method in the existing ft3-host RPC
 group, with the store snapshot scanner in
 `packages/ft3-host/src/openContextDocs.ts` (the same package that already
 composes the server RPC group), so no core contracts or `ws.ts` handler is
-added. Commit SHAs resolve in `ft3-vcs` with one `git cat-file --batch-check`
-call; unknown or ambiguous prefixes stay plain text. Typora joins the shared
+added. A whole inline-code span counts as one token; fenced code, longer inline
+code, links and URLs stay plain. Commit SHAs resolve in `ft3-vcs` with
+`git cat-file --batch-check` in the thread cwd first, then in git repositories
+nested under it (bounded depth, cached); the result names the repository that
+holds the commit, and the diff panel asks `ft3-vcs` for that cwd before opening
+the patch. Unknown or ambiguous prefixes stay plain text. Typora joins the shared
 editor list so the Markdown file preview can offer it. Other open-with menus
 filter it and use the package preference fallback, while the upstream
 `usePreferredEditor` hook stays unchanged.

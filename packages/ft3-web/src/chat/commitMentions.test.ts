@@ -34,6 +34,12 @@ describe("extractCommitMentions", () => {
     expect(extractCommitMentions(markdown).map(({ sha }) => sha)).toEqual([FULL_SHA]);
   });
 
+  it("recognizes a SHA that fills the whole inline code span", () => {
+    expect(extractCommitMentions("Готово, коммит `6d242e2f09`.").map(({ sha }) => sha)).toEqual([
+      "6d242e2f09",
+    ]);
+  });
+
   it("keeps exact inline code and rejects hex-looking words and UUIDs", () => {
     expect(extractCommitMentions("Run `abcdef123` now").map(({ sha }) => sha)).toEqual([
       "abcdef123",

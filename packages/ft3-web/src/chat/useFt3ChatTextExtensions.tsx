@@ -158,7 +158,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
         input: { cwd, candidates },
       });
       if (!AsyncResult.isSuccess(result)) throw result.cause;
-      return result.value.commits;
+      return result.value.commits.map((mention) => mention.commit);
     }).then(
       (resolved) => {
         if (!current) return;
