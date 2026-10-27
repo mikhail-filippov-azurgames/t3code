@@ -1250,7 +1250,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {accessibleTitle}
               {inFolder ? null : (
                 <span
-                  data-ft3-status-override={statusOverride !== null ? "" : undefined}
+                  data-ft3-status-override={
+                    statusOverride !== null &&
+                    !(variantAction === "unsnooze" && props.snoozeWakeLabelText !== null)
+                      ? ""
+                      : undefined
+                  }
                   data-ft3-status-slim=""
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
