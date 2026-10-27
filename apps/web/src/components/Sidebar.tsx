@@ -1,6 +1,10 @@
 import { attachSidebarTree } from "../lib/sidebarTree";
 import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
-import { SidebarForestRowDecorations, useSidebarForests } from "@t3tools/ft3-web/sidebar";
+import {
+  SidebarForestRowDecorations,
+  SidebarRoleBadgeMarker,
+  useSidebarForests,
+} from "@t3tools/ft3-web/sidebar";
 import {
   canSwitchThreadProvider,
   collectDelegatedChildRefs,
@@ -3509,6 +3513,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
+                        const rowVariant = isCard ? "card" : "slim";
+                        const forestModel = sidebarForests.modelByKey.get(threadKey);
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
@@ -3522,12 +3528,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
                             depth={forest?.depth ?? 0}
+                            delegatedWorkingStartedAt={
+                              forestModel?.delegatedWorkingStartedAt ?? null
+                            }
                             decorations={
                               <SidebarForestRowDecorations
-                                model={sidebarForests.modelByKey.get(threadKey)}
+                                model={forestModel}
                                 onToggleCollapse={sidebarForests.toggleCollapsed}
                               />
                             }
+                            metaDecorations={<SidebarRoleBadgeMarker model={forestModel} />}
                             sortableDisabled={
                               renamingThreadKey === threadKey ||
                               !draggableThreadKeys.has(threadKey) ||

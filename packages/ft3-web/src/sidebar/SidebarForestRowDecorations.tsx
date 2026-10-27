@@ -15,15 +15,47 @@ export type SidebarForestRowModel = {
   readonly toggleKey: string | null;
   readonly workingCount: number;
   readonly returnedCount: number;
+  /** Earliest working child's start, for the parent row's own Working timer. */
+  readonly delegatedWorkingStartedAt: string | null;
   readonly roleBadge: SidebarRoleBadge | null;
 };
 
 /**
- * Single decoration slot for a sidebar thread row: role badge, delegated
- * child counters (returned / working), collapsed descendant count, and the
- * forest collapse toggle. Rendered by the sidebar inside the row's own flex
- * line via the row's `decorations` prop; indentation itself is the row's
- * `depth` prop.
+ * Board role glyph for a sidebar row, rendered by the row's `metaDecorations`
+ * slot in the bottom meta line (the v1 fork look); slim rows have no meta line,
+ * so it follows the title there. Orchestrator rows win over a card role.
+ */
+export function SidebarRoleBadgeMarker(props: {
+  readonly model: SidebarForestRowModel | undefined;
+}) {
+  const badge = props.model?.roleBadge ?? null;
+  if (badge === null) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span
+            aria-label={badge.label}
+            className={cn("inline-flex shrink-0 items-center", ORCHESTRATOR_ICON_CLASS)}
+          />
+        }
+      >
+        {badge.kind === "orchestrator" ? (
+          <OrchestratorIcon aria-hidden className="size-3.5 shrink-0" />
+        ) : (
+          <BoardRoleIcon role={badge.role} className="size-3.5 shrink-0" />
+        )}
+      </TooltipTrigger>
+      <TooltipPopup>{badge.label}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
+/**
+ * Title-line decoration slot for a sidebar thread row: delegated child
+ * counters (returned / working), collapsed descendant count, and the forest
+ * collapse toggle. Rendered by the sidebar via the row's `decorations` prop;
+ * indentation itself is the row's `depth` prop.
  */
 export function SidebarForestRowDecorations(props: {
   readonly model: SidebarForestRowModel | undefined;
@@ -31,28 +63,8 @@ export function SidebarForestRowDecorations(props: {
 }) {
   const model = props.model;
   if (model === undefined) return null;
-  const badge = model.roleBadge;
   return (
     <>
-      {badge !== null ? (
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <span
-                aria-label={badge.label}
-                className={cn("inline-flex shrink-0 items-center", ORCHESTRATOR_ICON_CLASS)}
-              />
-            }
-          >
-            {badge.kind === "orchestrator" ? (
-              <OrchestratorIcon aria-hidden className="size-3.5 shrink-0" />
-            ) : (
-              <BoardRoleIcon role={badge.role} className="size-3.5 shrink-0" />
-            )}
-          </TooltipTrigger>
-          <TooltipPopup>{badge.label}</TooltipPopup>
-        </Tooltip>
-      ) : null}
       {model.returnedCount > 0 ? (
         <Tooltip>
           <TooltipTrigger

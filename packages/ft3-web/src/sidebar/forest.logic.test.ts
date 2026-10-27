@@ -2,11 +2,14 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  collectDelegatedWorkingStartedAt,
   collectUnseenDelegatedChildCounts,
   collectWorkingDelegatedChildCounts,
+  delegatedChildWorkingStartedAt,
   filterCollapsedSidebarForest,
   groupSidebarForestChildrenBySection,
   orderSidebarSectionForest,
+  resolveDelegatedWorkingStart,
   sidebarForestParentKey,
   sidebarSubagentParentKey,
 } from "./forest.logic.ts";
@@ -296,7 +299,11 @@ type DelegateShell = {
     readonly parentThreadId: ThreadId | null;
     readonly relationshipToParent: "fork" | "subagent" | null;
   };
-  readonly latestRun: { readonly completedAt: string | null } | null;
+  readonly latestRun: {
+    readonly startedAt?: string | null;
+    readonly requestedAt?: string | null;
+    readonly completedAt: string | null;
+  } | null;
   readonly runtime: { readonly status: string } | null;
 };
 
@@ -505,6 +512,68 @@ describe("collectWorkingDelegatedChildCounts", () => {
     });
     expect(counts.get(parentKey)).toBeUndefined();
     expect(counts.get(keyOf(middle))).toBe(1);
+  });
+});
+
+describe("delegated working start", () => {
+  const startedAt = "2026-03-09T10:00:00.000Z";
+  const parentKey = keyOf(parentShell);
+  const workingChild: DelegateShell = {
+    environmentId: delegateEnv,
+    id: ThreadId.make("thread-child-working"),
+    lineage: { parentThreadId: delegateParentId, relationshipToParent: "subagent" },
+    latestRun: { startedAt, requestedAt: "2026-03-09T09:59:59.000Z", completedAt: null },
+    runtime: { status: "running" },
+  };
+
+  it("reads the start of a working child from its latest run", () => {
+    expect(delegatedChildWorkingStartedAt(workingChild)).toBe(startedAt);
+    expect(
+      delegatedChildWorkingStartedAt({ ...workingChild, runtime: { status: "completed" } }),
+    ).toBeNull();
+  });
+
+  it("counts the parent's timer from its earliest working child", () => {
+    const laterChild: DelegateShell = {
+      ...workingChild,
+      id: ThreadId.make("thread-child-later"),
+      latestRun: { startedAt: "2026-03-09T10:02:00.000Z", completedAt: null },
+    };
+    const starts = collectDelegatedWorkingStartedAt({
+      threads: [parentShell, laterChild, workingChild],
+      getKey: keyOf,
+    });
+    expect(starts.get(parentKey)).toBe(startedAt);
+  });
+
+  it("keeps a parent Working after its own run ended while a child works", () => {
+    expect(
+      resolveDelegatedWorkingStart({
+        ownWorking: false,
+        ownStartedAt: null,
+        delegatedStartedAt: startedAt,
+      }),
+    ).toEqual({ working: true, startedAt });
+  });
+
+  it("prefers the row's own run when it is the one working", () => {
+    expect(
+      resolveDelegatedWorkingStart({
+        ownWorking: true,
+        ownStartedAt: "2026-03-09T10:03:00.000Z",
+        delegatedStartedAt: startedAt,
+      }),
+    ).toEqual({ working: true, startedAt: "2026-03-09T10:03:00.000Z" });
+  });
+
+  it("stays idle without working children", () => {
+    expect(
+      resolveDelegatedWorkingStart({
+        ownWorking: false,
+        ownStartedAt: null,
+        delegatedStartedAt: null,
+      }),
+    ).toEqual({ working: false, startedAt: null });
   });
 });
 

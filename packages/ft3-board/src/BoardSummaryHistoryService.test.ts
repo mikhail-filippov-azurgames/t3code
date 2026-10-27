@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, ProviderInstanceId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -75,6 +75,17 @@ function dependencies(input: {
   );
 }
 
+function unavailableHistoryDependencies(error: OrchestratorMcpFailure) {
+  return Layer.mergeAll(
+    Layer.mock(BoardRepository.BoardRepository)({
+      getCardByExecutorThreadId: () => Effect.succeed(null),
+    }),
+    Layer.mock(TaskQueryService.TaskQueryService)({
+      history: () => Effect.fail(error),
+    }),
+  );
+}
+
 describe("BoardSummaryHistoryService", () => {
   it.effect("names the child by its card and fills the executor from the card", () => {
     const requestedThreadIds: Array<string> = [];
@@ -92,6 +103,48 @@ describe("BoardSummaryHistoryService", () => {
       Effect.provide(
         BoardSummaryHistoryService.layer.pipe(
           Layer.provide(dependencies({ records: [record()], card, requestedThreadIds })),
+        ),
+      ),
+    );
+  });
+
+  it.effect("returns an empty page for a parent thread the server has not persisted", () => {
+    return Effect.gen(function* () {
+      const history = yield* BoardSummaryHistoryService.BoardSummaryHistoryService;
+      const page = yield* history.history({ parentThreadId: ThreadId.make("draft-thread") });
+      assert.deepStrictEqual(page, { records: [], nextCursor: null });
+    }).pipe(
+      Effect.provide(
+        BoardSummaryHistoryService.layer.pipe(
+          Layer.provide(
+            unavailableHistoryDependencies(
+              new OrchestratorMcpFailure({
+                code: "thread_not_found",
+                message: "The calling thread was not found.",
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it.effect("keeps a real orchestration failure visible", () => {
+    return Effect.gen(function* () {
+      const history = yield* BoardSummaryHistoryService.BoardSummaryHistoryService;
+      const error = yield* history.history({ parentThreadId: coordinatorId }).pipe(Effect.flip);
+      assert.equal(error.code, "orchestration_error");
+    }).pipe(
+      Effect.provide(
+        BoardSummaryHistoryService.layer.pipe(
+          Layer.provide(
+            unavailableHistoryDependencies(
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: "The delegated task query could not be completed.",
+              }),
+            ),
+          ),
         ),
       ),
     );
