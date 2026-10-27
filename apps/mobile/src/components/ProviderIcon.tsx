@@ -14,6 +14,7 @@ import { getProviderClient } from "@t3tools/client-runtime/provider-clients";
 
 type ProviderIconProps = {
   readonly provider: string | null | undefined;
+  readonly displayName?: string | null | undefined;
   readonly iconUrl?: string | null | undefined;
   readonly size?: number;
 };
@@ -84,6 +85,13 @@ export function ProviderIcon(props: ProviderIconProps) {
     );
   }
   if (props.provider === "acpRegistry") {
+    if (props.displayName?.trim().toLowerCase() === "kimi") {
+      return (
+        <Svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+          <Path fill={mono} d="M4 3h4v7.2L15.4 3h5.1l-8.3 8.1L21 21h-5.2l-6.1-7.4L8 15.2V21H4V3Z" />
+        </Svg>
+      );
+    }
     return <AcpRegistryProviderIcon color={mono} iconUrl={props.iconUrl} size={size} />;
   }
 

@@ -570,6 +570,24 @@ New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-host/src/openContextDocs.test.ts`, and
 `apps/web/src/components/chat/OpenInPicker.test.ts`.
 
+## Markdown frontmatter in document previews
+
+A leading YAML block in a Markdown file is metadata, not prose. Passing it to
+the Markdown renderer turns the closing `---` into a setext heading and the
+`key: value` lines into a paragraph. `packages/ft3-web/src/files` splits the
+block off first and shows it as a monospaced block above the rendered body,
+which keeps the old fork's presentation for OpenContext documents and every
+other file opened in the files panel. Task-list offsets are shifted by the
+block length so a checkbox edit still lands on the original file.
+
+| Upstream file                                           | Connection                                                          | Reason                                          |
+| ------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------- |
+| `apps/web/src/components/files/FileMarkdownPreview.tsx` | delegate to `MarkdownDocumentPreview` from `@t3tools/ft3-web/files` | frontmatter rendering stays in the fork package |
+| `packages/ft3-web/package.json`                         | export `./files`                                                    | resolve the preview entry without a root barrel |
+
+New fork-owned tests: `packages/ft3-web/src/files/markdownFrontmatter.test.ts`
+and `packages/ft3-web/src/files/MarkdownDocumentPreview.browser.test.tsx`.
+
 ## Панель «Карточки/История» в чате и координаторская кнопка в шапке
 
 `packages/ft3-web/src/board/BoardChatSidePanel.tsx` — порт плавающей панели
@@ -630,6 +648,30 @@ stays visible instead of vanishing when the range changes.
 | `apps/web/src/components/chat/ProviderInstanceIcon.tsx`  | render `KimiIcon` for ACP instances whose agent id or display name is Kimi                                  | the driver kind alone is generic ACP                                       |
 | `apps/mobile/src/features/usage/usageProviders.ts`       | add kimi to the ordered kinds, labels and colors                                                            | keep the usage contract exhaustive                                         |
 | `packages/ft3-host/src/import/importProviderSettings.ts` | imported kimi instances get `displayName: "Kimi"`                                                           | V1 named the provider, the ACP driver does not                             |
+| `packages/shared/src/usageLimits.ts`                     | `LimitPool.displayName` carries the shared instance name of an `acpRegistry` pool                           | the driver kind is generic, so the limits card needs the instance name     |
+| `apps/web/src/components/usage/UsageLimitsPooled.tsx`    | section label falls back from `pool.displayName` to the driver label                                        | the limits card says Kimi, not ACP Registry                                |
+| `apps/mobile/src/features/usage/UsageLimitsPooled.tsx`   | the same fallback, and the pool name is passed to `ProviderIcon`                                            | mobile limits match web                                                    |
+| `apps/mobile/src/components/ProviderIcon.tsx`            | optional `displayName`; a Kimi ACP instance renders the Kimi glyph                                          | mobile has no `ProviderInstanceIcon`                                       |
 
 Fork-owned tests: `packages/ft3-kimi/src/usage.test.ts`, `apps/web/src/components/usage/usageProviders.test.ts`,
-and the updated `packages/ft3-host/src/import/importProviderSettings.test.ts`.
+and the updated `packages/ft3-host/src/import/importProviderSettings.test.ts`. The pool display name is
+covered in `packages/shared/src/usageLimits.test.ts`.
+
+## Kimi quota failures inside a successful ACP turn
+
+Kimi Code CLI 2.3.2 reports an exhausted 5-hour quota as a successful
+`session/prompt` result with `stopReason: "end_turn"` and no content; the real
+`APIProviderQuotaExhaustedError` only reaches Kimi's own `wire.jsonl`. The
+upstream ACP adapter therefore records a completed empty turn. `packages/ft3-kimi`
+now decorates the Kimi runtime: if an `end_turn` produced no message, thought,
+tool, plan, or compaction update, it reads the plan usage endpoint and fails the
+prompt with `Kimi: 5-hour limit exhausted, resets in …`. ACP has no extension
+point for this, so the registry adapter accepts one optional runtime decorator.
+
+| Upstream file                                          | Connection                                                                           | Reason                                                                |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
+| `packages/provider-acp-registry/src/server/adapter.ts` | `decorateRuntime` option is applied after `AcpSessionRuntime.layer` is built         | Kimi-specific turn settlement lives in the fork package               |
+| `packages/provider-acp-registry/src/server/driver.ts`  | `AcpRegistryDriver.create` takes an optional second options argument and forwards it | `packages/ft3-kimi` creates the driver directly                       |
+| `packages/provider-acp-registry/src/server.ts`         | re-exports the runtime service, ACP update/response types, and `makeAcpRequestError` | `ft3-kimi` does not depend on `provider-acp` or `effect-acp` directly |
+
+New fork-owned tests: `packages/ft3-kimi/src/promptFailure.test.ts`.

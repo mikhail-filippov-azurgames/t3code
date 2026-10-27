@@ -323,15 +323,14 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool, index) => {
         const windows = displayLimitWindows(pool);
+        const label = pool.displayName ?? DRIVER_LABEL[pool.driver] ?? pool.driver;
         return (
           <Fragment key={pool.driver}>
             {index === cursorPromptAt ? cursorPrompt : null}
             <View className="gap-3">
               <View className="flex-row items-center gap-2 px-1">
-                <ProviderIcon provider={pool.driver} size={18} />
-                <Text className="text-base font-t3-medium text-foreground">
-                  {DRIVER_LABEL[pool.driver] ?? pool.driver}
-                </Text>
+                <ProviderIcon provider={pool.driver} displayName={pool.displayName} size={18} />
+                <Text className="text-base font-t3-medium text-foreground">{label}</Text>
               </View>
               {windows.map((window) => {
                 const details =
@@ -443,7 +442,11 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
           <>
             <View className="gap-2">
               <View className="flex-row items-center gap-2">
-                <ProviderIcon provider={account.driver} size={24} />
+                <ProviderIcon
+                  provider={account.driver}
+                  displayName={account.displayName}
+                  size={24}
+                />
                 <Text className="flex-1 text-xl font-t3-bold text-foreground">
                   {account.displayName ?? DRIVER_LABEL[account.driver] ?? account.driver}
                 </Text>
