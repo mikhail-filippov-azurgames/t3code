@@ -783,6 +783,31 @@ describe("ft3 task toolkit through ft3-host", () => {
     }).pipe(Effect.provide(f.layer));
   });
 
+  it.effect("numbers history turns from stored summaries instead of provider turn ids", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO ft3_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES
+          (${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'turn:a',
+            '2026-10-25T01:00:00.000Z', 'Current summary', 'model', '["turn:a"]', 0,
+            'fingerprint:current', 'ready', NULL, 1, NULL, '2026-10-25T01:00:00.000Z'),
+          (${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'legacy:turn:0',
+            '2026-10-01T00:00:00.000Z', 'Historical summary', 'model', '["legacy:turn:0"]', 0,
+            'fingerprint:legacy', 'ready', NULL, 1, NULL, '2026-10-01T00:00:00.000Z')`;
+      const history = yield* decodeHistory(
+        (yield* call("task_summary_history", {})).structuredContent,
+      );
+      assert.deepStrictEqual(
+        history.records.map((record) => record.turnOrdinal),
+        [2, 1],
+      );
+    }).pipe(Effect.provide(f.layer));
+  });
+
   it.effect("keeps the child title, executor and state after provider turns are pruned", () => {
     const f = fixture();
     f.projections.get(f.aThreadId)!.providerTurns = [];
