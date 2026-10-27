@@ -7,6 +7,10 @@
       "types": "./src/BoardReactor.ts",
       "import": "./src/BoardReactor.ts"
     },
+    "./automation": {
+      "types": "./src/automation.ts",
+      "import": "./src/automation.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"

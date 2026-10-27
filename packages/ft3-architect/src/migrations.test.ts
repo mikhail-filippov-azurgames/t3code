@@ -153,6 +153,7 @@ describe("architect migrations through ft3-host", () => {
         [6, "Ft3DelegatedTaskSummaries"],
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
+        [9, "BoardRetention"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

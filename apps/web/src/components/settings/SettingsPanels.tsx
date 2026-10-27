@@ -110,6 +110,11 @@ import { canUpdateServer } from "../ServerUpdateAction";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
+import {
+  BoardRetentionSection,
+  CoordinatorBoardNudgeSection,
+  DeletedThreadPurgeSection,
+} from "@t3tools/ft3-web/settings";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: "Wait for the full response",
@@ -1447,6 +1452,11 @@ export function DiffsSettingsPanel() {
         />
         <PullRequestLinksOpenInAppSetting />
       </SettingsSection>
+
+      <CoordinatorBoardNudgeSection />
+      <BoardRetentionSection />
+      <DeletedThreadPurgeSection />
+
     </SettingsPageContainer>
   );
 }
