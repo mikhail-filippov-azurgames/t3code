@@ -174,12 +174,16 @@ Web-вкладка «Commit graph» в реестре `ft3-web` переноси
 `focusCommitId` из того же выбора, поэтому выбранный коммит подсвечен при
 возврате к графу. Патч коммита читает `vcs.getCommitDiff` (`git diff` против
 первого родителя, для корневого коммита — `git diff-tree --root`), а рендер
-остаётся в `ft3-web` на существующих компонентах диффа V2.
+остаётся в `ft3-web` на существующих компонентах диффа V2. Открытие панели
+диффа не сбрасывает этот выбор: `ChatView` вызывает
+`prepareDiffSelectionForPanelOpen`, который оставляет `{ kind: "commit" }` и
+переводит на branch-дифф только остальные выборы.
 
 | Upstream-файл                           | Правка                                                                                          | Зачем                                                |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `apps/web/src/diffPanelStore.ts`        | вариант `{ kind: "commit"; commitId }` и `selectCommit`                                         | хранить выбранный коммит рядом с остальными диффами  |
+| `apps/web/src/diffPanelStore.ts`        | вариант `{ kind: "commit"; commitId }`, `selectCommit`, `prepareDiffSelectionForPanelOpen`      | хранить выбранный коммит рядом с остальными диффами  |
 | `apps/web/src/components/DiffPanel.tsx` | импорт `CommitDiffPanel` из `@t3tools/ft3-web/commits`; ветка `diffSelection.kind === "commit"` | показать дифф коммита в штатной панели, без копии UI |
+| `apps/web/src/components/ChatView.tsx`  | `prepareDiffSelectionForPanelOpen` вместо безусловного `selectGitScope("branch")` при открытии  | не затирать выбор коммита из графа                   |
 | `packages/ft3-web/package.json`         | экспорт `./commits`                                                                             | точка подключения компонента панели                  |
 
 ## Pi: managed agent dir, local inference and executor-only instances (срез 1)
@@ -477,13 +481,13 @@ New fork-owned tests: `packages/ft3-web/src/usage/*.test.ts` and
 
 Upstream-правки — только подключение (каждая по одному вызову/пропу):
 
-| Upstream-файл                                   | Правка                                                                                                                  | Зачем                                                                 |
-| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `apps/web/src/components/Sidebar.tsx`           | вызов `useSidebarForests` (секции + pool + `sectionOfKey`); `rowsOf` маппит записи леса; строке и пину передаются `depth`/`decorations` | дерево дочерних тредов в новом сайдбаре                                  |
-| `apps/web/src/components/LegacySidebar.tsx`     | вызов `useSidebarForests` в `SidebarProjectItem` (pool — `sidebarThreads` проекта); проп `sidebarForests` в список; `depth`/`decorations` строке и пину | то же в легаси-сайдбаре                                                  |
-| `apps/web/src/components/sidebar/SidebarThreadRow.tsx` | опциональные пропы `depth` (отступ корня строки) и `decorations` (слот после заголовка в обоих вариантах)             | отступ вложенных строк и слот декораций                                  |
-| `apps/web/src/components/Sidebar.logic.ts`      | в `SidebarListItem`-ветку `thread` добавлены опциональные `thread`/`depth`/`descendantCount`                                   | записи леса несут свои shell (дочерние треды вне upstream `threadByKey`) |
-| `apps/web/vite.config.ts`                       | алиас `@betteroffice/fonts-cjk` через `NodeURL.fileURLToPath` вместо `new URL(...).pathname`                                   | `pathname` оставляет `%20`, Node отклоняет путь с пробелом — падали все unit-тесты apps/web |
+| Upstream-файл                                          | Правка                                                                                                                                                  | Зачем                                                                                       |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `apps/web/src/components/Sidebar.tsx`                  | вызов `useSidebarForests` (секции + pool); `rowsOf` маппит записи леса; строке и пину передаются `depth`/`decorations`                                  | дерево дочерних тредов в новом сайдбаре                                                     |
+| `apps/web/src/components/LegacySidebar.tsx`            | вызов `useSidebarForests` в `SidebarProjectItem` (pool — `sidebarThreads` проекта); проп `sidebarForests` в список; `depth`/`decorations` строке и пину | то же в легаси-сайдбаре                                                                     |
+| `apps/web/src/components/sidebar/SidebarThreadRow.tsx` | опциональные пропы `depth` (отступ корня строки) и `decorations` (слот после заголовка в обоих вариантах)                                               | отступ вложенных строк и слот декораций                                                     |
+| `apps/web/src/components/Sidebar.logic.ts`             | в `SidebarListItem`-ветку `thread` добавлены опциональные `thread`/`depth`/`descendantCount`                                                            | записи леса несут свои shell (дочерние треды вне upstream `threadByKey`)                    |
+| `apps/web/vite.config.ts`                              | алиас `@betteroffice/fonts-cjk` через `NodeURL.fileURLToPath` вместо `new URL(...).pathname`                                                            | `pathname` оставляет `%20`, Node отклоняет путь с пробелом — падали все unit-тесты apps/web |
 
 `packages/ft3-web/src/architect/ArchitectSidebarPin.tsx` (пакет ft3-web,
 не upstream): пин репортит активную связку в `architectBindingIndex` (лес
@@ -504,12 +508,12 @@ start. V2 had no native deleted-thread erasure, so the purge covers `orchestrati
 The settings live in the upstream server settings schema because V2's settings file rejects
 unknown keys; the UI sections are ft3-web components mounted once in General settings.
 
-| Upstream file | Connection | Reason |
-| --- | --- | --- |
-| `packages/contracts/src/settings.ts` | add `coordinatorBoardNudge*`, `boardArchiveAfterDays`, `boardDeleteArchivedAfterDays`, `deletedThreadPurgeAfterDays` schemas, defaults, and patch keys | keep retention and nudge configuration in the existing settings service instead of a parallel store |
-| `apps/web/src/components/settings/SettingsPanels.tsx` | import and render `CoordinatorBoardNudgeSection`, `BoardRetentionSection`, `DeletedThreadPurgeSection` in General | the only upstream mount for the ft3 settings UI |
-| `apps/web/src/components/settings/settingsSearch.ts` | add search items and anchor ids for the three sections | settings search must find the ft3 rows without touching core settings |
-| `packages/ft3-host/src/server.ts` | merge `@t3tools/ft3-board/automation` into `reactorLayer()` | start the three reactors beside the board, architect, and orchestration workers |
+| Upstream file                                         | Connection                                                                                                                                             | Reason                                                                                              |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `packages/contracts/src/settings.ts`                  | add `coordinatorBoardNudge*`, `boardArchiveAfterDays`, `boardDeleteArchivedAfterDays`, `deletedThreadPurgeAfterDays` schemas, defaults, and patch keys | keep retention and nudge configuration in the existing settings service instead of a parallel store |
+| `apps/web/src/components/settings/SettingsPanels.tsx` | import and render `CoordinatorBoardNudgeSection`, `BoardRetentionSection`, `DeletedThreadPurgeSection` in General                                      | the only upstream mount for the ft3 settings UI                                                     |
+| `apps/web/src/components/settings/settingsSearch.ts`  | add search items and anchor ids for the three sections                                                                                                 | settings search must find the ft3 rows without touching core settings                               |
+| `packages/ft3-host/src/server.ts`                     | merge `@t3tools/ft3-board/automation` into `reactorLayer()`                                                                                            | start the three reactors beside the board, architect, and orchestration workers                     |
 
 New fork-owned tests: `packages/ft3-board/src/BoardRetentionReactor.test.ts`,
 `CoordinatorBoardNudgeReactor.test.ts`, `DeletedThreadPurge.test.ts`, and
@@ -527,8 +531,8 @@ new `pi.bonsaiPreset.detect` and `pi.bonsaiPreset.apply` methods stay in the exi
 ft3-pi RPC group; detect is `orchestration:read`, apply is `orchestration:operate`.
 The settings UI lives in `packages/ft3-web/src/pi` and needs no new upstream contract.
 
-| Upstream file | Connection | Reason |
-| --- | --- | --- |
+| Upstream file                                                | Connection                                                                                            | Reason                                            |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | `apps/web/src/components/settings/ProviderSettingsPanel.tsx` | import `PiBonsaiPresetSection` from `@t3tools/ft3-web/pi`; render it in `setup` for `driver === "pi"` | the only upstream mount for the Bonsai preset row |
 
 New fork-owned tests: `packages/ft3-pi/src/inferenceServer.test.ts`,
@@ -550,16 +554,16 @@ package that already composes the server RPC group), so no core contracts or
 file preview can offer it, but it is filtered out of every other open-with menu
 and never becomes the globally preferred editor.
 
-| Upstream file | Connection | Reason |
-| --- | --- | --- |
-| `apps/web/src/components/ChatMarkdown.tsx` | import `useFt3ChatTextExtensions`; spread its remark plugins, pass its renderer and href predicate into `useChatMarkdownState`, and try the renderer in the anchor branch | one mount point for both chip kinds without copying link logic |
-| `apps/web/src/components/Icons.tsx` | add `TyporaIcon` | brand icon for the open-with row |
-| `apps/web/src/components/chat/OpenInPicker.tsx` | `allowTypora` prop filters and prefers the editor; export `resolveOpenInOptions` for its test | Typora belongs to Markdown preview only |
-| `apps/web/src/editorPreferences.ts` | `resolvePreferredEditor(..., allowTypora)`; `usePreferredEditor` takes the flag | a hidden editor must not be persisted as the default from another menu |
-| `apps/web/src/components/files/FilePreviewPanel.tsx` | pass `allowTypora={isMarkdown}` | the only surface that offers Typora |
-| `packages/contracts/src/editor.ts` | add the `typora` editor (`direct-path`) | editor id crosses to the server launcher |
-| `packages/shared/src/editor.ts` | resolve the Typora executable from its install paths on Windows and macOS | Typora is not on `PATH` and has no VS Code-style bundle layout |
-| `packages/shared/src/markdownPipeline.ts` | allow the `oc` and `ocl` href protocols in the sanitize schema | sanitize runs before the anchor renderer and would strip the document link |
+| Upstream file                                        | Connection                                                                                                                                                                | Reason                                                                     |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `apps/web/src/components/ChatMarkdown.tsx`           | import `useFt3ChatTextExtensions`; spread its remark plugins, pass its renderer and href predicate into `useChatMarkdownState`, and try the renderer in the anchor branch | one mount point for both chip kinds without copying link logic             |
+| `apps/web/src/components/Icons.tsx`                  | add `TyporaIcon`                                                                                                                                                          | brand icon for the open-with row                                           |
+| `apps/web/src/components/chat/OpenInPicker.tsx`      | `allowTypora` prop filters and prefers the editor; export `resolveOpenInOptions` for its test                                                                             | Typora belongs to Markdown preview only                                    |
+| `apps/web/src/editorPreferences.ts`                  | `resolvePreferredEditor(..., allowTypora)`; `usePreferredEditor` takes the flag                                                                                           | a hidden editor must not be persisted as the default from another menu     |
+| `apps/web/src/components/files/FilePreviewPanel.tsx` | pass `allowTypora={isMarkdown}`                                                                                                                                           | the only surface that offers Typora                                        |
+| `packages/contracts/src/editor.ts`                   | add the `typora` editor (`direct-path`)                                                                                                                                   | editor id crosses to the server launcher                                   |
+| `packages/shared/src/editor.ts`                      | resolve the Typora executable from its install paths on Windows and macOS                                                                                                 | Typora is not on `PATH` and has no VS Code-style bundle layout             |
+| `packages/shared/src/markdownPipeline.ts`            | allow the `oc` and `ocl` href protocols in the sanitize schema                                                                                                            | sanitize runs before the anchor renderer and would strip the document link |
 
 New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-web/src/chat/openContextDocLink.test.ts`,
@@ -598,11 +602,34 @@ actions» (Make Coordinator / Create task / Resend brief / Remove) и бейдж
 Coordinator с иконкой оркестратора. В контекстное меню треда старый форк
 эти действия не добавлял — здесь тоже нет.
 
-| Upstream file | Connection | Reason |
-| --- | --- | --- |
-| `apps/web/src/components/ChatView.tsx` | импорт `useFt3BoardChatPanel`; вызов хука и рендер рядом с таймлайном; проп `hasDelegationParent` (`parentSubagentThreadId !== null`) в `ChatHeader` | панель в чате и данные для меню координатора |
-| `apps/web/src/components/chat/ChatHeader.tsx` | импорт из `@t3tools/ft3-web/board-header`; `useBoardOrchestratorThreadKeys` + `resolveBoardThreadActionsControlModel`; бейдж Coordinator; `BoardThreadActionsControl` | координаторские действия в шапке, как в старом форке |
-| `apps/web/src/state/use-atom-command.ts` | раннер обёрнут в `useCallback` со стабильной идентичностью | портированная панель держит раннеры в зависимостях эффектов, как в старом форке; без мемоизации каждый рендер перезапускал бы эффекты |
-| `apps/web/src/state/use-atom-query-runner.ts` | то же: `useCallback` вокруг раннера | то же, для query-раннера истории выжимок и карточек |
-| `apps/server/src/ws.test.ts` | mock `BoardSummaryHistoryService` в обоих config-RPC слоях | RPC-слой требует новый ft3-сервис |
-| `packages/ft3-web/package.json` | экспорты `./board-chat` и `./board-header` | точки подключения панели и кнопок из upstream |
+| Upstream file                                 | Connection                                                                                                                                                            | Reason                                                                                                                                |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/web/src/components/ChatView.tsx`        | импорт `useFt3BoardChatPanel`; вызов хука и рендер рядом с таймлайном; проп `hasDelegationParent` (`parentSubagentThreadId !== null`) в `ChatHeader`                  | панель в чате и данные для меню координатора                                                                                          |
+| `apps/web/src/components/chat/ChatHeader.tsx` | импорт из `@t3tools/ft3-web/board-header`; `useBoardOrchestratorThreadKeys` + `resolveBoardThreadActionsControlModel`; бейдж Coordinator; `BoardThreadActionsControl` | координаторские действия в шапке, как в старом форке                                                                                  |
+| `apps/web/src/state/use-atom-command.ts`      | раннер обёрнут в `useCallback` со стабильной идентичностью                                                                                                            | портированная панель держит раннеры в зависимостях эффектов, как в старом форке; без мемоизации каждый рендер перезапускал бы эффекты |
+| `apps/web/src/state/use-atom-query-runner.ts` | то же: `useCallback` вокруг раннера                                                                                                                                   | то же, для query-раннера истории выжимок и карточек                                                                                   |
+| `apps/server/src/ws.test.ts`                  | mock `BoardSummaryHistoryService` в обоих config-RPC слоях                                                                                                            | RPC-слой требует новый ft3-сервис                                                                                                     |
+| `packages/ft3-web/package.json`               | экспорты `./board-chat` и `./board-header`                                                                                                                            | точки подключения панели и кнопок из upstream                                                                                         |
+
+## Kimi usage provider and provider visibility
+
+Kimi instances run on the upstream `acpRegistry` driver, so the snapshot alone cannot name or price
+them. `packages/ft3-kimi` now owns the Kimi identity (`displayName` "Kimi"), a scan usage reader over
+`<KIMI_CODE_HOME or ~/.kimi-code>/sessions/**/wire.jsonl` `usage.record` lines, and the existing plan
+limits. The usage page keeps a column for every provider whose scan reported a source, so a provider
+with no events in the selected window (Codex after its last turn, OpenCode on a failed 90-day scan)
+stays visible instead of vanishing when the range changes.
+
+| Upstream file                                            | Connection                                                                                                  | Reason                                                                     |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `packages/contracts/src/usage.ts`                        | add `"kimi"` to `UsageProviderKind`                                                                         | carry Kimi buckets through the usage contract                              |
+| `apps/server/src/provider/builtInDrivers.ts`             | `AcpRegistryDriver` joins `BUILT_IN_USAGE_DRIVERS` and `BuiltInUsageReadersEnv`                             | run the Kimi scan reader beside the other usage readers                    |
+| `apps/web/src/components/usage/usageProviders.ts`        | add the `kimi` presentation; `providersForWindow` unions source-backed providers with those that have usage | a zero-usage or failed provider must not disappear with the selected range |
+| `apps/web/src/components/usage/UsagePage.tsx`            | build the active provider set from `providersForWindow` and the summaries' sources                          | same reason                                                                |
+| `apps/web/src/components/Icons.tsx`                      | add `KimiIcon`                                                                                              | Kimi branding for Kimi ACP instances                                       |
+| `apps/web/src/components/chat/ProviderInstanceIcon.tsx`  | render `KimiIcon` for ACP instances whose agent id or display name is Kimi                                  | the driver kind alone is generic ACP                                       |
+| `apps/mobile/src/features/usage/usageProviders.ts`       | add kimi to the ordered kinds, labels and colors                                                            | keep the usage contract exhaustive                                         |
+| `packages/ft3-host/src/import/importProviderSettings.ts` | imported kimi instances get `displayName: "Kimi"`                                                           | V1 named the provider, the ACP driver does not                             |
+
+Fork-owned tests: `packages/ft3-kimi/src/usage.test.ts`, `apps/web/src/components/usage/usageProviders.test.ts`,
+and the updated `packages/ft3-host/src/import/importProviderSettings.test.ts`.

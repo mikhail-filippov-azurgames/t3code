@@ -94,26 +94,44 @@ export function orderSidebarSectionForest<TThread>(input: {
     parentByKey.set(key, parent);
   }
   const depthByKey = new Map<string, number>();
-  const resolveDepth = (key: string): number => {
-    const cached = depthByKey.get(key);
-    if (cached !== undefined) return cached;
-    const parent = parentByKey.get(key) ?? null;
-    const depth = parent === null ? 0 : Math.min(resolveDepth(parent) + 1, maxDepth);
-    depthByKey.set(key, depth);
-    return depth;
+  const depthOf = (key: string): number => {
+    const known = depthByKey.get(key);
+    if (known !== undefined) return known;
+    let depth = 0;
+    let cursor = parentByKey.get(key) ?? null;
+    for (let step = 0; step <= threads.length && cursor !== null; step += 1) {
+      depth += 1;
+      cursor = parentByKey.get(cursor) ?? null;
+    }
+    const capped = Math.min(depth, maxDepth);
+    depthByKey.set(key, capped);
+    return capped;
   };
-  const descendantCounts = new Map<string, number>();
-  const entryOf = (thread: TThread): SidebarForestEntry<TThread> => {
+  const childrenByKey = new Map<string, TThread[]>();
+  const roots: TThread[] = [];
+  for (const thread of threads) {
+    const parent = parentByKey.get(getKey(thread));
+    if (parent === null || parent === undefined) roots.push(thread);
+    else {
+      const siblings = childrenByKey.get(parent);
+      if (siblings) siblings.push(thread);
+      else childrenByKey.set(parent, [thread]);
+    }
+  }
+  const entries: SidebarForestEntry<TThread>[] = [];
+  const emit = (thread: TThread): void => {
     const key = getKey(thread);
-    return {
+    entries.push({
       key,
       thread,
-      depth: resolveDepth(key),
+      depth: depthOf(key),
       parentKey: parentByKey.get(key) ?? null,
       descendantCount: 0,
-    };
+    });
+    for (const child of childrenByKey.get(key) ?? []) emit(child);
   };
-  const entries = threads.map(entryOf);
+  for (const root of roots) emit(root);
+  const descendantCounts = new Map<string, number>();
   for (const entry of entries) {
     const seen = new Set([entry.key]);
     let cursor = entry.parentKey;
@@ -127,6 +145,84 @@ export function orderSidebarSectionForest<TThread>(input: {
     ...entry,
     descendantCount: descendantCounts.get(entry.key) ?? 0,
   }));
+}
+
+export function groupSidebarForestChildrenBySection<TThread>(input: {
+  readonly sections: readonly {
+    readonly section: string;
+    readonly threads: readonly TThread[];
+  }[];
+  readonly pool: readonly TThread[];
+  readonly getKey: (thread: TThread) => string;
+  readonly getParentKey: (thread: TThread) => string | null;
+}): ReadonlyMap<string, readonly TThread[]> {
+  const threadsBySection = new Map<string, TThread[]>();
+  const initialSectionByKey = new Map<string, string>();
+  const sectionThreadByKey = new Map<string, TThread>();
+  const poolByKey = new Map(input.pool.map((thread) => [input.getKey(thread), thread] as const));
+  for (const section of input.sections) {
+    threadsBySection.set(section.section, [...section.threads]);
+    for (const thread of section.threads) {
+      const key = input.getKey(thread);
+      initialSectionByKey.set(key, section.section);
+      sectionThreadByKey.set(key, thread);
+    }
+  }
+
+  const sectionByKey = new Map<string, string | null>();
+  const resolveSection = (
+    key: string,
+    visiting: ReadonlySet<string> = new Set(),
+  ): string | null => {
+    if (sectionByKey.has(key)) return sectionByKey.get(key) ?? null;
+    const fallback = initialSectionByKey.get(key) ?? null;
+    if (visiting.has(key)) return fallback;
+
+    const thread = poolByKey.get(key) ?? sectionThreadByKey.get(key);
+    if (thread === undefined) return fallback;
+    const parentKey = input.getParentKey(thread);
+    if (parentKey === null || parentKey === key) {
+      sectionByKey.set(key, fallback);
+      return fallback;
+    }
+
+    const nextVisiting = new Set(visiting);
+    nextVisiting.add(key);
+    const parentSection =
+      initialSectionByKey.has(parentKey) || poolByKey.has(parentKey)
+        ? resolveSection(parentKey, nextVisiting)
+        : null;
+    const resolved = parentSection ?? fallback;
+    sectionByKey.set(key, resolved);
+    return resolved;
+  };
+
+  for (const key of new Set([...initialSectionByKey.keys(), ...poolByKey.keys()])) {
+    resolveSection(key);
+  }
+
+  for (const [section, threads] of threadsBySection) {
+    threadsBySection.set(
+      section,
+      threads.filter((thread) => sectionByKey.get(input.getKey(thread)) === section),
+    );
+  }
+
+  const includedBySection = new Map<string, Set<string>>();
+  for (const [section, threads] of threadsBySection) {
+    includedBySection.set(section, new Set(threads.map(input.getKey)));
+  }
+  for (const [key, thread] of poolByKey) {
+    const section = sectionByKey.get(key);
+    if (section === null || section === undefined) continue;
+    const destination = threadsBySection.get(section);
+    const included = includedBySection.get(section);
+    if (destination === undefined || included === undefined || included.has(key)) continue;
+    destination.push(thread);
+    included.add(key);
+  }
+
+  return threadsBySection;
 }
 
 // Hide descendants of collapsed parents. Collapsed rows themselves stay

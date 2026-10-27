@@ -774,8 +774,41 @@ describe("ft3 task toolkit through ft3-host", () => {
         ["turn:a", "legacy:turn:0"],
       );
       assert.equal(history.records[0]!.summaryText, "Current summary");
+      assert.equal(history.records[0]!.childTitle, "Parser review");
+      assert.equal(history.records[0]!.executorProviderInstanceId, "codex");
+      assert.equal(history.records[0]!.executorModel, "gpt-5");
+      assert.equal(history.records[0]!.currentTurnState, "completed");
       assert.isTrue(history.records[1]!.stale);
       assert.isNull(history.nextCursor);
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("keeps the child title, executor and state after provider turns are pruned", () => {
+    const f = fixture();
+    f.projections.get(f.aThreadId)!.providerTurns = [];
+    const parent = f.projections.get(parentId)!;
+    parent.subagents = parent.subagents.map((task) =>
+      task.childThreadId === f.aThreadId ? { ...task, status: "running" } : task,
+    );
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO ft3_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES
+          (${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'turn:a',
+            '2026-10-25T01:00:00.000Z', 'Current summary', 'model', '["turn:a"]', 0,
+            'fingerprint:current', 'ready', NULL, 1, NULL, '2026-10-25T01:00:00.000Z')`;
+      const history = yield* decodeHistory(
+        (yield* call("task_summary_history", {})).structuredContent,
+      );
+      const entry = history.records[0]!;
+      assert.equal(entry.childTitle, "Parser review");
+      assert.equal(entry.executorProviderInstanceId, "codex");
+      assert.equal(entry.executorModel, "gpt-5");
+      assert.equal(entry.currentTurnState, "running");
+      assert.isNull(entry.currentTurnId);
     }).pipe(Effect.provide(f.layer));
   });
 

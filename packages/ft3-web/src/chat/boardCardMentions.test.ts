@@ -8,6 +8,7 @@ import {
 import { assert, describe, it } from "vite-plus/test";
 
 import {
+  boardCardMentionLookupKey,
   boardCardMentionTextSegments,
   boardCardMentionTokenFromInlineCode,
   clearBoardCardMentionCache,
@@ -126,6 +127,32 @@ describe("board card mentions", () => {
     const segments = boardCardMentionTextSegments("c0ffee42", new Map([["b71111aa", uniqueMatch]]));
 
     assert.deepEqual(segments, [{ text: "c0ffee42", match: null }]);
+  });
+
+  it("reads card- and card: prefixed ids the way an operator writes them", () => {
+    const full = String(card.cardId);
+    const fullMatch: BoardCardLookupMatch = {
+      ...uniqueMatch,
+      token: BoardCardLookupToken.make(full),
+    };
+
+    assert.deepEqual(
+      extractBoardCardLookupTokens(`Card card-:${full} and card-b71111aa.`).map(String),
+      [full, "b71111aa"],
+    );
+
+    const segments = boardCardMentionTextSegments(
+      `See card-:${full}.`,
+      new Map([[full, fullMatch]]),
+    );
+    assert.deepEqual(
+      segments.filter((segment) => segment.match !== null).map((segment) => segment.text),
+      [`card-:${full}`],
+    );
+
+    assert.equal(boardCardMentionLookupKey(` card-:${full} `), full);
+    assert.equal(boardCardMentionLookupKey(` card-${full} `), full);
+    assert.equal(boardCardMentionLookupKey(` ${full} `), full);
   });
 
   it("links only server-confirmed unique prefixes", () => {

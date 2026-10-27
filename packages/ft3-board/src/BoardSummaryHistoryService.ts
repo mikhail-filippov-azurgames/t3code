@@ -1,4 +1,4 @@
-import { EnvironmentId, ProviderInstanceId, ProviderSessionId } from "@t3tools/contracts";
+import { EnvironmentId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -7,6 +7,7 @@ import * as Layer from "effect/Layer";
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as TaskQueryService from "../../ft3-orchestration/src/TaskQueryService.ts";
 import { TaskSummaryHistoryResult } from "../../ft3-orchestration/src/contracts.ts";
+import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
 
 // TaskQueryService inspects only the capability set and the caller thread id.
@@ -37,17 +38,49 @@ export class BoardSummaryHistoryService extends Context.Service<
 
 const make = Effect.gen(function* () {
   const taskQueries = yield* TaskQueryService.TaskQueryService;
+  const cards = yield* BoardRepository.BoardRepository;
 
   return BoardSummaryHistoryService.of({
     history: Effect.fn("Ft3BoardSummaryHistoryService.history")(function* (input) {
       const { parentThreadId, ...page } = input;
-      return yield* taskQueries
+      const result = yield* taskQueries
         .history(summaryHistoryScope(parentThreadId, yield* Clock.currentTimeMillis), page)
         .pipe(
           Effect.mapError(
             (error) => new Contracts.BoardMcpFailure({ code: error.code, message: error.message }),
           ),
         );
+      // A delegated child thread can be hidden from the client, so the card is the human-facing name.
+      const records = yield* Effect.forEach(
+        result.records,
+        (record) =>
+          Effect.gen(function* () {
+            const card = yield* cards
+              .getCardByExecutorThreadId(ThreadId.make(record.childThreadId))
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new Contracts.BoardMcpFailure({
+                      code: "orchestration_error",
+                      message: `The board card for this task could not be read: ${error.operation}.`,
+                    }),
+                ),
+              );
+            if (card === null) return record;
+            const assignee = card.assignee;
+            return {
+              ...record,
+              childTitle: card.title,
+              executorRole: card.executorRole,
+              executorProviderInstanceId:
+                record.executorProviderInstanceId ??
+                (assignee === null ? null : String(assignee.instanceId)),
+              executorModel: record.executorModel ?? assignee?.model ?? null,
+            };
+          }),
+        { concurrency: 8 },
+      );
+      return { ...result, records };
     }),
   });
 });

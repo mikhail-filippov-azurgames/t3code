@@ -12,6 +12,7 @@ import { BoardCardMentionButton } from "./BoardCardMentionChip";
 import {
   EMPTY_BOARD_CARD_LOOKUP_MATCHES,
   EMPTY_BOARD_CARD_LOOKUP_TOKENS,
+  boardCardMentionLookupKey,
   extractBoardCardLookupTokens,
   resolveBoardCardMentions,
   subscribeBoardCardMentionCacheInvalidation,
@@ -145,7 +146,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
     () =>
       (input: Ft3MarkdownLinkInput): ReactNode | null => {
         if (input.href.startsWith(BOARD_CARD_MENTION_HREF_PREFIX)) {
-          const match = matches.get(input.label.trim().toLowerCase());
+          const match = matches.get(boardCardMentionLookupKey(input.label));
           if (match === undefined || threadRef === undefined) return null;
           return <BoardCardMentionButton match={match} onPin={openBoardCard} />;
         }

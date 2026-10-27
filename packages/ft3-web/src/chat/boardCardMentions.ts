@@ -2,7 +2,7 @@ import type { BoardCardLookupMatch, BoardCardLookupToken } from "@t3tools/ft3-bo
 import { BoardCardLookupToken as BoardCardLookupTokenSchema } from "@t3tools/ft3-board/contracts";
 
 const BOARD_CARD_TOKEN_PATTERN =
-  /(^|[^a-z0-9_-])((?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}))(?=$|[^a-z0-9_-])/giu;
+  /(^|[^a-z0-9_-])(card[-:]*)?((?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}))(?=$|[^a-z0-9_-])/giu;
 const INLINE_CODE_PATTERN = /(`+)([\s\S]*?)\1/g;
 const MARKDOWN_LINK_PATTERN = /!?\[[^\]]*\]\([^)]*\)/g;
 const MARKDOWN_REFERENCE_LINK_PATTERN = /!?\[[^\]]*\]\[[^\]]*\]/g;
@@ -27,13 +27,21 @@ const tokenMatchesInText = (
   const pattern = new RegExp(BOARD_CARD_TOKEN_PATTERN.source, BOARD_CARD_TOKEN_PATTERN.flags);
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    const token = match[2];
+    const token = match[3];
     if (token === undefined) continue;
     const start = match.index + match[1]!.length;
-    matches.push({ token, start, end: start + token.length });
+    matches.push({ token, start, end: start + (match[2]?.length ?? 0) + token.length });
   }
   return matches;
 };
+
+/** Chip lookup key for anchor text that may carry the optional `card-`/`card:` prefix. */
+export function boardCardMentionLookupKey(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/^card[-:]*/, "");
+}
 
 /** Returns a token only when the trimmed inline-code value is one card candidate. */
 export function boardCardMentionTokenFromInlineCode(text: string): string | null {
@@ -62,7 +70,10 @@ export function boardCardMentionTextSegments(
   for (const tokenMatch of tokenMatchesInText(text)) {
     appendPlain(text.slice(cursor, tokenMatch.start));
     const resolved = matches.get(tokenMatch.token.toLowerCase());
-    segments.push({ text: tokenMatch.token, match: resolved ?? null });
+    segments.push({
+      text: text.slice(tokenMatch.start, tokenMatch.end),
+      match: resolved ?? null,
+    });
     cursor = tokenMatch.end;
   }
   appendPlain(text.slice(cursor));
