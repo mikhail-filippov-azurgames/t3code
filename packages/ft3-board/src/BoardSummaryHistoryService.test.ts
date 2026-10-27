@@ -40,6 +40,7 @@ function record(
   return {
     childThreadId: executorId,
     sourceTurnId: TurnId.make("turn:one"),
+    turnOrdinal: 1,
     completedAt,
     summaryText: "Outcome: audit recorded.",
     summaryState: "ready",

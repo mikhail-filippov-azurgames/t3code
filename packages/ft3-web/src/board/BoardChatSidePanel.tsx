@@ -552,7 +552,7 @@ function HistoryEntry(props: {
         >
           <ChevronIcon className="size-3.5 shrink-0" aria-hidden="true" />
           <span className={cn("min-w-0", expanded ? "break-words" : "truncate")}>
-            {entry.child} · ход {entry.turn}
+            {entry.child} · ход {entry.turnOrdinal}
           </span>
         </button>
         {entry.stale ? (

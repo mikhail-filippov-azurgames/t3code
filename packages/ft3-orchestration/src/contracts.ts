@@ -152,6 +152,8 @@ export type TaskSummaryHistoryInput = typeof TaskSummaryHistoryInput.Type;
 const TaskSummaryHistoryRecord = Schema.Struct({
   childThreadId: ThreadId,
   sourceTurnId: TurnId,
+  /** One-based position of this summary among the child's turns, oldest first. */
+  turnOrdinal: PositiveInt,
   completedAt: IsoDateTime,
   summaryText: Schema.String,
   summaryState: Schema.Literals(["pending", "ready", "error"]),

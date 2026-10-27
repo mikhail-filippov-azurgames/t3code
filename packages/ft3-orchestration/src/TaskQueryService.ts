@@ -442,6 +442,7 @@ const make = Effect.gen(function* () {
         records.push({
           childThreadId: ThreadId.make(row.childThreadId),
           sourceTurnId: TurnId.make(row.sourceTurnId),
+          turnOrdinal: row.turnOrdinal,
           completedAt: row.completedAt,
           summaryText: safeSummaryText(row.summaryText),
           summaryState: row.summaryState,

@@ -16,7 +16,7 @@ export interface CoordinatorSummaryHistoryEntry {
   readonly id: string;
   readonly summaryText: string;
   readonly child: string;
-  readonly turn: string;
+  readonly turnOrdinal: number;
   readonly completedAt: string;
   readonly currentStatus: string;
   readonly summaryStatus: string;
@@ -65,7 +65,7 @@ export function toCoordinatorSummaryHistoryEntry(
     id: `${record.childThreadId}:${record.sourceTurnId}`,
     summaryText: summaryTextFor(record),
     child: record.childTitle ?? childLabel ?? String(record.childThreadId),
-    turn: String(record.sourceTurnId),
+    turnOrdinal: record.turnOrdinal,
     completedAt: record.completedAt,
     currentStatus:
       record.currentTurnState === null

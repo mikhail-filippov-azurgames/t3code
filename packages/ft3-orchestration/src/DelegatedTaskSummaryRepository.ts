@@ -36,6 +36,7 @@ export class DelegatedTaskSummaryRepositoryError extends Schema.TaggedError<Dele
 export interface SummaryHistoryRow {
   readonly childThreadId: string;
   readonly sourceTurnId: string;
+  readonly turnOrdinal: number;
   readonly completedAt: string;
   readonly summaryText: string;
   readonly summaryState: SummaryState;
@@ -216,6 +217,11 @@ const make = Effect.gen(function* () {
           sql<SummaryHistoryRow>`SELECT
             s.child_thread_id AS "childThreadId",
             s.source_turn_id AS "sourceTurnId",
+            (SELECT COUNT(*) FROM ft3_delegated_task_summaries s2
+              WHERE s2.child_thread_id = s.child_thread_id
+                AND (s2.completed_at < s.completed_at
+                  OR (s2.completed_at = s.completed_at
+                    AND s2.source_turn_id <= s.source_turn_id))) AS "turnOrdinal",
             s.completed_at AS "completedAt",
             s.summary_text AS "summaryText",
             s.state AS "summaryState",

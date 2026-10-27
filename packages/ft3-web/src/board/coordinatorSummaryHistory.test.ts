@@ -19,6 +19,7 @@ function record(overrides: Partial<HistoryRecord> = {}): HistoryRecord {
   return {
     childThreadId,
     sourceTurnId: TurnId.make("turn:one"),
+    turnOrdinal: 3,
     completedAt: "2026-10-26T10:38:33.024Z",
     summaryText: "Outcome: audit recorded.",
     summaryState: "ready" as const,
@@ -41,7 +42,7 @@ describe("toCoordinatorSummaryHistoryEntry", () => {
       id: "delegated-task:a8687f:turn:one",
       summaryText: "Outcome: audit recorded.",
       child: "Аудит новой графики Workshop",
-      turn: "turn:one",
+      turnOrdinal: 3,
       completedAt: "2026-10-26T10:38:33.024Z",
       currentStatus: "завершено",
       summaryStatus: "готова",
