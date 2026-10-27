@@ -2842,6 +2842,12 @@ const make = Effect.gen(function* () {
     }),
     sendToThread: Effect.fn("OrchestratorMcpService.sendToThread")(function* (scope, input) {
       const { parent, limits, target } = yield* loadScopedThread(scope, input.threadId);
+      if (target.thread.lineage?.parentThreadId != null) {
+        const delegatedText = delegationTextDecision({ task: input.message });
+        if (delegatedText._tag === "Denied") {
+          return yield* failure("capability_denied", delegatedText.reason);
+        }
+      }
       yield* assertLiveCallerForOtherThread(scope, parent, target);
       yield* resolveRuntimeMode(limits.runtimeMode, target.thread.runtimeMode);
       yield* resolveInteractionMode(limits.interactionMode, target.thread.interactionMode);

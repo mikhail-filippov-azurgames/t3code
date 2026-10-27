@@ -20,6 +20,7 @@ import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { projectDerivedText } from "../../ft3-delegation/src/secretTextPolicy.ts";
 import {
   decodeThreadHistoryCursor,
   selectRecentTimelineWindow,
@@ -238,11 +239,12 @@ const make = Effect.gen(function* () {
       taskId: task.id,
       childThreadId: child.id,
       role: null,
-      title: child.title.slice(0, 500),
+      title: projectDerivedText("read", child.title).slice(0, 500),
       latestStatus: pending ? "waiting" : statusForRun(latestRun?.status, task),
       latestTurnId: latestTurn?.id ?? null,
       updatedAt: DateTime.formatIso(child.updatedAt),
-      worktreePath: child.worktreePath,
+      worktreePath:
+        child.worktreePath === null ? null : projectDerivedText("read", child.worktreePath),
       summary,
       handoff: yield* handoffs.get(task.id),
     };
@@ -370,7 +372,7 @@ const make = Effect.gen(function* () {
           messages.push({
             id: item.messageId,
             role: item.type === "user_message" ? "user" : "assistant",
-            text: item.text,
+            text: projectDerivedText("read", item.text),
             ...(item.attachments === undefined ? {} : { attachments: item.attachments }),
             ...(item.type === "user_message" && item.context !== undefined
               ? { context: item.context }
@@ -391,8 +393,8 @@ const make = Effect.gen(function* () {
                   ? "approval"
                   : "tool",
             kind: item.type,
-            summary: item.title?.trim() || item.type,
-            payload,
+            summary: projectDerivedText("read", item.title?.trim() || item.type),
+            payload: projectReadTextValue(payload),
             turnId: item.providerTurnId,
             createdAt,
           });
@@ -477,5 +479,17 @@ const make = Effect.gen(function* () {
     }),
   });
 });
+
+/** Tool payloads carry tool names, commands and paths, so every nested string is redacted. */
+function projectReadTextValue<T>(value: T): T {
+  if (typeof value === "string") return projectDerivedText("read", value) as T;
+  if (Array.isArray(value)) return value.map(projectReadTextValue) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nested]) => [key, projectReadTextValue(nested)]),
+    ) as T;
+  }
+  return value;
+}
 
 export const layer = Layer.effect(TaskQueryService, make);
