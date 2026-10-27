@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { McpProviderSessions } from "@t3tools/provider-core/server/McpProviderSessions";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpServer } from "effect/ai";
@@ -67,6 +68,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadManagementService)({}),
   Layer.mock(ThreadSearch)({}),
   Layer.mock(VcsStatusBroadcaster)({}),
+  NodeSqliteClient.layer({ filename: ":memory:" }),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
@@ -114,7 +116,6 @@ it.effect("agent context matches the committed budget", () =>
         ),
       ),
     };
-
     expect(measured).toEqual(budget);
   }).pipe(
     Effect.provide(
