@@ -156,6 +156,8 @@ const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       "t3-citation",
       "t3-context",
       THREAD_LINK_PROTOCOL,
+      "oc",
+      "ocl",
     ],
     src: [...(defaultSchema.protocols?.src ?? []), "file", "t3-context"],
   },

@@ -20,6 +20,11 @@ export const reactorLayer = () =>
   Layer.mergeAll(
     boardReactorLayer(),
     Layer.unwrap(
+      Effect.promise(() => import("@t3tools/ft3-board/automation")).pipe(
+        Effect.map((module) => module.layerWorker()),
+      ),
+    ),
+    Layer.unwrap(
       Effect.promise(() => import("@t3tools/ft3-architect/reactor")).pipe(
         Effect.map((module) => module.layerWorker()),
       ),

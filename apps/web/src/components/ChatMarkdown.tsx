@@ -214,6 +214,7 @@ import {
   nodeToPlainText,
 } from "./chat/MarkdownCodeBlock.logic";
 import { reportMarkdownActionFailure } from "./chat/markdownActionFailure";
+import { useFt3ChatTextExtensions } from "@t3tools/ft3-web/chat";
 
 const isAssetNotFoundError = Schema.is(AssetWorkspaceAssetNotFoundError);
 
@@ -242,6 +243,12 @@ interface ChatMarkdownProps {
       `cwd`'s; without it a private repository's uploads load unauthenticated and 404. */
   sourceControlMedia?: boolean | undefined;
   headingLevelOffset?: number | undefined;
+  /** ft3 chips for `oc:` document and board-card mention links. */
+  renderMarkdownLink?:
+    | ((input: { readonly href: string; readonly label: string }) => ReactNode | null)
+    | undefined;
+  /** Extra href schemes ft3 chips understand, which react-markdown would blank. */
+  allowMarkdownHref?: ((href: string) => boolean) | undefined;
 }
 
 export interface ChatMarkdownContextReference {
@@ -450,6 +457,8 @@ function useChatMarkdownState({
   renderContextReference,
   headingLevelOffset = 0,
   sourceControlMedia = false,
+  renderMarkdownLink,
+  allowMarkdownHref,
 }: ChatMarkdownProps) {
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
@@ -640,6 +649,7 @@ function useChatMarkdownState({
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
     if (parseThreadLinkHref(href)) return href;
+    if (allowMarkdownHref?.(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   };
@@ -882,6 +892,7 @@ function useChatMarkdownState({
     fileLinkChip,
     sourceControlMedia,
     renderContextReference,
+    renderMarkdownLink,
     headingLevelOffset,
     imageBaseDir,
     workspaceMutationId,
@@ -1055,6 +1066,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       fileLinkChip,
       renderContextReference,
+      renderMarkdownLink,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
@@ -1078,6 +1090,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
       );
     }
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
+    const ft3Chip = renderMarkdownLink?.({
+      href: href ?? "",
+      label: hastPlainTextDeep(node) || nodeToPlainText(children),
+    });
+    if (ft3Chip) return ft3Chip;
     const fileLinkMeta = normalizedHref
       ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
         resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
@@ -1598,6 +1615,12 @@ function ChatMarkdown({
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
+  const ft3ChatText = useFt3ChatTextExtensions({
+    text,
+    threadRef: props.threadRef,
+    environmentId: props.threadRef?.environmentId ?? props.environmentId ?? null,
+    isStreaming: props.isStreaming === true,
+  });
   const {
     componentState,
     handleCopy,
@@ -1605,7 +1628,13 @@ function ChatMarkdown({
     markdownUrlTransform,
     localMediaPreview,
     closeLocalMediaPreview,
-  } = useChatMarkdownState({ text, inline, ...props });
+  } = useChatMarkdownState({
+    text,
+    inline,
+    ...props,
+    renderMarkdownLink: ft3ChatText.renderMarkdownLink,
+    allowMarkdownHref: ft3ChatText.isAllowedHref,
+  });
   const incrementalParsing =
     props.isStreaming === true &&
     extraRemarkPlugins.length === 0 &&
@@ -1617,6 +1646,7 @@ function ChatMarkdown({
   const remarkPlugins = [
     ...(lineBreaks ? CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS : CHAT_MARKDOWN_REMARK_PLUGINS),
     ...extraRemarkPlugins,
+    ...(ft3ChatText.remarkPlugins as NonNullable<ReactMarkdownOptions["remarkPlugins"]>),
     ...(incrementalParsing ? [createIncrementalMarkdownPlugin()] : []),
   ];
   if (componentState.mathEnabled)

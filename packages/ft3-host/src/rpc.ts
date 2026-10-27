@@ -35,6 +35,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import {
+  FT3_OPENCONTEXT_WS_METHODS,
+  openContextRpcHandlers,
+  openContextRpcScopes,
+  openContextRpcs,
+} from "./openContextRpc.ts";
 
 export { ArchitectService } from "@t3tools/ft3-architect/service";
 export { BoardService } from "@t3tools/ft3-board/service";
@@ -46,6 +52,7 @@ export const FT3_WS_METHODS = {
   ...FT3_ARCHITECT_WS_METHODS,
   ...FT3_PI_WS_METHODS,
   ...FT3_VCS_WS_METHODS,
+  ...FT3_OPENCONTEXT_WS_METHODS,
 } as const;
 
 const ft3RpcScopes = {
@@ -53,6 +60,7 @@ const ft3RpcScopes = {
   ...architectRpcScopes,
   ...piRpcScopes,
   ...ft3VcsRpcScopes,
+  ...openContextRpcScopes,
 } as const;
 
 export class Ft3RpcScopeAuthorization extends RpcMiddleware.Service<Ft3RpcScopeAuthorization>()(
@@ -86,6 +94,7 @@ export const group = RpcGroup.make(
   ...architectRpcs,
   ...piRpcs,
   ...ft3VcsRpcs,
+  ...openContextRpcs,
 ).middleware(Ft3RpcScopeAuthorization);
 
 export const handlers = {
@@ -93,6 +102,7 @@ export const handlers = {
   ...architectRpcHandlers,
   ...piRpcHandlers,
   ...ft3VcsRpcHandlers,
+  ...openContextRpcHandlers,
 };
 
 export const serviceLayer = Layer.mergeAll(

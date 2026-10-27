@@ -134,6 +134,25 @@ export const resolveEditorCommand = Effect.fn("editor.resolveEditorCommand")(fun
     }
   }
 
+  if (editor.id === "typora") {
+    // Typora ships a single executable rather than a VS Code-style bundle.
+    if (platform === "darwin") {
+      for (const root of [...(home ? [path.join(home, "Applications")] : []), "/Applications"]) {
+        candidates.push(path.join(root, "Typora.app/Contents/MacOS/Typora"));
+      }
+    } else if (platform === "win32") {
+      if (env.LOCALAPPDATA) {
+        candidates.push(
+          path.join(env.LOCALAPPDATA, "Programs/Typora/Typora.exe"),
+          path.join(env.LOCALAPPDATA, "Typora/Typora.exe"),
+        );
+      }
+      for (const root of [env.ProgramFiles, env["ProgramFiles(x86)"], env.ProgramW6432]) {
+        if (root) candidates.push(path.join(root, "Typora/Typora.exe"));
+      }
+    }
+  }
+
   if (preferBundle) candidates.push(...editor.commands);
   for (const candidate of candidates) {
     if (yield* isCommandAvailable(candidate, { env })) {

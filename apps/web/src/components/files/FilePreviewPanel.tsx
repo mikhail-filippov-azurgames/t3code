@@ -1262,6 +1262,7 @@ export default function FilePreviewPanel({
               openInCwdIsFile={file.isFile}
               compact
               revealFileManager={revealsInFileManager}
+              allowTypora={isMarkdown}
             />
           ) : null}
           {canToggleRendered && renderedMode ? (

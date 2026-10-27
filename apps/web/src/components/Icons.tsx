@@ -146,6 +146,13 @@ export const TraeIcon: Icon = (props) => (
   </svg>
 );
 
+export const TyporaIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 24 24" fill="none">
+    <rect x="2" y="2" width="20" height="20" rx="4" fill="#4778DE" />
+    <path d="M7.5 7.75h9M12 7.75v8.5" stroke="#FFFFFF" strokeWidth="2" strokeLinecap="round" />
+  </svg>
+);
+
 export const KiroIcon: Icon = (props) => (
   <svg {...props} viewBox="0 0 1200 1200" fill="none">
     <rect width="1200" height="1200" rx="260" fill="#9046FF" />

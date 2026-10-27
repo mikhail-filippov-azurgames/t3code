@@ -145,6 +145,12 @@ export const EDITORS = [
     launchStyle: "line-column",
     jetbrainsProductCode: "WS",
   },
+  {
+    id: "typora",
+    label: "Typora",
+    commands: ["typora"],
+    launchStyle: "direct-path",
+  },
   { id: "file-manager", label: "File Manager", commands: null, launchStyle: "direct-path" },
 ] as const satisfies ReadonlyArray<EditorDefinition>;
 
