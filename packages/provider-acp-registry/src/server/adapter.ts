@@ -80,6 +80,10 @@ export interface AcpRegistryAdapterV2Options {
   >;
   readonly continuationRequests?: Parameters<typeof makeAcpAdapterV2>[0]["continuationRequests"];
   readonly assertComplete?: Effect.Effect<void, EffectAcpErrors.AcpError>;
+  /** Agent-specific runtime behaviors, applied after the ACP session starts. */
+  readonly decorateRuntime?: (
+    runtime: AcpSessionRuntime.AcpSessionRuntime["Service"],
+  ) => AcpSessionRuntime.AcpSessionRuntime["Service"];
 }
 
 // Mistral Vibe's application rate-limit code, outside ACP.
@@ -169,9 +173,10 @@ function makeAcpRegistryRuntime(
           ),
         }),
       );
-      return yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
+      const runtime = yield* Effect.service(AcpSessionRuntime.AcpSessionRuntime).pipe(
         Effect.provide(context),
       );
+      return options.decorateRuntime === undefined ? runtime : options.decorateRuntime(runtime);
     });
 }
 
@@ -307,15 +312,29 @@ export type AcpRegistryAdapterV2DriverEnv =
   | ProviderEventLoggers.ProviderEventLoggers
   | ProviderHost.ProviderHost;
 
-export const AcpRegistryAdapterV2Driver: ProviderAdapterDriver<
+export interface AcpRegistryAdapterV2DriverCreateOptions {
+  readonly decorateRuntime?: AcpRegistryAdapterV2Options["decorateRuntime"];
+}
+
+type AcpRegistryAdapterV2DriverBase = ProviderAdapterDriver<
   AcpRegistrySettings,
   AcpRegistryAdapterV2DriverEnv
-> = {
+>;
+
+export const AcpRegistryAdapterV2Driver: AcpRegistryAdapterV2DriverBase & {
+  readonly create: (
+    input: Parameters<AcpRegistryAdapterV2DriverBase["create"]>[0],
+    options?: AcpRegistryAdapterV2DriverCreateOptions,
+  ) => ReturnType<AcpRegistryAdapterV2DriverBase["create"]>;
+} = {
   driverKind: ACP_REGISTRY_PROVIDER,
   configSchema: AcpRegistrySettings,
   defaultConfig: (): AcpRegistrySettings => DEFAULT_ACP_REGISTRY_SETTINGS,
   create: Effect.fn("AcpRegistryAdapterV2Driver.create")(
-    function* (input: ProviderAdapterDriverCreateInput<AcpRegistrySettings>) {
+    function* (
+      input: ProviderAdapterDriverCreateInput<AcpRegistrySettings>,
+      createOptions?: AcpRegistryAdapterV2DriverCreateOptions,
+    ) {
       const hostEnvironment = yield* HostProcess.Environment;
       const selfInvocation = yield* resolveSelfInvocation();
       const providerEventLoggers = yield* ProviderEventLoggers.ProviderEventLoggers;
@@ -326,6 +345,9 @@ export const AcpRegistryAdapterV2Driver: ProviderAdapterDriver<
         environment: yield* mergeProviderInstanceEnvironment(input.environment, hostEnvironment),
         selfInvocation,
         continuationRequests: yield* ProviderContinuationRequests.ProviderContinuationRequests,
+        ...(createOptions?.decorateRuntime === undefined
+          ? {}
+          : { decorateRuntime: createOptions.decorateRuntime }),
         nativeLogging: (threadId) =>
           makeNativeLogger({
             nativeEventLogger: providerEventLoggers.native,

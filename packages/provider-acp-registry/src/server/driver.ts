@@ -22,7 +22,11 @@ import * as Semaphore from "effect/Semaphore";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
-import { AcpRegistryAdapterV2Driver, type AcpRegistryAdapterV2DriverEnv } from "./adapter.ts";
+import {
+  AcpRegistryAdapterV2Driver,
+  type AcpRegistryAdapterV2DriverCreateOptions,
+  type AcpRegistryAdapterV2DriverEnv,
+} from "./adapter.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
@@ -447,7 +451,16 @@ export const checkAcpRegistryProviderReadiness = Effect.fn(
 
 export type AcpRegistryDriverEnv = AcpRegistryAdapterV2DriverEnv | ProviderHost.ProviderHost;
 
-export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryDriverEnv> = {
+export type AcpRegistryDriverCreateOptions = AcpRegistryAdapterV2DriverCreateOptions;
+
+type AcpRegistryDriverBase = ProviderDriver<AcpRegistrySettings, AcpRegistryDriverEnv>;
+
+export const AcpRegistryDriver: AcpRegistryDriverBase & {
+  readonly create: (
+    input: Parameters<AcpRegistryDriverBase["create"]>[0],
+    options?: AcpRegistryDriverCreateOptions,
+  ) => ReturnType<AcpRegistryDriverBase["create"]>;
+} = {
   driverKind: DRIVER_KIND,
   metadata: {
     displayName: "ACP Registry",
@@ -456,14 +469,10 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
   },
   configSchema: AcpRegistrySettings,
   defaultConfig: () => decodeSettings({}),
-  create: Effect.fn("AcpRegistryDriver.create")(function* ({
-    instanceId,
-    displayName,
-    accentColor,
-    environment,
-    enabled,
-    config,
-  }) {
+  create: Effect.fn("AcpRegistryDriver.create")(function* (
+    { instanceId, displayName, accentColor, environment, enabled, config },
+    createOptions?: AcpRegistryDriverCreateOptions,
+  ) {
     const catalog = yield* AcpRegistrySupport.AcpRegistryCatalog;
     const runtimeCoordinator = yield* Effect.serviceOption(
       AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator,
@@ -496,14 +505,17 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
       environment,
       hostEnvironment,
     );
-    const orchestrationAdapter = yield* AcpRegistryAdapterV2Driver.create({
-      instanceId,
-      displayName,
-      accentColor,
-      environment,
-      enabled,
-      config,
-    }).pipe(
+    const orchestrationAdapter = yield* AcpRegistryAdapterV2Driver.create(
+      {
+        instanceId,
+        displayName,
+        accentColor,
+        environment,
+        enabled,
+        config,
+      },
+      createOptions,
+    ).pipe(
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
