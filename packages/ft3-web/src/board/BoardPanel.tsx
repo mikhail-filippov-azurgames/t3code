@@ -8,13 +8,21 @@ import type {
 } from "@t3tools/ft3-board/contracts";
 import { ThreadId } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { Archive, Pin, RefreshCw } from "lucide-react";
+import {
+  Archive,
+  CircleAlertIcon,
+  OctagonAlertIcon,
+  Pin,
+  RefreshCw,
+  SquareKanbanIcon,
+} from "lucide-react";
 import { useContext, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useThreadShells } from "~/state/entities";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useEnvironmentQuery } from "~/state/query";
 import { Button } from "~/components/ui/button";
+import { Badge } from "~/components/ui/badge";
 import { Input } from "~/components/ui/input";
 import {
   Select,
@@ -29,6 +37,7 @@ import { BoardCardDialog } from "./BoardCardDialog.tsx";
 import { BoardCardDetailDialog } from "./BoardCardDetailDialog.tsx";
 import { BoardCardPinnedPanel, useBoardCardPins } from "./BoardCardPinnedPanel.tsx";
 import { addBoardCardPin } from "./boardCardPins.ts";
+import { BoardRoleIcon } from "./boardRoleIcons.tsx";
 import {
   BOARD_COLUMNS,
   BOARD_EXECUTOR_ROLES,
@@ -209,6 +218,15 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
     <div className="flex min-h-0 flex-1 flex-col overflow-auto" aria-label="Board">
       <div className="flex flex-wrap items-center gap-2 border-b p-3">
         <h2 className="mr-auto text-sm font-semibold">Board</h2>
+        <Button
+          variant="outline"
+          size="xs"
+          aria-label="Open full board"
+          onClick={() => void navigate({ to: "/board", search: {} })}
+        >
+          <SquareKanbanIcon />
+          Open board
+        </Button>
         <Button variant="ghost" size="icon-xs" aria-label="Refresh board" onClick={refresh}>
           <RefreshCw />
         </Button>
@@ -396,82 +414,117 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
         onRetry={refreshPinned}
         onSelect={(card) => setSelectedId(card.cardId)}
       />
-      <div className="grid flex-1 grid-cols-1 gap-3 p-3 sm:grid-cols-2">
-        {BOARD_COLUMNS.map((column) => (
-          <section
-            key={column.status}
-            aria-label={column.label}
-            className="flex min-w-0 flex-col gap-2 rounded-lg border bg-muted/20 p-2"
-          >
-            <h3 className="flex items-center gap-2 text-sm font-medium">
-              {column.label}
-              <span>{counts[column.status]}</span>
-              {archivedCounts[column.status] > 0 ? (
-                <span className="text-xs text-muted-foreground">
-                  {archivedCounts[column.status]} archived
-                </span>
-              ) : null}
-            </h3>
-            {(grouped.get(column.status) ?? []).map((card) => (
-              <article
-                key={card.cardId}
-                className="flex flex-col gap-2 rounded-md border bg-card p-2"
-              >
-                <Button
-                  size="sm-multiline"
-                  variant="ghost"
-                  onClick={() => setSelectedId(card.cardId)}
-                >
-                  {card.title}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  {boardExecutorRoleLabel(card.executorRole)}
-                  {card.archived ? " · Archived" : ""}
-                </p>
-                {shouldShowBoardReadiness(card.readiness) ? (
-                  <p className="text-xs text-warning-foreground">
-                    {boardReadinessLabel(card.readiness)}
-                    {card.readinessNote ? `: ${card.readinessNote}` : ""}
-                  </p>
+      <div className="grid flex-1 grid-cols-1 gap-3 p-3">
+        {BOARD_COLUMNS.map((column) => {
+          const columnCards = grouped.get(column.status) ?? [];
+          return (
+            <section
+              key={column.status}
+              aria-label={column.label}
+              className="flex min-w-0 flex-col gap-2 rounded-lg border bg-muted/20 p-2"
+            >
+              <h3 className="flex items-center gap-2 text-sm font-medium">
+                {column.label}
+                <span>{counts[column.status]}</span>
+                {archivedCounts[column.status] > 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    {archivedCounts[column.status]} archived
+                  </span>
                 ) : null}
-                <div className="flex flex-wrap gap-1">
-                  {isCardStartable(card) ? (
+              </h3>
+              {columnCards.map((card) => (
+                <article
+                  key={card.cardId}
+                  className="flex min-w-0 flex-col gap-1 rounded-md border bg-card px-2.5 py-2"
+                >
+                  <button
+                    type="button"
+                    className="min-w-0 truncate text-left text-xs font-medium hover:text-accent-foreground"
+                    onClick={() => setSelectedId(card.cardId)}
+                  >
+                    {card.title}
+                  </button>
+                  <span className="flex min-w-0 flex-wrap items-center gap-1 text-[10px] text-muted-foreground">
+                    <span className="inline-flex items-center gap-1">
+                      <BoardRoleIcon role={card.executorRole} />
+                      {boardExecutorRoleLabel(card.executorRole)}
+                    </span>
+                    {card.assignee !== null ? <span>· {card.assignee.model}</span> : null}
+                  </span>
+                  <span className="flex min-w-0 flex-wrap items-center gap-1">
+                    {shouldShowBoardReadiness(card.readiness) ? (
+                      <Badge
+                        variant={card.readiness === "needs_human" ? "destructive" : "outline"}
+                        size="sm"
+                      >
+                        {card.readiness === "needs_human" ? (
+                          <CircleAlertIcon aria-hidden="true" className="size-3" />
+                        ) : (
+                          <OctagonAlertIcon aria-hidden="true" className="size-3" />
+                        )}
+                        {boardReadinessLabel(card.readiness)}
+                      </Badge>
+                    ) : null}
+                    {card.failureStreak >= 3 ? (
+                      <Badge variant="destructive" size="sm">
+                        needs human
+                      </Badge>
+                    ) : null}
+                    {card.archived ? (
+                      <Badge variant="outline" size="sm">
+                        archived
+                      </Badge>
+                    ) : null}
+                    {isCardStartable(card) ? (
+                      <Badge variant="secondary" size="sm">
+                        ready
+                      </Badge>
+                    ) : null}
+                    {shouldShowBoardReadiness(card.readiness) && card.readinessNote !== null ? (
+                      <span className="w-full whitespace-pre-line line-clamp-3 break-words text-[10px] text-muted-foreground">
+                        {card.readinessNote}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="flex flex-wrap gap-1.5 pt-0.5">
+                    {isCardStartable(card) ? (
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() =>
+                          void runAction(() =>
+                            start({
+                              environmentId: threadRef.environmentId,
+                              input: { cardId: card.cardId },
+                            }),
+                          )
+                        }
+                      >
+                        Start
+                      </Button>
+                    ) : null}
                     <Button
                       size="xs"
-                      variant="outline"
-                      disabled={busy}
+                      variant="ghost"
+                      aria-label={`Pin ${card.title}`}
+                      disabled={pins.includes(card.cardId)}
                       onClick={() =>
-                        void runAction(() =>
-                          start({
-                            environmentId: threadRef.environmentId,
-                            input: { cardId: card.cardId },
-                          }),
-                        )
+                        addBoardCardPin(threadRef.environmentId, threadRef.threadId, card.cardId)
                       }
                     >
-                      Start
+                      <Pin />
+                      Pin
                     </Button>
-                  ) : null}
-                  <Button
-                    size="xs"
-                    variant="ghost"
-                    aria-label={`Pin ${card.title}`}
-                    disabled={pins.includes(card.cardId)}
-                    onClick={() =>
-                      addBoardCardPin(threadRef.environmentId, threadRef.threadId, card.cardId)
-                    }
-                  >
-                    <Pin />
-                    Pin
-                  </Button>
-                </div>
-              </article>
-            ))}
-            {(grouped.get(column.status)?.length ?? 0) === 0 ? (
-              <p className="text-xs text-muted-foreground">No cards</p>
-            ) : null}
-          </section>
-        ))}
+                  </span>
+                </article>
+              ))}
+              {columnCards.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No cards</p>
+              ) : null}
+            </section>
+          );
+        })}
       </div>
       {createOpen ? (
         <BoardCardDialog
