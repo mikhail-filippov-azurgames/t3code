@@ -93,7 +93,7 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
+import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersForWindow } from "./usageProviders";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
@@ -632,7 +632,15 @@ function UsageOverview({
   const loadingProviders = new Set(
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
-  const providersWithData = new Set(providersWithUsage(merged.providers));
+  const providersWithData = new Set(
+    providersForWindow(
+      merged.providers,
+      selectedEnvironments.flatMap(
+        (environment) =>
+          environment.summary?.sources.map((source) => source.fingerprint.provider) ?? [],
+      ),
+    ),
+  );
   // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
   // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
