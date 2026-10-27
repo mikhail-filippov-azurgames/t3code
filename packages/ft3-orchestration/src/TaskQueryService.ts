@@ -217,8 +217,12 @@ const make = Effect.gen(function* () {
       .pipe(Effect.mapError(unavailable));
     let summary: TaskSummary | null = null;
     if (summaryRow !== null) {
-      const watermark = yield* summaries
-        .currentWatermark(String(child.id))
+      const newerWork = yield* summaries
+        .hasNewerWork({
+          childThreadId: String(child.id),
+          sourceTurnId: summaryRow.sourceTurnId,
+          completedAt: summaryRow.completedAt,
+        })
         .pipe(Effect.mapError(unavailable));
       summary = {
         text: summaryRow.text,
@@ -227,8 +231,7 @@ const make = Effect.gen(function* () {
         watermark: summaryRow.watermark,
         stale:
           summaryRow.state !== "ready" ||
-          summaryRow.sourceTurnId !== (latestTurn === undefined ? "" : String(latestTurn.id)) ||
-          summaryRow.watermark < watermark ||
+          newerWork ||
           pending ||
           ACTIVE_THREAD_STATUSES.has(child.status),
         state: summaryRow.state,
@@ -460,9 +463,7 @@ const make = Effect.gen(function* () {
             shell === null || shell.deletedAt !== null ? null : String(shell.providerInstanceId),
           executorModel:
             shell === null || shell.deletedAt !== null ? null : shell.modelSelection.model,
-          stale:
-            row.sourceTurnId !== (row.currentTurnId ?? "") ||
-            row.summaryWatermark !== row.currentWatermark,
+          stale: row.newerWorkStarted === 1,
         });
       }
       const last = page.at(-1);
