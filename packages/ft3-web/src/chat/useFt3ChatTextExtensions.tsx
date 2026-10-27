@@ -1,11 +1,21 @@
 import { AsyncResult } from "effect/reactivity";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { AuthFilesystemReadScope } from "@t3tools/contracts";
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import type { BoardCardLookupMatch } from "@t3tools/ft3-board/contracts";
+import {
+  claimWorkspaceBasenameLookup,
+  stripRepeatedWorkspacePrefix,
+  WORKSPACE_BASENAME_LOOKUP_LIMIT,
+} from "@t3tools/client-runtime/workspace-basename-lookup";
 
 import { useDiffPanelStore } from "~/diffPanelStore";
+import { useRenderedAppearance } from "~/hooks/useTheme";
+import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "~/markdown-links";
 import { useRightPanelStore } from "~/rightPanelStore";
+import { projectEnvironment } from "~/state/projects";
+import { readEnvironmentScope } from "~/state/session";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { addBoardCardPin } from "../board/boardCardPins";
 import { boardEnvironment } from "../board/state";
@@ -32,6 +42,16 @@ import {
   resolveCommitMentions,
 } from "./commitMentions";
 import { COMMIT_MENTION_HREF_PREFIX, remarkLinkifyCommitMentions } from "./commitMentionsPlugin";
+import {
+  cacheWorkspaceMatch,
+  normalizeWorkspaceRelativePath,
+  readCachedWorkspaceMatch,
+  resolveWorkspaceRelativeMatch,
+  workspaceLookupQuery,
+  workspaceMatchCacheKey,
+  workspaceParentDirectory,
+} from "./chatFileLink";
+import { MissingFileLinkChip } from "./MissingFileLinkChip";
 import { OpenContextDocChip } from "./OpenContextDocChip";
 import { parseOpenContextDocHref } from "./openContextDocLink";
 import { openContextEnvironment, toOpenContextDocResolveResult } from "./openContextState";
@@ -41,13 +61,23 @@ export interface Ft3MarkdownLinkInput {
   readonly label: string;
 }
 
+export interface Ft3OpenFileLinkInput {
+  readonly meta: MarkdownFileLinkMeta;
+  readonly panelPath: string;
+  readonly line: number | undefined;
+  /** Upstream's own open; used whenever this resolver cannot conclude. */
+  readonly fallback: () => void;
+}
+
 export interface Ft3ChatTextExtensions {
   /** Remark plugins for upstream `ChatMarkdown`'s `extraRemarkPlugins` slot. */
   readonly remarkPlugins: ReadonlyArray<unknown>;
-  /** Returns a chip for an `oc:` document or a board-card mention, else null. */
+  /** Returns a chip for an `oc:` document, a board-card mention, or a missing file. */
   readonly renderMarkdownLink: ((input: Ft3MarkdownLinkInput) => ReactNode | null) | undefined;
   /** True for hrefs whose scheme react-markdown would otherwise blank. */
   readonly isAllowedHref: (href: string) => boolean;
+  /** Resolves a workspace-relative file link, including nested suffixes and missing targets. */
+  readonly openFileLink: ((input: Ft3OpenFileLinkInput) => Promise<void>) | undefined;
 }
 
 export interface Ft3ChatTextOptions {
@@ -56,9 +86,11 @@ export interface Ft3ChatTextOptions {
   readonly threadRef: ScopedThreadRef | undefined;
   readonly environmentId: EnvironmentId | null;
   readonly isStreaming: boolean;
+  readonly fileLinkBaseDir?: string | undefined;
 }
 
 const EMPTY_REMARK_PLUGINS: ReadonlyArray<unknown> = [];
+const EMPTY_MISSING_FILE_TARGETS: ReadonlySet<string> = new Set();
 
 /**
  * Board-card mentions and OpenContext document links, resolved per message.
@@ -66,7 +98,7 @@ const EMPTY_REMARK_PLUGINS: ReadonlyArray<unknown> = [];
  * that upstream markdown only has to call.
  */
 export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTextExtensions {
-  const { text, cwd, threadRef, environmentId, isStreaming } = options;
+  const { text, cwd, threadRef, environmentId, isStreaming, fileLinkBaseDir } = options;
   const resolveBoardCards = useAtomQueryRunner(boardEnvironment.resolve, {
     reportFailure: false,
   });
@@ -76,6 +108,13 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
   const resolveOpenContextDocQuery = useAtomQueryRunner(openContextEnvironment.resolveDoc, {
     reportFailure: false,
   });
+  const searchProjectEntries = useAtomQueryRunner(projectEnvironment.searchEntries, {
+    reportFailure: false,
+  });
+  const listProjectEntries = useAtomQueryRunner(projectEnvironment.listEntries, {
+    reportFailure: false,
+  });
+  const resolvedTheme = useRenderedAppearance();
 
   const threadId = threadRef?.threadId ?? null;
   const lookupText = isStreaming || threadId === null || environmentId === null ? null : text;
@@ -221,6 +260,129 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
     [threadRef],
   );
 
+  const fileLinkScope = [
+    text,
+    cwd,
+    threadRef?.environmentId,
+    threadRef?.threadId,
+    environmentId,
+    fileLinkBaseDir,
+  ].join("\u0000");
+  const [missingFileTargets, setMissingFileTargets] = useState<ReadonlySet<string>>(
+    EMPTY_MISSING_FILE_TARGETS,
+  );
+  const [missingFileScope, setMissingFileScope] = useState(fileLinkScope);
+  if (missingFileScope !== fileLinkScope) {
+    setMissingFileScope(fileLinkScope);
+    setMissingFileTargets(EMPTY_MISSING_FILE_TARGETS);
+  }
+
+  const markFileMissing = useCallback((targetPath: string) => {
+    setMissingFileTargets((current) => {
+      if (current.has(targetPath)) return current;
+      const next = new Set(current);
+      next.add(targetPath);
+      return next;
+    });
+  }, []);
+
+  const findWorkspaceMatchResolution = useCallback(
+    async (workspaceRelativePath: string) => {
+      if (
+        cwd === undefined ||
+        environmentId === null ||
+        !readEnvironmentScope(environmentId, AuthFilesystemReadScope)
+      ) {
+        return null;
+      }
+      const cacheKey = workspaceMatchCacheKey(cwd, workspaceRelativePath);
+      const cached = readCachedWorkspaceMatch(cacheKey);
+      if (cached.hit) {
+        return cached.value !== null
+          ? ({ kind: "resolved", path: cached.value } as const)
+          : ({ kind: "none" } as const);
+      }
+      const result = await searchProjectEntries({
+        environmentId,
+        input: {
+          cwd,
+          query: workspaceLookupQuery(workspaceRelativePath),
+          limit: WORKSPACE_BASENAME_LOOKUP_LIMIT,
+          kind: "file",
+        },
+      });
+      if (!AsyncResult.isSuccess(result)) return null;
+      const resolution = resolveWorkspaceRelativeMatch(workspaceRelativePath, result.value.entries);
+      // An ambiguous hit is not a stable answer to cache: a later index change
+      // can make it resolvable.
+      if (resolution.kind !== "ambiguous") {
+        cacheWorkspaceMatch(cacheKey, resolution.kind === "resolved" ? resolution.path : null);
+      }
+      return resolution;
+    },
+    [cwd, environmentId, searchProjectEntries],
+  );
+
+  const findWorkspaceEntryKind = useCallback(
+    async (
+      workspaceRelativePath: string,
+    ): Promise<"file" | "directory" | "missing" | "unknown"> => {
+      if (cwd === undefined || environmentId === null) return "unknown";
+      const parent = workspaceParentDirectory(workspaceRelativePath);
+      const result = await listProjectEntries({
+        environmentId,
+        input: { cwd, ...(parent.length > 0 ? { directoryPath: parent } : {}) },
+      });
+      if (!AsyncResult.isSuccess(result)) return "unknown";
+      const target = normalizeWorkspaceRelativePath(workspaceRelativePath);
+      const entry = result.value.entries.find(
+        (candidate) => normalizeWorkspaceRelativePath(candidate.path) === target,
+      );
+      return entry?.kind ?? "missing";
+    },
+    [cwd, environmentId, listProjectEntries],
+  );
+
+  const openFileLink = useCallback(
+    async (input: Ft3OpenFileLinkInput) => {
+      const { meta, panelPath, line, fallback } = input;
+      const lookupPath = meta.workspaceLookupPath;
+      if (
+        threadRef === undefined ||
+        lookupPath === null ||
+        (cwd !== undefined && stripRepeatedWorkspacePrefix(lookupPath, cwd) !== null)
+      ) {
+        fallback();
+        return;
+      }
+      const isLatestLookup = claimWorkspaceBasenameLookup();
+      const openAt = (path: string) =>
+        useRightPanelStore.getState().openFile(threadRef, path, line);
+
+      const resolution = await findWorkspaceMatchResolution(lookupPath);
+      if (!isLatestLookup()) return;
+      if (resolution === null) return;
+      if (resolution.kind === "resolved") {
+        openAt(resolution.path);
+        return;
+      }
+      if (resolution.kind === "ambiguous") return;
+
+      const kind = await findWorkspaceEntryKind(lookupPath);
+      if (!isLatestLookup()) return;
+      if (kind === "file" || kind === "directory") {
+        openAt(panelPath);
+        return;
+      }
+      if (kind === "missing") {
+        markFileMissing(meta.targetPath);
+        return;
+      }
+      fallback();
+    },
+    [cwd, findWorkspaceEntryKind, findWorkspaceMatchResolution, markFileMissing, threadRef],
+  );
+
   const renderMarkdownLink = useMemo(
     () =>
       (input: Ft3MarkdownLinkInput): ReactNode | null => {
@@ -240,20 +402,46 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
           );
         }
         const doc = parseOpenContextDocHref(input.href);
-        if (doc === null) return null;
+        if (doc !== null) {
+          return (
+            <OpenContextDocChip
+              href={doc.href}
+              stableId={doc.stableId}
+              resolvable={doc.scheme === "oc"}
+              label={input.label.trim() || doc.stableId}
+              canOpenDocument={threadRef !== undefined}
+              resolveDoc={resolveDoc}
+              onOpenDocument={openDocumentInPanel}
+            />
+          );
+        }
+        if (missingFileTargets.size === 0 || cwd === undefined) return null;
+        const meta = resolveMarkdownFileLinkMeta(input.href, cwd, fileLinkBaseDir ?? cwd);
+        if (meta === null || !missingFileTargets.has(meta.targetPath)) return null;
         return (
-          <OpenContextDocChip
-            href={doc.href}
-            stableId={doc.stableId}
-            resolvable={doc.scheme === "oc"}
-            label={input.label.trim() || doc.stableId}
-            canOpenDocument={threadRef !== undefined}
-            resolveDoc={resolveDoc}
-            onOpenDocument={openDocumentInPanel}
+          <MissingFileLinkChip
+            environmentId={environmentId}
+            targetPath={meta.targetPath}
+            iconPath={meta.filePath}
+            label={meta.line !== undefined ? `${meta.basename} · L${meta.line}` : meta.basename}
+            copyMarkdown={`[${meta.basename}](${input.href})`}
+            theme={resolvedTheme}
           />
         );
       },
-    [matches, openBoardCard, openCommit, openDocumentInPanel, resolveDoc, threadRef],
+    [
+      cwd,
+      environmentId,
+      fileLinkBaseDir,
+      matches,
+      missingFileTargets,
+      openBoardCard,
+      openCommit,
+      openDocumentInPanel,
+      resolveDoc,
+      resolvedTheme,
+      threadRef,
+    ],
   );
 
   const remarkPlugins = useMemo(() => {
@@ -265,5 +453,5 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
 
   const isAllowedHref = useCallback((href: string) => parseOpenContextDocHref(href) !== null, []);
 
-  return { remarkPlugins, renderMarkdownLink, isAllowedHref };
+  return { remarkPlugins, renderMarkdownLink, isAllowedHref, openFileLink };
 }

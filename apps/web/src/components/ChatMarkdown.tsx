@@ -518,6 +518,7 @@ function useChatMarkdownState({
     threadRef,
     environmentId: threadRef?.environmentId ?? explicitEnvironmentId ?? null,
     isStreaming,
+    fileLinkBaseDir: imageBaseDir,
   });
   const ft3RenderMarkdownLink = renderMarkdownLink ?? ft3ChatText.renderMarkdownLink;
   const resolvedTheme = useRenderedAppearance();
@@ -882,7 +883,18 @@ function useChatMarkdownState({
         resolveCopyPaths={async () =>
           markdownFileCopyPaths(fileLinkMeta, await resolveHostPath(), cwd)
         }
-        onOpenInPanel={(path) => openFileInPanel(fileLinkMeta, path)}
+        onOpenInPanel={(path) => {
+          if (ft3ChatText.openFileLink === undefined) {
+            openFileInPanel(fileLinkMeta, path);
+            return;
+          }
+          void ft3ChatText.openFileLink({
+            meta: fileLinkMeta,
+            panelPath: path,
+            line: fileLinkMeta.line,
+            fallback: () => openFileInPanel(fileLinkMeta, path),
+          });
+        }}
         onOpenMedia={
           threadRef && canPreviewMedia
             ? () => openMarkdownMedia(mediaPath, fileLinkMeta.filePath)

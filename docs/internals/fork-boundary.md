@@ -604,9 +604,12 @@ temporary config files, and command mocks; no llama-server or Pi process is spaw
 resolved through `board.resolve`), commit chips (7-40 hex tokens resolved through
 `vcs.resolveCommitMentions`) and OpenContext document chips (`oc://doc/<id>` and
 `ocl://doc/<id>`). One hook, `useFt3ChatTextExtensions`, supplies the remark
-plugin, the chip renderer, and the extra allowed href schemes; upstream
-`ChatMarkdown` only calls it and gives it two slots plus `cwd`, the first
-repository a commit SHA is resolved against. A chip click reuses the commit
+plugin, the chip renderer, the extra allowed href schemes, and the workspace
+file-link opener; upstream `ChatMarkdown` only calls it and gives it its slots
+plus `cwd` and `imageBaseDir`, the first repository a commit SHA is resolved
+against. Relative file links resolve through the workspace index by basename or
+nested suffix, and only a completed parent listing may turn a chip into the red
+"Not found" state; an ambiguous hit or a failed query stays a plain chip. A chip click reuses the commit
 graph selection path (`selectCommitFromGraph`): the diff panel opens on
 `{ kind: "commit" }`, so the graph highlights the same commit. OpenContext
 resolution is a new `openContext.resolveDoc` method in the existing ft3-host RPC
@@ -623,17 +626,17 @@ editor list so the Markdown file preview can offer it. Other open-with menus
 filter it and use the package preference fallback, while the upstream
 `usePreferredEditor` hook stays unchanged.
 
-| Upstream file                                        | Connection                                                                                                                                                                        | Reason                                                                     |
-| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `apps/web/src/components/ChatMarkdown.tsx`           | import `useFt3ChatTextExtensions`; spread its remark plugins, pass its renderer, href predicate and `cwd` into `useChatMarkdownState`, and try the renderer in the anchor branch  | one mount point for every chip kind without copying link logic             |
-| `apps/web/src/components/Icons.tsx`                  | add `TyporaIcon`                                                                                                                                                                  | brand icon for the open-with row                                           |
-| `apps/web/src/components/chat/OpenInPicker.tsx`      | add the `allowTypora` option and filter it from menus where disabled; delegate Typora preference fallback to `@t3tools/ft3-web/files`; export `resolveOpenInOptions` for its test | Typora belongs to Markdown preview only                                    |
-| `apps/web/src/editorPreferences.ts`                  | keep the upstream preference hook and persistence implementation; the package resolves the Typora-excluded preference when needed                                                 | keep editor preference logic out of the upstream integration               |
-| `apps/web/src/components/files/FilePreviewPanel.tsx` | pass `allowTypora={isMarkdown}`                                                                                                                                                   | the only surface that offers Typora                                        |
-| `packages/contracts/src/editor.ts`                   | add the `typora` editor (`direct-path`)                                                                                                                                           | editor id crosses to the server launcher                                   |
-| `packages/shared/src/editor.ts`                      | resolve the Typora executable from its install paths on Windows and macOS                                                                                                         | Typora is not on `PATH` and has no VS Code-style bundle layout             |
-| `packages/shared/src/markdownPipeline.ts`            | allow the `oc` and `ocl` href protocols in the sanitize schema                                                                                                                    | sanitize runs before the anchor renderer and would strip the document link |
-| `apps/web/src/markdown-clipboard.ts`                 | retain the upstream serializer and sanitizer unchanged; the added chat link renderer uses existing DOM/anchor behavior                                                            | no upstream clipboard code is removed                                      |
+| Upstream file                                        | Connection                                                                                                                                                                                                                                                                                   | Reason                                                                                                     |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `apps/web/src/components/ChatMarkdown.tsx`           | import `useFt3ChatTextExtensions`; spread its remark plugins, pass its renderer, href predicate, `cwd` and `imageBaseDir` into `useChatMarkdownState`, try the renderer in the anchor branch, and route a file chip's panel open through `openFileLink` with upstream's open as the fallback | one mount point for every chip kind, nested resolution and missing-target state without copying link logic |
+| `apps/web/src/components/Icons.tsx`                  | add `TyporaIcon`                                                                                                                                                                                                                                                                             | brand icon for the open-with row                                                                           |
+| `apps/web/src/components/chat/OpenInPicker.tsx`      | add the `allowTypora` option and filter it from menus where disabled; delegate Typora preference fallback to `@t3tools/ft3-web/files`; export `resolveOpenInOptions` for its test                                                                                                            | Typora belongs to Markdown preview only                                                                    |
+| `apps/web/src/editorPreferences.ts`                  | keep the upstream preference hook and persistence implementation; the package resolves the Typora-excluded preference when needed                                                                                                                                                            | keep editor preference logic out of the upstream integration                                               |
+| `apps/web/src/components/files/FilePreviewPanel.tsx` | pass `allowTypora={isMarkdown}`                                                                                                                                                                                                                                                              | the only surface that offers Typora                                                                        |
+| `packages/contracts/src/editor.ts`                   | add the `typora` editor (`direct-path`)                                                                                                                                                                                                                                                      | editor id crosses to the server launcher                                                                   |
+| `packages/shared/src/editor.ts`                      | resolve the Typora executable from its install paths on Windows and macOS                                                                                                                                                                                                                    | Typora is not on `PATH` and has no VS Code-style bundle layout                                             |
+| `packages/shared/src/markdownPipeline.ts`            | allow the `oc` and `ocl` href protocols in the sanitize schema                                                                                                                                                                                                                               | sanitize runs before the anchor renderer and would strip the document link                                 |
+| `apps/web/src/markdown-clipboard.ts`                 | retain the upstream serializer and sanitizer unchanged; the added chat link renderer uses existing DOM/anchor behavior                                                                                                                                                                       | no upstream clipboard code is removed                                                                      |
 
 `packages/ft3-web/src/chat/chatCopyFilters.ts` keeps the old-fork copy rules
 covered by package tests; `apps/web` keeps the upstream serializer/sanitizer
@@ -659,8 +662,10 @@ New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-web/src/chat/openContextDocLink.test.ts`,
 `packages/ft3-web/src/chat/chatCopyFilters.test.ts`,
 `packages/ft3-web/src/chat/chatCopyFilters.browser.test.tsx`,
-`packages/ft3-host/src/openContextDocs.test.ts`, and
-`packages/ft3-web/src/files/openInPicker.test.ts`.
+`packages/ft3-host/src/openContextDocs.test.ts`,
+`packages/ft3-web/src/files/openInPicker.test.ts`,
+`packages/ft3-web/src/chat/chatFileLink.test.ts`, and
+`packages/ft3-web/src/chat/chatFileLinks.browser.test.tsx`.
 
 ## Markdown frontmatter in document previews
 
