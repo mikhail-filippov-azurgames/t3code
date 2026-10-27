@@ -11,6 +11,7 @@ import {
 import { useEnvironmentQuery } from "~/state/query";
 import type { EnvironmentId } from "@t3tools/contracts";
 
+import { findResolvedCommit } from "./commitsPanel.logic.ts";
 import { commitsEnvironment } from "./state.ts";
 
 export interface CommitDiffPanelProps {
@@ -22,10 +23,29 @@ export interface CommitDiffPanelProps {
 /** Renders one commit's patch inside V2's diff panel shell. */
 export function CommitDiffPanel({ environmentId, cwd, commitId }: CommitDiffPanelProps) {
   const { resolvedTheme } = useTheme();
-  const query = useEnvironmentQuery(
+  // A mentioned commit can live in a nested repository; the thread cwd is only
+  // the first candidate, so the diff has to open in the repository git found.
+  const resolution = useEnvironmentQuery(
     cwd === null
       ? null
-      : commitsEnvironment.commitDiff({ environmentId, input: { cwd, commit: commitId } }),
+      : commitsEnvironment.resolveCommitMentions({
+          environmentId,
+          input: { cwd, candidates: [commitId] },
+        }),
+  );
+  const resolvedMention = findResolvedCommit({
+    commitId,
+    commits: resolution.data?.commits ?? [],
+  });
+  // `null` while the lookup runs, so the diff never reads the wrong repository first.
+  const repositoryCwd = resolvedMention?.cwd ?? (resolution.isPending ? null : cwd);
+  const query = useEnvironmentQuery(
+    repositoryCwd === null
+      ? null
+      : commitsEnvironment.commitDiff({
+          environmentId,
+          input: { cwd: repositoryCwd, commit: resolvedMention?.commit ?? commitId },
+        }),
   );
   const patch = query.data?.patch;
   const renderable = useMemo(
