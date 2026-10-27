@@ -245,6 +245,25 @@ process-wide менеджера, поэтому `ws.ts` и карта прав u
 | `apps/web/src/components/chat/ChatComposer.tsx` | импорт `PiInferenceServerControl` из `@t3tools/ft3-web/pi`; рендер рядом с publish-кнопкой, только для провайдера `pi` | start/stop и индикатор статуса llama-server в composer     |
 | `pnpm-lock.yaml`                                | зависимости `@t3tools/ft3-pi` у `packages/ft3-host` и `packages/ft3-web`                                               | браузерные контракты и серверная регистрация группы Pi RPC |
 
+## Pi: локальные llama-модели без MCP-инструментов
+
+`packages/ft3-pi/src/localLlamaExtension.ts` владеет политикой провайдера
+`ft3-local`: активными остаются только восемь встроенных инструментов Pi, а
+секция `t3_code_orchestration` не попадает в system prompt, потому что
+llama.cpp не разбирает часть T3 MCP JSON-схем (например `summary.maxLength`).
+При переключении на удалённого провайдера инструменты MCP возвращаются.
+Upstream хранит только необязательный transform в mcpExtensionSource.ts; wrapper
+импортирует хук напрямую и регистрирует его до материализации расширения.
+
+| Upstream-файл                                           | Правка                                                     | Зачем                                                  |
+| ------------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------ |
+| `packages/provider-pi/src/server/mcpExtensionSource.ts` | `setPiExtensionSourceTransform` и `piT3McpExtensionSource` | generic hook, политика остаётся в `ft3-pi`             |
+| `packages/provider-pi/src/server/mcpInjection.ts`       | материализует `piT3McpExtensionSource()` вместо константы  | применить зарегистрированный transform                 |
+| `packages/provider-pi/src/server/mcpBridge.testkit.ts`  | опции `source` и `provider` в контексте модели             | загрузка преобразованного расширения в тестах `ft3-pi` |
+
+Тесты форка: `packages/ft3-pi/src/localLlamaExtension.test.ts`; upstream держит
+только проверку самого хука в `mcpExtensionSource.test.ts`.
+
 ## Исправления Muse в стеке ft3
 
 Перед успешным завершением адаптер сверяет потоковый текст с `session/read`:

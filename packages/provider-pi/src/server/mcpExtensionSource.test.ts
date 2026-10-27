@@ -6,7 +6,11 @@ import * as NodeModule from "node:module";
 import * as NodeVM from "node:vm";
 import { assert, describe, it } from "@effect/vitest";
 
-import { PI_T3_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
+import {
+  piT3McpExtensionSource,
+  PI_T3_MCP_EXTENSION_SOURCE,
+  setPiExtensionSourceTransform,
+} from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 
 type RequestHook = (
@@ -73,6 +77,16 @@ describe("Pi orchestration prompt section", () => {
       assert.isDefined(result);
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
+    }
+  });
+
+  it("applies a registered extension source transform", () => {
+    try {
+      setPiExtensionSourceTransform((source) => source + "\nconst TRANSFORMED = true;");
+      assert.include(piT3McpExtensionSource(), "const TRANSFORMED = true;");
+    } finally {
+      setPiExtensionSourceTransform(undefined);
+      assert.notInclude(piT3McpExtensionSource(), "const TRANSFORMED = true;");
     }
   });
 });

@@ -3,11 +3,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-const PI_BUNDLED_PROVIDER_ID = "ft3-local";
+export const PI_BUNDLED_PROVIDER_ID = "ft3-local";
 const PI_DEFAULT_BASE_URL = "http://127.0.0.1:11434/v1";
 const PI_DEFAULT_API_KEY = "ollama";
 
-const PI_BUILT_IN_TOOLS = [
+export const PI_BUILT_IN_TOOLS = [
   "read",
   "bash",
   "powershell",

@@ -11,6 +11,13 @@ export const T3_PI_MCP_EXTENSION_PATH_ENV = "T3_PI_MCP_EXTENSION_PATH";
 // These tools trigger file-change approvals, bypassed by Auto-accept edits.
 export const PI_FILE_CHANGE_TOOLS = ["edit", "write"] as const;
 
+let extensionSourceTransform: ((source: string) => string) | undefined;
+export const setPiExtensionSourceTransform = (transform: typeof extensionSourceTransform): void => {
+  extensionSourceTransform = transform;
+};
+export const piT3McpExtensionSource = (): string =>
+  extensionSourceTransform?.(PI_T3_MCP_EXTENSION_SOURCE) ?? PI_T3_MCP_EXTENSION_SOURCE;
+
 export const PI_T3_MCP_EXTENSION_SOURCE = `\
 import { stripFrontmatter, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as NodeFSP from "node:fs/promises";
