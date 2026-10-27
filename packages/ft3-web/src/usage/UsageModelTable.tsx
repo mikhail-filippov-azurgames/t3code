@@ -139,7 +139,7 @@ export function UsageModelTable({
   if (!featureEnabled && renderUpstream !== undefined) return renderUpstream();
 
   return (
-    <div className="flex flex-col gap-2">
+    <div data-ft3-model-table="" className="flex flex-col gap-2">
       <ToggleGroup
         aria-label="Model columns"
         variant="segmented"
