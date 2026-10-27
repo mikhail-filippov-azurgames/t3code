@@ -1,15 +1,12 @@
 import * as EffectAcpErrors from "effect-acp/errors";
 
-export {
-  AcpRegistryDriver,
-  type AcpRegistryDriverCreateOptions,
-  type AcpRegistryDriverEnv,
-} from "./server/driver.ts";
+export { AcpRegistryDriver, type AcpRegistryDriverEnv } from "./server/driver.ts";
+export type { AcpRegistryDriverCreateOptions } from "./server/driver.ts";
 export {
   AcpRegistryAdapterV2Driver,
-  type AcpRegistryAdapterV2DriverCreateOptions,
   type AcpRegistryAdapterV2DriverEnv,
 } from "./server/adapter.ts";
+export type { AcpRegistryAdapterV2DriverCreateOptions } from "./server/adapter.ts";
 export { acpRegistryManagedBinaryDirectories } from "./server/AcpRegistrySupport.ts";
 
 export type AcpSessionRuntimeService =

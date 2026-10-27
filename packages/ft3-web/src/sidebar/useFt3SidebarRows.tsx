@@ -38,6 +38,8 @@ export type SidebarForestSectionInput = {
 };
 
 export type Ft3SidebarRows = {
+  /** Whether the current rows have a visible ft3 forest, role, or working extension. */
+  readonly hasFt3Rows: boolean;
   /** Visible (collapse-filtered) entries per section, in render order. */
   readonly entriesBySection: ReadonlyMap<
     string,
@@ -275,7 +277,16 @@ export function useFt3SidebarRows(input: {
     return rows;
   }, [entryByKey, input.onNavigate]);
 
+  const hasFt3Rows = useMemo(
+    () =>
+      [...entryByKey.values()].some(
+        (entry) => entry.parentKey !== null || entry.descendantCount > 0,
+      ) || [...modelByKey.values()].some((model) => model.roleBadge !== null),
+    [entryByKey, modelByKey],
+  );
+
   return {
+    hasFt3Rows,
     entriesBySection: visibleThreads.entriesBySection,
     entryByKey,
     rowPropsByKey,

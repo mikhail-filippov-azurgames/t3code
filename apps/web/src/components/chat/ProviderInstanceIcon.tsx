@@ -124,50 +124,61 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-      {isKimi ? (
-        <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-      ) : isAcpRegistry ? (
-        <AcpRegistryAgentIcon
-          className={cn("size-5 rounded-none bg-transparent", iconClassName)}
-          fallbackClassName="size-full"
-          icon={acpRegistryIconUrl}
-        />
-      ) : isCustomEndpoint ? (
-        // The tile is a size container: below ~18px it keeps one letter and drops the mark.
-        <span
-          className={cn(
-            "@container relative flex size-5 shrink-0 items-center justify-center rounded-md border bg-card text-4xs font-semibold leading-none text-foreground",
-            iconClassName,
-          )}
-          aria-hidden
-        >
-          {Array.from(providerInstanceInitials(props.displayName))[0]}
-          <span className="@max-[1.1rem]:hidden">
-            {Array.from(providerInstanceInitials(props.displayName)).slice(1).join("")}
-          </span>
+      <span className={isKimi ? "hidden" : undefined}>
+        {isAcpRegistry ? (
+          <AcpRegistryAgentIcon
+            className={cn("size-5 rounded-none bg-transparent", iconClassName)}
+            fallbackClassName="size-full"
+            icon={acpRegistryIconUrl}
+          />
+        ) : isCustomEndpoint ? (
+          // The tile is a size container: below ~18px it keeps one letter and drops the mark.
           <span
             className={cn(
-              "pointer-events-none absolute right-[-0.3125rem] bottom-[-0.3125rem] z-10 flex size-3 items-center justify-center rounded-full border bg-card text-foreground shadow-sm @max-[1.1rem]:hidden",
-              props.badgeClassName,
+              "@container relative flex size-5 shrink-0 items-center justify-center rounded-md border bg-card text-4xs font-semibold leading-none text-foreground",
+              iconClassName,
             )}
-            style={{ borderColor: indicatorBackground }}
+            aria-hidden
           >
-            <OpenAI className="size-2" />
+            {Array.from(providerInstanceInitials(props.displayName))[0]}
+            <span className="@max-[1.1rem]:hidden">
+              {Array.from(providerInstanceInitials(props.displayName)).slice(1).join("")}
+            </span>
+            <span
+              className={cn(
+                "pointer-events-none absolute right-[-0.3125rem] bottom-[-0.3125rem] z-10 flex size-3 items-center justify-center rounded-full border bg-card text-foreground shadow-sm @max-[1.1rem]:hidden",
+                props.badgeClassName,
+              )}
+              style={{ borderColor: indicatorBackground }}
+            >
+              <OpenAI className="size-2" />
+            </span>
           </span>
-        </span>
-      ) : packageIcon ? (
-        <ProviderPackageIcon
-          icon={packageIcon}
-          className={cn("size-5 shrink-0", iconClassName)}
+        ) : packageIcon ? (
+          <ProviderPackageIcon
+            icon={packageIcon}
+            className={cn("size-5 shrink-0", iconClassName)}
+            aria-hidden
+          />
+        ) : Icon ? (
+          <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+        ) : (
+          <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
+            {providerInstanceInitials(props.displayName)}
+          </span>
+        )}
+      </span>
+      {isKimi ? <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden /> : null}
+      {props.statusDotClassName ? (
+        <span
+          className={cn(
+            "pointer-events-none absolute -left-0.5 -top-0.5 z-10 size-2 rounded-full",
+            props.statusDotClassName,
+          )}
+          style={{ boxShadow: `0 0 0 2px ${indicatorBackground}` }}
           aria-hidden
         />
-      ) : Icon ? (
-        <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-      ) : (
-        <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
-          {providerInstanceInitials(props.displayName)}
-        </span>
-      )}
+      ) : null}
       {isCustomEndpoint ? null : props.showBadge ? (
         <span
           className={cn(

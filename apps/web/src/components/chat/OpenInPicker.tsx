@@ -7,6 +7,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { memo, use, useMemo, useRef } from "react";
+import { resolvePreferredEditor } from "@t3tools/ft3-web/files";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { OPEN_FAVORITE_EDITOR_ATTRIBUTE } from "./OpenInPickerShortcut";
@@ -82,10 +83,7 @@ type OpenInOption = {
   kind: "brand" | "generic";
 };
 
-export const resolveOpenInOptions = (
-  platform: string,
-  availableEditors: ReadonlyArray<EditorId>,
-) => {
+const resolveOpenInOptions = (platform: string, availableEditors: ReadonlyArray<EditorId>) => {
   const baseOptions: ReadonlyArray<Omit<OpenInOption, "label">> = [
     {
       Icon: CursorIcon,
@@ -208,6 +206,8 @@ export const resolveOpenInOptions = (
     .map((option) => ({ ...option, label: editorLabelForPlatform(option.value, platform) }));
 };
 
+export { resolveOpenInOptions };
+
 function getOpenInIconClass(kind: OpenInOption["kind"]) {
   return cn(kind === "brand" ? "text-foreground opacity-100" : "text-muted-foreground");
 }
@@ -256,11 +256,16 @@ export const OpenInPicker = memo(function OpenInPicker({
       allowTypora ? effectiveEditors : effectiveEditors.filter((editor) => editor !== "typora"),
     [allowTypora, effectiveEditors],
   );
-  const [preferredEditor, setPreferredEditor] = usePreferredEditor(contextEditors, allowTypora);
+  const [preferredEditor, setPreferredEditor] = usePreferredEditor(contextEditors);
 
   const openInEditor = async (editorId: EditorId | null): Promise<boolean> => {
     if (!openInCwd) return false;
     const editor = editorId ?? preferredEditor;
+    if (!allowTypora && editor === "typora") {
+      const fallbackEditor = resolvePreferredEditor(effectiveEditors, editor, false);
+      if (fallbackEditor === null) return false;
+      return openInEditor(fallbackEditor);
+    }
     if (!editor) return false;
     if (remote.mode === "remote-unavailable") return false;
     if (remote.mode === "remote-links") {

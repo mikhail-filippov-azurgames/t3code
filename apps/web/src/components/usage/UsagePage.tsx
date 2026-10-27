@@ -619,15 +619,16 @@ function UsageOverview({
   const loadingProviders = new Set(
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
-  const providersWithData = new Set(
-    providersForWindow(
-      merged.providers,
-      selectedEnvironments.flatMap(
-        (environment) =>
-          environment.summary?.sources.map((source) => source.fingerprint.provider) ?? [],
-      ),
+  const providersWithData = new Set(providersWithUsage(merged.providers));
+  for (const provider of providersForWindow(
+    merged.providers,
+    selectedEnvironments.flatMap(
+      (environment) =>
+        environment.summary?.sources.map((source) => source.fingerprint.provider) ?? [],
     ),
-  );
+  )) {
+    providersWithData.add(provider);
+  }
   // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
   // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
