@@ -219,6 +219,7 @@ import {
   nodeToPlainText,
 } from "./chat/MarkdownCodeBlock.logic";
 import { reportMarkdownActionFailure } from "./chat/markdownActionFailure";
+import { parseOpenContextDocHref, useFt3ChatTextExtensions } from "@t3tools/ft3-web/chat";
 
 const isAssetNotFoundError = Schema.is(AssetWorkspaceAssetNotFoundError);
 
@@ -248,6 +249,10 @@ interface ChatMarkdownProps {
       `cwd`'s; without it a private repository's uploads load unauthenticated and 404. */
   sourceControlMedia?: boolean | undefined;
   headingLevelOffset?: number | undefined;
+  /** ft3 chips for `oc:` document and board-card mention links. */
+  renderMarkdownLink?:
+    | ((input: { readonly href: string; readonly label: string }) => ReactNode | null)
+    | undefined;
 }
 
 export interface ChatMarkdownContextReference {
@@ -406,6 +411,7 @@ function markdownUrlTransform(href: string) {
   if (parseAssistantCitationHref(href)) return href;
   if (parseComposerContextHref(href)) return href;
   if (parseThreadLinkHref(href)) return href;
+  if (parseOpenContextDocHref(href)) return href;
   if (isWindowsDrivePathHref(href)) return href;
   return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
 }
@@ -504,6 +510,7 @@ function useChatMarkdownState({
   renderContextReference,
   headingLevelOffset = 0,
   sourceControlMedia = false,
+  renderMarkdownLink,
 }: ChatMarkdownProps) {
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
@@ -902,6 +909,7 @@ function useChatMarkdownState({
     fileLinkChip,
     sourceControlMedia,
     renderContextReference,
+    renderMarkdownLink,
     headingLevelOffset,
     imageBaseDir,
     workspaceMutationId,
@@ -1079,6 +1087,7 @@ const CHAT_MARKDOWN_COMPONENTS = {
       updateThreadPullRequestLink,
       fileLinkChip,
       renderContextReference,
+      renderMarkdownLink,
     } = use(ChatMarkdownRendererContext);
     const text = use(ChatMarkdownTextContext);
     const citation = href ? parseAssistantCitationHref(href) : null;
@@ -1104,6 +1113,11 @@ const CHAT_MARKDOWN_COMPONENTS = {
       );
     }
     const normalizedHref = href ? normalizeMarkdownLinkHrefKey(href) : "";
+    const ft3Chip = renderMarkdownLink?.({
+      href: href ?? "",
+      label: hastPlainTextDeep(node) || nodeToPlainText(children),
+    });
+    if (ft3Chip) return ft3Chip;
     const fileLinkMeta = normalizedHref
       ? (markdownFileLinkMetaByHref.get(normalizedHref) ??
         resolveMarkdownFileLinkMeta(normalizedHref, cwd, imageBaseDir ?? cwd))
@@ -1728,8 +1742,20 @@ function ChatMarkdown({
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
+  const ft3ChatText = useFt3ChatTextExtensions({
+    text,
+    threadRef: props.threadRef,
+    environmentId: props.threadRef?.environmentId ?? props.environmentId ?? null,
+    isStreaming: props.isStreaming === true,
+  });
   const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
-    useChatMarkdownState({ text, inline, ...props });
+    useChatMarkdownState({
+      text,
+      inline,
+      ...props,
+      renderMarkdownLink: ft3ChatText.renderMarkdownLink,
+    });
+  const ft3RemarkPlugins = ft3ChatText.remarkPlugins as PluggableList;
   // Streaming re-renders only the last block; offsets for task edits need the whole text.
   const streamingBlocks =
     props.isStreaming === true &&
@@ -1760,8 +1786,13 @@ function ChatMarkdown({
   // The incremental parser keeps per-instance state, so its output is not shared.
   const uncachedPlugins = incrementalParsing;
   const remarkPlugins = incrementalParsing
-    ? [...sharedRemarkPlugins, ...extraRemarkPlugins, createIncrementalMarkdownPlugin()]
-    : withExtraPlugins(sharedRemarkPlugins, extraRemarkPlugins);
+    ? [
+        ...sharedRemarkPlugins,
+        ...extraRemarkPlugins,
+        ...ft3RemarkPlugins,
+        createIncrementalMarkdownPlugin(),
+      ]
+    : withExtraPlugins(withExtraPlugins(sharedRemarkPlugins, extraRemarkPlugins), ft3RemarkPlugins);
   const blocks = streamingBlocks ?? [text];
 
   return (

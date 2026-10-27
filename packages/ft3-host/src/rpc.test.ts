@@ -79,6 +79,9 @@ const stubs = {
   [FT3_WS_METHODS.piInferenceServerStatus]: () => Effect.succeed(piStatus),
   [FT3_WS_METHODS.piInferenceServerStart]: () => Effect.succeed(piStatus),
   [FT3_WS_METHODS.piInferenceServerStop]: () => Effect.succeed(piStatus),
+  [FT3_WS_METHODS.piBonsaiPresetDetect]: () => Effect.succeed(null),
+  [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
+  [FT3_WS_METHODS.openContextResolveDoc]: () => Effect.succeed({ status: "not_found" as const }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
