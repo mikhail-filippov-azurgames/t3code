@@ -1,9 +1,12 @@
 import type { ScopedProjectRef } from "@t3tools/contracts";
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 
+import { selectThreadDiffPanelSelection, useDiffPanelStore } from "~/diffPanelStore";
 import { useProject, useThreadShell } from "~/state/entities";
+import { useRightPanelStore } from "~/rightPanelStore";
 
 import { CommitsGraph } from "./CommitsGraph.tsx";
+import { selectCommitFromGraph, selectedCommitId } from "./commitsPanel.logic.ts";
 import type { Ft3PanelProps } from "../panels.tsx";
 
 export default function CommitsPanel({ threadRef, visible }: Ft3PanelProps) {
@@ -17,6 +20,21 @@ export default function CommitsPanel({ threadRef, visible }: Ft3PanelProps) {
   );
   const project = useProject(projectRef);
   const cwd = shell?.worktreePath ?? project?.workspaceRoot ?? null;
+  const selection = useDiffPanelStore((state) =>
+    selectThreadDiffPanelSelection(state.byThreadKey, threadRef),
+  );
+  const focusCommitId = selectedCommitId(selection);
+  const onCommitSelect = useCallback(
+    (commitId: string) => {
+      selectCommitFromGraph({
+        threadRef,
+        commitId,
+        selectCommit: useDiffPanelStore.getState().selectCommit,
+        openDiffPanel: (ref) => useRightPanelStore.getState().open(ref, "diff"),
+      });
+    },
+    [threadRef],
+  );
 
   if (!visible || cwd === null) {
     return null;
@@ -29,6 +47,8 @@ export default function CommitsPanel({ threadRef, visible }: Ft3PanelProps) {
         environmentId={threadRef.environmentId}
         cwd={cwd}
         className="min-h-0 flex-1"
+        focusCommitId={focusCommitId}
+        onCommitSelect={onCommitSelect}
       />
     </div>
   );

@@ -15,6 +15,17 @@ const COMMIT_HISTORY_PAGE_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const COMMIT_HISTORY_LOCATE_MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
 const COMMIT_HISTORY_LOCATE_TIMEOUT_MS = 120_000;
 const COMMIT_HISTORY_FIELD_SEPARATOR = "\x1f";
+const REFS_LIST_FIELD_SEPARATOR = "\x1f";
+const REFS_LIST_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const REFS_LIST_ARGS = [
+  "for-each-ref",
+  `--format=%(refname)${REFS_LIST_FIELD_SEPARATOR}%(objectname)${REFS_LIST_FIELD_SEPARATOR}%(*objectname)${REFS_LIST_FIELD_SEPARATOR}%(HEAD)`,
+  "refs/heads",
+  "refs/remotes",
+  "refs/tags",
+] as const;
+const COMMIT_DIFF_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const COMMIT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 // `--exclude` only applies to the next `--all`, so it has to stay in front of it.
 const COMMIT_HISTORY_REV_ARGS = [
   "--topo-order",
@@ -39,6 +50,12 @@ export class CommitHistoryService extends Context.Service<
     readonly listCommitHistory: (
       input: Contracts.VcsCommitHistoryInput,
     ) => Effect.Effect<Contracts.VcsCommitHistoryResult, VcsError>;
+    readonly listRefs: (
+      input: Contracts.VcsRefsListInput,
+    ) => Effect.Effect<Contracts.VcsRefsListResult, VcsError>;
+    readonly getCommitDiff: (
+      input: Contracts.VcsCommitDiffInput,
+    ) => Effect.Effect<Contracts.VcsCommitDiffResult, VcsError>;
   }
 >()("@t3tools/ft3-vcs/CommitHistoryService") {}
 export function classifyCommitHistoryRef(fullName: string): Contracts.VcsCommitHistoryRef {
@@ -95,6 +112,33 @@ const nonRepositoryResult = (): Contracts.VcsCommitHistoryResult => ({
   isRepo: false,
   nextCursor: null,
 });
+
+/** Parses `git for-each-ref` output; annotated tags use their peeled commit. */
+export function parseRefsList(stdout: string): Contracts.VcsRefEntry[] {
+  const refs: Contracts.VcsRefEntry[] = [];
+  for (const line of stdout.split("\n")) {
+    if (line.length === 0) continue;
+    const [refName, objectName, peeledName, headMarker] = line.split(REFS_LIST_FIELD_SEPARATOR);
+    if (
+      refName === undefined ||
+      objectName === undefined ||
+      !COMMIT_ID_PATTERN.test(objectName) ||
+      refName.startsWith(`${CHECKPOINT_REFS_PREFIX}/`)
+    ) {
+      continue;
+    }
+    const target =
+      peeledName !== undefined && COMMIT_ID_PATTERN.test(peeledName) ? peeledName : objectName;
+    const classified = classifyCommitHistoryRef(refName);
+    refs.push({
+      ...classified,
+      refName,
+      target,
+      current: classified.kind === "branch" && (headMarker ?? "").trim() === "*",
+    });
+  }
+  return refs;
+}
 
 export const make = Effect.gen(function* () {
   const vcsProcess = yield* VcsProcess.VcsProcess;
@@ -217,7 +261,80 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  return CommitHistoryService.of({ listCommitHistory });
+  const listRefs: CommitHistoryService["Service"]["listRefs"] = Effect.fn("Ft3Vcs.listRefs")(
+    function* (input) {
+      if (!(yield* isGitRepository(input.cwd))) {
+        return { refs: [], isRepo: false };
+      }
+      const result = yield* runGit("Ft3Vcs.listRefs.for-each-ref", input.cwd, REFS_LIST_ARGS, {
+        maxOutputBytes: REFS_LIST_MAX_OUTPUT_BYTES,
+      });
+      return { refs: parseRefsList(result.stdout), isRepo: true };
+    },
+  );
+
+  const commitDiffArgs = Effect.fn("Ft3Vcs.getCommitDiff.args")(function* (
+    cwd: string,
+    commit: string,
+  ) {
+    const result = yield* runGit(
+      "Ft3Vcs.getCommitDiff.parents",
+      cwd,
+      ["rev-list", "--parents", "-n", "1", "--end-of-options", commit],
+      { maxOutputBytes: 4_096 },
+    );
+    const [id, firstParent] = result.stdout.trim().split(/\s+/);
+    if (id !== commit) {
+      return yield* new VcsProcessExitError({
+        operation: "Ft3Vcs.getCommitDiff.parents",
+        command: "git rev-list",
+        cwd,
+        exitCode: 0,
+        detail: "Git returned a different commit while resolving the requested commit.",
+      });
+    }
+    return firstParent
+      ? [
+          "diff",
+          "--no-ext-diff",
+          "--no-renames",
+          "--patch",
+          "--minimal",
+          "--no-color",
+          firstParent,
+          commit,
+        ]
+      : [
+          "diff-tree",
+          "--root",
+          "-r",
+          "--no-commit-id",
+          "--no-renames",
+          "--patch",
+          "--minimal",
+          "--no-color",
+          commit,
+        ];
+  });
+
+  const getCommitDiff: CommitHistoryService["Service"]["getCommitDiff"] = Effect.fn(
+    "Ft3Vcs.getCommitDiff",
+  )(function* (input) {
+    if (!(yield* isGitRepository(input.cwd))) {
+      return { commit: input.commit, patch: "", truncated: false };
+    }
+    const args = yield* commitDiffArgs(input.cwd, input.commit);
+    const result = yield* runGit("Ft3Vcs.getCommitDiff.patch", input.cwd, args, {
+      maxOutputBytes: COMMIT_DIFF_MAX_OUTPUT_BYTES,
+    });
+    return {
+      commit: input.commit,
+      patch: result.stdout,
+      truncated: result.stdoutTruncated,
+    };
+  });
+
+  return CommitHistoryService.of({ listCommitHistory, listRefs, getCommitDiff });
 });
 
 export const layer = Layer.effect(CommitHistoryService, make);

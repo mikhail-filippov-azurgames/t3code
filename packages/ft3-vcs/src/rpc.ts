@@ -13,4 +13,14 @@ export const ft3VcsRpcHandlers = {
       const service = yield* CommitHistoryService.CommitHistoryService;
       return yield* service.listCommitHistory(input);
     }),
+  [FT3_VCS_WS_METHODS.vcsListRefs]: (input: Contracts.VcsRefsListInput) =>
+    Effect.gen(function* () {
+      const service = yield* CommitHistoryService.CommitHistoryService;
+      return yield* service.listRefs(input);
+    }),
+  [FT3_VCS_WS_METHODS.vcsGetCommitDiff]: (input: Contracts.VcsCommitDiffInput) =>
+    Effect.gen(function* () {
+      const service = yield* CommitHistoryService.CommitHistoryService;
+      return yield* service.getCommitDiff(input);
+    }),
 };

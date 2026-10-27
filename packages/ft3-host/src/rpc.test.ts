@@ -73,6 +73,9 @@ const stubs = {
     Effect.succeed({ reviewId: "review", status: "published" as const }),
   [FT3_WS_METHODS.vcsListCommitHistory]: () =>
     Effect.succeed({ commits: [], isRepo: false, nextCursor: null }),
+  [FT3_WS_METHODS.vcsListRefs]: () => Effect.succeed({ refs: [], isRepo: false }),
+  [FT3_WS_METHODS.vcsGetCommitDiff]: () =>
+    Effect.succeed({ commit: "0".repeat(40), patch: "", truncated: false }),
   [FT3_WS_METHODS.piInferenceServerStatus]: () => Effect.succeed(piStatus),
   [FT3_WS_METHODS.piInferenceServerStart]: () => Effect.succeed(piStatus),
   [FT3_WS_METHODS.piInferenceServerStop]: () => Effect.succeed(piStatus),
@@ -148,6 +151,13 @@ describe("FT3 RPC authorization", () => {
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo", limit: 10 }),
       ).toEqual({ commits: [], isRepo: false, nextCursor: null });
+      expect(yield* client[FT3_WS_METHODS.vcsListRefs]({ cwd: "/repo" })).toEqual({
+        refs: [],
+        isRepo: false,
+      });
+      expect(
+        yield* client[FT3_WS_METHODS.vcsGetCommitDiff]({ cwd: "/repo", commit: "0".repeat(40) }),
+      ).toEqual({ commit: "0".repeat(40), patch: "", truncated: false });
       const piInput = { instanceId: ProviderInstanceId.make("pi"), model: "bonsai-2-27b" };
       expect(yield* client[FT3_WS_METHODS.piInferenceServerStatus](piInput)).toEqual(piStatus);
       expect(yield* client[FT3_WS_METHODS.piInferenceServerStart](piInput)).toEqual(piStatus);
@@ -227,6 +237,15 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.vcsListRefs]({ cwd: "/repo" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.vcsGetCommitDiff]({
+          cwd: "/repo",
+          commit: "0".repeat(40),
+        }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       const piInput = { instanceId: ProviderInstanceId.make("pi") };
       expect(
