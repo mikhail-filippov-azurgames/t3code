@@ -9,7 +9,10 @@ import * as TaskQueryService from "../../ft3-orchestration/src/TaskQueryService.
 import * as BoardDelegationService from "./BoardDelegationService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
+import * as BoardSummaryHistoryService from "./BoardSummaryHistoryService.ts";
 import * as Contracts from "./contracts.ts";
+
+export { BoardSummaryHistoryService } from "./BoardSummaryHistoryService.ts";
 
 const taskQueryLayer = TaskQueryService.layer.pipe(
   Layer.provide(TaskHandoffService.layer),
@@ -24,6 +27,7 @@ const boardDelegationServiceLayer = BoardDelegationService.layer.pipe(
 export const boardRpcServiceLayer = Layer.mergeAll(
   BoardService.layer.pipe(Layer.provide(BoardRepository.layer)),
   boardDelegationServiceLayer,
+  BoardSummaryHistoryService.layer.pipe(Layer.provide(taskQueryLayer)),
 );
 
 export const boardRpcHandlers = {
@@ -60,6 +64,13 @@ export const boardRpcHandlers = {
     Effect.gen(function* () {
       const service = yield* BoardDelegationService.BoardDelegationService;
       return yield* service.list(input);
+    }),
+  [FT3_BOARD_WS_METHODS.boardDelegatedTaskSummaryHistory]: (
+    input: Contracts.BoardDelegatedTaskSummaryHistoryInput,
+  ) =>
+    Effect.gen(function* () {
+      const service = yield* BoardSummaryHistoryService.BoardSummaryHistoryService;
+      return yield* service.history(input);
     }),
   [FT3_BOARD_WS_METHODS.boardList]: (input: Contracts.BoardListInput) =>
     Effect.gen(function* () {

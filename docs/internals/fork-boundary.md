@@ -203,6 +203,21 @@ agent-dir (или `T3CODE_FT3_PI_INFERENCE_CONFIG`), поднимает один
 перенесены: upstream адаптер всегда досмешивает ambient env. Профили с `baseUrl`
 вне loopback и `.ps1` launchers отклоняются, а не запускаются.
 
+Встроенный runtime Pi перенесён в `packages/ft3-pi/src/piRuntime.ts`: пустой
+`binaryPath` или `"pi"` считается sentinel и резолвится в
+`@earendil-works/pi-coding-agent@0.87.1` (`dist/bundle/cli.js`, зависимость
+`ft3-pi`), который запускается текущим Node-исполняемым файлом через
+сгенерированный launcher `<stateDir>/pi/<instanceId>/runtime/pi[.cmd]`. Поиск
+идёт вверх по дереву каталогов от модуля, чего достаточно для workspace/dev.
+Упакованный sidecar этот пакет на диск не кладёт: серверный бандл инлайнит
+workspace-зависимости, поэтому packaged runtime потребует отдельного
+packaging-шага и пока не покрыт. Явный непустой `binaryPath`, отличный от `"pi"`,
+передаётся upstream без изменений; `PI_BUNDLED_PI_BIN` по-прежнему запрещён, а
+отсутствие пакета — ошибка, а не fallback на PATH. Upstream-файлы не менялись:
+правка только в `packages/ft3-pi`, его `package.json` и `pnpm-workspace.yaml`
+(`allowBuilds: false` для `@google/genai` и `protobufjs`, пришедших с пакетом);
+`pnpm-lock.yaml` фиксирует importer `packages/ft3-pi`.
+
 `T3CODE_FT3_EXECUTOR_ONLY_INSTANCES` — список id инстансов через запятую; такие
 инстансы не получают capability `orchestration` ни в MCP-credential, ни в наборе
 `ProviderSessionManager`, поэтому не могут действовать как координатор.
@@ -550,3 +565,44 @@ New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-web/src/chat/openContextDocLink.test.ts`,
 `packages/ft3-host/src/openContextDocs.test.ts`, and
 `apps/web/src/components/chat/OpenInPicker.test.ts`.
+
+## Панель «Карточки/История» в чате и координаторская кнопка в шапке
+
+`packages/ft3-web/src/board/BoardChatSidePanel.tsx` — порт плавающей панели
+чата из старого форка (`apps/web/src/components/board-chat/BoardCardPinnedPanel.tsx`
+ветки `feat/ocl-cross-provider-delegation`): вкладки «Карточки» и «История»
+(вкладка «Коммиты» намеренно не переносится — граф коммитов остаётся в
+поверхности правой панели), ресайз и сворачивание панели, закреплённые
+карточки с действиями (старт/архив/просьба оркестратору) и постраничная
+история выжимок с `IntersectionObserver`-sentinel'ем. Монтируется через хук
+`useFt3BoardChatPanel(threadRef)` — null без server-треда.
+
+История читает существующий сервис `task_summary_history`
+(`packages/ft3-orchestration`) через новый метод ft3-RPC-группы
+`board.delegatedTaskSummaryHistory` (read → `orchestration:read`): вход
+`BoardDelegatedTaskSummaryHistoryInput` в `ft3-board/contracts`
+(`parentThreadId` приходит из web, а не из MCP-области), результат —
+существующий `TaskSummaryHistoryResult`. Обработчик идёт через новый
+`BoardSummaryHistoryService` (`ft3-board`): обёртка над
+`TaskQueryService.history` с синтетическим MCP-scope, как у
+`BoardDelegationService` — иначе требование `TaskQueryService` утекло бы из
+обработчика в ws-слой (handlers предоставляются `Ft3Rpc.serviceLayer`, а
+сервис у неё внутренний). Веб-атом `delegatedTaskSummaryHistory` добавлен в
+`ft3-web/src/board/backend.ts`; лоадер и маппинг записей — порты
+`coordinatorSummaryHistory.ts`/`useCoordinatorSummaryHistoryLoader.ts` из
+`board-chat` старого форка.
+
+В шапку чата подключены уже перенесённые ранее `boardThreadActions.logic` /
+`useBoardThreadActions` / `BoardThreadActionsControl`: меню «Coordinator
+actions» (Make Coordinator / Create task / Resend brief / Remove) и бейдж
+Coordinator с иконкой оркестратора. В контекстное меню треда старый форк
+эти действия не добавлял — здесь тоже нет.
+
+| Upstream file | Connection | Reason |
+| --- | --- | --- |
+| `apps/web/src/components/ChatView.tsx` | импорт `useFt3BoardChatPanel`; вызов хука и рендер рядом с таймлайном; проп `hasDelegationParent` (`parentSubagentThreadId !== null`) в `ChatHeader` | панель в чате и данные для меню координатора |
+| `apps/web/src/components/chat/ChatHeader.tsx` | импорт из `@t3tools/ft3-web/board-header`; `useBoardOrchestratorThreadKeys` + `resolveBoardThreadActionsControlModel`; бейдж Coordinator; `BoardThreadActionsControl` | координаторские действия в шапке, как в старом форке |
+| `apps/web/src/state/use-atom-command.ts` | раннер обёрнут в `useCallback` со стабильной идентичностью | портированная панель держит раннеры в зависимостях эффектов, как в старом форке; без мемоизации каждый рендер перезапускал бы эффекты |
+| `apps/web/src/state/use-atom-query-runner.ts` | то же: `useCallback` вокруг раннера | то же, для query-раннера истории выжимок и карточек |
+| `apps/server/src/ws.test.ts` | mock `BoardSummaryHistoryService` в обоих config-RPC слоях | RPC-слой требует новый ft3-сервис |
+| `packages/ft3-web/package.json` | экспорты `./board-chat` и `./board-header` | точки подключения панели и кнопок из upstream |

@@ -11,6 +11,8 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import { TaskSummaryHistoryCursor } from "../../ft3-orchestration/src/contracts.ts";
+
 export const BoardCardId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardId"));
 export type BoardCardId = typeof BoardCardId.Type;
 export const BoardCardEventId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardEventId"));
@@ -236,6 +238,14 @@ export const BoardExecutorDelegationsResult = Schema.Struct({
   nextCursor: Schema.NullOr(NodeId),
 });
 export type BoardExecutorDelegationsResult = typeof BoardExecutorDelegationsResult.Type;
+
+export const BoardDelegatedTaskSummaryHistoryInput = Schema.Struct({
+  parentThreadId: ThreadId,
+  limit: Schema.optional(PositiveInt.check(Schema.isLessThanOrEqualTo(100))),
+  cursor: Schema.optional(TaskSummaryHistoryCursor),
+});
+export type BoardDelegatedTaskSummaryHistoryInput =
+  typeof BoardDelegatedTaskSummaryHistoryInput.Type;
 
 export const BoardCreateInput = Schema.Struct({
   orchestratorThreadId: ThreadId,
