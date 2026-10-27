@@ -65,21 +65,30 @@ export function normalizePiApiKey(value: string | undefined): string {
   return trimmed.length > 0 ? trimmed : PI_DEFAULT_API_KEY;
 }
 
+/** One managed model; `baseUrl` overrides the provider endpoint for this model only. */
+export interface PiManagedModel {
+  readonly id: string;
+  readonly baseUrl?: string | undefined;
+}
+
 /** Managed `models.json` for one instance; Pi never reads the ambient user catalog. */
 export function buildPiModelsJson(input: {
   readonly baseUrl: string;
   readonly apiKey: string;
-  readonly models: ReadonlyArray<string>;
+  readonly models: ReadonlyArray<PiManagedModel>;
 }): string {
   const baseUrl = normalizePiBaseUrl(input.baseUrl);
   const apiKey = normalizePiApiKey(input.apiKey);
   const seen = new Set<string>();
-  const models: Array<{ readonly id: string }> = [];
+  const models: Array<PiManagedModel> = [];
   for (const raw of input.models) {
-    const id = piModelIdFromSlug(raw) ?? raw.trim();
+    const id = piModelIdFromSlug(raw.id) ?? raw.id.trim();
     if (id.length === 0 || seen.has(id)) continue;
     seen.add(id);
-    models.push({ id });
+    const modelBaseUrl = raw.baseUrl?.trim() ?? "";
+    models.push(
+      modelBaseUrl.length > 0 && modelBaseUrl !== baseUrl ? { id, baseUrl: modelBaseUrl } : { id },
+    );
   }
   return `${JSON.stringify({ providers: { [PI_BUNDLED_PROVIDER_ID]: { baseUrl, api: "openai-completions", apiKey, models } } }, null, 2)}\n`;
 }
@@ -101,19 +110,20 @@ function buildPiSettingsJson(input: {
 /** Resolve the model list written into the managed `models.json`. */
 export function resolvePiManagedModels(input: {
   readonly configuredModel: string | undefined;
-  readonly profileModels: ReadonlyArray<string>;
+  readonly profileModels: ReadonlyArray<{ readonly model: string; readonly baseUrl?: string }>;
   readonly customModels: ReadonlyArray<CustomModelSetting> | undefined;
-}): ReadonlyArray<string> {
-  const ordered: Array<string> = [];
+}): ReadonlyArray<PiManagedModel> {
+  const ordered: Array<PiManagedModel> = [];
   const seen = new Set<string>();
-  const push = (value: string | undefined) => {
+  const push = (value: string | undefined, baseUrl?: string | undefined) => {
     const id = piModelIdFromSlug(value) ?? value?.trim() ?? "";
     if (id.length === 0 || seen.has(id)) return;
     seen.add(id);
-    ordered.push(id);
+    const modelBaseUrl = baseUrl?.trim() ?? "";
+    ordered.push(modelBaseUrl.length > 0 ? { id, baseUrl: modelBaseUrl } : { id });
   };
   push(input.configuredModel);
-  for (const model of input.profileModels) push(model);
+  for (const profile of input.profileModels) push(profile.model, profile.baseUrl);
   for (const entry of input.customModels ?? []) {
     push(typeof entry === "string" ? entry : entry.slug);
   }
@@ -123,7 +133,7 @@ export function resolvePiManagedModels(input: {
 export interface PiAgentFilesInput {
   readonly baseUrl: string;
   readonly apiKey: string;
-  readonly models: ReadonlyArray<string>;
+  readonly models: ReadonlyArray<PiManagedModel>;
   readonly runtimeMode: RuntimeMode;
   readonly defaultModel?: string | undefined;
 }

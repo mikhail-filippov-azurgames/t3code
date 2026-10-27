@@ -29,7 +29,11 @@ it.effect("writes the managed catalog and never trusts project resources", () =>
     yield* ensurePiAgentFiles(dir, {
       baseUrl: "http://127.0.0.1:8080/v1",
       apiKey: "local",
-      models: ["bonsai-2-27b", "ft3-local/bonsai-2-27b", "qwen"],
+      models: [
+        { id: "bonsai-2-27b", baseUrl: "http://127.0.0.1:8080/v1" },
+        { id: "ft3-local/bonsai-2-27b" },
+        { id: "qwen", baseUrl: "http://127.0.0.1:8081/v1" },
+      ],
       runtimeMode: "full-access",
       defaultModel: "ft3-local/bonsai-2-27b",
     });
@@ -41,7 +45,7 @@ it.effect("writes the managed catalog and never trusts project resources", () =>
           baseUrl: "http://127.0.0.1:8080/v1",
           api: "openai-completions",
           apiKey: "local",
-          models: [{ id: "bonsai-2-27b" }, { id: "qwen" }],
+          models: [{ id: "bonsai-2-27b" }, { id: "qwen", baseUrl: "http://127.0.0.1:8081/v1" }],
         },
       },
     });
@@ -62,7 +66,7 @@ it.effect("rewrites only when the turn changes the pinned tools", () =>
     const input = {
       baseUrl: "http://127.0.0.1:8080/v1",
       apiKey: "local",
-      models: ["bonsai-2-27b"],
+      models: [{ id: "bonsai-2-27b" }],
       runtimeMode: "approval-required" as const,
       defaultModel: "bonsai-2-27b",
     };
@@ -89,12 +93,31 @@ it("dedupes managed models and keeps the provider prefix out of the catalog", ()
   assert.deepEqual(
     resolvePiManagedModels({
       configuredModel: "ft3-local/bonsai-2-27b",
-      profileModels: ["bonsai-2-27b", "qwen"],
+      profileModels: [
+        { model: "bonsai-2-27b", baseUrl: "http://127.0.0.1:8080/v1" },
+        { model: "qwen", baseUrl: "http://127.0.0.1:8081/v1" },
+      ],
       customModels: ["qwen", { slug: "llama" }],
     }),
-    ["bonsai-2-27b", "qwen", "llama"],
+    [{ id: "bonsai-2-27b" }, { id: "qwen", baseUrl: "http://127.0.0.1:8081/v1" }, { id: "llama" }],
   );
   assert.include(buildPiModelsJson({ baseUrl: "", apiKey: "", models: [] }), "127.0.0.1:11434");
+});
+
+it("keeps a per-model endpoint so profiles on different ports stay reachable", () => {
+  const modelsJson = buildPiModelsJson({
+    baseUrl: "http://127.0.0.1:8080/v1",
+    apiKey: "local",
+    models: [
+      { id: "ternary-bonsai-8b", baseUrl: "http://127.0.0.1:8081/v1" },
+      { id: "bonsai-2-27b" },
+    ],
+  });
+
+  assert.deepEqual(JSON.parse(modelsJson).providers["ft3-local"].models, [
+    { id: "ternary-bonsai-8b", baseUrl: "http://127.0.0.1:8081/v1" },
+    { id: "bonsai-2-27b" },
+  ]);
 });
 
 it("replaces an inherited agent dir variable", () => {
