@@ -9,6 +9,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { applyAuthorTextPolicy } from "../../ft3-delegation/src/secretTextPolicy.ts";
 import {
   TaskHandoff,
   type TaskAttachHandoffInput,
@@ -25,6 +26,30 @@ const unavailable = () =>
     code: "orchestration_error",
     message: "The delegated task handoff could not be completed.",
   });
+
+/** The handoff is agent-authored text read by other agents, so it follows the author policy. */
+const handoffTexts = (handoff: TaskHandoff): ReadonlyArray<string> => [
+  handoff.contractRef,
+  handoff.stage,
+  ...handoff.owns,
+  ...handoff.reads,
+  ...handoff.forbidden,
+  ...handoff.acceptance,
+  ...handoff.outputs,
+  ...handoff.evidence,
+  ...handoff.predecessorRefs,
+];
+
+const handoffCarriesSecret = (handoff: TaskHandoff): boolean => {
+  try {
+    return handoffTexts(handoff).some(
+      (text) => applyAuthorTextPolicy("handoff", text)._tag === "Rejected",
+    );
+  } catch {
+    // A failed check must reject the handoff like a detected secret does.
+    return true;
+  }
+};
 
 const notFound = () =>
   new OrchestratorMcpFailure({
@@ -123,6 +148,13 @@ const make = Effect.gen(function* () {
     get: read,
     attach: Effect.fn("Ft3TaskHandoffService.attach")(function* (scope, input) {
       const owned = yield* ownedTask(scope, input.taskId);
+      if (handoffCarriesSecret(input.handoff)) {
+        return yield* new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "The authored handoff could not be confirmed secret-free. Remove sensitive values and try again.",
+        });
+      }
       const canonical = encodeHandoff(input.handoff);
       const existing = yield* sql<{
         readonly handoff_json: string;

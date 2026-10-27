@@ -310,4 +310,58 @@ describe("OrchestratorMcpService delegation text policy", () => {
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
     }),
   );
+
+  it.effect(
+    "rejects a follow-up message with a credential when the target is a delegated child",
+    () =>
+      Effect.gen(function* () {
+        const parentThreadId = ThreadId.make("thread:delegation-followup-parent");
+        const childThreadId = ThreadId.make("thread:delegation-followup-child");
+        const sent = yield* Ref.make(0);
+        const parentProjection = {
+          ...idleThreadProjection(liveThreadShell(parentThreadId)),
+          runs: [
+            {
+              id: RunId.make("run:delegation-followup-parent"),
+              ordinal: 1,
+              status: "running",
+              rootNodeId: NodeId.make("node:delegation-followup-root"),
+              providerInstanceId: codexInstanceId,
+              modelSelection: { instanceId: codexInstanceId, model: "gpt-5.4" },
+            },
+          ],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const childShell: OrchestrationV2ThreadShell = {
+          ...liveThreadShell(childThreadId),
+          lineage: {
+            rootThreadId: parentThreadId,
+            parentThreadId,
+            relationshipToParent: "subagent",
+          },
+        };
+        const childProjection = idleThreadProjection(childShell);
+        const layerDependencies = Layer.mergeAll(
+          baseLayers(),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            getThreadRecords: (threadId: ThreadId) =>
+              Effect.succeed(threadId === parentThreadId ? parentProjection : childProjection),
+            getThreadShell: () => Effect.succeed(childShell),
+            getProjectThreadRecords: () => Effect.succeed(childProjection),
+            sendToThread: () => Ref.update(sent, (count) => count + 1).pipe(Effect.as({} as never)),
+          }),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const error = yield* service
+            .sendToThread(scopeFor(parentThreadId), {
+              threadId: childThreadId,
+              message: `Follow-up report: ${providerToken}`,
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.code, "capability_denied");
+          assert.equal(yield* Ref.get(sent), 0);
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+      }),
+  );
 });
