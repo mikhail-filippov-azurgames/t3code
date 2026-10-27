@@ -78,7 +78,10 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
       const current = inference.registeredConfig(instanceId) ?? inferenceConfig;
       const models = resolvePiManagedModels({
         configuredModel: undefined,
-        profileModels: current.profiles.map((profile) => profile.model),
+        profileModels: current.profiles.map((profile) => ({
+          model: profile.model,
+          baseUrl: profile.baseUrl,
+        })),
         customModels: input.config.customModels,
       });
       return {
@@ -86,7 +89,7 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
         apiKey: current.apiKey,
         models,
         runtimeMode,
-        defaultModel: models[0],
+        defaultModel: models[0]?.id,
       };
     };
     const codexPaths = defaultCodexImportPaths(processEnvironment);

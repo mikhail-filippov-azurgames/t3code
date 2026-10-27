@@ -1,5 +1,5 @@
 import { AsyncResult } from "effect/reactivity";
-import { CircleIcon, PowerIcon } from "lucide-react";
+import { CircleIcon, PowerIcon, Settings2Icon } from "lucide-react";
 import { useState } from "react";
 
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
@@ -9,6 +9,7 @@ import { ComposerControl, ComposerControlIcon } from "~/components/chat/Composer
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { PiInferenceProfileDialog } from "./PiInferenceProfileDialog.tsx";
 import {
   piInferenceAction,
   piInferenceActionDisabled,
@@ -44,6 +45,7 @@ export function PiInferenceServerControl(props: PiInferenceServerControlProps) {
   const stop = useAtomCommand(piEnvironment.stop, { reportFailure: false });
   const [pending, setPending] = useState<PiInferenceAction | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [paramsOpen, setParamsOpen] = useState(false);
 
   const status = query.data;
   const action = piInferenceAction(status);
@@ -98,6 +100,26 @@ export function PiInferenceServerControl(props: PiInferenceServerControlProps) {
         </TooltipTrigger>
         <TooltipPopup>{hint}</TooltipPopup>
       </Tooltip>
+      <ComposerControl
+        size="xs"
+        type="button"
+        aria-label="Server parameters"
+        aria-haspopup="dialog"
+        onClick={() => setParamsOpen(true)}
+      >
+        <ComposerControlIcon icon={Settings2Icon} size="xs" />
+        <span className="sr-only sm:not-sr-only">Server parameters</span>
+      </ComposerControl>
+      {paramsOpen ? (
+        <PiInferenceProfileDialog
+          environmentId={props.environmentId}
+          instanceId={props.instanceId}
+          model={props.model}
+          open
+          onOpenChange={setParamsOpen}
+          onSaved={query.refresh}
+        />
+      ) : null}
     </div>
   );
 }

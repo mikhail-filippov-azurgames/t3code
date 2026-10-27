@@ -11,6 +11,8 @@ export const FT3_PI_WS_METHODS = {
   piInferenceServerStatus: "pi.inferenceServer.status",
   piInferenceServerStart: "pi.inferenceServer.start",
   piInferenceServerStop: "pi.inferenceServer.stop",
+  piInferenceProfileGet: "pi.inferenceProfile.get",
+  piInferenceProfileSave: "pi.inferenceProfile.save",
   piBonsaiPresetDetect: "pi.bonsaiPreset.detect",
   piBonsaiPresetApply: "pi.bonsaiPreset.apply",
 } as const;
@@ -20,6 +22,39 @@ export const PiInferenceServerInput = Schema.Struct({
   model: Schema.optionalKey(Schema.String),
 });
 export type PiInferenceServerInput = typeof PiInferenceServerInput.Type;
+
+export const PiInferenceProfileSettings = Schema.Struct({
+  model: Schema.NonEmptyString,
+  baseUrl: Schema.NonEmptyString,
+  executablePath: Schema.String,
+  modelPath: Schema.String,
+  gpuLayers: Schema.Int,
+  contextSize: Schema.Int,
+  parallel: Schema.Int,
+  temperature: Schema.Number,
+  topP: Schema.Number,
+  topK: Schema.Int,
+  minP: Schema.Number,
+  flashAttention: Schema.Boolean,
+  cacheTypeK: Schema.Literals(["q4_0", "q8_0", "f16", "bf16", "f32"]),
+  cacheTypeV: Schema.Literals(["q4_0", "q8_0", "f16", "bf16", "f32"]),
+  jinja: Schema.Boolean,
+  reasoning: Schema.Boolean,
+  reasoningEffort: Schema.Literals(["low", "medium", "high"]),
+});
+export type PiInferenceProfileSettings = typeof PiInferenceProfileSettings.Type;
+
+export const PiInferenceProfileGetInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  model: Schema.NonEmptyString,
+});
+export type PiInferenceProfileGetInput = typeof PiInferenceProfileGetInput.Type;
+
+export const PiInferenceProfileSaveInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  profile: PiInferenceProfileSettings,
+});
+export type PiInferenceProfileSaveInput = typeof PiInferenceProfileSaveInput.Type;
 
 export const PiInferenceServerStatus = Schema.Struct({
   instanceId: Schema.String,
@@ -70,6 +105,16 @@ export const piRpcs = [
     success: PiInferenceServerStatus,
     error: EnvironmentAuthorizationError,
   }),
+  Rpc.make(FT3_PI_WS_METHODS.piInferenceProfileGet, {
+    payload: PiInferenceProfileGetInput,
+    success: PiInferenceProfileSettings,
+    error: EnvironmentAuthorizationError,
+  }),
+  Rpc.make(FT3_PI_WS_METHODS.piInferenceProfileSave, {
+    payload: PiInferenceProfileSaveInput,
+    success: PiInferenceProfileSettings,
+    error: EnvironmentAuthorizationError,
+  }),
   Rpc.make(FT3_PI_WS_METHODS.piBonsaiPresetDetect, {
     payload: PiBonsaiPresetDetectInput,
     success: Schema.NullOr(PiBonsaiPreset),
@@ -86,6 +131,8 @@ export const piRpcScopes = {
   [FT3_PI_WS_METHODS.piInferenceServerStatus]: AuthOrchestrationReadScope,
   [FT3_PI_WS_METHODS.piInferenceServerStart]: AuthOrchestrationOperateScope,
   [FT3_PI_WS_METHODS.piInferenceServerStop]: AuthOrchestrationOperateScope,
+  [FT3_PI_WS_METHODS.piInferenceProfileGet]: AuthOrchestrationReadScope,
+  [FT3_PI_WS_METHODS.piInferenceProfileSave]: AuthOrchestrationOperateScope,
   [FT3_PI_WS_METHODS.piBonsaiPresetDetect]: AuthOrchestrationReadScope,
   [FT3_PI_WS_METHODS.piBonsaiPresetApply]: AuthOrchestrationOperateScope,
 } as const;

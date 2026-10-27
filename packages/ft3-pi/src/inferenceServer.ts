@@ -306,9 +306,12 @@ export function resolvePiInferenceProfile(
   );
 }
 
-/** Managed models.json points at the configured endpoint, never at a user Pi catalog. */
+/**
+ * Managed models.json provider endpoint. Profiles on other ports keep working
+ * because each model carries its own `baseUrl` override.
+ */
 export function piInferenceModelsBaseUrl(config: PiInferenceConfig): string {
-  return config.profiles.length === 1 ? config.profiles[0]!.baseUrl : config.baseUrl;
+  return config.baseUrl;
 }
 
 function parsePiLocalEndpoint(value: string): URL | undefined {
