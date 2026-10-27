@@ -222,3 +222,100 @@ it("reports an unregistered instance instead of throwing", async () => {
   assert.match(status.error ?? "", /not registered/);
   assert.equal(fake.spawnArgs.length, 0);
 });
+
+it("returns launch defaults for a stored profile with unset tuning fields", () => {
+  const { control } = makeControl("a");
+
+  const settings = control.profile("a", `ft3-local/${MODEL}`);
+
+  assert.equal(settings.model, `ft3-local/${MODEL}`);
+  assert.equal(settings.baseUrl, profile.baseUrl);
+  assert.equal(settings.contextSize, 81_920);
+  assert.equal(settings.parallel, 1);
+  assert.isTrue(settings.flashAttention);
+});
+
+it("saves one model's launch settings into the registered profile file", async () => {
+  const fake = makeFake();
+  const manager = makePiInferenceServerManager(fake.deps);
+  const configPath = "C:\\state\\pi\\a\\inference-profiles.json";
+  manager.registerInstance("a", config, configPath);
+  const writes: Array<PiInferenceConfig> = [];
+  const control = makePiInferenceControl({
+    manager,
+    readConfig: async () => config,
+    writeConfig: async (_path, next) => {
+      writes.push(next);
+    },
+  });
+
+  const saved = await control.saveProfile("a", {
+    model: `ft3-local/${MODEL}`,
+    baseUrl: "http://127.0.0.1:8081/v1",
+    executablePath: "C:\\Bonsai\\bin\\llama-server.exe",
+    modelPath: "C:\\Bonsai\\models\\bonsai-8b.gguf",
+    gpuLayers: 99,
+    contextSize: 16_384,
+    parallel: 2,
+    temperature: 0.7,
+    topP: 0.9,
+    topK: 40,
+    minP: 0.05,
+    flashAttention: true,
+    cacheTypeK: "q8_0",
+    cacheTypeV: "q8_0",
+    jinja: true,
+    reasoning: true,
+    reasoningEffort: "low",
+  });
+
+  assert.equal(saved.contextSize, 16_384);
+  assert.equal(writes[0]?.profiles.length, 1);
+  const written = writes[0]!.profiles[0]!;
+  assert.equal(written.model, `ft3-local/${MODEL}`);
+  assert.equal(written.baseUrl, "http://127.0.0.1:8081/v1");
+  assert.equal(written.parallel, 2);
+  assert.equal(written.cacheTypeK, "q8_0");
+  assert.deepEqual(manager.registeredConfig("a"), writes[0]);
+});
+
+it("rejects a non-loopback endpoint before writing the profile file", async () => {
+  const fake = makeFake();
+  const manager = makePiInferenceServerManager(fake.deps);
+  manager.registerInstance("a", config, "C:\\state\\pi\\a\\inference-profiles.json");
+  let writes = 0;
+  const control = makePiInferenceControl({
+    manager,
+    readConfig: async () => config,
+    writeConfig: async () => {
+      writes += 1;
+    },
+  });
+
+  let failure: unknown;
+  try {
+    await control.saveProfile("a", {
+      model: `ft3-local/${MODEL}`,
+      baseUrl: "http://example.com/v1",
+      executablePath: profile.executablePath,
+      modelPath: profile.modelPath,
+      gpuLayers: 48,
+      contextSize: 81_920,
+      parallel: 1,
+      temperature: 1,
+      topP: 0.95,
+      topK: 20,
+      minP: 0.05,
+      flashAttention: true,
+      cacheTypeK: "q4_0",
+      cacheTypeV: "q4_0",
+      jinja: true,
+      reasoning: true,
+      reasoningEffort: "medium",
+    });
+  } catch (cause) {
+    failure = cause;
+  }
+  assert.match(failure instanceof Error ? failure.message : "", /loopback/);
+  assert.equal(writes, 0);
+});

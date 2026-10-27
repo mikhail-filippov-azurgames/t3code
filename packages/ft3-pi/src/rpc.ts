@@ -7,6 +7,8 @@ import {
   FT3_PI_WS_METHODS,
   type PiBonsaiPresetApplyInput,
   type PiBonsaiPresetDetectInput,
+  type PiInferenceProfileGetInput,
+  type PiInferenceProfileSaveInput,
   type PiInferenceServerInput,
 } from "./rpc-contracts.ts";
 
@@ -21,6 +23,10 @@ export const piRpcHandlers = {
     Effect.promise(() => control.start(input.instanceId, input.model)),
   [FT3_PI_WS_METHODS.piInferenceServerStop]: (input: PiInferenceServerInput) =>
     Effect.promise(() => control.stop(input.instanceId, input.model)),
+  [FT3_PI_WS_METHODS.piInferenceProfileGet]: (input: PiInferenceProfileGetInput) =>
+    Effect.sync(() => control.profile(input.instanceId, input.model)),
+  [FT3_PI_WS_METHODS.piInferenceProfileSave]: (input: PiInferenceProfileSaveInput) =>
+    Effect.promise(() => control.saveProfile(input.instanceId, input.profile)),
   [FT3_PI_WS_METHODS.piBonsaiPresetDetect]: (input: PiBonsaiPresetDetectInput) =>
     Effect.promise(() => control.detectPreset(input.rootPath)),
   [FT3_PI_WS_METHODS.piBonsaiPresetApply]: (input: PiBonsaiPresetApplyInput) =>
