@@ -44,6 +44,7 @@ export interface SummaryHistoryRow {
   readonly currentTurnId: string | null;
   readonly currentTurnState: string | null;
   readonly currentWatermark: number;
+  readonly newerWorkStarted: number;
 }
 
 interface SummaryRow {
@@ -118,6 +119,11 @@ export class DelegatedTaskSummaryRepository extends Context.Service<
     readonly currentWatermark: (
       childThreadId: string,
     ) => Effect.Effect<number, DelegatedTaskSummaryRepositoryError>;
+    readonly hasNewerWork: (input: {
+      readonly childThreadId: string;
+      readonly sourceTurnId: string;
+      readonly completedAt: string;
+    }) => Effect.Effect<boolean, DelegatedTaskSummaryRepositoryError>;
     readonly listHistory: (input: {
       readonly parentThreadId: string;
       readonly cursor?: {
@@ -211,6 +217,33 @@ const make = Effect.gen(function* () {
           WHERE aggregate_kind = 'thread' AND stream_id = ${childThreadId}`,
         ).pipe(Effect.map((rows) => rows[0]?.watermark ?? 0)),
     ),
+    hasNewerWork: Effect.fn("DelegatedTaskSummaryRepository.hasNewerWork")(
+      ({ childThreadId, sourceTurnId, completedAt }) =>
+        mapError("hasNewerWork")(
+          sql<{ readonly found: number }>`SELECT
+            COALESCE((
+              SELECT MAX(t.ordinal) > src.ordinal
+              FROM orchestration_v2_projection_provider_turns t
+              WHERE t.thread_id = ${childThreadId} AND src.ordinal IS NOT NULL
+            ), 0)
+            OR CASE WHEN src.ordinal IS NULL THEN (
+              NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = ${childThreadId}
+              )
+              OR EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = ${childThreadId}
+                  AND r.status <> 'rolled_back'
+                  AND r.requested_at > ${completedAt}
+              )
+            ) ELSE 0 END AS found
+          FROM (SELECT (
+            SELECT t.ordinal FROM orchestration_v2_projection_provider_turns t
+            WHERE t.thread_id = ${childThreadId} AND t.provider_turn_id = ${sourceTurnId}
+          ) AS ordinal) src`,
+        ).pipe(Effect.map((rows) => rows[0]?.found === 1)),
+    ),
     listHistory: Effect.fn("DelegatedTaskSummaryRepository.listHistory")(
       ({ parentThreadId, cursor, limit }) =>
         mapError("listHistory")(
@@ -231,7 +264,31 @@ const make = Effect.gen(function* () {
             (SELECT t.status FROM orchestration_v2_projection_provider_turns t
               WHERE t.thread_id = s.child_thread_id ORDER BY t.ordinal DESC LIMIT 1) AS "currentTurnState",
             COALESCE((SELECT MAX(e.sequence) FROM orchestration_events e
-              WHERE e.aggregate_kind = 'thread' AND e.stream_id = s.child_thread_id), 0) AS "currentWatermark"
+              WHERE e.aggregate_kind = 'thread' AND e.stream_id = s.child_thread_id), 0) AS "currentWatermark",
+            (COALESCE((
+              SELECT MAX(t2.ordinal) > (
+                SELECT t1.ordinal FROM orchestration_v2_projection_provider_turns t1
+                WHERE t1.thread_id = s.child_thread_id
+                  AND t1.provider_turn_id = s.source_turn_id
+              )
+              FROM orchestration_v2_projection_provider_turns t2
+              WHERE t2.thread_id = s.child_thread_id
+            ), 0) OR CASE WHEN (
+              SELECT t1.ordinal FROM orchestration_v2_projection_provider_turns t1
+              WHERE t1.thread_id = s.child_thread_id
+                AND t1.provider_turn_id = s.source_turn_id
+            ) IS NULL THEN (
+              NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = s.child_thread_id
+              )
+              OR EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_runs r
+                WHERE r.thread_id = s.child_thread_id
+                  AND r.status <> 'rolled_back'
+                  AND r.requested_at > s.completed_at
+              )
+            ) ELSE 0 END) AS "newerWorkStarted"
           FROM ft3_delegated_task_summaries s
           WHERE s.parent_thread_id = ${parentThreadId}
             AND NOT EXISTS (

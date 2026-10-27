@@ -762,6 +762,12 @@ describe("ft3 task toolkit through ft3-host", () => {
           (${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'legacy:turn:0',
             '2026-10-01T00:00:00.000Z', 'Historical summary', 'model', '["legacy:turn:0"]', 0,
             'fingerprint:legacy', 'ready', NULL, 1, NULL, '2026-10-01T00:00:00.000Z')`;
+      yield* sql`INSERT INTO orchestration_v2_projection_runs (
+          run_id, thread_id, ordinal, provider, status, requested_at, completed_at, payload_json
+        ) VALUES (
+          'run:a:1', ${String(f.aThreadId)}, 1, 'codex', 'completed',
+          '2026-10-25T00:00:00.000Z', '2026-10-25T02:00:00.000Z', '{}'
+        )`;
       const listed = yield* decodeList((yield* call("task_list", {})).structuredContent);
       assert.equal(listed.tasks[0]!.summary!.text, "Current summary");
       assert.isFalse(listed.tasks[0]!.summary!.stale);
@@ -805,6 +811,52 @@ describe("ft3 task toolkit through ft3-host", () => {
         history.records.map((record) => record.turnOrdinal),
         [2, 1],
       );
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("keeps a summary fresh when only trailing bookkeeping events follow it", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO ft3_delegated_task_summaries (
+          child_thread_id, parent_environment_id, parent_thread_id, source_turn_id, completed_at,
+          summary_text, source, source_turn_ids_json, watermark, content_fingerprint, state,
+          error, attempt_count, retry_after, updated_at
+        ) VALUES (
+          ${String(f.aThreadId)}, 'environment:test', ${String(parentId)}, 'turn:a',
+          '2026-10-25T01:00:00.000Z', 'Current summary', 'model', '["turn:a"]', 0,
+          'fingerprint:current', 'ready', NULL, 1, NULL, '2026-10-25T01:00:00.000Z'
+        )`;
+      yield* sql`INSERT INTO orchestration_v2_projection_provider_turns (
+          provider_turn_id, thread_id, provider_thread_id, node_id, run_attempt_id, ordinal,
+          status, started_at, completed_at, payload_json
+        ) VALUES (
+          'turn:a', ${String(f.aThreadId)}, 'provider-thread:a', 'node:a-root', NULL, 1,
+          'completed', '2026-10-25T00:30:00.000Z', '2026-10-25T01:00:00.000Z', '{}'
+        )`;
+      yield* sql`INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          actor_kind, payload_json, metadata_json
+        ) VALUES (
+          'event:trailing', 'thread', ${String(f.aThreadId)}, 1, 'checkpoint.captured',
+          '2026-10-25T01:00:01.000Z', 'server', '{}', '{}'
+        )`;
+      const history = yield* decodeHistory(
+        (yield* call("task_summary_history", {})).structuredContent,
+      );
+      assert.equal(String(history.records[0]!.currentTurnId), "turn:a");
+      assert.isFalse(history.records[0]!.stale);
+      yield* sql`INSERT INTO orchestration_v2_projection_provider_turns (
+          provider_turn_id, thread_id, provider_thread_id, node_id, run_attempt_id, ordinal,
+          status, started_at, completed_at, payload_json
+        ) VALUES (
+          'turn:a:2', ${String(f.aThreadId)}, 'provider-thread:a', 'node:a-root', NULL, 2,
+          'running', '2026-10-25T02:00:00.000Z', NULL, '{}'
+        )`;
+      const followed = yield* decodeHistory(
+        (yield* call("task_summary_history", {})).structuredContent,
+      );
+      assert.isTrue(followed.records[0]!.stale);
     }).pipe(Effect.provide(f.layer));
   });
 
