@@ -16,7 +16,7 @@ export function KimiProviderInstanceIcon(props: {
   readonly size?: "default" | "compact" | undefined;
   readonly showBadge?: boolean | undefined;
   readonly badgeContent: "initials" | "none";
-  readonly accentColor: string | null;
+  readonly accentColor: string | null | undefined;
   readonly accentStyle: CSSProperties | undefined;
 }) {
   return (
