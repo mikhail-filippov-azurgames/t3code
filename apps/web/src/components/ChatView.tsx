@@ -278,6 +278,7 @@ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { useSideChat } from "./chat/useSideChat";
+import { useFt3BoardChatPanel } from "@t3tools/ft3-web/board-chat";
 import { useRemoteOpenState } from "~/remoteOpen";
 import { shouldShowOpenInPicker } from "./chat/OpenInPicker.logic";
 import { useOpenFavoriteEditorShortcut } from "./chat/OpenInPickerShortcut";
@@ -971,6 +972,7 @@ export default function ChatView(props: ChatViewProps) {
     return labels;
   })();
   const activeThreadRef = useActiveThreadRef(activeThread);
+  const ft3BoardChatPanel = useFt3BoardChatPanel(activeThreadRef);
   const activeThreadKey = activeThreadRef ? scopedThreadKey(activeThreadRef) : null;
   const activeEnvironmentServerBrowser = useEnvironmentSupportsServerBrowser(
     activeThreadRef?.environmentId ?? null,
@@ -3304,6 +3306,7 @@ export default function ChatView(props: ChatViewProps) {
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
               isServerThread={isServerThread}
+              hasDelegationParent={parentSubagentThreadId !== null}
               activeThreadTitle={activeThread.title}
               activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
               activeProject={activeProject ?? null}
@@ -3462,6 +3465,8 @@ export default function ChatView(props: ChatViewProps) {
                     : { historyControls: threadHistoryControls })}
                 />
               </WorkspaceMutationIdContext>
+
+              {ft3BoardChatPanel}
 
               {showScrollToBottom && !isThreadFindActive && (
                 <ScrollToEndButton

@@ -61,6 +61,12 @@ export function createBoardEnvironmentAtoms<R, E>(
     staleTimeMs: 15_000,
     refreshIntervalMs: 15_000,
   });
+  const delegatedTaskSummaryHistory = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:delegated-summary-history",
+    tag: WS_METHODS.boardDelegatedTaskSummaryHistory,
+    staleTimeMs: 15_000,
+    refreshIntervalMs: 15_000,
+  });
   const refreshLists = (environmentId: EnvironmentId, registry: AtomRegistry.AtomRegistry) => {
     registry.refresh(list({ environmentId, input: {} }));
     registry.refresh(list({ environmentId, input: { includeArchived: true } }));
@@ -90,6 +96,7 @@ export function createBoardEnvironmentAtoms<R, E>(
     list,
     resolve,
     delegations,
+    delegatedTaskSummaryHistory,
     orchestratorAdd: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:board:orchestrator-add",
       tag: WS_METHODS.boardOrchestratorAdd,

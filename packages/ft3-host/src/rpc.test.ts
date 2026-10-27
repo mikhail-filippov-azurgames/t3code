@@ -60,6 +60,8 @@ const stubs = {
   [FT3_WS_METHODS.boardResolve]: () => Effect.succeed({ matches: [], details: [] }),
   [FT3_WS_METHODS.boardExecutorDelegations]: () =>
     Effect.succeed({ delegations: [], nextCursor: null }),
+  [FT3_WS_METHODS.boardDelegatedTaskSummaryHistory]: () =>
+    Effect.succeed({ records: [], nextCursor: null }),
   [FT3_WS_METHODS.boardList]: () => Effect.succeed({ cards: [], events: [] }),
   [FT3_WS_METHODS.boardCreate]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardStart]: () => Effect.succeed(card),
@@ -121,6 +123,11 @@ describe("FT3 RPC authorization", () => {
         delegations: [],
         nextCursor: null,
       });
+      expect(
+        yield* client[FT3_WS_METHODS.boardDelegatedTaskSummaryHistory]({
+          parentThreadId: ThreadId.make("c"),
+        }),
+      ).toEqual({ records: [], nextCursor: null });
       expect(yield* client[FT3_WS_METHODS.boardList]({})).toEqual({ cards: [], events: [] });
       expect(
         yield* client[FT3_WS_METHODS.boardCreate]({
@@ -196,6 +203,11 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
         yield* client[FT3_WS_METHODS.boardExecutorDelegations]({ cardId }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.boardDelegatedTaskSummaryHistory]({
+          parentThreadId: ThreadId.make("c"),
+        }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(yield* client[FT3_WS_METHODS.boardList]({}).pipe(Effect.flip)).toMatchObject({
         _tag: "EnvironmentAuthorizationError",
