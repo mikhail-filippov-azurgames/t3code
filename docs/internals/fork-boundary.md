@@ -49,14 +49,15 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 Его MCP-регистрация использует существующие `McpToolAccess` и `toolkitRegistration`;
 host загружает её при построении Layer, чтобы не замкнуть инициализацию модулей сервера.
 
-| Upstream-файл                                       | Правка                                                                                      | Зачем                                                               |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `apps/server/src/server.ts`                         | импорт `ft3-host/server`, `Ft3Host.layer` и `Ft3Host.reactorLayer()` в композиции Layer     | подключение серверных возможностей ft3, запуск реактора доски       |
-| `apps/server/src/mcp/McpHttpServer.ts`              | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`                   | подключение регистрационных Layer MCP-toolkit'ов ft3                |
-| `apps/server/src/persistence/Sqlite.ts`             | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()`            | миграции пакета на той же SQLite-сессии после core                  |
-| `apps/server/package.json`                          | зависимость `@t3tools/ft3-host: workspace:*`                                                | разрешение workspace-пакета                                         |
-| `pnpm-lock.yaml`                                    | importers `packages/ft3-*` и workspace-зависимости                                          | воспроизводимое подключение пакетов                                 |
-| `apps/server/src/persistence/ft3Migrations.test.ts` | ожидаемые записи `Board`, `BoardReactor`, `Architect` и `ArchitectReviewWake` в журнале ft3 | проверка подключения миграций пакетов доски, реактора и архитектора |
+| Upstream-файл                                         | Правка                                                                                      | Зачем                                                                                              |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `apps/server/src/server.ts`                           | импорт `ft3-host/server`, `Ft3Host.layer` и `Ft3Host.reactorLayer()` в композиции Layer     | подключение серверных возможностей ft3, запуск реактора доски                                      |
+| `apps/server/src/mcp/McpHttpServer.ts`                | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`                   | подключение регистрационных Layer MCP-toolkit'ов ft3                                               |
+| `apps/server/src/provider/AgentContextBudget.test.ts` | добавить in-memory SQLite в слои теста                                                      | регистрация `ft3-orchestration` MCP-инструментов требует `SqlClient`; тест измеряет общий контекст |
+| `apps/server/src/persistence/Sqlite.ts`               | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()`            | миграции пакета на той же SQLite-сессии после core                                                 |
+| `apps/server/package.json`                            | зависимость `@t3tools/ft3-host: workspace:*`                                                | разрешение workspace-пакета                                                                        |
+| `pnpm-lock.yaml`                                      | importers `packages/ft3-*` и workspace-зависимости                                          | воспроизводимое подключение пакетов                                                                |
+| `apps/server/src/persistence/ft3Migrations.test.ts`   | ожидаемые записи `Board`, `BoardReactor`, `Architect` и `ArchitectReviewWake` в журнале ft3 | проверка подключения миграций пакетов доски, реактора и архитектора                                |
 
 Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
 Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
@@ -661,21 +662,18 @@ New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 
 ## Markdown frontmatter in document previews
 
-A leading YAML block in a Markdown file is metadata, not prose. Passing it to
-the Markdown renderer turns the closing `---` into a setext heading and the
-`key: value` lines into a paragraph. When frontmatter is present,
-`packages/ft3-web/src/files` splits the block off and shows it as a monospaced
-block above the rendered body; plain Markdown keeps the upstream preview.
-Task-list offsets are shifted by the block length so a checkbox edit still
-lands on the original file.
+Upstream now masks a leading YAML block before Markdown rendering and preserves
+line positions for task edits. ft3 keeps only the extra display: it extracts
+the YAML for a monospaced metadata block, then passes the original text through
+upstream's masker. The duplicate body split and offset remapping were removed.
 
-| Upstream file                                           | Connection                                                                                                                                              | Reason                                          |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| `apps/web/src/components/files/FileMarkdownPreview.tsx` | return `MarkdownDocumentPreview` from `@t3tools/ft3-web/files` only when `hasMarkdownFrontmatter` matches; otherwise keep the upstream Markdown preview | frontmatter rendering stays in the fork package |
-| `packages/ft3-web/package.json`                         | export `./files`                                                                                                                                        | resolve the preview entry without a root barrel |
+| Upstream file                                           | Connection                                                                                                                    | Reason                                                   |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `apps/web/src/components/files/FileMarkdownPreview.tsx` | render `MarkdownFrontmatterBlock` from `@t3tools/ft3-web/files`; pass `maskMarkdownFrontmatter(props.text)` to `ChatMarkdown` | show metadata while keeping upstream masking and offsets |
+| `packages/ft3-web/package.json`                         | export `./files`                                                                                                              | resolve the display block without a root barrel          |
 
-New fork-owned tests: `packages/ft3-web/src/files/markdownFrontmatter.test.ts`
-and `packages/ft3-web/src/files/MarkdownDocumentPreview.browser.test.tsx`.
+Fork-owned tests: `packages/ft3-web/src/files/markdownFrontmatter.test.ts`
+and `packages/ft3-web/src/files/MarkdownFrontmatterBlock.browser.test.tsx`.
 
 ## Панель «Карточки/История» в чате и координаторская кнопка в шапке
 
