@@ -66,3 +66,40 @@ export const VcsCommitHistoryResult = Schema.Struct({
   nextCursor: VcsCommitHistoryCursor.pipe(Schema.NullOr),
 });
 export type VcsCommitHistoryResult = typeof VcsCommitHistoryResult.Type;
+
+/** Every ref in the repository, independent of the loaded history page. */
+export const VcsRefEntry = Schema.Struct({
+  /** Full ref name, e.g. `refs/heads/main` or `refs/tags/v1`. */
+  refName: Schema.String,
+  /** Short name: `main`, `origin/main`, `v1`. */
+  name: Schema.String,
+  kind: VcsCommitHistoryRefKind,
+  /** Commit the ref points at; annotated tags are peeled. */
+  target: VcsCommitHistoryId,
+  current: Schema.Boolean,
+});
+export type VcsRefEntry = typeof VcsRefEntry.Type;
+
+export const VcsRefsListInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+});
+export type VcsRefsListInput = typeof VcsRefsListInput.Type;
+
+export const VcsRefsListResult = Schema.Struct({
+  refs: Schema.Array(VcsRefEntry),
+  isRepo: Schema.Boolean,
+});
+export type VcsRefsListResult = typeof VcsRefsListResult.Type;
+
+export const VcsCommitDiffInput = Schema.Struct({
+  cwd: TrimmedNonEmptyString,
+  commit: VcsCommitHistoryId,
+});
+export type VcsCommitDiffInput = typeof VcsCommitDiffInput.Type;
+
+export const VcsCommitDiffResult = Schema.Struct({
+  commit: VcsCommitHistoryId,
+  patch: Schema.String,
+  truncated: Schema.Boolean,
+});
+export type VcsCommitDiffResult = typeof VcsCommitDiffResult.Type;

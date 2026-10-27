@@ -158,13 +158,29 @@ RPC-метод `vcs.listCommitHistory` (read → `orchestration:read`) доба�
 Web-вкладка «Commit graph» в реестре `ft3-web` переносит компоненты старого
 форка (`CommitsGraph`, `webGitGraphAdapter`, `commitsGraphPreferences`,
 `commitsGraphSelection`) на `@web-git-graph/web` с тем же патчем через
-`patchedDependencies` в `pnpm-workspace.yaml`. Реф-бейджи читаются только из
-`--decorate`-вывода `git log`; дополнение рефами веток через `usePaginatedBranches`
-не перенесено (у V2 `VcsRef` нет поля `target`).
+`patchedDependencies` в `pnpm-workspace.yaml`. Реф-бейджи страницы читаются из
+`--decorate`-вывода `git log`, а полный список веток и тегов — из
+`vcs.listRepositoryRefs` (`git for-each-ref`) и накладывается поверх страницы,
+поэтому рефы за пределами загруженной страницы тоже рисуются.
 
 | Файл                  | Правка                                                                | Зачем                                           |
 | --------------------- | --------------------------------------------------------------------- | ----------------------------------------------- |
 | `pnpm-workspace.yaml` | `"@web-git-graph/web@1.0.7": patches/@web-git-graph__web@1.0.7.patch` | применить патч темы/колонок, как в старом форке |
+
+## Выбор коммита в графе (S2b)
+
+Клик по узлу графа выбирает коммит в штатной панели диффа V2. Логика выбора
+живёт в `ft3-web` (`commitsPanel.logic.ts`), а `CommitsGraph` получает
+`focusCommitId` из того же выбора, поэтому выбранный коммит подсвечен при
+возврате к графу. Патч коммита читает `vcs.getCommitDiff` (`git diff` против
+первого родителя, для корневого коммита — `git diff-tree --root`), а рендер
+остаётся в `ft3-web` на существующих компонентах диффа V2.
+
+| Upstream-файл                           | Правка                                                                                          | Зачем                                                |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `apps/web/src/diffPanelStore.ts`        | вариант `{ kind: "commit"; commitId }` и `selectCommit`                                         | хранить выбранный коммит рядом с остальными диффами  |
+| `apps/web/src/components/DiffPanel.tsx` | импорт `CommitDiffPanel` из `@t3tools/ft3-web/commits`; ветка `diffSelection.kind === "commit"` | показать дифф коммита в штатной панели, без копии UI |
+| `packages/ft3-web/package.json`         | экспорт `./commits`                                                                             | точка подключения компонента панели                  |
 
 ## Pi: managed agent dir, local inference and executor-only instances (срез 1)
 

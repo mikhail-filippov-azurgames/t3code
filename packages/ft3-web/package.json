@@ -5,6 +5,7 @@
   "exports": {
     "./panels": "./src/panels.tsx",
     "./architect": "./src/architect/index.ts",
+    "./commits": "./src/commits/CommitDiffPanel.tsx",
     "./pi": "./src/pi/index.ts"
   },
   "scripts": {

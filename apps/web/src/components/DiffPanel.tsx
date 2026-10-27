@@ -1,4 +1,5 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
+import { CommitDiffPanel } from "@t3tools/ft3-web/commits";
 import { useAtomValue } from "@effect/atom-react";
 import type { FileDiffContentsLoader, FileDiffMetadata } from "@pierre/diffs";
 import {
@@ -965,8 +966,31 @@ export default function DiffPanel({
   );
 
   return (
-    <DiffPanelShell mode={mode} header={headerRow}>
-      {!activeThread ? (
+    <DiffPanelShell
+      mode={mode}
+      header={
+        diffSelection.kind === "commit" ? (
+          <div className="flex min-w-0 items-center gap-2 text-xs font-medium">
+            <span className="truncate">Commit {diffSelection.commitId.slice(0, 7)}</span>
+          </div>
+        ) : (
+          headerRow
+        )
+      }
+    >
+      {diffSelection.kind === "commit" ? (
+        routeThreadRef ? (
+          <CommitDiffPanel
+            environmentId={routeThreadRef.environmentId}
+            cwd={activeCwd ?? null}
+            commitId={diffSelection.commitId}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+            Select a thread to inspect a commit.
+          </div>
+        )
+      ) : !activeThread ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Select a thread to inspect turn diffs.
         </div>
