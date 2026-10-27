@@ -13,6 +13,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
+import { useMemo } from "react";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
 import { shellEnvironment } from "./state/shell";
 import { useAtomCommand } from "./state/use-atom-command";
@@ -44,22 +45,30 @@ export class PreferredEditorUnavailableError extends Schema.TaggedError<Preferre
   }
 }
 
-export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>) {
+export function resolvePreferredEditor(
+  availableEditors: ReadonlyArray<EditorId>,
+  lastEditor: EditorId | null,
+  allowTypora = false,
+): EditorId | null {
+  const eligible = new Set(availableEditors.filter((editor) => allowTypora || editor !== "typora"));
+  if (lastEditor && eligible.has(lastEditor)) return lastEditor;
+  return EDITORS.find((editor) => eligible.has(editor.id))?.id ?? null;
+}
+
+export function usePreferredEditor(availableEditors: ReadonlyArray<EditorId>, allowTypora = false) {
   const [lastEditor, setLastEditor] = useLocalStorage(LAST_EDITOR_KEY, null, EditorId);
 
-  const effectiveEditor =
-    lastEditor && availableEditors.includes(lastEditor)
-      ? lastEditor
-      : (EDITORS.find((editor) => availableEditors.includes(editor.id))?.id ?? null);
+  const effectiveEditor = useMemo(
+    () => resolvePreferredEditor(availableEditors, lastEditor, allowTypora),
+    [lastEditor, availableEditors, allowTypora],
+  );
 
   return [effectiveEditor, setLastEditor] as const;
 }
 
 function resolveAndPersistPreferredEditor(availableEditors: readonly EditorId[]): EditorId | null {
-  const availableEditorIds = new Set(availableEditors);
   const stored = getLocalStorageItem(LAST_EDITOR_KEY, EditorId);
-  if (stored && availableEditorIds.has(stored)) return stored;
-  const editor = EDITORS.find((editor) => availableEditorIds.has(editor.id))?.id ?? null;
+  const editor = resolvePreferredEditor(availableEditors, stored);
   if (editor) setLocalStorageItem(LAST_EDITOR_KEY, editor, EditorId);
   return editor ?? null;
 }

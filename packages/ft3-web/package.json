@@ -4,9 +4,14 @@
   "type": "module",
   "exports": {
     "./panels": "./src/panels.tsx",
-    "./architect": "./src/architect/index.ts",
+    "./chat": "./src/chat/index.ts",
+    "./settings": "./src/settings/index.ts",
+    "./board": "./src/board/BoardPage.tsx",
     "./commits": "./src/commits/CommitDiffPanel.tsx",
-    "./pi": "./src/pi/index.ts"
+    "./architect": "./src/architect/index.ts",
+    "./pi": "./src/pi/index.ts",
+    "./sidebar": "./src/sidebar/index.ts",
+    "./usage": "./src/usage/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -6,7 +6,7 @@ import {
   type EnvironmentId,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { memo, use, useRef } from "react";
+import { memo, use, useMemo, useRef } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { shortcutLabelForCommand } from "../../keybindings";
 import { OPEN_FAVORITE_EDITOR_ATTRIBUTE } from "./OpenInPickerShortcut";
@@ -41,6 +41,7 @@ import {
   Icon,
   KiroIcon,
   TraeIcon,
+  TyporaIcon,
   VisualStudioCode,
   VisualStudioCodeInsiders,
   VSCodium,
@@ -81,7 +82,10 @@ type OpenInOption = {
   kind: "brand" | "generic";
 };
 
-const resolveOpenInOptions = (platform: string, availableEditors: ReadonlyArray<EditorId>) => {
+export const resolveOpenInOptions = (
+  platform: string,
+  availableEditors: ReadonlyArray<EditorId>,
+) => {
   const baseOptions: ReadonlyArray<Omit<OpenInOption, "label">> = [
     {
       Icon: CursorIcon,
@@ -184,6 +188,11 @@ const resolveOpenInOptions = (platform: string, availableEditors: ReadonlyArray<
       kind: "brand",
     },
     {
+      Icon: TyporaIcon,
+      value: "typora",
+      kind: "brand",
+    },
+    {
       Icon: isMacPlatform(platform)
         ? FinderIcon
         : isWindowsPlatform(platform)
@@ -214,6 +223,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   enableShortcut = true,
   displayMode = "toolbar",
   revealFileManager = false,
+  allowTypora = false,
 }: {
   environmentId: EnvironmentId;
   keybindings: ResolvedKeybindingsConfig;
@@ -225,6 +235,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   enableShortcut?: boolean;
   displayMode?: "toolbar" | "panel";
   revealFileManager?: boolean;
+  allowTypora?: boolean;
 }) {
   const isPanel = displayMode === "panel";
   const ActionGroup = isPanel ? "div" : Group;
@@ -240,7 +251,12 @@ export const OpenInPicker = memo(function OpenInPicker({
   const environmentLabel = useEnvironment(environmentId)?.label ?? "this machine";
   // Remote editors run on the viewing machine; only desktop can probe that PATH.
   const effectiveEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
-  const [preferredEditor, setPreferredEditor] = usePreferredEditor(effectiveEditors);
+  const contextEditors = useMemo(
+    () =>
+      allowTypora ? effectiveEditors : effectiveEditors.filter((editor) => editor !== "typora"),
+    [allowTypora, effectiveEditors],
+  );
+  const [preferredEditor, setPreferredEditor] = usePreferredEditor(contextEditors, allowTypora);
 
   const openInEditor = async (editorId: EditorId | null): Promise<boolean> => {
     if (!openInCwd) return false;
@@ -282,7 +298,7 @@ export const OpenInPicker = memo(function OpenInPicker({
   );
 
   const backgroundThread = use(BackgroundThreadContext);
-  const options = resolveOpenInOptions(navigator.platform, effectiveEditors);
+  const options = resolveOpenInOptions(navigator.platform, contextEditors);
   const primaryOption = options.find(({ value }) => value === preferredEditor) ?? null;
   const primaryLabel = isPanel ? `Open in ${primaryOption?.label ?? "editor"}` : "Open";
 
