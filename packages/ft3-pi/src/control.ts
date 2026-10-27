@@ -1,16 +1,23 @@
 import {
+  applyPiBonsaiPresetToConfig,
+  detectPiBonsaiPreset,
+  loadPiInferenceConfig,
   resolvePiInferenceProfile,
+  savePiInferenceConfig,
   type PiInferenceConfig,
   type PiInferenceServerManager,
   type PiInferenceServerStatus as ManagerStatus,
 } from "./inferenceServer.ts";
-import type { PiInferenceServerStatus } from "./rpc-contracts.ts";
+import type { PiBonsaiPreset, PiInferenceServerStatus } from "./rpc-contracts.ts";
 
 export interface PiInferenceControlDependencies {
   readonly manager: Pick<
     PiInferenceServerManager,
-    "registerInstance" | "registeredConfig" | "status" | "start" | "stop"
+    "registerInstance" | "registeredConfig" | "registeredConfigPath" | "status" | "start" | "stop"
   >;
+  readonly detectPreset?: typeof detectPiBonsaiPreset;
+  readonly readConfig?: typeof loadPiInferenceConfig;
+  readonly writeConfig?: typeof savePiInferenceConfig;
 }
 
 const failureMessage = (cause: unknown): string =>
@@ -18,6 +25,10 @@ const failureMessage = (cause: unknown): string =>
 
 /** Control path shared by the RPC handlers and tests; it never spawns a process itself. */
 export function makePiInferenceControl(dependencies: PiInferenceControlDependencies) {
+  const detectPreset = dependencies.detectPreset ?? detectPiBonsaiPreset;
+  const readConfig = dependencies.readConfig ?? loadPiInferenceConfig;
+  const writeConfig = dependencies.writeConfig ?? savePiInferenceConfig;
+
   const view = (status: ManagerStatus, canStart: boolean): PiInferenceServerStatus => ({
     instanceId: status.instanceId,
     phase: status.phase,
@@ -111,6 +122,25 @@ export function makePiInferenceControl(dependencies: PiInferenceControlDependenc
       } catch (cause) {
         return failed(instanceId, model, failureMessage(cause), prepared.canStart);
       }
+    },
+
+    detectPreset: (rootPath?: string): Promise<PiBonsaiPreset | null> =>
+      detectPreset(rootPath === undefined ? {} : { rootPath }),
+
+    /** Persist the preset into the instance's own profile file, then re-register it. */
+    applyPreset: async (instanceId: string, rootPath?: string): Promise<PiBonsaiPreset | null> => {
+      const preset = await detectPreset(rootPath === undefined ? {} : { rootPath });
+      if (!preset) return null;
+      const configPath = dependencies.manager.registeredConfigPath(instanceId);
+      if (configPath === undefined) {
+        throw new Error(
+          `Pi inference config path for ${instanceId} is not registered; recreate the provider instance.`,
+        );
+      }
+      const next = applyPiBonsaiPresetToConfig(await readConfig(configPath), preset);
+      await writeConfig(configPath, next);
+      dependencies.manager.registerInstance(instanceId, next, configPath);
+      return preset;
     },
   };
 }
