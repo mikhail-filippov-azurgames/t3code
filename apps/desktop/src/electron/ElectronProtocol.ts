@@ -22,10 +22,9 @@ function resolveDesktopSchemeOverride(): string | undefined {
 }
 
 export function getDesktopScheme(isDevelopment: boolean): string {
-  return (
-    resolveDesktopSchemeOverride() ??
-    (isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME)
-  );
+  const override = resolveDesktopSchemeOverride();
+  if (override !== undefined) return override;
+  return isDevelopment ? DESKTOP_DEVELOPMENT_SCHEME : DESKTOP_PRODUCTION_SCHEME;
 }
 
 function getDesktopOrigin(isDevelopment: boolean): string {

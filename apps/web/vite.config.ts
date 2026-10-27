@@ -323,11 +323,21 @@ export default defineConfig(() => {
     resolve: {
       tsconfigPaths: true,
       alias: {
-        // fileURLToPath, not URL#pathname: the latter keeps percent-encoding,
-        // which Node's file APIs reject when the checkout path contains spaces.
-        "@betteroffice/fonts-cjk": NodeURL.fileURLToPath(
-          new URL("./src/components/files/office/fonts-cjk.ts", import.meta.url),
-        ),
+        ...(process.cwd().includes(" ")
+          ? {}
+          : {
+              "@betteroffice/fonts-cjk": new URL(
+                "./src/components/files/office/fonts-cjk.ts",
+                import.meta.url,
+              ).pathname,
+            }),
+        ...(process.cwd().includes(" ")
+          ? {
+              "@betteroffice/fonts-cjk": NodeURL.fileURLToPath(
+                new URL("./src/components/files/office/fonts-cjk.ts", import.meta.url),
+              ),
+            }
+          : {}),
       },
       dedupe: ["react", "react-dom"],
     },

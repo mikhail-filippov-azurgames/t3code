@@ -694,10 +694,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
-  const statusOverride = status === "working" ? null : (props.statusOverride ?? null);
-  const isWorking = status === "working" || statusOverride !== null;
-  const workingStartedAt =
-    status === "working" ? resolveWorkingStartedAt(thread) : (statusOverride?.startedAt ?? null);
+  const statusOverride = props.statusOverride ?? null;
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -705,15 +702,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (lastVisitedDate === null || lastVisitedDate < wokeAtDate) &&
     thread.settledOverride !== "settled";
   const shouldRecede = shouldRecedeSidebarThread({
-    status: isWorking ? "working" : status,
+    status,
     isUnread,
     isWoke,
     isActive: props.isActive,
     isSelected,
   });
   const topStatus =
-    statusOverride ??
-    (status === "working"
+    status === "working"
       ? {
           label: thread.goal?.status === "active" ? "Goal" : "Working",
           icon: "working" as const,
@@ -767,7 +763,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                           icon: "done" as const,
                           className: "text-success-foreground",
                         }
-                      : null);
+                      : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -1168,9 +1164,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               >
                 <span
                   className={cn(
-                    "inline-flex justify-end gap-1 tabular-nums text-secondary-label transition-opacity",
+                    "inline-flex justify-end tabular-nums text-secondary-label transition-opacity",
                     !isWoke && "group-any-hover/sidebar-row:opacity-0",
                   )}
+                  style={{ columnGap: "0.25rem" }}
                 >
                   {props.topRightDecorations}
                   {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (
@@ -1179,10 +1176,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       <AlarmClockIcon aria-hidden className="size-3" />
                       {props.snoozeWakeLabelText}
                     </span>
-                  ) : isWorking ? (
+                  ) : statusOverride !== null ? (
                     <span className="inline-flex items-center gap-1 text-xs font-medium text-info-foreground tabular-nums">
                       <CircleDashedIcon aria-hidden className="size-3" />
-                      Working <WorkingDuration startedAt={workingStartedAt} />
+                      Working <WorkingDuration startedAt={statusOverride.startedAt} />
                     </span>
                   ) : isWoke ? (
                     <Tooltip>
@@ -1352,72 +1349,84 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       isWokeStatus
                         ? "pointer-events-auto"
                         : "pointer-events-none group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-any-hover/sidebar-row:absolute group-any-hover/sidebar-row:right-0 group-any-hover/sidebar-row:opacity-0",
-                      "flex items-center self-center justify-self-end gap-1 tabular-nums text-secondary-label",
+                      "flex items-center self-center justify-self-end tabular-nums text-secondary-label",
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
+                    style={{ columnGap: "0.25rem" }}
                   >
                     {props.topRightDecorations}
-                    {topStatus ? (
-                      isWokeStatus ? (
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <button
-                                type="button"
-                                aria-label="Dismiss Woke notification"
-                                onClick={handleAcknowledgeWokeClick}
-                                className={cn(
-                                  "inline-flex cursor-pointer items-center gap-1 rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
-                                  topStatus.className,
-                                )}
-                              >
-                                <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
-                                <span role="status">{topStatus.label}</span>
-                              </button>
-                            }
-                          />
-                          <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
-                        </Tooltip>
-                      ) : (
-                        <span
-                          className={cn(
-                            "inline-flex items-center gap-1 font-medium",
-                            topStatus.className,
-                          )}
-                        >
-                          {topStatus.icon === "working" ? (
-                            <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "waiting" ? (
-                            <CircleDotDashedIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "input" ? (
-                            <MessageCircleQuestionIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "request" ? (
-                            <UserRoundIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "approval" ? (
-                            <ShieldQuestionIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "failed" ? (
-                            <CircleAlertIcon aria-hidden className="size-4 shrink-0" />
-                          ) : topStatus.icon === "done" ? (
-                            <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
-                          ) : null}
-                          {/* Not a live region: a collapsed sidebar is inert, so
+                    {statusOverride !== null ? (
+                      <span className="inline-flex items-center gap-1 font-medium text-info-foreground">
+                        <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                        Working
+                        <WorkingDuration startedAt={statusOverride.startedAt} />
+                      </span>
+                    ) : null}
+                    <span hidden={statusOverride !== null}>
+                      {topStatus ? (
+                        isWokeStatus ? (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <button
+                                  type="button"
+                                  aria-label="Dismiss Woke notification"
+                                  onClick={handleAcknowledgeWokeClick}
+                                  className={cn(
+                                    "inline-flex cursor-pointer items-center gap-1 rounded-sm font-medium outline-none hover:underline focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                                    topStatus.className,
+                                  )}
+                                >
+                                  <AlarmClockIcon aria-hidden className="size-4 shrink-0" />
+                                  <span role="status">{topStatus.label}</span>
+                                </button>
+                              }
+                            />
+                            <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
+                          </Tooltip>
+                        ) : (
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-1 font-medium",
+                              topStatus.className,
+                            )}
+                          >
+                            {topStatus.icon === "working" ? (
+                              <CircleDashedIcon aria-hidden className="size-4 shrink-0" />
+                            ) : topStatus.icon === "waiting" ? (
+                              <CircleDotDashedIcon aria-hidden className="size-4 shrink-0" />
+                            ) : topStatus.icon === "input" ? (
+                              <MessageCircleQuestionIcon aria-hidden className="size-4 shrink-0" />
+                            ) : topStatus.icon === "request" ? (
+                              <UserRoundIcon aria-hidden className="size-4 shrink-0" />
+                            ) : topStatus.icon === "approval" ? (
+                              <ShieldQuestionIcon aria-hidden className="size-4 shrink-0" />
+                            ) : topStatus.icon === "failed" ? (
+                              <CircleAlertIcon aria-hidden className="size-4 shrink-0" />
+                            ) : topStatus.icon === "done" ? (
+                              <CircleCheckIcon aria-hidden className="size-4 shrink-0" />
+                            ) : null}
+                            {/* Not a live region: a collapsed sidebar is inert, so
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
-                          {topStatus.label}
-                          {isWorking ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={workingStartedAt} />
-                            </span>
-                          ) : status === "waiting" ? (
-                            <span aria-hidden>
-                              <WorkingDuration startedAt={thread.latestRun?.completedAt ?? null} />
-                            </span>
-                          ) : null}
-                        </span>
-                      )
-                    ) : (
-                      <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
-                    )}
+                            {topStatus.label}
+                            {status === "working" ? (
+                              <span aria-hidden>
+                                <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
+                              </span>
+                            ) : status === "waiting" ? (
+                              <span aria-hidden>
+                                <WorkingDuration
+                                  startedAt={thread.latestRun?.completedAt ?? null}
+                                />
+                              </span>
+                            ) : null}
+                          </span>
+                        )
+                      ) : (
+                        <RelativeTimeLabel timestamp={threadTimeTimestamp(thread)} />
+                      )}
+                    </span>
                   </span>
                   {props.settlementSupported || showSnoozeButton || hasUnsentDraft ? (
                     <span

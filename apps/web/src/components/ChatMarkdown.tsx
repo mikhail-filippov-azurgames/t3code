@@ -460,6 +460,15 @@ function useChatMarkdownState({
   renderMarkdownLink,
   allowMarkdownHref,
 }: ChatMarkdownProps) {
+  const ft3ChatText = useFt3ChatTextExtensions({
+    text,
+    cwd,
+    threadRef,
+    environmentId: threadRef?.environmentId ?? explicitEnvironmentId ?? null,
+    isStreaming,
+  });
+  const ft3RenderMarkdownLink = renderMarkdownLink ?? ft3ChatText.renderMarkdownLink;
+  const ft3AllowMarkdownHref = allowMarkdownHref ?? ft3ChatText.isAllowedHref;
   const resolvedTheme = useRenderedAppearance();
   const markdownRef = useRef<HTMLElement>(null);
   const mediaRequestId = useRef(0);
@@ -649,7 +658,7 @@ function useChatMarkdownState({
     if (parseAssistantCitationHref(href)) return href;
     if (parseComposerContextHref(href)) return href;
     if (parseThreadLinkHref(href)) return href;
-    if (allowMarkdownHref?.(href)) return href;
+    if (ft3AllowMarkdownHref?.(href)) return href;
     if (isWindowsDrivePathHref(href)) return href;
     return rewriteMarkdownFileUriHref(href) ?? defaultUrlTransform(href);
   };
@@ -892,7 +901,7 @@ function useChatMarkdownState({
     fileLinkChip,
     sourceControlMedia,
     renderContextReference,
-    renderMarkdownLink,
+    renderMarkdownLink: ft3RenderMarkdownLink,
     headingLevelOffset,
     imageBaseDir,
     workspaceMutationId,
@@ -925,6 +934,7 @@ function useChatMarkdownState({
     markdownUrlTransform,
     localMediaPreview,
     closeLocalMediaPreview,
+    ft3ChatText,
   };
 }
 
@@ -1615,13 +1625,6 @@ function ChatMarkdown({
   extraRemarkPlugins = EMPTY_REMARK_PLUGINS,
   ...props
 }: ChatMarkdownProps) {
-  const ft3ChatText = useFt3ChatTextExtensions({
-    text,
-    cwd: props.cwd,
-    threadRef: props.threadRef,
-    environmentId: props.threadRef?.environmentId ?? props.environmentId ?? null,
-    isStreaming: props.isStreaming === true,
-  });
   const {
     componentState,
     handleCopy,
@@ -1629,13 +1632,8 @@ function ChatMarkdown({
     markdownUrlTransform,
     localMediaPreview,
     closeLocalMediaPreview,
-  } = useChatMarkdownState({
-    text,
-    inline,
-    ...props,
-    renderMarkdownLink: ft3ChatText.renderMarkdownLink,
-    allowMarkdownHref: ft3ChatText.isAllowedHref,
-  });
+    ft3ChatText,
+  } = useChatMarkdownState({ text, inline, ...props });
   const incrementalParsing =
     props.isStreaming === true &&
     extraRemarkPlugins.length === 0 &&

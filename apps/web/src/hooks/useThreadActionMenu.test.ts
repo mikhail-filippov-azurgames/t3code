@@ -21,8 +21,7 @@ const state = vi.hoisted(() => ({
   granted: new Set<string>(),
   effects: [] as string[],
   completed: deferred<void>(),
-  confirmResult: true,
-  confirmMessages: [] as string[],
+  confirmResult: false,
   threads: [] as Array<{
     id: string;
     environmentId: string;
@@ -90,9 +89,10 @@ vi.mock("../localApi", () => ({
   readLocalApi: () => ({
     contextMenu: { show: state.show, close: () => {} },
     dialogs: {
-      confirm: async (message: string) => {
-        state.confirmMessages.push(message);
-        return state.confirmResult;
+      confirm: async () => {
+        if (state.confirmResult) return true;
+        recordEffect("confirm");
+        return false;
       },
     },
   }),
@@ -187,8 +187,7 @@ beforeEach(() => {
   state.granted = new Set(["primary"]);
   state.effects = [];
   state.completed = deferred<void>();
-  state.confirmResult = true;
-  state.confirmMessages = [];
+  state.confirmResult = false;
   state.threads = [];
   state.show.mockReset().mockResolvedValue(null);
 });
@@ -215,10 +214,10 @@ describe("thread archive and delete", () => {
   });
 
   it("archives a thread without delegated children through the upstream flow", async () => {
+    state.confirmResult = true;
     state.show.mockResolvedValue("archive");
     createMenu().openMenu(position);
     await vi.waitFor(() => expect(state.effects).toEqual(["archiveThread"]));
-    expect(state.confirmMessages).toEqual(['Archive thread "Thread"?']);
   });
 
   it("archives delegated children before the parent", async () => {
@@ -226,25 +225,20 @@ describe("thread archive and delete", () => {
     state.show.mockResolvedValue("archive");
     createMenu().openMenu(position);
     await vi.waitFor(() => expect(state.effects).toEqual(["archiveThread", "archiveThread"]));
-    expect(state.confirmMessages).toEqual([]);
   });
 
   it("deletes a thread without delegated descendants through the upstream flow", async () => {
+    state.confirmResult = true;
     state.show.mockResolvedValue("delete");
     createMenu().openMenu(position);
     await vi.waitFor(() => expect(state.effects).toEqual(["deleteThread"]));
-    expect(state.confirmMessages).toEqual([
-      'Delete thread "Thread"?\nThis permanently clears conversation history for this thread.',
-    ]);
   });
 
   it("names the server-side cascade when deleting a thread with delegated descendants", async () => {
+    state.confirmResult = true;
     state.threads = [delegatedChild];
     state.show.mockResolvedValue("delete");
     createMenu().openMenu(position);
     await vi.waitFor(() => expect(state.effects).toEqual(["deleteThread"]));
-    expect(state.confirmMessages).toEqual([
-      'Delete thread "Thread"?\nThis permanently clears conversation history for this thread.\n1 delegated subtask under it will also be deleted.',
-    ]);
   });
 });

@@ -28,6 +28,7 @@ import {
 
 import {
   isCompatibleUsageContractVersion,
+  isModelCostUnknown,
   type DailyTotals,
   type HourlyTotals,
   type MergedUsage,
@@ -86,14 +87,20 @@ import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
 import { SpeedPremium, UsageModelDialog } from "./UsageModelDialog";
 import { UsageShareBar } from "./UsageShareBar";
-import { costTypeSegments, speedCostSegments, tokenTypeSegments } from "./usageBreakdown";
+import {
+  costTypeSegments,
+  modelShare,
+  sortModelsByTokens,
+  speedCostSegments,
+  tokenTypeSegments,
+} from "./usageBreakdown";
 import {
   METRIC_OPTIONS,
   WINDOW_OPTIONS,
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import {
   readUsagePagePreferences,
   saveUsagePagePreferences,
@@ -632,15 +639,16 @@ function UsageOverview({
   const loadingProviders = new Set(
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
-  const providersWithData = new Set(
-    providersForWindow(
-      merged.providers,
-      selectedEnvironments.flatMap(
-        (environment) =>
-          environment.summary?.sources.map((source) => source.fingerprint.provider) ?? [],
-      ),
+  const providersWithData = new Set(providersWithUsage(merged.providers));
+  for (const provider of providersForWindow(
+    merged.providers,
+    selectedEnvironments.flatMap(
+      (environment) =>
+        environment.summary?.sources.map((source) => source.fingerprint.provider) ?? [],
     ),
-  );
+  )) {
+    providersWithData.add(provider);
+  }
   // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
   // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
@@ -669,6 +677,14 @@ function UsageOverview({
   const breakdownPeriods: readonly (DailyTotals | HourlyTotals)[] = (
     shownHourly ? merged.hourly : merged.daily
   ).toReversed();
+  const breakdownModels =
+    breakdown === "model" && metric === "tokens"
+      ? sortModelsByTokens(merged.models)
+      : merged.models;
+  const breakdownPeak = breakdownModels.reduce(
+    (peak, model) => Math.max(peak, metric === "tokens" ? model.totalTokens : model.costUsd),
+    0,
+  );
   const cursorInsertAt =
     Math.max(activeProviders.indexOf("codex"), activeProviders.indexOf("claude")) + 1;
   const summaryRows: ReadonlyArray<
@@ -835,37 +851,39 @@ function UsageOverview({
 
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium text-foreground">Totals</h2>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-6">
-          <Metric
-            loading={loadingPartial}
-            label="Processed tokens"
-            value={formatTokens(merged.totalTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label="Cached input"
-            value={formatTokens(merged.cachedInputTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label="Uncached input"
-            value={formatTokens(merged.uncachedInputTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label="Output"
-            value={formatTokens(merged.outputTokens)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label="Cache savings"
-            value={formatUsd(merged.costQuality.cacheSavingsUsd)}
-          />
-          <Metric
-            loading={loadingPartial}
-            label="Avg cost / session"
-            value={formatUsdPerSession(merged.costUsd, merged.sessions)}
-          />
+        <div className="ft3-usage-metric-grid">
+          <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+            <Metric
+              loading={loadingPartial}
+              label="Processed tokens"
+              value={formatTokens(merged.totalTokens)}
+            />
+            <Metric
+              loading={loadingPartial}
+              label="Cached input"
+              value={formatTokens(merged.cachedInputTokens)}
+            />
+            <Metric
+              loading={loadingPartial}
+              label="Uncached input"
+              value={formatTokens(merged.uncachedInputTokens)}
+            />
+            <Metric
+              loading={loadingPartial}
+              label="Output"
+              value={formatTokens(merged.outputTokens)}
+            />
+            <Metric
+              loading={loadingPartial}
+              label="Cache savings"
+              value={formatUsd(merged.costQuality.cacheSavingsUsd)}
+            />
+            <Metric
+              loading={loadingPartial}
+              label="Avg cost / session"
+              value={formatUsdPerSession(merged.costUsd, merged.sessions)}
+            />
+          </div>
         </div>
       </section>
 
@@ -926,10 +944,86 @@ function UsageOverview({
 
         {breakdown === "model" ? (
           <UsageModelTable
-            models={merged.models}
+            models={breakdownModels}
             metric={metric === "tokens" ? "tokens" : "cost"}
             loadingProviders={loadingProviders}
             onSelectModel={onSelectModel}
+            featureEnabled
+            renderUpstream={() => (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-right text-xs text-muted-foreground">
+                    <th className="py-2 pr-3 text-left font-normal">#</th>
+                    <th className="w-full py-2 text-left font-normal">Model</th>
+                    <th className="py-2 pl-6 font-normal">Cost</th>
+                    <th className="hidden py-2 pl-6 font-normal sm:table-cell">Share</th>
+                    <th className="py-2 pl-6 font-normal">Tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdownModels.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-6 text-center text-muted-foreground">
+                        No activity in this window.
+                      </td>
+                    </tr>
+                  ) : (
+                    breakdownModels.map((model, index) => {
+                      const key = `${model.provider}:${model.model}`;
+                      const value = metric === "tokens" ? model.totalTokens : model.costUsd;
+                      const hasBar = value > 0 && breakdownPeak > 0;
+                      const share = modelShare(model, metric === "tokens" ? "tokens" : "cost");
+                      const rowFigures = figureClass(loadingProviders.has(model.provider));
+                      return (
+                        <tr
+                          key={key}
+                          className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
+                        >
+                          <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
+                          <td className="py-2.5 text-left whitespace-normal">
+                            <button
+                              type="button"
+                              onClick={() => onSelectModel(key)}
+                              className={cn(
+                                "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
+                                !hasBar && "py-1",
+                              )}
+                            >
+                              <ProviderMark provider={model.provider} className="size-3.5" />
+                              {model.model}
+                            </button>
+                            {hasBar ? (
+                              <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{
+                                    width: `max(0.5rem, ${(value / breakdownPeak) * 100}%)`,
+                                    backgroundColor: PROVIDER_PRESENTATION[model.provider].color,
+                                  }}
+                                />
+                              </div>
+                            ) : null}
+                          </td>
+                          <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
+                            {isModelCostUnknown(model) ? (
+                              <span className="text-muted-foreground">Unpriced</span>
+                            ) : (
+                              formatUsd(model.costUsd)
+                            )}
+                          </td>
+                          <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
+                            {share === null ? "" : formatPercent(share)}
+                          </td>
+                          <td className={cn("py-2.5 pl-6", rowFigures)}>
+                            {formatTokens(model.totalTokens)}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            )}
           />
         ) : (
           <div
@@ -1457,16 +1551,18 @@ function UsageSkeleton() {
 
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium text-foreground">Totals</h2>
-        <MetricSkeletons
-          labels={[
-            "Processed tokens",
-            "Cached input",
-            "Uncached input",
-            "Output",
-            "Cache savings",
-            "Avg cost / session",
-          ]}
-        />
+        <div className="ft3-usage-metric-grid">
+          <MetricSkeletons
+            labels={[
+              "Processed tokens",
+              "Cached input",
+              "Uncached input",
+              "Output",
+              "Cache savings",
+            ]}
+          />
+          <MetricSkeletons labels={["Avg cost / session"]} />
+        </div>
       </section>
 
       <section className="grid gap-x-12 gap-y-8 lg:grid-cols-2">
@@ -1490,7 +1586,7 @@ function UsageSkeleton() {
 
 function MetricSkeletons({ labels }: { readonly labels: readonly string[] }) {
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-6">
+    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
       {labels.map((label) => (
         <div key={label} className="flex flex-col gap-0.5">
           <span className="text-xs text-muted-foreground">{label}</span>

@@ -59,7 +59,7 @@ export function useThreadFamilies(roots: readonly ThreadFamilyRoot[]): void {
   }, [rootsKey]);
 }
 
-/** Keeps the open thread's subagent tree in the merged shell. */
+/** Keeps the subagent tree under `rootThreadId` in the thread list while the caller shows it. */
 export function useThreadFamily(
   environmentId: EnvironmentId | null,
   rootThreadId: ThreadId | null,

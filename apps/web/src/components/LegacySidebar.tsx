@@ -136,7 +136,8 @@ import { useDesktopUpdateState } from "../state/desktopUpdate";
 
 import { useThreadActions } from "../hooks/useThreadActions";
 import { projectEnvironment } from "../state/projects";
-import { threadEnvironment, useEnvironmentThread, useThreadFamilies } from "../state/threads";
+import { threadEnvironment, useEnvironmentThread } from "../state/threads";
+import { useThreadFamilies } from "../state/threads";
 import { readUnloadedThreadCount } from "../state/olderSettledShelf";
 import { useEnvironment, useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { buildThreadRouteParams, resolveActiveThreadRouteRef } from "../threadRoutes";
@@ -977,6 +978,7 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
     hasOverflowingThreads,
     hiddenThreadStatus,
     orderedProjectThreadKeys,
+    renderedThreads,
     sidebarRows,
     showEmptyThreadState,
     shouldShowThreadPanel,
@@ -1027,6 +1029,42 @@ const SidebarProjectThreadList = memo(function SidebarProjectThreadList(
         </SidebarMenuSubItem>
       ) : null}
       {shouldShowThreadPanel &&
+        !sidebarRows.hasFt3Rows &&
+        renderedThreads.map((thread) => {
+          const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+          return (
+            <SidebarThreadRow
+              key={threadKey}
+              thread={thread}
+              orderedProjectThreadKeys={orderedProjectThreadKeys}
+              isActive={activeRouteThreadKey === threadKey}
+              openPullRequestsInRightPanel={openPullRequestsInRightPanel}
+              jumpLabel={threadJumpLabelByKey.get(threadKey) ?? null}
+              appSettingsConfirmThreadArchive={appSettingsConfirmThreadArchive}
+              renamingThreadKey={renamingThreadKey}
+              renamingTitle={renamingTitle}
+              setRenamingTitle={setRenamingTitle}
+              startThreadRename={startThreadRename}
+              renamingInputRef={renamingInputRef}
+              renamingCommittedRef={renamingCommittedRef}
+              confirmingArchiveThreadKey={confirmingArchiveThreadKey}
+              setConfirmingArchiveThreadKey={setConfirmingArchiveThreadKey}
+              confirmArchiveButtonRefs={confirmArchiveButtonRefs}
+              handleThreadClick={handleThreadClick}
+              navigateToThread={navigateToThread}
+              onFileDropThreads={onFileDropThreads}
+              handleMultiSelectContextMenu={handleMultiSelectContextMenu}
+              handleThreadContextMenu={handleThreadContextMenu}
+              clearSelection={clearSelection}
+              commitRename={commitRename}
+              cancelRename={cancelRename}
+              attemptArchiveThread={attemptArchiveThread}
+              openPrLink={openPrLink}
+            />
+          );
+        })}
+      {shouldShowThreadPanel &&
+        sidebarRows.hasFt3Rows &&
         (sidebarRows.entriesBySection.get("project") ?? []).map((entry) => {
           const thread = entry.thread;
           const threadKey = entry.key;

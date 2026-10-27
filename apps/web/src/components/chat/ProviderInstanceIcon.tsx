@@ -106,27 +106,28 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-      {isKimi ? (
-        <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-      ) : isAcpRegistry ? (
-        <AcpRegistryAgentIcon
-          className={cn("size-5 rounded-none bg-transparent", iconClassName)}
-          fallbackClassName="size-full"
-          icon={acpRegistryIconUrl}
-        />
-      ) : packageIcon ? (
-        <ProviderPackageIcon
-          icon={packageIcon}
-          className={cn("size-5 shrink-0", iconClassName)}
-          aria-hidden
-        />
-      ) : Icon ? (
-        <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-      ) : (
-        <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
-          {providerInstanceInitials(props.displayName)}
-        </span>
-      )}
+      <span className={isKimi ? "hidden" : undefined}>
+        {isAcpRegistry ? (
+          <AcpRegistryAgentIcon
+            className={cn("size-5 rounded-none bg-transparent", iconClassName)}
+            fallbackClassName="size-full"
+            icon={acpRegistryIconUrl}
+          />
+        ) : packageIcon ? (
+          <ProviderPackageIcon
+            icon={packageIcon}
+            className={cn("size-5 shrink-0", iconClassName)}
+            aria-hidden
+          />
+        ) : Icon ? (
+          <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
+        ) : (
+          <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
+            {providerInstanceInitials(props.displayName)}
+          </span>
+        )}
+      </span>
+      {isKimi ? <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden /> : null}
       {props.statusDotClassName ? (
         <span
           className={cn(

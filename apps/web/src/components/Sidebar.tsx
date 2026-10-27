@@ -142,7 +142,8 @@ import {
 import { environmentPresentations } from "../state/presentation";
 import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
-import { threadEnvironment, useThreadFamilies } from "../state/threads";
+import { threadEnvironment } from "../state/threads";
+import { useThreadFamilies } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
@@ -1717,12 +1718,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     });
   };
   const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
-    const rowsOf = (section: SidebarSection): SidebarListItem[] =>
-      (sidebarRows.entriesBySection.get(section) ?? []).map((entry) => ({
-        kind: "thread",
-        key: entry.key,
-        section,
-      }));
+    const rowsOf = (
+      list: readonly EnvironmentThreadShell[],
+      section: SidebarSection,
+    ): SidebarListItem[] =>
+      list.map((thread) => {
+        const key = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
+        return { kind: "thread", key, section };
+      });
     if (
       pinnedThreads.length +
         activeThreads.length +
@@ -1734,24 +1737,40 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       return [];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf("pinned");
+    const pinnedRows = rowsOf(pinnedThreads, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf("active");
+    const activeRows = rowsOf(activeThreads, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
-      items.push(...rowsOf("working"));
+      items.push(...rowsOf(visibleWorkingThreads, "working"));
     }
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
-      items.push(...rowsOf("snoozed"));
+      items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
     }
     items.push({ kind: "marker", marker: "settled-header" });
-    const settledRows = rowsOf("settled");
+    const settledRows = rowsOf(renderedSettledThreads, "settled");
     items.push({ kind: "marker", marker: "settled-placeholder" });
     items.push(...settledRows);
+    if (sidebarRows.hasFt3Rows) {
+      const forestItems: SidebarListItem[] = [];
+      const emittedSections = new Set<SidebarSection>();
+      for (const item of items) {
+        if (item.kind !== "thread") {
+          forestItems.push(item);
+          continue;
+        }
+        if (emittedSections.has(item.section)) continue;
+        emittedSections.add(item.section);
+        for (const entry of sidebarRows.entriesBySection.get(item.section) ?? []) {
+          forestItems.push({ kind: "thread", key: entry.key, section: item.section });
+        }
+      }
+      return forestItems;
+    }
     return items;
   })();
   // Preserve the list while streamed updates leave order unchanged to retain row memoization.
@@ -2454,7 +2473,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           clicked.value === "archive-old-children" ||
           clicked.value === "delete-old-children"
         ) {
-          await runFt3SidebarDelegatedAction({
+          const handled = await runFt3SidebarDelegatedAction({
             action: clicked.value,
             thread,
             threadRef,
@@ -2472,7 +2491,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               return result._tag === "Success" && result.value;
             },
           });
-          return;
+          if (handled) return;
         }
         switch (clicked.value) {
           case "filter-by-project":
@@ -2615,6 +2634,61 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           case "copy-thread-id":
             copyThreadIdToClipboard(thread.id, { threadId: thread.id });
             return;
+          case "archive": {
+            if (confirmThreadArchive) {
+              const confirmed = await settlePromise(() =>
+                api.dialogs.confirm(`Archive thread "${thread.title}"?`),
+              );
+              if (confirmed._tag === "Failure" || !confirmed.value) return;
+            }
+            let didArchive = false;
+            const result = await archiveThread(threadRef, {
+              onArchived: () => {
+                didArchive = true;
+              },
+            });
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: didArchive
+                    ? "Thread archived, but navigation failed"
+                    : "Failed to archive thread",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+              return;
+            }
+            return;
+          }
+          case "delete": {
+            if (confirmThreadDelete) {
+              const confirmed = await settlePromise(() =>
+                api.dialogs.confirm(
+                  [
+                    `Delete thread "${thread.title}"?`,
+                    "This permanently clears conversation history for this thread.",
+                  ].join("\n"),
+                  { variant: "destructive" },
+                ),
+              );
+              if (confirmed._tag === "Failure" || !confirmed.value) return;
+            }
+            const result = await deleteThread(threadRef);
+            if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Failed to delete thread",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+              return;
+            }
+            return;
+          }
           default:
             return;
         }
@@ -3096,6 +3170,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
+                          if (!sidebarRows.hasFt3Rows) {
+                            items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                            continue;
+                          }
                           const forestEntry = sidebarRows.entryByKey.get(item.key);
                           const thread = forestEntry?.thread ?? threadByKey.get(item.key)!;
                           items.push(renderThreadRow(thread, item.section));

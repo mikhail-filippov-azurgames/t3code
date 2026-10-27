@@ -570,20 +570,32 @@ function PoolWindowCard({
 
 function PoolSection({ pool, now }: { readonly pool: LimitPool; readonly now: number }) {
   const color = barColor(pool.driver);
-  const label =
-    limitPoolDisplayName(pool) ?? providerClients.get(pool.driver)?.label ?? String(pool.driver);
+  const label = providerClients.get(pool.driver)?.label ?? String(pool.driver);
+  const ft3Label = limitPoolDisplayName(pool);
   const windows = displayLimitWindows(pool);
   return (
     <section className="flex flex-col gap-3">
       <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
-        <ProviderInstanceIcon
-          driverKind={pool.driver}
-          displayName={label}
-          indicatorBackground="var(--background)"
-          className="size-5"
-          iconClassName="size-4 text-foreground/80"
-        />
-        {label}
+        {ft3Label !== null ? (
+          <ProviderInstanceIcon
+            driverKind={pool.driver}
+            displayName={ft3Label}
+            indicatorBackground="var(--background)"
+            className="size-5"
+            iconClassName="size-4 text-foreground/80"
+          />
+        ) : null}
+        <span className={ft3Label !== null ? "hidden" : undefined}>
+          <ProviderInstanceIcon
+            driverKind={pool.driver}
+            displayName={label}
+            indicatorBackground="var(--background)"
+            className="size-5"
+            iconClassName="size-4 text-foreground/80"
+          />
+        </span>
+        {ft3Label !== null ? <span>{ft3Label}</span> : null}
+        <span className={ft3Label !== null ? "hidden" : undefined}>{label}</span>
       </h2>
       {windows.map((window) => {
         const details = pool.driver === "cursor" ? cursorUsageWindowDetails(window.id) : undefined;

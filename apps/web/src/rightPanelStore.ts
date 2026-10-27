@@ -14,7 +14,6 @@ import type { ThreadPanelPresentation } from "./rightPanelLayout";
 import type { ChatFileAttachment } from "./types";
 
 const RIGHT_PANEL_KINDS = [
-  "ft3",
   "diff",
   "files",
   "file",
@@ -123,7 +122,7 @@ interface RightPanelStoreState {
   ) => boolean;
   open: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "ft3">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
   ) => void;
   openFt3Surface: (ref: ScopedThreadRef, surface: Ft3Surface) => void;
   openDevice: (ref: ScopedThreadRef, target: DeviceTabTarget, automatic?: boolean) => void;
@@ -183,7 +182,7 @@ interface RightPanelStoreState {
   toggleVisibility: (ref: ScopedThreadRef) => void;
   toggle: (
     ref: ScopedThreadRef,
-    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request" | "ft3">,
+    kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
   ) => void;
   setThreadPanelOpen: (
     ref: ScopedThreadRef,
@@ -206,7 +205,7 @@ const DEFAULT_THREAD_PANEL_VISIBILITY: ThreadPanelVisibility = {
 };
 
 const singletonSurface = (
-  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request" | "ft3">,
+  kind: Exclude<RightPanelKind, "file" | "preview" | "terminal" | "pull-request">,
 ): RightPanelSurface => {
   switch (kind) {
     case "diff":
@@ -1182,7 +1181,7 @@ export function selectThreadPanelOpen(
 export function selectActiveRightPanel(
   byThreadKey: Record<string, ThreadRightPanelState>,
   ref: ScopedThreadRef | null | undefined,
-): RightPanelKind | null {
+): RightPanelSurface["kind"] | null {
   const state = selectThreadRightPanelState(byThreadKey, ref);
   if (!state.isOpen) return null;
   return state.surfaces.find((surface) => surface.id === state.activeSurfaceId)?.kind ?? null;

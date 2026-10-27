@@ -125,6 +125,7 @@ import { AsyncResult } from "effect/reactivity";
 import { isElectron } from "../env";
 import { prepareDiffSelectionForPanelOpen } from "@t3tools/ft3-web/commits";
 import { useDiffPanelStore } from "../diffPanelStore";
+import { selectThreadDiffPanelSelection } from "../diffPanelStore";
 import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
 import { composerRequiresModifier } from "../composer-logic";
 import {
@@ -945,6 +946,12 @@ export default function ChatView(props: ChatViewProps) {
     const explicitThreadRef = explicitDiffOpenRef.current;
     explicitDiffOpenRef.current = null;
     if (diffOpen && activeThreadRef && explicitThreadRef !== activeThreadRef) {
+      if (
+        selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, activeThreadRef)
+          .kind !== "commit"
+      ) {
+        useDiffPanelStore.getState().selectGitScope(activeThreadRef, "branch");
+      }
       prepareDiffSelectionForPanelOpen(activeThreadRef);
     }
   }, [activeThreadRef, diffOpen]);

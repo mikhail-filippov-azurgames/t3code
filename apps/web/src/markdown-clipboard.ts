@@ -1,17 +1,25 @@
-import {
-  CHAT_COPY_SANITIZED_HTML_SELECTOR,
-  chatCopyAnchorMarkdown,
-  chatCopyChipMarkdown,
-  isChatCopyChromeElement,
-  isChatCopyHtmlChipKept,
-} from "@t3tools/ft3-web/chat-copy";
+const SKIPPED_TAGS = new Set(["BUTTON", "INPUT", "SCRIPT", "STYLE", "TEMPLATE"]);
+const SKIPPED_CLASS_NAMES = ["select-none", "sr-only"];
+const SANITIZED_HTML_SELECTOR = [
+  "button",
+  "input",
+  "script",
+  "style",
+  "svg",
+  '[aria-hidden="true"]',
+  ...SKIPPED_CLASS_NAMES.map((className) => `.${className}`),
+].join(", ");
 
 export interface MarkdownClipboardPayload {
   text: string;
   html: string;
 }
 
-const isSkippedElement = isChatCopyChromeElement;
+function isSkippedElement(element: Element): boolean {
+  if (SKIPPED_TAGS.has(element.tagName) || element.localName === "svg") return true;
+  if (element.getAttribute("aria-hidden") === "true") return true;
+  return SKIPPED_CLASS_NAMES.some((className) => element.classList.contains(className));
+}
 
 function wrapInlineMarker(content: string, marker: string): string {
   const match = /^(\s*)([\s\S]*?)(\s*)$/.exec(content);
@@ -152,9 +160,15 @@ function serializeDetails(details: Element): string {
 }
 
 function serializeAnchor(anchor: Element): string {
-  const markdownCopy = chatCopyChipMarkdown(anchor);
+  const markdownCopy = anchor.getAttribute("data-markdown-copy");
   if (markdownCopy !== null) return markdownCopy;
-  return chatCopyAnchorMarkdown(serializeChildren(anchor), anchor.getAttribute("href") ?? "");
+  const content = serializeChildren(anchor);
+  const href = anchor.getAttribute("href") ?? "";
+  if (!/^https?:\/\//i.test(href)) return content;
+  const label = content.trim();
+  if (!label) return "";
+  if (label === href) return href;
+  return `[${label}](${href})`;
 }
 
 function serializeChildren(node: Node): string {
@@ -176,7 +190,7 @@ function serializeNode(node: Node): string {
   if (element.hasAttribute("data-markdown-details")) {
     return serializeDetails(element);
   }
-  const markdownCopy = chatCopyChipMarkdown(element);
+  const markdownCopy = element.getAttribute("data-markdown-copy");
   if (markdownCopy !== null) return markdownCopy;
   if (isSkippedElement(element)) return "";
 
@@ -365,8 +379,11 @@ function sanitizedHtmlFrom(container: Element): string {
   for (const wrapper of container.querySelectorAll(MATH_SELECTOR)) {
     wrapper.replaceWith(mathSourceElement(wrapper));
   }
-  for (const node of container.querySelectorAll(CHAT_COPY_SANITIZED_HTML_SELECTOR)) {
-    if (isChatCopyHtmlChipKept(node)) {
+  for (const node of container.querySelectorAll(SANITIZED_HTML_SELECTOR)) {
+    if (
+      node.classList.contains("chat-markdown-file-link") ||
+      node.closest(".chat-markdown-file-link")
+    ) {
       if (node.getAttribute("aria-hidden") === "true" || node.localName === "svg") {
         node.remove();
       }

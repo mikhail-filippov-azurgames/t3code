@@ -733,7 +733,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
           yield* publishNativeSubagent(turn, item, base, status, time);
           return;
         }
-        const text = itemText(item);
+        const text = item.text ?? item.summary?.join("\n") ?? item.fallbackText ?? "";
         let turnItem: OrchestrationV2TurnItem;
         if (item.kind === "agentMessage") {
           const messageId = idAllocator.derive.messageFromProviderItem({
@@ -2316,17 +2316,20 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         interruptTurn: Effect.fn("MuseAdapter.interruptTurn")(
           function* (args) {
             const turn = active;
-            if (
-              (turn && turn.providerTurn.id !== args.providerTurnId) ||
-              !validateThread(args.providerThread)
-            )
-              return yield* protocolError("This Muse turn is no longer active");
             if (!turn) {
+              if (!validateThread(args.providerThread))
+                return yield* protocolError("This Muse turn is no longer active");
               if (!args.nativeTurnId)
                 return yield* protocolError("The saved Muse turn has no native identity");
               yield* request("turn/interrupt", { turnId: args.nativeTurnId });
               return;
             }
+            if (
+              !turn ||
+              turn.providerTurn.id !== args.providerTurnId ||
+              !validateThread(args.providerThread)
+            )
+              return yield* protocolError("This Muse turn is no longer active");
             turn.interruptRequested = true;
             if (turn.compact) {
               yield* eventPermit.withPermits(1)(

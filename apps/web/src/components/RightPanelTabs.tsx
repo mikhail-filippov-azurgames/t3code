@@ -52,7 +52,8 @@ import {
 
 import { isElectron } from "~/env";
 import type { DesktopPreviewOverlay } from "~/previewStateStore";
-import { type RightPanelSurface, useRightPanelStore } from "~/rightPanelStore";
+import type { RightPanelSurface } from "~/rightPanelStore";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { cn } from "~/lib/utils";
 import { resolveShortcutCommand, type ShortcutMatchContext } from "~/keybindings";
 import { readLocalApi } from "~/localApi";
