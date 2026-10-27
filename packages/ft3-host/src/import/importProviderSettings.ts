@@ -138,7 +138,7 @@ const mapInstance = (
       : (envelopeEnabled ?? configEnabled);
 
   const entry: JsonObject = { driver: mappedDriver };
-  const displayName = stringField(raw.displayName);
+  const displayName = stringField(raw.displayName) ?? (driver === "kimi" ? "Kimi" : undefined);
   if (displayName !== undefined) entry.displayName = displayName;
   const accentColor = stringField(raw.accentColor);
   if (accentColor !== undefined) entry.accentColor = accentColor;
