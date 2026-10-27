@@ -4,6 +4,7 @@ import * as BoardRepository from "@t3tools/ft3-board/repository";
 import { ARCHITECT_SKILL_PATH } from "@t3tools/ft3-architect/skillLocation";
 
 export { runMigrations } from "./Migrations.ts";
+export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
 
 export { BoardRepository };
 

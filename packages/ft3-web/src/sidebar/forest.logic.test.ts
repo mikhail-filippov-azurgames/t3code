@@ -666,6 +666,19 @@ describe("resolveSidebarRoleBadge", () => {
     });
   });
 
+  it("maps the architecture role and keeps the legacy design label", () => {
+    expect(resolveSidebarRoleBadge({ role: "architecture", isOrchestrator: false })).toEqual({
+      kind: "role",
+      role: "architecture",
+      label: "Architecture",
+    });
+    expect(resolveSidebarRoleBadge({ role: "design", isOrchestrator: false })).toEqual({
+      kind: "role",
+      role: "architecture",
+      label: "Design",
+    });
+  });
+
   it("marks orchestrator rows even without a card role", () => {
     expect(resolveSidebarRoleBadge({ role: null, isOrchestrator: true })).toEqual({
       kind: "orchestrator",

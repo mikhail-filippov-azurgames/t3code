@@ -1,6 +1,10 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 
-import type { DiffPanelSelection } from "~/diffPanelStore";
+import {
+  selectThreadDiffPanelSelection,
+  useDiffPanelStore,
+  type DiffPanelSelection,
+} from "~/diffPanelStore";
 
 /** The graph highlights the commit the diff panel currently shows. */
 export function selectedCommitId(selection: DiffPanelSelection | undefined): string | null {
@@ -19,4 +23,14 @@ export function selectCommitFromGraph(input: {
 }) {
   input.selectCommit(input.threadRef, input.commitId);
   input.openDiffPanel(input.threadRef);
+}
+
+/**
+ * Opening the panel starts at the branch diff, except for a commit picked in the
+ * graph: that selection is the reason the panel opened and must survive.
+ */
+export function prepareDiffSelectionForPanelOpen(ref: ScopedThreadRef): void {
+  const state = useDiffPanelStore.getState();
+  if (selectThreadDiffPanelSelection(state.byThreadKey, ref).kind === "commit") return;
+  state.selectGitScope(ref, "branch");
 }

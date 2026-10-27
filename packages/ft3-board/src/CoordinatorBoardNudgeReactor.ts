@@ -27,7 +27,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
+import { readBoardAutomationSettings } from "./settings.ts";
 import * as Contracts from "./contracts.ts";
+
+const nudgeIntervalMinutes = (settings: ServerSettings) =>
+  readBoardAutomationSettings(settings.ft3).coordinatorBoardNudgeIntervalMinutes;
+const nudgeActiveChildThreshold = (settings: ServerSettings) =>
+  readBoardAutomationSettings(settings.ft3).coordinatorBoardNudgeActiveChildThreshold;
 
 export const NUDGES_PER_SWEEP_LIMIT = 3;
 
@@ -200,12 +206,12 @@ export const make = Effect.gen(function* () {
   const sweep = Effect.fn("CoordinatorBoardNudgeReactor.sweep")(function* (
     settings: ServerSettings,
   ) {
-    const intervalMinutes = settings.coordinatorBoardNudgeIntervalMinutes;
+    const intervalMinutes = nudgeIntervalMinutes(settings);
     if (intervalMinutes === null) {
       yield* logReason("disabled");
       return;
     }
-    const threshold = settings.coordinatorBoardNudgeActiveChildThreshold;
+    const threshold = nudgeActiveChildThreshold(settings);
     const observedAtMillis = DateTime.toEpochMillis(yield* DateTime.now);
 
     const orchestrators = [...(yield* board.listOrchestrators())].sort(compareOrchestrators);
@@ -410,12 +416,12 @@ export const make = Effect.gen(function* () {
         }
 
         const latestSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
-        const latestInterval = latestSettings.coordinatorBoardNudgeIntervalMinutes;
+        const latestInterval = nudgeIntervalMinutes(latestSettings);
         if (latestInterval === null) {
           yield* logReason("disabled", { coordinatorId });
           return;
         }
-        const latestThreshold = latestSettings.coordinatorBoardNudgeActiveChildThreshold;
+        const latestThreshold = nudgeActiveChildThreshold(latestSettings);
         if (!blockedNudge && activeChildCount >= latestThreshold) {
           yield* logReason("threshold", {
             coordinatorId,
@@ -494,7 +500,7 @@ export const make = Effect.gen(function* () {
     const loopReady = yield* Deferred.make<void>();
     const loop = Effect.fn("CoordinatorBoardNudgeReactor.loop")(function* () {
       let currentSettings = initialSettings;
-      let intervalMinutes = currentSettings.coordinatorBoardNudgeIntervalMinutes;
+      let intervalMinutes = nudgeIntervalMinutes(currentSettings);
       let nextSweepAt = intervalMinutes === null ? null : startedAt + intervalMinutes * 60_000;
       let loggedNotTime = false;
       let signalledReady = false;
@@ -513,7 +519,7 @@ export const make = Effect.gen(function* () {
       while (true) {
         if (nextSweepAt === null) {
           const changed = yield* Queue.take(settingsQueue);
-          const changedInterval = changed.coordinatorBoardNudgeIntervalMinutes;
+          const changedInterval = nudgeIntervalMinutes(changed);
           currentSettings = changed;
           if (changedInterval === null) continue;
           intervalMinutes = changedInterval;
@@ -540,7 +546,7 @@ export const make = Effect.gen(function* () {
           if (wake._tag === "settings") {
             const previousInterval = intervalMinutes;
             currentSettings = wake.settings;
-            intervalMinutes = currentSettings.coordinatorBoardNudgeIntervalMinutes;
+            intervalMinutes = nudgeIntervalMinutes(currentSettings);
             if (intervalMinutes === null) {
               nextSweepAt = null;
               loggedNotTime = false;
@@ -554,7 +560,7 @@ export const make = Effect.gen(function* () {
         }
 
         const latestSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
-        const latestInterval = latestSettings.coordinatorBoardNudgeIntervalMinutes;
+        const latestInterval = nudgeIntervalMinutes(latestSettings);
         currentSettings = latestSettings;
         if (latestInterval === null) {
           intervalMinutes = null;
@@ -574,7 +580,7 @@ export const make = Effect.gen(function* () {
 
         const afterSweepSettings = yield* settingsService.getSettings.pipe(Effect.orDie);
         currentSettings = afterSweepSettings;
-        intervalMinutes = currentSettings.coordinatorBoardNudgeIntervalMinutes;
+        intervalMinutes = nudgeIntervalMinutes(currentSettings);
         if (intervalMinutes === null) {
           nextSweepAt = null;
           loggedNotTime = false;

@@ -7,11 +7,11 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import { ProviderDriverKind } from "@t3tools/contracts";
+import { isKimiProviderInstance, KimiIcon } from "@t3tools/ft3-web/kimi";
 import {
   AnthropicIcon,
   AntigravityIcon,
   ClaudeAI,
-  KimiIcon,
   Icon,
   OllamaIcon,
   OpenAI,
@@ -104,10 +104,11 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   const isAcpRegistry = props.driverKind === "acpRegistry";
   // A custom OpenAI-compatible endpoint has no brand: show its name, marked with the protocol.
   const isCustomEndpoint = props.driverKind === "openaiCompatible";
-  const isKimi =
-    isAcpRegistry &&
-    (props.acpRegistryAgentId?.trim().toLowerCase() === "kimi" ||
-      props.displayName.trim().toLowerCase() === "kimi");
+  const isKimi = isKimiProviderInstance({
+    driverKind: props.driverKind,
+    agentId: props.acpRegistryAgentId,
+    displayName: props.displayName,
+  });
   const acpRegistryIconUrl = resolveProviderInstanceAcpRegistryIconUrl({
     driverKind: props.driverKind,
     agentId: props.acpRegistryAgentId,

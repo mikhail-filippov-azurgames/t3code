@@ -18,6 +18,9 @@ export function resolveSidebarRoleBadge(input: {
   readonly isOrchestrator: boolean;
 }): SidebarRoleBadge | null {
   if (input.isOrchestrator) return { kind: "orchestrator", label: "Coordinator" };
+  if (input.role === "design") {
+    return { kind: "role", role: "architecture", label: "Design" };
+  }
   const role = BOARD_EXECUTOR_ROLES.find((candidate) => candidate === input.role);
   if (role === undefined) return null;
   return { kind: "role", role, label: boardExecutorRoleLabel(role) };

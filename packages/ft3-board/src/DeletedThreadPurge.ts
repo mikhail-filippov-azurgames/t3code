@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
+import { readBoardAutomationSettings } from "./settings.ts";
 
 export const DELETED_THREAD_PURGE_BUDGET_MS = 30_000;
 export const DELETED_THREAD_PURGE_BATCH_LIMIT = 500;
@@ -198,7 +199,7 @@ export const purgeDeletedThreadsAtEngineStart: Effect.Effect<
 > = Effect.gen(function* () {
   const settings = yield* ServerSettingsService;
   const current = yield* settings.getSettings;
-  const afterDays = current.deletedThreadPurgeAfterDays;
+  const afterDays = readBoardAutomationSettings(current.ft3).deletedThreadPurgeAfterDays;
   const cutoffIso = deletedThreadPurgeCutoffIso(afterDays, yield* DateTime.now);
   const counts = yield* purgeDeletedThreads({ cutoffIso });
   yield* Effect.logInfo("deleted thread purge", {

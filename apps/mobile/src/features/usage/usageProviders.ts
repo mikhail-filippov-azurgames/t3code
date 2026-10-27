@@ -1,4 +1,5 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
+import type { LimitPool } from "@t3tools/shared/usageLimits";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 
 export const PROVIDER_ORDER: readonly UsageProviderKind[] = [
@@ -58,4 +59,16 @@ export function useUsageMixColors() {
     fast: dark ? "#838383" : "#797979",
     ultrafast: dark ? "#e6e6e6" : "#3c3c43",
   };
+}
+
+/** The ACP driver kind is generic, so only its instances can name a pooled provider. */
+export function poolDisplayName(pool: LimitPool): string | null {
+  if (pool.driver !== "acpRegistry") return null;
+  const names = new Set(
+    pool.accounts.flatMap((account) => {
+      const name = account.displayName?.trim();
+      return name ? [name] : [];
+    }),
+  );
+  return names.size === 1 ? ([...names][0] as string) : null;
 }

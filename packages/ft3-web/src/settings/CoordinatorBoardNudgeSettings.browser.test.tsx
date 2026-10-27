@@ -81,13 +81,17 @@ describe("coordinator board nudge settings", () => {
     mocks.update.mockReset();
     await using screen = await render(<CoordinatorBoardNudgeSection />, { router: false });
     await userEvent.click(screen.getByLabelText(SWITCH));
-    expect(mocks.update).toHaveBeenLastCalledWith({ coordinatorBoardNudgeIntervalMinutes: 15 });
+    expect(mocks.update).toHaveBeenLastCalledWith({
+      ft3: { coordinatorBoardNudgeIntervalMinutes: 15 },
+    });
   });
 
   it("shows both fields with stored values once enabled", async () => {
     mocks.settings = {
-      coordinatorBoardNudgeIntervalMinutes: 30,
-      coordinatorBoardNudgeActiveChildThreshold: 2,
+      ft3: {
+        coordinatorBoardNudgeIntervalMinutes: 30,
+        coordinatorBoardNudgeActiveChildThreshold: 2,
+      },
     };
     await using screen = await render(<CoordinatorBoardNudgeSection />, { router: false });
     expect((screen.getByLabelText(SWITCH).element() as HTMLInputElement).checked).toBe(true);
@@ -96,7 +100,7 @@ describe("coordinator board nudge settings", () => {
   });
 
   it("saves only values the schema accepts", async () => {
-    mocks.settings = { coordinatorBoardNudgeIntervalMinutes: 30 };
+    mocks.settings = { ft3: { coordinatorBoardNudgeIntervalMinutes: 30 } };
     mocks.update.mockReset();
     await using screen = await render(<CoordinatorBoardNudgeSection />, { router: false });
     const interval = screen.getByLabelText(INTERVAL);
@@ -107,20 +111,26 @@ describe("coordinator board nudge settings", () => {
 
     await userEvent.clear(interval);
     await userEvent.type(interval, "45");
-    expect(mocks.update).toHaveBeenLastCalledWith({ coordinatorBoardNudgeIntervalMinutes: 45 });
+    expect(mocks.update).toHaveBeenLastCalledWith({
+      ft3: { coordinatorBoardNudgeIntervalMinutes: 45 },
+    });
   });
 
   it("offers a reset to off only when something differs from the default", async () => {
     mocks.settings = {
-      coordinatorBoardNudgeIntervalMinutes: 30,
-      coordinatorBoardNudgeActiveChildThreshold: 2,
+      ft3: {
+        coordinatorBoardNudgeIntervalMinutes: 30,
+        coordinatorBoardNudgeActiveChildThreshold: 2,
+      },
     };
     mocks.update.mockReset();
     await using screen = await render(<CoordinatorBoardNudgeSection />, { router: false });
     await userEvent.click(screen.getByRole("button"));
     expect(mocks.update).toHaveBeenCalledWith({
-      coordinatorBoardNudgeIntervalMinutes: null,
-      coordinatorBoardNudgeActiveChildThreshold: 1,
+      ft3: {
+        coordinatorBoardNudgeIntervalMinutes: null,
+        coordinatorBoardNudgeActiveChildThreshold: 1,
+      },
     });
   });
 });

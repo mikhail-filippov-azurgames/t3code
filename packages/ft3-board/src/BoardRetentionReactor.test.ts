@@ -1,4 +1,5 @@
 import { ThreadId, type ServerSettings } from "@t3tools/contracts";
+import type { BoardAutomationSettings } from "./settings.ts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -114,11 +115,9 @@ const startReactor = (harness: SettingsHarness) =>
     return reactor;
   });
 
-const retentionSettings = (overrides: Partial<ServerSettings> = {}): ServerSettings => ({
+const retentionSettings = (overrides: Partial<BoardAutomationSettings> = {}): ServerSettings => ({
   ...DEFAULT_SERVER_SETTINGS,
-  boardArchiveAfterDays: 1,
-  boardDeleteArchivedAfterDays: 14,
-  ...overrides,
+  ft3: { boardArchiveAfterDays: 1, boardDeleteArchivedAfterDays: 14, ...overrides },
 });
 
 const seeded = <A, E, R>(effect: Effect.Effect<A, E, R>) =>

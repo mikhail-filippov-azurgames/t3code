@@ -15,6 +15,21 @@ export {
   type Ft3MarkdownLinkInput,
 } from "./useFt3ChatTextExtensions.tsx";
 export { BoardCardMentionButton } from "./BoardCardMentionChip.tsx";
+export { CommitMentionChip } from "./CommitMentionChip.tsx";
+export {
+  clearCommitMentionCache,
+  commitMentionTextSegments,
+  commitMentionTokenFromInlineCode,
+  extractCommitMentions,
+  resolveCommitMentions,
+  type CommitMention,
+  type CommitMentionTextSegment,
+} from "./commitMentions.ts";
+export {
+  COMMIT_MENTION_HREF_PREFIX,
+  commitMentionHref,
+  remarkLinkifyCommitMentions,
+} from "./commitMentionsPlugin.ts";
 export { OpenContextDocChip } from "./OpenContextDocChip.tsx";
 export {
   parseOpenContextDocHref,

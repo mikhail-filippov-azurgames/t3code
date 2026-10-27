@@ -24,6 +24,7 @@ import type * as Scope from "effect/Scope";
 
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as BoardRepository from "./BoardRepository.ts";
+import { readBoardAutomationSettings } from "./settings.ts";
 
 export const RETENTION_BATCH_LIMIT = 500;
 const RETENTION_INTERVAL = Duration.hours(1);
@@ -105,8 +106,9 @@ export const make = Effect.gen(function* () {
 
   const sweep = Effect.fn("BoardRetentionReactor.sweep")(function* () {
     const settings = yield* settingsService.getSettings.pipe(Effect.orDie);
-    const archived = yield* archiveBatch(settings.boardArchiveAfterDays);
-    const deleted = yield* deleteBatch(settings.boardDeleteArchivedAfterDays);
+    const automation = readBoardAutomationSettings(settings.ft3);
+    const archived = yield* archiveBatch(automation.boardArchiveAfterDays);
+    const deleted = yield* deleteBatch(automation.boardDeleteArchivedAfterDays);
     yield* logReason("sweep", { archived, deleted });
   });
 
