@@ -1,4 +1,5 @@
 import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
+import { SidebarForestRowDecorations, useSidebarForests } from "@t3tools/ft3-web/sidebar";
 import { liveShellEnvironmentIdsAtom } from "../state/shell";
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
@@ -1365,6 +1366,22 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
   // already shown keep their places while slower environments answer.
+  // ft3 delegation forest: subagent children nest under their parent row in
+  // the parent's section and the bound Architect row nests through the
+  // binding index. Upstream only supplies the section lists and the pool.
+  const sidebarForests = useSidebarForests({
+    sections: [
+      { section: "pinned", threads: pinnedThreads },
+      { section: "active", threads: activeThreads },
+      { section: "working", threads: visibleWorkingThreads },
+      { section: "snoozed", threads: visibleSnoozedThreads },
+      { section: "settled", threads: renderedSettledThreads },
+    ],
+    pool: threads,
+    sectionOfKey: (key) => sectionByThreadKey.get(key) ?? null,
+    routeThreadKey,
+    getLastVisitedAt: (thread) => thread.lastVisitedAt ?? undefined,
+  });
   const threadByMatchKey =
     threadSearch.matches.length === 0
       ? null
@@ -1922,6 +1939,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const hasProjectFolders = projectFolders !== null && projectFolders.length > 0;
   const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
+    const rowsOf = (section: SidebarSection): SidebarListItem[] =>
+      (sidebarForests.entriesBySection.get(section) ?? []).map((entry) => ({
+        kind: "thread",
+        key: entry.key,
+        section,
+        thread: entry.thread,
+        depth: entry.depth,
+        descendantCount: entry.descendantCount,
+      }));
     const rowsOf = (
       list: readonly EnvironmentThreadShell[],
       section: SidebarSection,
@@ -1943,22 +1969,22 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       return [];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf(pinnedThreads, "pinned");
+    const pinnedRows = rowsOf("pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
-    const activeRows = rowsOf(activeThreads, "active");
+    const activeRows = rowsOf("active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
-      items.push(...rowsOf(visibleWorkingThreads, "working"));
+      items.push(...rowsOf("working"));
     }
     if (snoozedThreads.length > 0) {
       items.push({ kind: "marker", marker: "snoozed-header" });
-      items.push(...rowsOf(visibleSnoozedThreads, "snoozed"));
+      items.push(...rowsOf("snoozed"));
     }
     items.push({ kind: "marker", marker: "settled-header" });
-    const settledRows = rowsOf(renderedSettledThreads, "settled");
+    const settledRows = rowsOf("settled");
     items.push({ kind: "marker", marker: "settled-placeholder" });
     items.push(...settledRows);
     return items;
@@ -3305,6 +3331,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
+                        forest?: { depth: number; descendantCount: number },
                         // The tree row of the project folder this row sits in.
                         folderRow?: string,
                       ) => {
@@ -3325,6 +3352,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             key={threadKey}
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
+                            depth={forest?.depth ?? 0}
+                            decorations={
+                              <SidebarForestRowDecorations
+                                model={sidebarForests.modelByKey.get(threadKey)}
+                                onToggleCollapse={sidebarForests.toggleCollapsed}
+                              />
+                            }
                             sortableDisabled={
                               projectFolders !== null ||
                               renamingThreadKey === threadKey ||
@@ -3436,13 +3470,21 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
+                          const thread = item.thread ?? threadByKey.get(item.key)!;
+                          items.push(
+                            renderThreadRow(thread, item.section, {
+                              depth: item.depth ?? 0,
+                              descendantCount: item.descendantCount ?? 0,
+                            }),
+                          );
                           // Folders draw active rows in their own place below.
                           if (projectFolders !== null && item.section === "active") continue;
                           items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                           items.push(
                             <ArchitectSidebarPin
                               key={`architect-pin:${item.key}`}
-                              thread={threadByKey.get(item.key)!}
+                              thread={thread}
+                              depth={item.depth ?? 0}
                               onNavigate={navigateToThread}
                             />,
                           );
