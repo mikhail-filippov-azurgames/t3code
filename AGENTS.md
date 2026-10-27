@@ -1,5 +1,7 @@
 # T3 Code
 
+This is the ft3 fork of T3 Code V2: read [docs/ft3/README.md](docs/ft3/README.md) and [docs/ft3/contributing.md](docs/ft3/contributing.md) before starting any work.
+
 T3 Code is a minimal GUI for coding agents. A Node WebSocket server wraps provider CLIs and agents (Codex, Claude Code, Cursor, Grok, OpenCode, Antigravity) and serves web, desktop, and mobile clients.
 
 You can think of T3 Code as an open source "bring-your-own-subscription" alternative to apps like Claude Desktop, Codex App, Cursor Glass and Conductor.
