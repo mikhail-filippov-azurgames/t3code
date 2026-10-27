@@ -806,3 +806,14 @@ points); the option itself travels as data. `server.ts` export lists are restore
 to one line each so upstream edits stay local.
 
 New fork-owned tests: `packages/ft3-kimi/src/promptFailure.test.ts`.
+
+## Документация форка для агентов
+
+`AGENTS.md` получает одну строку после заголовка, чтобы агент до начала работы увидел
+границу форка и обязательные проверки. Подробности не дублируются: карта — в
+`docs/ft3/README.md`, правила — в `docs/ft3/contributing.md`, база и импорт — в
+`docs/ft3/database.md`.
+
+| Upstream-файл | Правка                                                                                       | Зачем                                                         |
+| ------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `AGENTS.md`   | одна строка после заголовка со ссылками на `docs/ft3/README.md` и `docs/ft3/contributing.md` | агент до начала работы видит границу форка и порядок проверок |
