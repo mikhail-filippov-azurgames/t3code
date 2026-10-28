@@ -1,0 +1,24 @@
+import type { SVGProps } from "react";
+
+/**
+ * The approved Corvis mark. Body follows `color` so it reads on both themes;
+ * the branch keeps the brand accent.
+ */
+export function CorvisMark(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg {...props} viewBox="0 0 540 410" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M 113 338 C 64 338 25 302 25 255 C 25 220 47 191 81 179 C 73 135 110 95 158 106 C 171 58 214 23 266 23 C 318 23 361 57 374 103 C 423 92 459 133 450 179 C 483 191 505 220 505 255 C 505 302 467 338 418 338 L 374 338 C 367 338 363 340 357 343 C 329 359 298 369 266 369 C 234 369 202 359 174 343 C 168 340 164 338 157 338 Z"
+        fill="currentColor"
+      />
+      <path
+        d="M 266 145 V 226 M 266 226 L 191 266 M 266 226 L 341 266"
+        fill="none"
+        stroke="#638bfa"
+        strokeWidth={55}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
