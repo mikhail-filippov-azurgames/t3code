@@ -17,6 +17,7 @@ import * as SynchronizedRef from "effect/SynchronizedRef";
 import serverPackageJson from "../../../server/package.json" with { type: "json" };
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
+import * as DesktopExternalBackend from "./DesktopExternalBackend.ts";
 import * as DesktopCliShim from "../app/DesktopCliShim.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopServerExposure from "./DesktopServerExposure.ts";
@@ -800,7 +801,11 @@ export const make = Effect.gen(function* () {
     const persistedSettings = yield* settings.get;
     const wslRequested = persistedSettings.wslOnly && persistedSettings.wslBackendEnabled;
     // When WSL is unavailable its controls are hidden; fall back to Windows to keep recovery possible.
-    const useWsl = wslRequested && (yield* wslEnvironment.isAvailable);
+    // External mode attaches to a server that already runs on this host, so WSL never applies.
+    const useWsl =
+      !DesktopExternalBackend.isExternalServerMode() &&
+      wslRequested &&
+      (yield* wslEnvironment.isAvailable);
     return { useWsl, wslRequested, distro: persistedSettings.wslDistro };
   });
 
@@ -812,6 +817,27 @@ export const make = Effect.gen(function* () {
   return DesktopBackendConfiguration.of({
     currentBootstrapToken,
     resolvePrimary: Effect.gen(function* () {
+      if (DesktopExternalBackend.isExternalServerMode()) {
+        const backendExposure = yield* serverExposure.backendConfig;
+        const bootstrapToken = yield* DesktopExternalBackend.readExternalBootstrapToken(
+          fileSystem,
+          DesktopExternalBackend.resolveBootstrapTokenPath({
+            joinPath: environment.path.join,
+            baseDir: environment.baseDir,
+          }),
+        );
+        return DesktopExternalBackend.resolveExternalStartConfig({
+          port: backendExposure.port,
+          bindHost: backendExposure.bindHost,
+          httpBaseUrl: backendExposure.httpBaseUrl,
+          tailscaleServeEnabled: backendExposure.tailscaleServeEnabled,
+          tailscaleServePort: backendExposure.tailscaleServePort,
+          baseDir: environment.baseDir,
+          backendEntryPath: environment.backendEntryPath,
+          backendCwd: environment.backendCwd,
+          bootstrapToken,
+        });
+      }
       const { useWsl, wslRequested } = yield* describePrimary;
       if (useWsl) {
         return yield* buildWslPrimaryConfig;

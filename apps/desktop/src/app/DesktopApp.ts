@@ -19,6 +19,7 @@ import * as DesktopApplicationMenu from "../window/DesktopApplicationMenu.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import * as PreviewPasskeys from "../preview/Passkeys.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
+import * as DesktopExternalBackend from "../backend/DesktopExternalBackend.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopLegacyLocalStorage from "./DesktopLegacyLocalStorage.ts";
 import * as DesktopLifecycle from "./DesktopLifecycle.ts";
@@ -199,12 +200,26 @@ const bootstrap = Effect.gen(function* () {
   const primaryBackend = yield* pool.primary;
   const serverExposure = yield* DesktopServerExposure.DesktopServerExposure;
   const wslBackend = yield* DesktopWslBackend.DesktopWslBackend;
+  const externalServerMode = DesktopExternalBackend.isExternalServerMode();
 
-  if (environment.isDevelopment && Option.isNone(environment.configuredBackendPort)) {
+  if (
+    !externalServerMode &&
+    environment.isDevelopment &&
+    Option.isNone(environment.configuredBackendPort)
+  ) {
     return yield* new DesktopDevelopmentBackendPortRequiredError();
   }
 
-  const backendPortSelection = yield* resolveDesktopBackendPort(environment.configuredBackendPort);
+  const backendPortSelection = externalServerMode
+    ? {
+        // The server owns the port, so never scan; the launcher says which port it holds.
+        port: Option.getOrElse(
+          environment.configuredBackendPort,
+          () => DEFAULT_DESKTOP_BACKEND_PORT,
+        ),
+        selectedByScan: false,
+      }
+    : yield* resolveDesktopBackendPort(environment.configuredBackendPort);
   const backendPort = backendPortSelection.port;
   yield* logBootstrapInfo(
     backendPortSelection.selectedByScan
@@ -240,6 +255,10 @@ const bootstrap = Effect.gen(function* () {
   }
 
   if (!(yield* Ref.get(state.quitting))) {
+    if (externalServerMode) {
+      // The server may still be starting; keep a window on screen until it answers.
+      yield* desktopWindow.showConnectingSplash;
+    }
     if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
       yield* desktopWindow.showConnectingSplash;
     }
@@ -259,7 +278,9 @@ const bootstrap = Effect.gen(function* () {
       Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
       Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
     );
-    yield* Effect.forkScoped(wslBackend.reconcile);
+    if (!externalServerMode) {
+      yield* Effect.forkScoped(wslBackend.reconcile);
+    }
   }
 }).pipe(Effect.withSpan("desktop.bootstrap"));
 

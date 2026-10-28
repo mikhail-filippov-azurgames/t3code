@@ -31,6 +31,23 @@ single-instance lock привязан к userData, поэтому отдельн
 AppUserModelID переопределяется штатным env `T3CODE_DESKTOP_APP_USER_MODEL_ID`
 (`apps/desktop/src/app/DesktopConfig.ts`), правки не требует.
 
+## Внешний сервер: окно-клиент без своего backend
+
+`FT3_EXTERNAL_SERVER=1` переводит окно в режим клиента: отдельный сервер запускает
+лончер, окно подключается к нему по статическому bootstrap-токену и не владеет
+процессом. Без env поведение совпадает с upstream.
+
+| Upstream-файл                                             | Правка                                                                                                                                       | Зачем                                                                 |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `apps/desktop/src/backend/DesktopBackendPool.ts`          | primary-инстанс выбирается между `makeBackendInstance` и `makeExternalBackendInstance` по `FT3_EXTERNAL_SERVER`                              | окно не спавнит backend, а следит за уже запущенным сервером          |
+| `apps/desktop/src/backend/DesktopBackendConfiguration.ts` | `resolvePrimary` для внешнего режима отдаёт конфиг из `DesktopExternalBackend.resolveExternalStartConfig`; `describePrimary` не выбирает WSL | сервер живёт вне окна, WSL-ветка к нему неприменима                   |
+| `apps/desktop/src/app/DesktopApp.ts`                      | гварды внешнего режима: без сканирования порта, без `wslBackend.reconcile`, сплэш «подключаюсь»                                              | порт держит сервер, окно не должно искать свободный или поднимать WSL |
+
+Логика режима — в форковом `apps/desktop/src/backend/DesktopExternalBackend.ts`
+(опрос `/.well-known/t3/environment`, статический токен из
+`<t3Home>/userdata/secrets/desktop-bootstrap-token`), тест —
+`DesktopExternalBackend.test.ts`.
+
 ## Значения для ft3-v2
 
 | Компонент      | Старый ft3           | Официальный T3       | ft3-v2 (env)                                          |
@@ -787,6 +804,25 @@ Fork-owned tests: `packages/ft3-kimi/src/usage.test.ts`,
 `packages/ft3-web/src/usage/usageProviders.test.ts`,
 `packages/ft3-web/src/usage/usageLimitsPool.test.ts`, and the updated
 `packages/ft3-host/src/import/importProviderSettings.test.ts`.
+
+## Kimi model prices for the usage page
+
+The usage page prices records from the LiteLLM table plus `usagePriceOverrides` from server settings,
+matched against the exact model id (`apps/server/src/usage/usagePricing.ts`, `resolveRate`). Kimi Code
+writes `kimi-code/<model>` ids (`kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed`,
+`kimi-code/k3.1-pro`, …), and no rate table carries those names, so every Kimi record priced as
+`unpriced`. `packages/ft3-kimi/src/pricing.ts` holds the Moonshot list prices keyed by those ids and
+feeds the same override table, below the user's own entries.
+
+| Upstream file                                | Connection                                                                                                                                   | Reason                                                            |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `apps/server/src/usage/UsageService.ts`      | import `kimiPriceOverrides` from `@t3tools/ft3-kimi/pricing` and spread it under `settings.usagePriceOverrides` in `createOverrideRateTable` | one merge point; a user override still replaces the fork entry    |
+| `apps/server/src/usage/usagePricing.test.ts` | additive case: the Kimi id is `unpriced` without the fork table and priced with it                                                           | proves the cause and the fix on the real pricing function         |
+| `packages/ft3-kimi/package.json`             | export `./pricing`                                                                                                                           | expose the price table without pulling the driver into usage code |
+
+`cacheWriteCostPerMillionTokens` is a single field, so K3.1 Pro and its highspeed tier carry the 5-minute
+cache-write price; the price schema has no per-request or per-cache-TTL field. Fork-owned tests:
+`packages/ft3-kimi/src/pricing.test.ts`.
 
 ## Kimi quota failures inside a successful ACP turn
 
