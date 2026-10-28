@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 
 import { cursorRateModel } from "@t3tools/provider-cursor/server/accountUsage";
+import { kimiPriceOverrides } from "@t3tools/ft3-kimi/pricing";
 import type { UsageSpeed } from "@t3tools/provider-core/server/usage";
 import {
   cacheSavingsUsd,
@@ -257,5 +258,36 @@ describe("usage pricing", () => {
     expect(lookupRate(table, "provider-a/example-model")?.inputCostPerToken).toBe(1);
     expect(lookupRate(table, "provider-b/example-model")?.inputCostPerToken).toBe(3);
     expect(lookupRate(table, "example-model")).toBeNull();
+  });
+
+  it("prices Kimi Code model ids from the fork price table", () => {
+    const table = parseRateTable({});
+    const overrides = createOverrideRateTable(kimiPriceOverrides);
+    const kimiRecord = {
+      model: "kimi-code/k3.1-pro",
+      totals: {
+        uncachedInputTokens: 1_000_000,
+        cachedInputTokens: 1_000_000,
+        cacheCreationTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        reasoningTokens: 0,
+      },
+      reportedCostUsd: null,
+      speed: "standard" as UsageSpeed,
+    };
+
+    expect(priceUsage(table, kimiRecord)).toMatchObject({ costUsd: 0, costSource: "unpriced" });
+    expect(priceUsage(table, kimiRecord, overrides)).toEqual({
+      costUsd: expect.closeTo(14.2),
+      costSource: "modelPriced",
+      categoryCostUsd: {
+        input: expect.closeTo(2),
+        cacheRead: expect.closeTo(0.2),
+        cacheWrite: expect.closeTo(2),
+        output: expect.closeTo(10),
+      },
+      speedPremiumUsd: 0,
+    });
+    expect(cacheSavingsUsd(table, kimiRecord, overrides)).toBeCloseTo(1.8);
   });
 });

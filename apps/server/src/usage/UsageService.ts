@@ -10,6 +10,7 @@ import {
   type UsageSummaryInput,
   UsageReadError,
 } from "@t3tools/contracts";
+import { kimiPriceOverrides } from "@t3tools/ft3-kimi/pricing";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -722,7 +723,10 @@ export const make = Effect.gen(function* () {
       resolution: input.resolution ?? "day",
       ...hourlyWindow,
       rates,
-      priceOverrides: createOverrideRateTable(settings.usagePriceOverrides),
+      priceOverrides: createOverrideRateTable({
+        ...kimiPriceOverrides,
+        ...settings.usagePriceOverrides,
+      }),
       modelAliases: resolveModelAliases(settings.usageModelAliases),
       ...(input.modelFilter === undefined ? {} : { modelFilter: input.modelFilter }),
     });
