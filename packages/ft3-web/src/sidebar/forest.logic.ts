@@ -325,6 +325,22 @@ export function collectDelegatedWorkingStartedAt<
 }
 
 /**
+ * Shell lookup for row actions: the upstream section shells plus the forest
+ * rows those sections never list (delegated children, bound architects). A row
+ * the sections do list keeps its section shell.
+ */
+export function mergeForestRowThreads<TThread>(input: {
+  readonly sectionThreads: ReadonlyMap<string, TThread>;
+  readonly forestRows: ReadonlyMap<string, { readonly thread: TThread }>;
+}): Map<string, TThread> {
+  const merged = new Map(input.sectionThreads);
+  for (const [key, row] of input.forestRows) {
+    if (!merged.has(key)) merged.set(key, row.thread);
+  }
+  return merged;
+}
+
+/**
  * A row shows Working when its own run is live or when its delegated children
  * are: the old fork read the parent as working through background liveness,
  * while V2 reports an idle runtime once the parent's own turn ended.
