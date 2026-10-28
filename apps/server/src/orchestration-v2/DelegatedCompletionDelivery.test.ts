@@ -2804,6 +2804,108 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
     }),
   );
 
+  it.effect("keeps a tool-only answered delivery delivered after a restart cancels its run", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const name = "delivery-tool-answered";
+      const threadId = ThreadId.make(`thread:${name}`);
+      const runId = RunId.make(`run:${name}`);
+      const taskId = NodeId.make(`node:${name}-task`);
+      const messageId = MessageId.make(`message:delegated-delivery:${threadId}`);
+      const deliveryRunId = RunId.make(`run:${name}:delivery`);
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId: ProjectId.make(`project:${name}`),
+        runId,
+        rootNodeId: NodeId.make(`node:${name}-root`),
+        taskId,
+        deliveryState: "claimed",
+        completionWake: "always",
+        deliveryTaskIds: [taskId],
+        now,
+      });
+      yield* eventSink.writeWithEffects({
+        commandId: reconcileCommandId(name),
+        events: [
+          {
+            id: EventId.make(`event:${name}:delivery-message`),
+            type: "message.updated",
+            threadId,
+            runId: deliveryRunId,
+            occurredAt: now,
+            payload: {
+              id: messageId,
+              threadId,
+              runId: deliveryRunId,
+              nodeId: null,
+              role: "user",
+              text: `Delegated task ${taskId} reached a terminal state.`,
+              attachments: [],
+              streaming: false,
+              createdBy: "agent",
+              creationSource: "server",
+              createdAt: now,
+              updatedAt: now,
+              delegatedCompletion: { parentRunId: runId, generation: 1, taskIds: [taskId] },
+            },
+          },
+          {
+            id: EventId.make(`event:${name}:delivery-tool`),
+            type: "turn-item.updated",
+            threadId,
+            runId: deliveryRunId,
+            providerInstanceId: modelSelection.instanceId,
+            occurredAt: now,
+            payload: {
+              id: TurnItemId.make(`turn-item:${name}:delivery-tool`),
+              type: "dynamic_tool",
+              threadId,
+              runId: deliveryRunId,
+              nodeId: null,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 1,
+              status: "completed",
+              title: null,
+              toolName: "shell",
+              input: { command: "git status" },
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+            },
+          },
+          runEvent({
+            threadId,
+            runId: deliveryRunId,
+            ordinal: 2,
+            status: "cancelled",
+            now,
+            providerThreadId: parentProviderThreadId(threadId),
+            userMessageId: messageId,
+          }),
+        ],
+        effects: [],
+      });
+      const before = yield* orchestrator.getThreadProjection(threadId);
+
+      yield* orchestrator.recoverDelegatedTasks;
+
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(
+        projection.subagents.find((row) => row.id === taskId)?.completionDelivery?.state,
+        "delivered",
+      );
+      const parentRun = projection.runs.find((row) => row.id === runId);
+      assert.equal(parentRun?.delegatedCompletion?.delivery, null);
+      assert.equal(parentRun?.delegatedCompletion?.nextGeneration, 2);
+      assert.equal(projection.messages.length, before.messages.length);
+    }),
+  );
+
   it.effect("settles a cancelled child whose held wakes wait behind it", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

@@ -12706,14 +12706,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
 
     const now = yield* DateTime.now;
-    // A cancelled run that already answered the wake must not re-offer it.
-    const deliveryRunAnswered =
+    // A cancelled run that already answered the wake, in text or tool activity,
+    // must not re-offer it.
+    const answeredDelivery =
       deliveryRun.status !== "cancelled"
-        ? true
-        : (yield* projectionStore.getThreadRecords(threadId, ["messages"], {
+        ? undefined
+        : yield* projectionStore.getThreadRecords(threadId, ["messages", "turnItems"], {
             messageRunIds: [deliveryRun.id],
             messageRoles: ["assistant"],
-          })).messages.length > 0;
+            turnItemRunIds: [deliveryRun.id],
+            turnItemTypes: ["command_execution", "dynamic_tool", "subagent"],
+          });
+    const deliveryRunAnswered =
+      answeredDelivery === undefined ||
+      answeredDelivery.messages.length > 0 ||
+      answeredDelivery.turnItems.length > 0;
     const nextTaskStates = new Map<
       OrchestrationV2Subagent["id"],
       OrchestrationV2Subagent["completionDelivery"]
