@@ -1,4 +1,8 @@
-import { useFt3SidebarRows, runFt3SidebarDelegatedAction } from "@t3tools/ft3-web/sidebar";
+import {
+  useFt3SidebarRows,
+  mergeForestRowThreads,
+  runFt3SidebarDelegatedAction,
+} from "@t3tools/ft3-web/sidebar";
 import {
   canSwitchThreadProvider,
   requestSwitchProviderTarget,
@@ -1390,6 +1394,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     onNavigate: (threadRef) => navigateToThread(threadRef),
   });
   useThreadFamilies(sidebarRows.familyRoots);
+  // Forest rows (delegated children, bound architects) are not part of the
+  // upstream sections, so row actions resolve their shells from the forest.
+  const actionThreadByKey = mergeForestRowThreads({
+    sectionThreads: threadByKey,
+    forestRows: sidebarRows.entryByKey,
+  });
   const threadByMatchKey =
     threadSearch.matches.length === 0
       ? null
@@ -1817,7 +1827,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   useLayoutEffect(() => {
     projectGroupsRef.current = projectGroups;
     orderedThreadKeysRef.current = orderedThreadKeys;
-    threadByKeyRef.current = threadByKey;
+    threadByKeyRef.current = actionThreadByKey;
     settledThreadKeysRef.current = settledThreadKeys;
     snoozedThreadKeysRef.current = snoozedThreadKeys;
     sectionByThreadKeyRef.current = sectionByThreadKey;

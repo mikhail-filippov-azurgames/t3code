@@ -9,6 +9,7 @@ export {
   collectWorkingDelegatedChildCounts,
   delegatedChildWorkingStartedAt,
   resolveDelegatedWorkingStart,
+  mergeForestRowThreads,
 } from "./forest.logic.ts";
 export type {
   SidebarForestEntry,

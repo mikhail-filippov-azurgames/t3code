@@ -8,6 +8,7 @@ import {
   delegatedChildWorkingStartedAt,
   filterCollapsedSidebarForest,
   groupSidebarForestChildrenBySection,
+  mergeForestRowThreads,
   orderSidebarSectionForest,
   resolveDelegatedWorkingStart,
   sidebarForestParentKey,
@@ -574,6 +575,29 @@ describe("delegated working start", () => {
         delegatedStartedAt: null,
       }),
     ).toEqual({ working: false, startedAt: null });
+  });
+});
+
+describe("mergeForestRowThreads", () => {
+  it("resolves a delegated child that the upstream sections never list", () => {
+    const child = shell({
+      id: ThreadId.make("thread-delegated-child"),
+      parentThreadId: delegateParentId,
+      completedAt: "2026-03-09T10:05:00.000Z",
+    });
+    const childKey = keyOf(child);
+    const merged = mergeForestRowThreads({
+      sectionThreads: new Map([[keyOf(parentShell), parentShell]]),
+      forestRows: new Map([
+        [
+          keyOf(parentShell),
+          { thread: parentShell, depth: 0, parentKey: null, descendantCount: 1 },
+        ],
+        [childKey, { thread: child, depth: 1, parentKey: keyOf(parentShell), descendantCount: 0 }],
+      ]),
+    });
+    expect(merged.get(childKey)).toBe(child);
+    expect(merged.size).toBe(2);
   });
 });
 
