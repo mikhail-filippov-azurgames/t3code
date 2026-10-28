@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./pricing": {
+      "types": "./src/pricing.ts",
+      "import": "./src/pricing.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"
