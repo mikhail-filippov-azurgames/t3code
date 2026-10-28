@@ -7,6 +7,7 @@ import {
   NOTIFICATION_MODE_LABELS,
   unlockNotificationAudio,
 } from "../../threadNotifications";
+import { APP_BASE_NAME } from "../../branding";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { SettingsRow } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
@@ -23,7 +24,7 @@ export function NotificationSettings() {
       {...searchableSetting("thread-notifications")}
       description={
         permissionMessage ??
-        "System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while T3 Code is open."
+        `System alerts when a thread finishes, fails, or needs input or approval. Applies to this device while ${APP_BASE_NAME} is open.`
       }
       control={
         <Select
