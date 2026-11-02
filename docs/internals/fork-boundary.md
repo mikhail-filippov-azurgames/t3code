@@ -633,6 +633,13 @@ New fork-owned tests: `packages/ft3-board/src/BoardRetentionReactor.test.ts`,
 retention index and updates the migration-list expectations in ft3-host, ft3-board, and
 ft3-architect.
 
+Wake text splits by purpose: the first bind of a lead (`markOrchestrator`) and the explicit
+`resendBrief` deliver the full brief (`buildBoardWakePrompt` in `boardWakePrompt.ts`), while
+every later wake (`BoardReactor`, `startCard`, the idle nudge) delivers a short message with
+the event lines only: the card title with a short id, the outcome and failure count in
+words, the full card ids for tool calls, and a closing `Rules: see your lead brief`
+(plus `<rolesDir>/lead.md` when roles are configured).
+
 ## Pi Bonsai preset
 
 `packages/ft3-pi` detects the Bonsai demo layout (`bin/cuda/llama-server.exe` plus

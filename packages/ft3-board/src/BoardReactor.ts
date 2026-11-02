@@ -18,11 +18,18 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../../../apps/server/src/serverActivation.ts";
-import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/server";
+import { rolesDir } from "@t3tools/ft3-delegation/server";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
-import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
-import { routingPolicyRef } from "./routingPolicy.ts";
+import {
+  boardCardIdLine,
+  boardCardStateLine,
+  buildBoardWakeShortMessage,
+  cardStateWords,
+  executorBackgroundLine,
+  executorFinishedLine,
+  executorInputLine,
+} from "./boardWakePrompt.ts";
 
 export class BoardReactorError extends Schema.TaggedError<BoardReactorError>()(
   "BoardReactorError",
@@ -53,9 +60,8 @@ const encodeTaskIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Sch
 const failure = (operation: string) => (cause: unknown) =>
   new BoardReactorError({ operation, cause });
 
-const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
-  const routingPolicyRefValue = yield* routingPolicyRef;
-  const coordinatorRoleLine = coordinatorBriefRoleLine(yield* rolesDir);
+const make = Effect.fn("Ft3BoardReactor.make")(function* () {
+  const rolesDirectory = yield* rolesDir;
   const sql = yield* SqlClient.SqlClient;
   const board = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -183,7 +189,8 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
       return;
     }
     let executorId = event.threadId;
-    let reason: string | null = null;
+    let wakeKind: "finished" | "input" | "background" | null = null;
+    let terminalStatus: string | null = null;
     let outcome: { readonly status: string; readonly key: string } | null = null;
     switch (event.type) {
       case "subagent.updated": {
@@ -191,7 +198,8 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
         if (task.origin !== "app_owned" || task.childThreadId === null || !terminal(task.status))
           return;
         executorId = task.childThreadId;
-        reason = `Delegated task ${task.id} ${task.status}.`;
+        wakeKind = "finished";
+        terminalStatus = task.status;
         outcome = {
           status: task.status,
           key: `task:${task.id}:${DateTime.formatIso(task.completedAt ?? task.updatedAt)}`,
@@ -200,12 +208,13 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
       }
       case "run.updated":
         if (!terminal(event.payload.status)) return;
-        reason = `Executor run ${event.payload.id} ${event.payload.status}.`;
+        wakeKind = "finished";
+        terminalStatus = event.payload.status;
         outcome = { status: event.payload.status, key: event.payload.id };
         break;
       case "runtime-request.updated":
         if (event.payload.kind !== "user_input" || event.payload.status !== "pending") return;
-        reason = `Executor requested human input (${event.payload.id}).`;
+        wakeKind = "input";
         break;
       case "provider-thread.updated": {
         const provider = event.payload;
@@ -219,7 +228,7 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
           VALUES (${provider.id}, ${executorId}, ${encoded})
           ON CONFLICT (provider_thread_id) DO UPDATE SET thread_id = excluded.thread_id, task_ids_json = excluded.task_ids_json`;
         if (!previous.some((id) => !current.includes(id))) return;
-        reason = "Executor background work finished.";
+        wakeKind = "background";
         break;
       }
       default:
@@ -260,18 +269,35 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
           yield* writeOutcome(card, outcome.key, outcome.status, at);
         }
       }
-      const cardContext = (yield* board.listCards(targetId))
-        .filter((card) => card.executorThreadId === executorId && !card.archived)
-        .map(
-          (card) =>
-            `Card ${card.cardId}: status=${card.status}; readiness=${card.readiness}; outcome=${card.outcome ?? "none"}; failureStreak=${card.failureStreak}.`,
-        )
-        .join("\n");
+      const cardContext = (yield* board.listCards(targetId)).filter(
+        (card) => card.executorThreadId === executorId && !card.archived,
+      );
+      const finishedLine = (failureStreak: number) =>
+        executorFinishedLine({
+          title: shell.title,
+          threadId: executorId,
+          status: terminalStatus,
+          failureStreak,
+        });
+      const lines =
+        wakeKind === "finished"
+          ? cardContext.length === 0
+            ? [finishedLine(0)]
+            : cardContext.map(
+                (card) => `${finishedLine(card.failureStreak)} Card ${cardStateWords(card)}.`,
+              )
+          : [
+              wakeKind === "input"
+                ? executorInputLine(shell.title, executorId)
+                : executorBackgroundLine(shell.title, executorId),
+              ...cardContext.map(boardCardStateLine),
+            ];
+      lines.push(boardCardIdLine(cardContext));
       yield* enqueue(
         `ft3:board:wake:${stored.sequence}:${targetId}`,
         targetId,
         executorId,
-        `${reason}\nExecutor thread: ${executorId}.\n${cardContext}`,
+        lines.filter((line) => line !== "").join("\n"),
       );
     }
   });
@@ -317,12 +343,7 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
         commandId: CommandId.make(wake.key),
         threadId: targetId,
         messageId: MessageId.make(wake.key),
-        text: buildBoardWakePrompt(
-          routingPolicyRefValue,
-          skillPath,
-          wake.context,
-          coordinatorRoleLine,
-        ),
+        text: buildBoardWakeShortMessage(wake.context, rolesDirectory),
         attachments: [],
         createdBy: "agent",
         creationSource: "server",
@@ -375,11 +396,26 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
             )
               return;
             yield* writeOutcome(current, key, "cancelled", at, true);
+            const lostCard: Contracts.BoardCard = {
+              ...current,
+              status: "orchestrator",
+              failureStreak: current.failureStreak + 1,
+            };
             yield* enqueue(
               key,
               mark.threadId,
               card.executorThreadId!,
-              `A delegated executor was lost when the server restarted. Card ${card.cardId}: status=orchestrator; outcome=cancelled. Review the card and decide whether to retry, reassign, or escalate it.`,
+              [
+                `${executorFinishedLine({
+                  title: shell.title,
+                  threadId: card.executorThreadId!,
+                  status: "cancelled",
+                  failureStreak: lostCard.failureStreak,
+                  lostAtRestart: true,
+                })} Card ${cardStateWords(lostCard)}.`,
+                boardCardIdLine([lostCard]),
+                "Review the card and decide whether to retry, reassign, or escalate it.",
+              ].join("\n"),
             );
           }),
         );
@@ -416,10 +452,10 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
   return BoardReactor.of({ process, recover, start });
 });
 
-export const layer = (skillPath = "") => Layer.effect(BoardReactor, make(skillPath));
+export const layer = () => Layer.effect(BoardReactor, make());
 
-export const layerWorker = (skillPath = "") =>
+export const layerWorker = () =>
   Layer.effectDiscard(Effect.flatMap(BoardReactor, (reactor) => reactor.start())).pipe(
-    Layer.provide(layer(skillPath)),
+    Layer.provide(layer()),
     Layer.provide(BoardRepository.layer),
   );

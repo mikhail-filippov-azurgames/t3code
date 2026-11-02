@@ -16,6 +16,7 @@ import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/Thr
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
+import * as Contracts from "./contracts.ts";
 
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
@@ -35,7 +36,13 @@ const makeRolesDir = (): string => {
   return dir.replace(/\\/g, "/");
 };
 
-const brief = (rolesDir: string | undefined) =>
+type Service = BoardService.BoardService["Service"];
+
+const wake = <A>(
+  rolesDir: string | undefined,
+  action: (service: Service) => Effect.Effect<A, Contracts.BoardMcpFailure>,
+  options: { readonly markFirst?: boolean } = {},
+) =>
   Effect.gen(function* () {
     const dispatched = yield* Ref.make<ReadonlyArray<string>>([]);
     const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -73,18 +80,23 @@ const brief = (rolesDir: string | undefined) =>
         payload_json: "{}",
       })}`;
       const repo = yield* BoardRepository.BoardRepository;
-      yield* repo.addOrchestrator({ threadId, createdBy: "human", createdAt: epoch });
+      if (options.markFirst !== false) {
+        yield* repo.addOrchestrator({ threadId, createdBy: "human", createdAt: epoch });
+      }
       const service = yield* BoardService.BoardService;
-      yield* service.resendBrief({ threadId });
+      const result = yield* action(service);
       const orchestrators = yield* service.listOrchestrators();
-      return { texts: yield* Ref.get(dispatched), rolesDir: orchestrators.rolesDir };
+      return { result, texts: yield* Ref.get(dispatched), rolesDir: orchestrators.rolesDir };
     }).pipe(Effect.provide(layer));
   });
+
+const resend = (rolesDir: string | undefined) =>
+  wake(rolesDir, (service) => service.resendBrief({ threadId }));
 
 describe("ft3 board Coordinator brief", () => {
   it.effect("starts with the Coordinator identity while roles are off", () =>
     Effect.gen(function* () {
-      const result = yield* brief(undefined);
+      const result = yield* resend(undefined);
       assert.equal(result.rolesDir, "");
       assert.equal(result.texts.length, 1);
       assert.isTrue(result.texts[0]!.startsWith("You are the lead for this board thread."));
@@ -94,7 +106,7 @@ describe("ft3 board Coordinator brief", () => {
   it.effect("starts with the lead role instruction when roles are configured", () =>
     Effect.gen(function* () {
       const dir = makeRolesDir();
-      const result = yield* brief(dir);
+      const result = yield* resend(dir);
       assert.equal(result.rolesDir, dir);
       assert.isTrue(
         result.texts[0]!.startsWith(
@@ -102,6 +114,45 @@ describe("ft3 board Coordinator brief", () => {
         ),
       );
       assert.include(result.texts[0]!, "You are the lead for this board thread.");
+    }),
+  );
+
+  it.effect("sends the full brief on the first bind of the lead", () =>
+    Effect.gen(function* () {
+      const result = yield* wake(undefined, (service) => service.markOrchestrator({ threadId }), {
+        markFirst: false,
+      });
+      assert.equal(result.texts.length, 1);
+      assert.include(result.texts[0]!, "You are the lead for this board thread.");
+      assert.include(result.texts[0]!, "Keep statuses truthful");
+      assert.include(result.texts[0]!, "This thread was marked a board lead by a human.");
+    }),
+  );
+
+  it.effect("sends a short wake instead of the brief when a human starts a card", () =>
+    Effect.gen(function* () {
+      const dir = makeRolesDir();
+      const result = yield* wake(dir, (service) =>
+        Effect.gen(function* () {
+          const card = yield* service.createHumanCard({
+            orchestratorThreadId: threadId,
+            title: "Mail: address matrix",
+            body: "Map every address to its owner.",
+            executorRole: "implementation",
+          });
+          yield* service.startCard({ cardId: card.cardId });
+          return card;
+        }),
+      );
+      assert.equal(result.texts.length, 1);
+      const text = result.texts[0]!;
+      const shortId = String(result.result.cardId).slice(0, 8);
+      assert.include(text, `Card "Mail: address matrix" (${shortId}) was started by a human`);
+      assert.include(text, "orchestrator, ready");
+      assert.include(text, "Map every address to its owner.");
+      assert.notInclude(text, "You are the lead for this board thread.");
+      assert.notInclude(text, "Keep statuses truthful");
+      assert.isTrue(text.endsWith(`Rules: see your lead brief and ${dir}/lead.md.`));
     }),
   );
 });
