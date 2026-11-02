@@ -1,7 +1,11 @@
 # @t3tools/ft3-architect
 
-Связка координатор↔архитектор: создание/замена/отзыв, цикл архитектурного ревью,
-публикация человеком и побудки через штатный `message.dispatch`.
+Legacy-связка координатор↔архитектор: создание/замена/отзыв, цикл архитектурного
+ревью, публикация человеком и побудки через штатный `message.dispatch`. Поток
+связки устарел: один босс — lead, а архитекторы (`architect`, `architect-*`) —
+консультанты на один вопрос через `delegate_task`, без привязки. Инструменты
+пакета остаются для существующих связок и их данных; скилл
+`create-orchestrator-architect` помечен retired.
 
 ## Экспорты
 
@@ -11,7 +15,7 @@
 - `./service` — `ArchitectService` (SQL-доступ остаётся внутри пакета);
 - `./reactor` — `ArchitectReconciler` после рестарта;
 - `./migrations` — `4_Architect`, `5_ArchitectReviewWake`;
-- `./skillLocation` — путь к `skills/create-orchestrator-architect/SKILL.md`;
+- `./skillLocation` — путь к retired-файлу `skills/create-orchestrator-architect/SKILL.md`;
 - `./rpc`, `./rpc-contracts`, `./contracts` — WebSocket-методы, браузерные контракты, типы.
 
 ## Швы

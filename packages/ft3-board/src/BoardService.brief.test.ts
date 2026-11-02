@@ -114,6 +114,10 @@ describe("ft3 board Coordinator brief", () => {
         ),
       );
       assert.include(result.texts[0]!, "You are the lead for this board thread.");
+      assert.include(result.texts[0]!, "are consultants you may call for one concrete question");
+      assert.include(result.texts[0]!, "ask the `planner` role and follow its role file");
+      assert.notInclude(result.texts[0]!, "create-orchestrator-architect");
+      assert.notInclude(result.texts[0]!, "architect_create_or_get");
     }),
   );
 

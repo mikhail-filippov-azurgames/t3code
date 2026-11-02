@@ -1247,11 +1247,13 @@ describe("ft3 architect restart reconciliation", () => {
 });
 
 describe("ft3 architect shipped skill", () => {
-  it("exists on disk and carries no local document reference", () => {
+  it("exists on disk, is marked retired and carries no local document reference", () => {
     const content = NodeFS.readFileSync(ARCHITECT_SKILL_PATH, "utf8");
     assert.include(ARCHITECT_SKILL_PATH, "create-orchestrator-architect");
     assert.notInclude(content, "oc://");
     assert.notInclude(content, ".opencontext");
-    assert.include(content, "routing policy");
+    assert.include(content, "retired");
+    assert.include(content, "planner");
+    assert.include(content, "delegate_task");
   });
 });

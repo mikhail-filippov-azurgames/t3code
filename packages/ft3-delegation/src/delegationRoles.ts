@@ -16,6 +16,7 @@ export const DELEGATED_ROLE_IDS = [
   "architect-data",
   "architect-failure",
   "architect-product",
+  "planner",
   "implementation",
   "test",
   "research",
@@ -26,6 +27,16 @@ export const DELEGATED_ROLE_IDS = [
   "review-architecture",
 ] as const;
 export type DelegatedRoleId = (typeof DELEGATED_ROLE_IDS)[number];
+
+/**
+ * Upstream role values whose instruction file has a different name. `architecture`
+ * stays in the upstream enum for existing callers, but the fork's consultant role
+ * file is `architect.md`.
+ */
+export const ROLE_FILE_ALIASES: Readonly<Record<string, string>> = { architecture: "architect" };
+
+/** The `<role>.md` basename a delegated role resolves to. */
+export const roleFileName = (role: string): string => ROLE_FILE_ALIASES[role] ?? role;
 
 /** The role ids the upstream schema already accepted before roles were configurable. */
 export const UPSTREAM_ROLE_IDS = [
@@ -84,7 +95,7 @@ export function availableRoles(dir: string): ReadonlyArray<string> {
 }
 
 const hasRoleFile = (dir: string, role: string): boolean =>
-  NodeFS.statSync(NodePath.join(rolesDirPath(dir), `${role}.md`), {
+  NodeFS.statSync(NodePath.join(rolesDirPath(dir), `${roleFileName(role)}.md`), {
     throwIfNoEntry: false,
   })?.isFile() === true;
 
@@ -100,12 +111,13 @@ export type DelegatedRoleAssignment =
 
 const unavailableRole = (role: string, dir: string): DelegatedRoleAssignment => {
   const available = availableRoles(dir);
+  const file = roleFileName(role);
   return {
     _tag: "rejected",
     message:
       available.length === 0
-        ? `Role "${role}" has no ${rolesDirPath(dir)}/${role}.md and ${ROLES_DIR_ENV} holds no role Markdown files. Add <role>.md files to that directory or unset ${ROLES_DIR_ENV}.`
-        : `Role "${role}" has no ${rolesDirPath(dir)}/${role}.md. Available roles: ${available.join(", ")}.`,
+        ? `Role "${role}" has no ${rolesDirPath(dir)}/${file}.md and ${ROLES_DIR_ENV} holds no role Markdown files. Add <role>.md files to that directory or unset ${ROLES_DIR_ENV}.`
+        : `Role "${role}" has no ${rolesDirPath(dir)}/${file}.md. Available roles: ${available.join(", ")}.`,
   };
 };
 
@@ -142,7 +154,8 @@ export function delegatedTaskPrompt(input: {
 }): string {
   const configured = rolesDirPath(input.rolesDir);
   if (configured === "") return input.upstreamPrompt;
-  return `${roleInstructionLine(input.role ?? DEFAULT_DELEGATED_ROLE, configured)}\n\n${input.task}`;
+  const role = roleFileName(input.role ?? DEFAULT_DELEGATED_ROLE);
+  return `${roleInstructionLine(role, configured)}\n\n${input.task}`;
 }
 
 /** Server startup: fail on an unusable roles directory and drop native-subagent guidance when on. */

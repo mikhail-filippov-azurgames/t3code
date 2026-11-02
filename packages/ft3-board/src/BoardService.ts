@@ -19,7 +19,6 @@ import {
   cardStateWords,
   wakeActorLabel,
 } from "./boardWakePrompt.ts";
-import { routingPolicyRef } from "./routingPolicy.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
 export class BoardService extends Context.Service<
@@ -117,7 +116,6 @@ const make = Effect.gen(function* () {
   const repo = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const crypto = yield* Crypto.Crypto;
-  const routingPolicyRefValue = yield* routingPolicyRef;
   const rolesDirectory = yield* rolesDir;
   const coordinatorRoleLine = coordinatorBriefRoleLine(rolesDirectory);
   const event = Effect.fn("Ft3BoardService.event")(function* (
@@ -226,7 +224,7 @@ const make = Effect.gen(function* () {
         messageId: MessageId.make(key),
         text:
           mode === "brief"
-            ? buildBoardWakePrompt(routingPolicyRefValue, "", context, coordinatorRoleLine)
+            ? buildBoardWakePrompt(context, coordinatorRoleLine)
             : buildBoardWakeShortMessage(context, rolesDirectory),
         attachments: [],
         createdBy: "agent",
