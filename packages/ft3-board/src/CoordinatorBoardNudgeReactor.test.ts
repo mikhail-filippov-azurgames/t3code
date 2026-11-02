@@ -2,7 +2,6 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
   ProviderInstanceId,
-  RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2ThreadShell,
@@ -364,6 +363,7 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
     );
     assert.ok(text.includes("automatic board check, not a message from a person"));
     assert.ok(text.includes("Last error: provider failed"));
+    assert.ok(text.includes("Rules: see your lead brief"));
     const secret = `ghp_${"A".repeat(32)}`;
     const blocked = CoordinatorBoardNudgeReactor.formatCoordinatorBoardNudgeMessage(
       card("blocked-card", {
