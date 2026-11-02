@@ -143,6 +143,17 @@ export const OrchestratorMcpTaskRole = Schema.Literals([
   "test",
   "general",
   "architecture",
+  // ft3: role ids that need `<rolesDir>/<role>.md`; validated when roles are configured.
+  "lead",
+  "architect",
+  "architect-boundaries",
+  "architect-data",
+  "architect-failure",
+  "architect-product",
+  "review-common",
+  "review-contracts",
+  "review-failure-paths",
+  "review-architecture",
 ]);
 export type OrchestratorMcpTaskRole = typeof OrchestratorMcpTaskRole.Type;
 
