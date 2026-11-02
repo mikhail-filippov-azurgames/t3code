@@ -87,7 +87,7 @@ describe("ft3 board Coordinator brief", () => {
       const result = yield* brief(undefined);
       assert.equal(result.rolesDir, "");
       assert.equal(result.texts.length, 1);
-      assert.isTrue(result.texts[0]!.startsWith("You are the Coordinator for this board thread."));
+      assert.isTrue(result.texts[0]!.startsWith("You are the lead for this board thread."));
     }),
   );
 
@@ -101,7 +101,7 @@ describe("ft3 board Coordinator brief", () => {
           `Your role is lead. Before any work, read the whole file ${dir}/lead.md and follow it.`,
         ),
       );
-      assert.include(result.texts[0]!, "You are the Coordinator for this board thread.");
+      assert.include(result.texts[0]!, "You are the lead for this board thread.");
     }),
   );
 });
