@@ -192,13 +192,13 @@ const make = Effect.gen(function* () {
     if (String(threadId).startsWith("arch:")) {
       return yield* new Contracts.BoardMcpFailure({
         code: "architect_denied",
-        message: "Architect threads cannot be board Coordinators.",
+        message: "Architect threads cannot be board leads.",
       });
     }
     if (shell.lineage.relationshipToParent === "subagent") {
       return yield* new Contracts.BoardMcpFailure({
         code: "delegated_executor_denied",
-        message: "Delegated child threads cannot be board Coordinators.",
+        message: "Delegated child threads cannot be board leads.",
       });
     }
   });
@@ -416,7 +416,7 @@ const make = Effect.gen(function* () {
       yield* wakeOrchestrator(
         input.threadId,
         `ft3:board:mark:${input.threadId}`,
-        "This thread was marked a board Coordinator by a human.",
+        "This thread was marked a board lead by a human.",
       );
       return created;
     }),
@@ -445,7 +445,7 @@ const make = Effect.gen(function* () {
       if (!orchestrators.some((row) => row.threadId === input.threadId)) {
         return yield* new Contracts.BoardMcpFailure({
           code: "task_not_found",
-          message: `Thread ${input.threadId} is not a registered board Coordinator.`,
+          message: `Thread ${input.threadId} is not a registered board lead.`,
         });
       }
       yield* requireMarkableThread(input.threadId);
@@ -636,8 +636,7 @@ const make = Effect.gen(function* () {
     deleteHumanCard: Effect.fn("Ft3BoardService.deleteHumanCard")(function* () {
       return yield* new Contracts.BoardMcpFailure({
         code: "capability_denied",
-        message:
-          "Human clients cannot delete board cards; the Coordinator deletes cards through MCP.",
+        message: "Human clients cannot delete board cards; the lead deletes cards through MCP.",
       });
     }),
   });
