@@ -47,6 +47,7 @@ import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
 
 const parentId = ThreadId.make("board:parent");
 const childId = ThreadId.make("board:child");
+const uncardedId = ThreadId.make("board:uncarded");
 const otherId = ThreadId.make("board:other");
 const epoch = DateTime.makeUnsafe("2026-10-26T00:00:00.000Z");
 const now = DateTime.makeUnsafe("2026-10-26T00:01:00.000Z");
@@ -64,7 +65,7 @@ const appThread = (id: ThreadId): OrchestrationV2AppThread => ({
   createdAt: epoch,
   updatedAt: epoch,
   lineage:
-    id === childId
+    id === childId || id === uncardedId
       ? { parentThreadId: parentId, rootThreadId: parentId, relationshipToParent: "subagent" }
       : { parentThreadId: null, rootThreadId: id, relationshipToParent: null },
 });
@@ -116,6 +117,7 @@ const provider = (
 });
 const subagent = (
   status: OrchestrationV2Subagent["status"] = "completed",
+  childThreadId = childId,
 ): OrchestrationV2Subagent => ({
   id: NodeId.make("task:executor"),
   threadId: parentId,
@@ -126,7 +128,7 @@ const subagent = (
   driver: ProviderDriverKind.make("codex"),
   providerInstanceId: modelSelection.instanceId,
   providerThreadId: null,
-  childThreadId: childId,
+  childThreadId,
   nativeTaskRef: null,
   prompt: "Task",
   title: "Executor",
@@ -255,7 +257,7 @@ function fixture() {
   });
   const seed = Effect.gen(function* () {
     yield* TestClock.setTime(DateTime.toEpochMillis(now));
-    for (const id of [parentId, childId, otherId])
+    for (const id of [parentId, childId, uncardedId, otherId])
       yield* emit({ ...base(id), type: "thread.created", payload: appThread(id) });
     const board = yield* Ft3Host.BoardRepository.BoardRepository;
     yield* board.addOrchestrator({
@@ -354,6 +356,38 @@ describe("ft3 board reactor", () => {
       assert.equal((yield* pending).length, 1);
       yield* reactor.process(yield* f.settle());
       assert.equal(f.delivered.length, 2);
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
+  });
+
+  it.effect("wakes only for a carded executor and only once per executor", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* f.seed;
+      const reactor = yield* f.newReactor;
+      const delegated = (child: ThreadId) =>
+        f.emit({
+          ...base(parentId),
+          type: "subagent.updated",
+          payload: subagent("completed", child),
+        });
+      yield* reactor.process(yield* f.sendRun("completed", "run:uncarded", uncardedId));
+      yield* reactor.process(yield* delegated(uncardedId));
+      yield* reactor.process(yield* delegated(uncardedId));
+      assert.equal(f.delivered.length, 0);
+      assert.deepStrictEqual(yield* pending, []);
+      yield* f.sendRun("running", "parent:busy", parentId);
+      yield* reactor.process(yield* f.sendRun("completed", "run:carded", childId));
+      yield* reactor.process(yield* delegated(childId));
+      const last = yield* delegated(childId);
+      yield* reactor.process(last);
+      assert.equal(f.attempts.length, 0);
+      assert.equal((yield* pending).length, 1);
+      yield* reactor.process(yield* f.sendRun("completed", "parent:busy", parentId));
+      assert.equal(f.attempts.length, 1);
+      assert.equal(f.delivered[0]!.commandId, `ft3:board:wake:${last.sequence}:${parentId}`);
+      assert.include(f.delivered[0]!.text, "Delegated task task:executor completed.");
+      assert.include(f.delivered[0]!.text, "Card card:one: status=review");
+      assert.deepStrictEqual(yield* pending, []);
     }).pipe(Effect.scoped, Effect.provide(f.layer));
   });
 

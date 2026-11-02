@@ -181,7 +181,6 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
       return;
     }
     let executorId = event.threadId;
-    let parentId: ThreadId | null = null;
     let reason: string | null = null;
     let outcome: { readonly status: string; readonly key: string } | null = null;
     switch (event.type) {
@@ -190,7 +189,6 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
         if (task.origin !== "app_owned" || task.childThreadId === null || !terminal(task.status))
           return;
         executorId = task.childThreadId;
-        parentId = task.threadId;
         reason = `Delegated task ${task.id} ${task.status}.`;
         outcome = {
           status: task.status,
@@ -240,18 +238,11 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
         if (run !== undefined) outcome = { status: event.payload.status, key: run.id };
       }
     }
-    if (shell.lineage.relationshipToParent === "subagent")
-      parentId ??= shell.lineage.parentThreadId;
+    // A bare delegated child already reaches its parent through the upstream completion notice.
     const cards = yield* cardsForExecutor(executorId);
     const targets = new Set(
       cards.filter((card) => !card.archived).map((card) => card.orchestratorThreadId),
     );
-    if (
-      parentId !== null &&
-      shell.lineage.parentThreadId === parentId &&
-      shell.lineage.relationshipToParent === "subagent"
-    )
-      targets.add(parentId);
     const marks = yield* board.listOrchestrators();
     for (const targetId of targets) {
       if (
@@ -290,7 +281,15 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
       readonly executor: string;
       readonly context: string;
     }>`SELECT wake_key AS "key", orchestrator_thread_id AS target, executor_thread_id AS executor, context FROM ft3_board_reactor_wakes ORDER BY rowid`;
-    for (const wake of wakes) {
+    const pairOf = (wake: (typeof wakes)[number]) => `${wake.target}\u0000${wake.executor}`;
+    const latest = new Map<string, (typeof wakes)[number]>();
+    for (const wake of wakes) latest.set(pairOf(wake), wake);
+    const superseded = wakes.filter((wake) => latest.get(pairOf(wake)) !== wake);
+    if (superseded.length > 0)
+      yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key IN ${sql.in(
+        superseded.map((wake) => wake.key),
+      )}`;
+    for (const wake of latest.values()) {
       const targetId = ThreadId.make(wake.target);
       const marks = yield* board.listOrchestrators();
       const shell = yield* threads.getThreadShell(targetId);
