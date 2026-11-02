@@ -190,22 +190,17 @@ Web-вкладка «Commit graph» в реестре `ft3-web` переноси
 
 ## Выбор коммита в графе (S2b)
 
-Клик по узлу графа выбирает коммит в штатной панели диффа V2. Логика выбора
-живёт в `ft3-web` (`commitsPanel.logic.ts`), а `CommitsGraph` получает
-`focusCommitId` из того же выбора, поэтому выбранный коммит подсвечен при
-возврате к графу. Патч коммита читает `vcs.getCommitDiff` (`git diff` против
-первого родителя, для корневого коммита — `git diff-tree --root`), а рендер
-остаётся в `ft3-web` на существующих компонентах диффа V2. Открытие панели
-диффа не сбрасывает этот выбор: `ChatView` вызывает
-`prepareDiffSelectionForPanelOpen` из `ft3-web/commits`, который оставляет
-`{ kind: "commit" }` и переводит на branch-дифф только остальные выборы.
+Клик по узлу графа и чип упоминания коммита в чате открывают коммит в штатной
+панели диффа upstream: `selectCommit(ref, sha, keepOnOpen)` из `diffPanelStore`,
+как это делает upstream для ссылок на коммиты. Своего рендера диффа коммита и
+швов в `DiffPanel`/`ChatView` у форка больше нет. Логика выбора живёт в
+`ft3-web` (`commitsPanel.logic.ts`); `CommitsGraph` получает `focusCommitId` из
+того же выбора, поэтому выбранный коммит подсвечен при возврате к графу.
+Upstream показывает коммит только из репозитория треда: коммит из вложенного
+репозитория в панели не откроется. RPC `vcs.getCommitDiff` в `ft3-vcs` остался
+без клиентов.
 
-| Upstream-файл                           | Правка                                                                                                                                    | Зачем                                                                       |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `apps/web/src/diffPanelStore.ts`        | вариант `{ kind: "commit"; commitId }` и `selectCommit`                                                                                   | хранить выбранный коммит рядом с остальными диффами                         |
-| `apps/web/src/components/DiffPanel.tsx` | `diffPanelCommitView` из `@t3tools/ft3-web/commits`; ранний возврат для выбранного коммита                                                | показать дифф коммита в штатной панели, без копии UI                        |
-| `apps/web/src/components/ChatView.tsx`  | retain upstream `selectGitScope("branch")`; add `prepareDiffSelectionForPanelOpen` from `@t3tools/ft3-web/commits` at the panel-open seam | preserve graph commit selection without replacing upstream branch selection |
-| `packages/ft3-web/package.json`         | экспорт `./commits` → `./src/commits/index.ts`                                                                                            | точка подключения видов диффа и выбора из графа                             |
+Правок upstream-файлов этот срез не требует.
 
 ## Pi: managed agent dir, local inference and executor-only instances (срез 1)
 

@@ -13,7 +13,7 @@ import {
 import { useDiffPanelStore } from "~/diffPanelStore";
 import { useRenderedAppearance } from "~/hooks/useTheme";
 import { resolveMarkdownFileLinkMeta, type MarkdownFileLinkMeta } from "~/markdown-links";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
 import { projectEnvironment } from "~/state/projects";
 import { readEnvironmentScope } from "~/state/session";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
@@ -126,6 +126,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
     [lookupText],
   );
   const [lookupRevision, setLookupRevision] = useState(0);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to the board mention cache
   useEffect(() => {
     if (environmentId === null) return;
     return subscribeBoardCardMentionCacheInvalidation(String(environmentId), () => {
@@ -136,9 +137,11 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
   const [matches, setMatches] = useState<ReadonlyMap<string, BoardCardLookupMatch>>(
     EMPTY_BOARD_CARD_LOOKUP_MATCHES,
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- resolves board mentions over RPC
   useEffect(() => {
     let current = true;
     if (environmentId === null || threadId === null || lookupTokens.length === 0) {
+      // oxlint-disable-next-line react/set-state-in-effect -- drops the previous lookup's matches
       setMatches(EMPTY_BOARD_CARD_LOOKUP_MATCHES);
       return () => {
         current = false;
@@ -165,6 +168,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
     return () => {
       current = false;
     };
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- lookupRevision reruns the lookup after cache invalidation
   }, [environmentId, lookupRevision, lookupTokens, resolveBoardCards, threadId]);
 
   const commitLookupText =
@@ -177,6 +181,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
   const [commitMatches, setCommitMatches] = useState<ReadonlyMap<string, string>>(
     EMPTY_COMMIT_MENTION_MATCHES,
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- resolves commit mentions over RPC
   useEffect(() => {
     let current = true;
     if (
@@ -185,6 +190,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
       threadId === null ||
       commitCandidates.length === 0
     ) {
+      // oxlint-disable-next-line react/set-state-in-effect -- drops the previous lookup's matches
       setCommitMatches(EMPTY_COMMIT_MENTION_MATCHES);
       return () => {
         current = false;
@@ -245,6 +251,8 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
       selectCommitFromGraph({
         threadRef,
         commitId: sha,
+        diffOpen:
+          selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, threadRef) === "diff",
         selectCommit: useDiffPanelStore.getState().selectCommit,
         openDiffPanel: (ref) => useRightPanelStore.getState().open(ref, "diff"),
       });

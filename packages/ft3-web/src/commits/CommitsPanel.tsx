@@ -3,7 +3,7 @@ import { useCallback, useMemo } from "react";
 
 import { selectThreadDiffPanelSelection, useDiffPanelStore } from "~/diffPanelStore";
 import { useProject, useThreadShell } from "~/state/entities";
-import { useRightPanelStore } from "~/rightPanelStore";
+import { selectActiveRightPanel, useRightPanelStore } from "~/rightPanelStore";
 
 import { CommitsGraph } from "./CommitsGraph.tsx";
 import { selectCommitFromGraph, selectedCommitId } from "./commitsPanel.logic.ts";
@@ -29,6 +29,8 @@ export default function CommitsPanel({ threadRef, visible }: Ft3PanelProps) {
       selectCommitFromGraph({
         threadRef,
         commitId,
+        diffOpen:
+          selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, threadRef) === "diff",
         selectCommit: useDiffPanelStore.getState().selectCommit,
         openDiffPanel: (ref) => useRightPanelStore.getState().open(ref, "diff"),
       });
