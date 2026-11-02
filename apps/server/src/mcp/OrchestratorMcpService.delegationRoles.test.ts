@@ -232,6 +232,39 @@ describe("OrchestratorMcpService delegation roles", () => {
     }),
   );
 
+  it.effect("accepts planner and resolves architecture to architect.md", () =>
+    Effect.gen(function* () {
+      const dir = makeRolesDir(["architect", "planner"]);
+      const plannerThread = ThreadId.make("thread:ft3-roles-planner");
+      const plannerDispatched = yield* Ref.make<Dispatched>([]);
+      yield* delegate(plannerThread, plannerDispatched, dir, {
+        task: "Write the plan.",
+        role: "planner",
+      });
+      const [planner] = yield* Ref.get(plannerDispatched);
+      assert.equal(planner!.role, "planner");
+      assert.isTrue(
+        planner!.task.startsWith(
+          `Your role is planner. Before any work, read the whole file ${dir.replace(/\\/g, "/")}/planner.md and follow it.`,
+        ),
+      );
+
+      const architectThread = ThreadId.make("thread:ft3-roles-architecture");
+      const architectDispatched = yield* Ref.make<Dispatched>([]);
+      yield* delegate(architectThread, architectDispatched, dir, {
+        task: "Advise on the schema.",
+        role: "architecture",
+      });
+      const [architect] = yield* Ref.get(architectDispatched);
+      assert.equal(architect!.role, "architecture");
+      assert.isTrue(
+        architect!.task.startsWith(
+          `Your role is architect. Before any work, read the whole file ${dir.replace(/\\/g, "/")}/architect.md and follow it.`,
+        ),
+      );
+    }),
+  );
+
   it.effect("rejects a role id without a role file and lists the available roles", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-missing");

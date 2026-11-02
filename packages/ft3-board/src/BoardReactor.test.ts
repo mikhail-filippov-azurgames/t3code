@@ -797,27 +797,20 @@ describe("ft3 board reactor", () => {
   });
 });
 
-it("uses the configured routing policy and has no embedded local document reference", () => {
-  const skillPath = "/skills/create-orchestrator-architect/SKILL.md";
+it("keeps the lead brief free of the retired binding flow and names the consultants", () => {
+  const brief = buildBoardWakePrompt("Card context");
   assert.include(
-    buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
-    "policy:configured",
+    brief,
+    "Architects (`architect`, `architect-*`) are consultants you may call for one concrete question via `delegate_task`; for a card that needs a plan, ask the `planner` role and follow its role file.",
   );
-  assert.include(
-    buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
-    "pass exactly `policy:configured` as routingEvidence.policyRef",
-  );
-  assert.include(buildBoardWakePrompt("", skillPath, "Card context"), "no routing policy is set");
-  assert.include(buildBoardWakePrompt("", skillPath, "Card context"), skillPath);
-  assert.notInclude(buildBoardWakePrompt("", skillPath, "Card context"), "oc://");
-  assert.notInclude(
-    buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
-    ".opencontext",
-  );
-  assert.include(
-    buildBoardWakePrompt("", "", "Card context"),
-    "Current card context:\nCard context",
-  );
+  assert.notInclude(brief, "create-orchestrator-architect");
+  assert.notInclude(brief, "get_lead_binding");
+  assert.notInclude(brief, "architect_create_or_get");
+  assert.notInclude(brief, "durable");
+  assert.notInclude(brief, "oc://");
+  assert.notInclude(brief, ".opencontext");
+  assert.include(brief, "Current card context:\nCard context");
+  assert.equal(buildBoardWakePrompt("Card context", "lead line").split("\n\n")[0], "lead line");
 });
 
 it("renders a short wake with readable ids and the rules pointer", () => {

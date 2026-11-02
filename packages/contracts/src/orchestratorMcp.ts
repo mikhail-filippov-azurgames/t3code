@@ -151,6 +151,7 @@ export const OrchestratorMcpTaskRole = Schema.Literals([
   "architect-data",
   "architect-failure",
   "architect-product",
+  "planner",
   "review-common",
   "review-contracts",
   "review-failure-paths",

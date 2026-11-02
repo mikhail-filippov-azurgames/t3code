@@ -116,6 +116,40 @@ describe("ft3 delegation roles", () => {
     assert.deepStrictEqual(availableRoles(dir), ["general", "lead", "review-contracts"]);
   });
 
+  it("accepts the planner role and resolves architecture to architect.md", () => {
+    const dir = makeRolesDir(["architect", "planner"]);
+    assert.deepStrictEqual(delegatedRoleAssignment("planner", dir), {
+      _tag: "assigned",
+      role: "planner",
+    });
+    const plannerPrompt = delegatedTaskPrompt({
+      role: "planner",
+      rolesDir: dir,
+      task: "Write the plan.",
+      upstreamPrompt: "unused",
+    });
+    assert.isTrue(plannerPrompt.startsWith(`${roleInstructionLine("planner", dir)}\n\n`));
+
+    const assignment = delegatedRoleAssignment("architecture", dir);
+    assert.deepStrictEqual(assignment, { _tag: "assigned", role: "architecture" });
+    const prompt = delegatedTaskPrompt({
+      role: "architecture",
+      rolesDir: dir,
+      task: "Advise on the schema.",
+      upstreamPrompt: "unused",
+    });
+    assert.isTrue(prompt.startsWith(`${roleInstructionLine("architect", dir)}\n\n`));
+    assert.include(prompt, `${dir.replace(/\\/g, "/")}/architect.md`);
+    assert.notInclude(prompt, "architecture.md");
+  });
+
+  it("does not accept architecture.md as the file for the architecture role", () => {
+    const dir = makeRolesDir(["architecture"]);
+    const assignment = delegatedRoleAssignment("architecture", dir);
+    assert.equal(assignment._tag, "rejected");
+    assert.include(assignment._tag === "rejected" ? assignment.message : "", "architect.md");
+  });
+
   it("starts the coordinator brief with the lead instruction", () => {
     const dir = makeRolesDir(["lead"]);
     assert.equal(coordinatorBriefRoleLine(""), "");
