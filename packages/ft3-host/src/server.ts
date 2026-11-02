@@ -2,13 +2,18 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import { ARCHITECT_SKILL_PATH } from "@t3tools/ft3-architect/skillLocation";
+import { startupRoleConfiguration } from "@t3tools/ft3-delegation/server";
 
 export { runMigrations } from "./Migrations.ts";
 export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
 
 export { BoardRepository };
 
-export const layer = BoardRepository.layer;
+// Startup seam: an unusable roles directory fails here, and roles disable native subagents.
+export const layer = Layer.mergeAll(
+  BoardRepository.layer,
+  Layer.effectDiscard(startupRoleConfiguration),
+);
 
 export const boardReactorLayer = () =>
   Layer.unwrap(

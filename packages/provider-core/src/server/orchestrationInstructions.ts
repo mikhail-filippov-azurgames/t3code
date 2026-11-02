@@ -1,7 +1,7 @@
 import type { ProviderInteractionMode } from "@t3tools/contracts";
 
 // Codex truncates entries over 4,000 bytes; keep each section self-contained and below that limit.
-export const T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
+const UPSTREAM_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = [
   `## T3 Code orchestration
 
 Ordinary coding tasks need no T3 tools.
@@ -24,10 +24,34 @@ Ordinary coding tasks need no T3 tools.
 - Never use \`preview_*\` unasked to verify or show your own edit. Use them when the current request asks for browser work, including recording edits, or names a page or tab. Do not repeat preview calls from an earlier turn. Public pages: web fetch or search unless browser work was asked; then preview tools only, no web fetch. Close a tab you opened before you reply, unless the user asked for it or uses it.`,
 ];
 
-export const T3_CODE_ORCHESTRATION_INSTRUCTIONS = `
+// A host that requires `delegate_task` for every child drops the native-subagent line.
+const withoutNativeSubagentGuidance = (sections: ReadonlyArray<string>): ReadonlyArray<string> =>
+  sections.map((section) =>
+    section
+      .split("\n")
+      .filter((line) => !line.startsWith("- Subagents:"))
+      .join("\n"),
+  );
 
-${T3_CODE_ORCHESTRATION_SECTIONS.join("\n\n")}
+const orchestrationSections = (nativeSubagents: boolean): ReadonlyArray<string> =>
+  nativeSubagents
+    ? UPSTREAM_ORCHESTRATION_SECTIONS
+    : withoutNativeSubagentGuidance(UPSTREAM_ORCHESTRATION_SECTIONS);
+
+const instructionsText = (sections: ReadonlyArray<string>): string => `
+
+${sections.join("\n\n")}
 `;
+
+export let T3_CODE_ORCHESTRATION_SECTIONS: ReadonlyArray<string> = orchestrationSections(true);
+
+export let T3_CODE_ORCHESTRATION_INSTRUCTIONS = instructionsText(T3_CODE_ORCHESTRATION_SECTIONS);
+
+/** Host seam: recompute the guidance so readers of the exported bindings see the change. */
+export function setNativeSubagentGuidance(enabled: boolean): void {
+  T3_CODE_ORCHESTRATION_SECTIONS = orchestrationSections(enabled);
+  T3_CODE_ORCHESTRATION_INSTRUCTIONS = instructionsText(T3_CODE_ORCHESTRATION_SECTIONS);
+}
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
