@@ -440,6 +440,48 @@ stays allowed.
 
 New fork-owned tests: `packages/ft3-delegation/src/delegationPermissionEnvelope.test.ts` and `apps/server/src/mcp/OrchestratorMcpService.delegationEnvelope.test.ts`.
 
+## Delegated roles (S)
+
+`T3CODE_FT3_ROLES_DIR` — абсолютный путь к каталогу с одним Markdown-файлом
+инструкций на роль (`<rolesDir>/<role>.md`). Пустое значение выключает функцию:
+поведение делегирования и текст инструкций остаются такими же, как в upstream.
+Каталог читается один раз при сборке слоёв; несуществующий каталог роняет
+startup (`rolesDir` из `packages/ft3-delegation/src/delegationRoles.ts` умирает
+с сообщением, называющим переменную), поэтому сломанная настройка не всплывает
+в середине делегации. `Ft3Host.layer` подключает этот startup-эффект, попутно
+переключая guidance из upstream `provider-core`.
+
+Когда каталог задан, `delegate_task` требует роль из списка ниже; роль без
+`<role>.md` отклоняется `invalid_request` с перечислением доступных ролей, а
+пропущенная роль становится `general`. Первый промпт ребёнка начинается с
+`Your role is <role>. Before any work, read the whole file <rolesDir>/<role>.md and follow it.`;
+эта строка заменяет upstream-префикс `Act as the <role> sub-agent`. Та же
+политика native-сабагентов: при заданном каталоге строка `- Subagents: use your
+native tool…` не отправляется, потому что каждый ребёнок — `delegate_task`-ребёнок.
+
+Brief координатора (`buildBoardWakePrompt`) начинается с той же строки для
+роли `lead`; web получает каталог в `board.orchestrators.list` (`rolesDir`) и
+показывает `Coordinator · lead`. Роль меняется только при создании задачи:
+команды `delegated_task.*` после создания роль не правят, поэтому обновление
+промпта при смене роли не реализовано.
+
+| Upstream-файл                                                    | Правка                                                                                                                          | Зачем                                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `packages/contracts/src/orchestratorMcp.ts`                      | 14 id ролей форка добавлены в `OrchestratorMcpTaskRole`                                                                         | MCP-схема `delegate_task` принимает id ролей форка             |
+| `apps/server/src/provider/agentContextBudget.json`               | `mcpToolListJsonBytes` 63308 → 63487                                                                                            | рекламируемая схема `delegate_task` выросла на список id ролей |
+| `packages/contracts/src/orchestrationV2.ts`                      | те же id добавлены в `OrchestrationV2DelegatedTaskRole`                                                                         | команда `delegated_task.request` сохраняет роль в проекции     |
+| `packages/provider-core/src/server/orchestrationInstructions.ts` | секции оркестрации стали live-`let`; добавлен `setNativeSubagentGuidance(enabled)`, который фильтрует строку `- Subagents:`     | generic host-hook вместо удаления upstream-текста              |
+| `apps/server/src/mcp/OrchestratorMcpService.ts`                  | `rolesDir` в `make`; `delegatedRoleAssignment` до dispatch, `delegatedTaskPrompt` и разрешённая роль в `delegated_task.request` | проверка роли и строка инструкции живут в `ft3-delegation`     |
+| `packages/ft3-host/package.json`                                 | зависимость `@t3tools/ft3-delegation`                                                                                           | startup-эффект ролей                                           |
+| `packages/ft3-delegation/package.json`                           | зависимости `@t3tools/contracts`, `@t3tools/provider-core`, `effect`                                                            | контракт роли и provider-core hook                             |
+| `pnpm-lock.yaml`                                                 | importers `packages/ft3-delegation` и `packages/ft3-host`                                                                       | workspace-связи                                                |
+
+Тесты форка: `packages/ft3-delegation/src/delegationRoles.test.ts` (каталог
+выключен, каталог задан, дефолт `general`, неизвестная роль, строка brief,
+отсутствие native-строки), `apps/server/src/mcp/OrchestratorMcpService.delegationRoles.test.ts`
+(промпт и роль в `delegated_task.request`, отказы до dispatch) и
+`packages/ft3-board/src/BoardService.brief.test.ts` (brief с `lead` и без).
+
 ## Kimi usage limits (S)
 
 `packages/ft3-kimi` оборачивает upstream `AcpRegistryDriver`, сохраняя его

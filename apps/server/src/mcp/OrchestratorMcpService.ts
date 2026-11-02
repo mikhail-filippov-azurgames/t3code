@@ -64,9 +64,12 @@ import {
   isOrchestrationV2WorkActive,
 } from "@t3tools/contracts";
 import {
+  delegatedRoleAssignment,
+  delegatedTaskPrompt,
   delegationPermissionDenial,
   delegationTextDecision,
   projectDerivedText,
+  rolesDir as delegatedRolesDir,
 } from "@t3tools/ft3-delegation/server";
 import { getProviderOptionCurrentValue } from "@t3tools/shared/model";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
@@ -1015,6 +1018,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
+  const rolesDirectory = yield* delegatedRolesDir;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2367,6 +2371,11 @@ const make = Effect.gen(function* () {
       if (delegationText._tag === "Denied") {
         return yield* failure("capability_denied", delegationText.reason);
       }
+      const roleAssignment = delegatedRoleAssignment(input.role, rolesDirectory);
+      if (roleAssignment._tag === "rejected") {
+        return yield* failure("invalid_request", roleAssignment.message);
+      }
+      const delegatedRole = roleAssignment._tag === "assigned" ? roleAssignment.role : input.role;
       const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({
@@ -2445,8 +2454,13 @@ const make = Effect.gen(function* () {
           parentThreadId: scope.thread.threadId,
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
-          task: taskPrompt(input),
-          ...(input.role === undefined ? {} : { role: input.role }),
+          task: delegatedTaskPrompt({
+            role: delegatedRole,
+            rolesDir: rolesDirectory,
+            task: input.task,
+            upstreamPrompt: taskPrompt(input),
+          }),
+          ...(delegatedRole === undefined ? {} : { role: delegatedRole }),
           ...(input.title === undefined ? {} : { title: input.title }),
           modelSelection: target.modelSelection,
           runtimeMode,

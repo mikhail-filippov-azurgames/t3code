@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
+import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/server";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
@@ -111,6 +112,8 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const crypto = yield* Crypto.Crypto;
   const routingPolicyRefValue = yield* routingPolicyRef;
+  const rolesDirectory = yield* rolesDir;
+  const coordinatorRoleLine = coordinatorBriefRoleLine(rolesDirectory);
   const event = Effect.fn("Ft3BoardService.event")(function* (
     card: Contracts.BoardCard,
     at: string,
@@ -214,7 +217,7 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(key),
         threadId,
         messageId: MessageId.make(key),
-        text: buildBoardWakePrompt(routingPolicyRefValue, "", context),
+        text: buildBoardWakePrompt(routingPolicyRefValue, "", context, coordinatorRoleLine),
         attachments: [],
         createdBy: "agent",
         creationSource: "server",
@@ -402,7 +405,7 @@ const make = Effect.gen(function* () {
     }),
     listOrchestrators: Effect.fn("Ft3BoardService.listOrchestrators")(function* () {
       const orchestrators = yield* repo.listOrchestrators().pipe(Effect.mapError(unavailable));
-      return { orchestrators };
+      return { orchestrators, rolesDir: rolesDirectory };
     }),
     markOrchestrator: Effect.fn("Ft3BoardService.markOrchestrator")(function* (input) {
       yield* requireMarkableThread(input.threadId);

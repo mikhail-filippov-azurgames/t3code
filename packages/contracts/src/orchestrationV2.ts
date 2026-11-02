@@ -851,6 +851,17 @@ export const OrchestrationV2DelegatedTaskRole = Schema.Literals([
   "research",
   "general",
   "design",
+  // ft3: role ids that need `<rolesDir>/<role>.md`; validated when roles are configured.
+  "lead",
+  "architect",
+  "architect-boundaries",
+  "architect-data",
+  "architect-failure",
+  "architect-product",
+  "review-common",
+  "review-contracts",
+  "review-failure-paths",
+  "review-architecture",
 ]);
 export type OrchestrationV2DelegatedTaskRole = typeof OrchestrationV2DelegatedTaskRole.Type;
 

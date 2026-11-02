@@ -16,8 +16,14 @@ export type SidebarRoleBadge =
 export function resolveSidebarRoleBadge(input: {
   readonly role: string | null;
   readonly isOrchestrator: boolean;
+  /** Role instructions directory from the board list; empty while roles are off. */
+  readonly rolesDir?: string;
 }): SidebarRoleBadge | null {
-  if (input.isOrchestrator) return { kind: "orchestrator", label: "Coordinator" };
+  if (input.isOrchestrator)
+    return {
+      kind: "orchestrator",
+      label: (input.rolesDir ?? "") === "" ? "Coordinator" : "Coordinator · lead",
+    };
   if (input.role === "design") {
     return { kind: "role", role: "architecture", label: "Design" };
   }
