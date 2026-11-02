@@ -22,7 +22,7 @@ export function buildBoardWakePrompt(
   const policyClause =
     policy === ""
       ? "no routing policy is set, so ask the human for the routing policy before choosing a provider or model"
-      : `the routing policy at ${policy}; read its current accepted revision`;
+      : `the routing policy at ${policy}; read its current accepted revision, and pass exactly \`${policy}\` as routingEvidence.policyRef`;
   return [
     IDENTITY,
     `Before taking any substantive board action after receiving this brief, use the exact skill \`create-orchestrator-architect\`. Call \`get_coordinator_binding\` for your coordinator thread id; reuse its active Architect, or create/get the single bound Architect with \`architect_create_or_get\`. Follow that skill and ${policyClause} to choose the Architect provider and model, and do not hard-code a provider, model, or revision.`,
