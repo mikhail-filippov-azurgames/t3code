@@ -17,7 +17,7 @@ Web-расширение форка. Пакет не является самос
 ## Швы
 
 Реестр поверхностей (`rightPanelStore`, `RightPanelTabs`, `RightPanelSurfaceContent`), sidebar
-(`Sidebar`, `LegacySidebar`, `SidebarThreadRow`), чат (`ChatMarkdown`, `ChatComposer`,
+(`Sidebar`, `SidebarThreadRow`), чат (`ChatMarkdown`, `ChatComposer`,
 `ChatView`, `ChatHeader`), меню треда, usage, настройки, `index.css`. Полный список — в
 [fork-boundary.md](../../docs/internals/fork-boundary.md) в разделах Web extensions,
 Architect sidebar, Sidebar, Board, Chat text chips, Usage page, Markdown frontmatter, Меню треда.

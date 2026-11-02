@@ -13,7 +13,6 @@
     "./board": "./src/board/index.ts",
     "./board-chat": "./src/board/BoardChatSidePanel.tsx",
     "./board-header": "./src/board/boardHeader.ts",
-    "./commits": "./src/commits/index.ts",
     "./architect": "./src/architect/index.ts",
     "./pi": "./src/pi/index.ts",
     "./sidebar": "./src/sidebar/index.ts",

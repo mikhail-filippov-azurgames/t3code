@@ -44,7 +44,7 @@ describe("CommitMentionChip", () => {
 
     expect(
       selectThreadDiffPanelSelection(useDiffPanelStore.getState().byThreadKey, threadRef),
-    ).toEqual({ kind: "commit", commitId: FULL_SHA });
+    ).toEqual({ kind: "commit", sha: FULL_SHA, baseRef: null });
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, threadRef)).toBe(
       "diff",
     );

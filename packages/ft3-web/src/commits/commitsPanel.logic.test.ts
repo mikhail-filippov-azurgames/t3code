@@ -18,11 +18,12 @@ describe("selectCommitFromGraph", () => {
     selectCommitFromGraph({
       threadRef,
       commitId: "a".repeat(40),
+      diffOpen: false,
       selectCommit,
       openDiffPanel,
     });
 
-    expect(selectCommit).toHaveBeenCalledWith(threadRef, "a".repeat(40));
+    expect(selectCommit).toHaveBeenCalledWith(threadRef, "a".repeat(40), true);
     expect(openDiffPanel).toHaveBeenCalledWith(threadRef);
     expect(calls).toEqual(["select", "open"]);
   });
@@ -47,7 +48,7 @@ describe("findResolvedCommit", () => {
 
 describe("selectedCommitId", () => {
   it("returns the commit shown by the diff panel and ignores other selections", () => {
-    expect(selectedCommitId({ kind: "commit", commitId: "abc" })).toBe("abc");
+    expect(selectedCommitId({ kind: "commit", sha: "abc", baseRef: null })).toBe("abc");
     expect(selectedCommitId({ kind: "unstaged" })).toBeNull();
     expect(selectedCommitId(undefined)).toBeNull();
   });

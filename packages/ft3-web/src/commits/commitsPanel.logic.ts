@@ -1,28 +1,25 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import type { VcsResolvedCommitMention } from "@t3tools/ft3-vcs/contracts";
 
-import {
-  selectThreadDiffPanelSelection,
-  useDiffPanelStore,
-  type DiffPanelSelection,
-} from "~/diffPanelStore";
+import type { DiffPanelSelection } from "~/diffPanelStore";
 
 /** The graph highlights the commit the diff panel currently shows. */
 export function selectedCommitId(selection: DiffPanelSelection | undefined): string | null {
-  return selection?.kind === "commit" ? selection.commitId : null;
+  return selection?.kind === "commit" ? selection.sha : null;
 }
 
 /**
- * Opens the commit in V2's diff panel. The selection is what the panel reads,
- * so the graph stays highlighted when the user returns to it.
+ * Opens the commit in the upstream diff panel. A closed panel would reset the
+ * selection to the branch diff on open, so the selection asks to be kept.
  */
 export function selectCommitFromGraph(input: {
   readonly threadRef: ScopedThreadRef;
   readonly commitId: string;
-  readonly selectCommit: (ref: ScopedThreadRef, commitId: string) => void;
+  readonly diffOpen: boolean;
+  readonly selectCommit: (ref: ScopedThreadRef, sha: string, keepOnOpen?: boolean) => void;
   readonly openDiffPanel: (ref: ScopedThreadRef) => void;
 }) {
-  input.selectCommit(input.threadRef, input.commitId);
+  input.selectCommit(input.threadRef, input.commitId, !input.diffOpen);
   input.openDiffPanel(input.threadRef);
 }
 
@@ -33,14 +30,4 @@ export function findResolvedCommit(input: {
 }): VcsResolvedCommitMention | null {
   const commitId = input.commitId.toLowerCase();
   return input.commits.find((mention) => mention.commit.startsWith(commitId)) ?? null;
-}
-
-/**
- * Opening the panel starts at the branch diff, except for a commit picked in the
- * graph: that selection is the reason the panel opened and must survive.
- */
-export function prepareDiffSelectionForPanelOpen(ref: ScopedThreadRef): void {
-  const state = useDiffPanelStore.getState();
-  if (selectThreadDiffPanelSelection(state.byThreadKey, ref).kind === "commit") return;
-  state.selectGitScope(ref, "branch");
 }

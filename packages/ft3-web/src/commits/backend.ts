@@ -20,11 +20,6 @@ export function createCommitsEnvironmentAtoms<R, E>(
       tag: WS_METHODS.vcsListRefs,
       staleTimeMs: 5_000,
     }),
-    commitDiff: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "environment-data:ft3-vcs:commit-diff",
-      tag: WS_METHODS.vcsGetCommitDiff,
-      staleTimeMs: 60_000,
-    }),
     resolveCommitMentions: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:ft3-vcs:resolve-commit-mentions",
       tag: WS_METHODS.vcsResolveCommitMentions,
