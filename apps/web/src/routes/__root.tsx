@@ -21,7 +21,6 @@ import { GuestShareDialogHost } from "../components/chat/GuestShareControls";
 import { AddProjectToMachineDialogHost } from "../components/AddProjectToMachineDialog";
 import { ConfirmDialogHost } from "../components/ConfirmDialogHost";
 import { DevReplayHost } from "../components/DevReplayHost";
-import { SwitchProviderDialogHost } from "@t3tools/ft3-web/delegation";
 import { DelegationDialogHosts } from "@t3tools/ft3-web/delegation-dialogs";
 import { FirstRunGate } from "../components/onboarding/FirstRunGate";
 import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDialog";

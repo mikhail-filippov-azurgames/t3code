@@ -1,3 +1,5 @@
+import { liveShellEnvironmentIdsAtom } from "../state/shell";
+import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import {
   useFt3SidebarRows,
   mergeForestRowThreads,
@@ -9,8 +11,6 @@ import {
   selectStaleDelegatedChildren,
 } from "@t3tools/ft3-web/delegation";
 import { useSwitchThreadProvider } from "../hooks/useSwitchThreadProvider";
-import { liveShellEnvironmentIdsAtom } from "../state/shell";
-import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
@@ -1957,12 +1957,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   };
   const hasProjectFolders = projectFolders !== null && projectFolders.length > 0;
   const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
-    const rowsOf = (section: SidebarSection): SidebarListItem[] =>
-      (sidebarRows.entriesBySection.get(section) ?? []).map((entry) => ({
-        kind: "thread",
-        key: entry.key,
-        section,
-      }));
     const rowsOf = (
       list: readonly EnvironmentThreadShell[],
       section: SidebarSection,
@@ -2814,6 +2808,26 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           case "unpin":
             attemptUnpin(threadRef);
             return;
+          case "turn-into-project": {
+            const result = await turnThreadIntoProject(threadRef);
+            if (result._tag === "Success") {
+              toastManager.add({
+                type: "success",
+                title: "Project created",
+                description: thread.title,
+              });
+            } else if (!isAtomCommandInterrupted(result)) {
+              const error = squashAtomCommandFailure(result);
+              toastManager.add(
+                stackedThreadToast({
+                  type: "error",
+                  title: "Could not turn thread into a project",
+                  description: error instanceof Error ? error.message : "An error occurred.",
+                }),
+              );
+            }
+            return;
+          }
           case "switch-provider": {
             // Target + optional reason come from the picker dialog; the
             // attempt persists the model selection and reports handoff
@@ -2834,24 +2848,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               },
               choice.reason,
             );
-          case "turn-into-project": {
-            const result = await turnThreadIntoProject(threadRef);
-            if (result._tag === "Success") {
-              toastManager.add({
-                type: "success",
-                title: "Project created",
-                description: thread.title,
-              });
-            } else if (!isAtomCommandInterrupted(result)) {
-              const error = squashAtomCommandFailure(result);
-              toastManager.add(
-                stackedThreadToast({
-                  type: "error",
-                  title: "Could not turn thread into a project",
-                  description: error instanceof Error ? error.message : "An error occurred.",
-                }),
-              );
-            }
             return;
           }
           case "auto-settle:enabled":
@@ -3413,7 +3409,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
-                        forest?: { depth: number; descendantCount: number },
                         // The tree row of the project folder this row sits in.
                         folderRow?: string,
                       ) => {
@@ -3422,9 +3417,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
-                        const rowVariant = isCard ? "card" : "slim";
-                        const rowProps = sidebarRows.rowPropsByKey.get(threadKey);
-                        const forestModel = sidebarForests.modelByKey.get(threadKey);
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
@@ -3432,6 +3424,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           : isCard
                             ? "card"
                             : "slim";
+                        const rowProps = sidebarRows.rowPropsByKey.get(threadKey);
                         return (
                           <SortableThreadRow
                             key={threadKey}
@@ -3550,6 +3543,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       ];
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
+                          // Folders draw active rows in their own place below.
+                          if (projectFolders !== null && item.section === "active") continue;
                           if (!sidebarRows.hasFt3Rows) {
                             items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
                             continue;
@@ -3558,24 +3553,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           const thread = forestEntry?.thread ?? threadByKey.get(item.key)!;
                           items.push(renderThreadRow(thread, item.section));
                           items.push(sidebarRows.afterRowByKey.get(item.key));
-                          const thread = item.thread ?? threadByKey.get(item.key)!;
-                          items.push(
-                            renderThreadRow(thread, item.section, {
-                              depth: item.depth ?? 0,
-                              descendantCount: item.descendantCount ?? 0,
-                            }),
-                          );
-                          // Folders draw active rows in their own place below.
-                          if (projectFolders !== null && item.section === "active") continue;
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
-                          items.push(
-                            <ArchitectSidebarPin
-                              key={`architect-pin:${item.key}`}
-                              thread={thread}
-                              depth={item.depth ?? 0}
-                              onNavigate={navigateToThread}
-                            />,
-                          );
                           continue;
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {

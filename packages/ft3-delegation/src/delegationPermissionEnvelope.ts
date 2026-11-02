@@ -13,7 +13,8 @@ export interface DelegationPermissionEnvelopeInput {
   readonly instanceConfig: unknown;
   readonly environment?: ReadonlyArray<{
     readonly name: string;
-    readonly value: string;
+    /** A secret reference instead of a string cannot be read here. */
+    readonly value: unknown;
   }>;
 }
 
@@ -45,7 +46,7 @@ export interface DelegationPermissionDenialInput {
                 readonly config?: unknown;
                 readonly environment?: ReadonlyArray<{
                   readonly name: string;
-                  readonly value: string;
+                  readonly value: unknown;
                 }>;
               }
             | undefined
@@ -309,9 +310,13 @@ function codexLaunchArgsReason(input: DelegationPermissionEnvelopeInput): string
 }
 
 function openCodeConfigReason(input: DelegationPermissionEnvelopeInput): string | undefined {
-  const content = (input.environment ?? [])
-    .find((variable) => variable.name === "OPENCODE_CONFIG_CONTENT")
-    ?.value.trim();
+  const value = (input.environment ?? []).find(
+    (variable) => variable.name === "OPENCODE_CONFIG_CONTENT",
+  )?.value;
+  if (value !== undefined && typeof value !== "string") {
+    return "OpenCode config content is a secret reference that cannot be compared, so delegation was refused.";
+  }
+  const content = value?.trim();
   if (content === undefined || content === "" || content === "{}") return undefined;
   try {
     const parsed = JSON.parse(content) as unknown;
@@ -334,7 +339,8 @@ function environmentReason(input: DelegationPermissionEnvelopeInput): string | u
   for (const variable of input.environment ?? []) {
     const name = variable.name.toUpperCase();
     if (!prefixes.some((prefix) => name.startsWith(prefix))) continue;
-    if (SECURITY_TERM.test(variable.name) && variable.value.trim() !== "") {
+    const set = typeof variable.value !== "string" || variable.value.trim() !== "";
+    if (SECURITY_TERM.test(variable.name) && set) {
       return (
         `Security-affecting provider environment variable ${variable.name} is set, which can ` +
         "change permission, tool, network, workspace, or MCP authority, so it is not comparable " +

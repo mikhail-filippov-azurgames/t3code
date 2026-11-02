@@ -23,6 +23,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -90,6 +91,7 @@ const baseLayers = () =>
     adapterRegistryLayer,
     Layer.mock(ProjectService.ProjectService)({}),
     Layer.mock(SecretRequests.SecretRequests)({}),
+    Layer.mock(RemoteDelegation.RemoteDelegation)({}),
     Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   );
 

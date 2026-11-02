@@ -1,4 +1,3 @@
-import { useAtomValue } from "@effect/atom-react";
 import type { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import { useEffect, useId, useMemo, useState } from "react";
@@ -6,11 +5,9 @@ import { useEffect, useId, useMemo, useState } from "react";
 import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { getAppModelOptionsForInstance } from "~/modelSelection";
 import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
   isProviderInstancePickerReady,
-  sortProviderInstanceEntries,
   type ProviderInstanceEntry,
+  providerInstanceEntriesFor,
 } from "~/providerInstances";
 import { useEnvironmentProviders } from "~/state/environments";
 import { Button } from "~/components/ui/button";
@@ -60,6 +57,7 @@ export { requestSwitchProviderTarget } from "./switchProviderStore";
 
 export function SwitchProviderDialogHost() {
   const request = useSwitchProviderRequest();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- settles a pending request when the host unmounts
   useEffect(() => () => finishSwitchProviderRequest(null), []);
   return request ? <SwitchProviderDialog request={request} /> : null;
 }
@@ -81,9 +79,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
 
   const entries = useMemo(
     () =>
-      sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), settings, null),
-      ).filter(isProviderInstancePickerReady),
+      providerInstanceEntriesFor(providers, settings, null).filter(isProviderInstancePickerReady),
     [providers, settings],
   );
 
@@ -113,6 +109,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
   // (or the current instance when it is present), together with a valid model
   // instead of stranding the selects or silently changing the user's current
   // provider while the catalog is loading.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- adopts an entry once the async catalog arrives
   useEffect(() => {
     if (instanceId !== null) return;
     const preferred = request.currentInstanceId
@@ -120,6 +117,7 @@ function SwitchProviderDialog({ request }: { request: SwitchProviderRequest }) {
       : undefined;
     const next = preferred ?? entries[0];
     if (!next) return;
+    // oxlint-disable-next-line react/set-state-in-effect -- runs once, when the catalog first loads
     setInstanceId(next.instanceId);
     const nextModels = modelsForEntry(settings, next);
     setModel(

@@ -28,14 +28,13 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
-import { APP_VERSION, HOSTED_APP_CHANNEL, HOSTED_APP_CHANNEL_LABEL } from "../../branding";
-import { AboutVersionTitle } from "./AboutVersionTitle";
 import {
   APP_BASE_NAME,
   APP_VERSION,
   HOSTED_APP_CHANNEL,
   HOSTED_APP_CHANNEL_LABEL,
 } from "../../branding";
+import { AboutVersionTitle } from "./AboutVersionTitle";
 import { CliCommandSettingsRow } from "./CliCommandSettingsRow";
 import { MobileAppSettingsRow } from "./MobileAppSettingsRow";
 import {
@@ -115,11 +114,6 @@ import { canUpdateServer } from "../ServerUpdateAction";
 import { useUpdateEverythingRun } from "../sidebar/updateEverythingRun";
 import { awaitsTrackSwitch, channelSwitchLabel } from "../sidebar/updateEverything.logic";
 import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
-import {
-  BoardRetentionSection,
-  CoordinatorBoardNudgeSection,
-  DeletedThreadPurgeSection,
-} from "@t3tools/ft3-web/settings";
 import { Ft3GeneralSettingsSections } from "@t3tools/ft3-web/settings";
 
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
@@ -2060,10 +2054,9 @@ export function AboutSettingsPanel() {
           {...searchableSetting("privacy-policy")}
           description={
             telemetryOff === undefined
-              ? "How we handle your data, including the anonymous usage data T3 Code collects."
+              ? `How we handle your data, including the anonymous usage data ${APP_BASE_NAME} collects.`
               : `How we handle your data. ${telemetryOff}`
           }
-          description={`How we handle your data, including the anonymous usage data ${APP_BASE_NAME} collects.`}
           control={
             <Button
               render={<a href={PRIVACY_POLICY_URL} target="_blank" rel="noreferrer noopener" />}
