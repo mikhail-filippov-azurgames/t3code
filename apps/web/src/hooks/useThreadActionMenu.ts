@@ -53,7 +53,6 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
-import { useSwitchThreadProvider } from "./useSwitchThreadProvider";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(

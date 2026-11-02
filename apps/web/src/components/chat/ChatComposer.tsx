@@ -3547,9 +3547,6 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   >
                     {composerControls}
                   </div>
-                  <ArchitectPublishButton
-                    threadRef={routeKind === "server" ? routeThreadRef : null}
-                    compact={isComposerPrimaryActionsCompact}
                   <ChatComposerFt3Actions
                     threadRef={routeKind === "server" ? routeThreadRef : null}
                     compact={isComposerPrimaryActionsCompact}

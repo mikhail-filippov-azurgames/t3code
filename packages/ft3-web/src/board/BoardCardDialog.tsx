@@ -9,10 +9,8 @@ import { useState } from "react";
 
 import { getCustomModelOptionsByInstance } from "~/modelSelection";
 import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
   resolveDefaultProviderModelSelection,
-  sortProviderInstanceEntries,
+  providerInstanceEntriesFor,
 } from "~/providerInstances";
 import { useEnvironmentProviders } from "~/state/environments";
 import { useEnvironmentSettings } from "~/hooks/useSettings";
@@ -51,9 +49,7 @@ export interface BoardCardDialogProps {
 export function BoardCardDialog({ environmentId, onClose, onCreate }: BoardCardDialogProps) {
   const providers = useEnvironmentProviders().get(environmentId) ?? [];
   const pickerSettings = useEnvironmentSettings(environmentId);
-  const instanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), pickerSettings, null),
-  );
+  const instanceEntries = providerInstanceEntriesFor(providers, pickerSettings, null);
   const defaultModelSelection = resolveDefaultProviderModelSelection(
     providers,
     pickerSettings.defaultModelSelection,

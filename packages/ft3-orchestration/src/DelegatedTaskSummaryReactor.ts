@@ -37,7 +37,6 @@ import {
   MAX_EVENT_CHARS,
   MAX_REPORT_CHARS,
   MAX_SOURCE_TURNS,
-  MAX_SUMMARY_CHARS,
   RETRY_LEASE_MS,
   SUMMARY_RETRY_DELAY_MS,
   safeSummaryText,
@@ -90,9 +89,11 @@ const isRetryableError = (row: SummaryRepository.SummaryRecord) =>
 const turnItemLine = (item: {
   readonly type: string;
   readonly title: string | null;
-  readonly failure?: { readonly message: string };
+  readonly failure?: { readonly message: string } | string | undefined;
 }): string => {
-  if (item.type === "error" && item.failure !== undefined) return `error: ${item.failure.message}`;
+  if (item.type === "error" && item.failure !== undefined) {
+    return `error: ${typeof item.failure === "string" ? item.failure : item.failure.message}`;
+  }
   return `${item.type}: ${item.title?.trim() || item.type}`;
 };
 

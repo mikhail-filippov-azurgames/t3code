@@ -22,8 +22,8 @@ const MAX_CONSECUTIVE_FAILURES = 3;
 // Same unauthenticated probe the manager uses to declare a backend ready.
 const READINESS_PATH = "/.well-known/t3/environment";
 
-export const EXTERNAL_SERVER_ENV = "FT3_EXTERNAL_SERVER";
-export const BOOTSTRAP_TOKEN_FILE = "desktop-bootstrap-token";
+const EXTERNAL_SERVER_ENV = "FT3_EXTERNAL_SERVER";
+const BOOTSTRAP_TOKEN_FILE = "desktop-bootstrap-token";
 
 export type ExternalBackendAvailabilityTransition = "ready" | "shutdown" | "none";
 

@@ -51,7 +51,7 @@ interface ChatHeaderProps {
   activeThreadLinkOrigin?: string | null | undefined;
   isServerThread: boolean;
   /** The active thread carries a delegation lineage, so it is a delegated child. */
-  hasDelegationParent: boolean;
+  hasDelegationParent?: boolean | undefined;
   activeProject: EnvironmentProject | null;
   parentThreadLink: { threadId: ThreadId; title: string } | null;
   onOpenThread: (threadId: ThreadId) => void;
@@ -79,7 +79,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadTitle,
   activeThreadLinkOrigin,
   isServerThread,
-  hasDelegationParent,
+  hasDelegationParent = false,
   activeProject,
   parentThreadLink,
   onOpenThread,

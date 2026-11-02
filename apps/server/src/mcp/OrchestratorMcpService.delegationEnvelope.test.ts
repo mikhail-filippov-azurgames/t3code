@@ -25,6 +25,7 @@ import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
+import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
@@ -135,6 +136,7 @@ const layerDependencies = (threadId: ThreadId, dispatched: Ref.Ref<number>) =>
     adapterRegistryLayer,
     Layer.mock(ProjectService.ProjectService)({}),
     Layer.mock(SecretRequests.SecretRequests)({}),
+    Layer.mock(RemoteDelegation.RemoteDelegation)({}),
     Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
     Layer.mock(ThreadManagementService.ThreadManagementService)({
       hasReceipt: () => Effect.succeed(false),

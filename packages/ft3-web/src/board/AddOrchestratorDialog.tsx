@@ -13,10 +13,8 @@ import { useState } from "react";
 
 import { getCustomModelOptionsByInstance } from "~/modelSelection";
 import {
-  applyProviderInstanceSettings,
-  deriveProviderInstanceEntries,
   resolveDefaultProviderModelSelection,
-  sortProviderInstanceEntries,
+  providerInstanceEntriesFor,
 } from "~/providerInstances";
 import { useProjects, useThreadShells } from "~/state/entities";
 import { useEnvironmentProviders } from "~/state/environments";
@@ -101,9 +99,7 @@ export function AddOrchestratorDialog({
     providerModelPreferences:
       resolvedSettings?.providerModelPreferences ?? environmentSettings.providerModelPreferences,
   };
-  const instanceEntries = sortProviderInstanceEntries(
-    applyProviderInstanceSettings(deriveProviderInstanceEntries(providers), pickerSettings, null),
-  );
+  const instanceEntries = providerInstanceEntriesFor(providers, pickerSettings, null);
   const defaultModelSelection = resolveDefaultProviderModelSelection(
     providers,
     pickerSettings.defaultModelSelection,
@@ -166,6 +162,7 @@ export function AddOrchestratorDialog({
     setSubmitting(true);
     setError(null);
     const threadId = newThreadId();
+    // oxlint-disable-next-line react/purity -- runs in the submit handler, not during render
     const createdAt = new Date().toISOString();
     const runtimeMode =
       resolvedSettings?.defaultRuntimeMode ?? DEFAULT_SERVER_SETTINGS.defaultRuntimeMode;

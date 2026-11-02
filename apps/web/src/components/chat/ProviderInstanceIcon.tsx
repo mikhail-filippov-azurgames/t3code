@@ -7,8 +7,7 @@ import {
 } from "@t3tools/client-runtime/state/provider-instance-display";
 
 import { ProviderDriverKind } from "@t3tools/contracts";
-<<<<<<< HEAD
-import { isKimiProviderInstance, KimiIcon } from "@t3tools/ft3-web/kimi";
+import { isKimiProviderInstance, KimiProviderInstanceIcon } from "@t3tools/ft3-web/kimi";
 import {
   AnthropicIcon,
   AntigravityIcon,
@@ -18,10 +17,6 @@ import {
   OpenAI,
   OpenRouterIcon,
 } from "../Icons";
-=======
-import { isKimiProviderInstance, KimiProviderInstanceIcon } from "@t3tools/ft3-web/kimi";
-import { AntigravityIcon, ClaudeAI, Icon, OpenAI } from "../Icons";
->>>>>>> 0c21013d27 (refactor(ft3-web): restore upstream ProviderInstanceIcon behind a seam)
 
 import { cn } from "~/lib/utils";
 import { providerClients } from "../settings/providerDriverMeta";
@@ -127,7 +122,6 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
         className={props.className}
         iconClassName={iconClassName}
         badgeClassName={props.badgeClassName}
-        statusDotClassName={props.statusDotClassName}
         indicatorBackground={indicatorBackground}
         size={props.size}
         showBadge={props.showBadge}
@@ -147,59 +141,35 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
       style={accentStyle}
       data-provider-accent-color={accentColor}
     >
-<<<<<<< HEAD
-      <span className={isKimi ? "hidden" : undefined}>
-        {isAcpRegistry ? (
-          <AcpRegistryAgentIcon
-            className={cn("size-5 rounded-none bg-transparent", iconClassName)}
-            fallbackClassName="size-full"
-            icon={acpRegistryIconUrl}
-          />
-        ) : isCustomEndpoint ? (
-          // The tile is a size container: below ~18px it keeps one letter and drops the mark.
-          <span
-            className={cn(
-              "@container relative flex size-5 shrink-0 items-center justify-center rounded-md border bg-card text-4xs font-semibold leading-none text-foreground",
-              iconClassName,
-            )}
-            aria-hidden
-          >
-            {Array.from(providerInstanceInitials(props.displayName))[0]}
-            <span className="@max-[1.1rem]:hidden">
-              {Array.from(providerInstanceInitials(props.displayName)).slice(1).join("")}
-            </span>
-            <span
-              className={cn(
-                "pointer-events-none absolute right-[-0.3125rem] bottom-[-0.3125rem] z-10 flex size-3 items-center justify-center rounded-full border bg-card text-foreground shadow-sm @max-[1.1rem]:hidden",
-                props.badgeClassName,
-              )}
-              style={{ borderColor: indicatorBackground }}
-            >
-              <OpenAI className="size-2" />
-            </span>
-          </span>
-        ) : packageIcon ? (
-          <ProviderPackageIcon
-            icon={packageIcon}
-            className={cn("size-5 shrink-0", iconClassName)}
-            aria-hidden
-          />
-        ) : Icon ? (
-          <Icon className={cn("size-5 shrink-0", iconClassName)} aria-hidden />
-        ) : (
-          <span className={cn("text-3xs font-semibold leading-none", iconClassName)}>
-            {providerInstanceInitials(props.displayName)}
-          </span>
-        )}
-      </span>
-      {isKimi ? <KimiIcon className={cn("size-5 shrink-0", iconClassName)} aria-hidden /> : null}
-=======
       {isAcpRegistry ? (
         <AcpRegistryAgentIcon
           className={cn("size-5 rounded-none bg-transparent", iconClassName)}
           fallbackClassName="size-full"
           icon={acpRegistryIconUrl}
         />
+      ) : isCustomEndpoint ? (
+        // The tile is a size container: below ~18px it keeps one letter and drops the mark.
+        <span
+          className={cn(
+            "@container relative flex size-5 shrink-0 items-center justify-center rounded-md border bg-card text-4xs font-semibold leading-none text-foreground",
+            iconClassName,
+          )}
+          aria-hidden
+        >
+          {Array.from(providerInstanceInitials(props.displayName))[0]}
+          <span className="@max-[1.1rem]:hidden">
+            {Array.from(providerInstanceInitials(props.displayName)).slice(1).join("")}
+          </span>
+          <span
+            className={cn(
+              "pointer-events-none absolute right-[-0.3125rem] bottom-[-0.3125rem] z-10 flex size-3 items-center justify-center rounded-full border bg-card text-foreground shadow-sm @max-[1.1rem]:hidden",
+              props.badgeClassName,
+            )}
+            style={{ borderColor: indicatorBackground }}
+          >
+            <OpenAI className="size-2" />
+          </span>
+        </span>
       ) : packageIcon ? (
         <ProviderPackageIcon
           icon={packageIcon}
@@ -213,17 +183,6 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
           {providerInstanceInitials(props.displayName)}
         </span>
       )}
->>>>>>> 0c21013d27 (refactor(ft3-web): restore upstream ProviderInstanceIcon behind a seam)
-      {props.statusDotClassName ? (
-        <span
-          className={cn(
-            "pointer-events-none absolute -left-0.5 -top-0.5 z-10 size-2 rounded-full",
-            props.statusDotClassName,
-          )}
-          style={{ boxShadow: `0 0 0 2px ${indicatorBackground}` }}
-          aria-hidden
-        />
-      ) : null}
       {isCustomEndpoint ? null : props.showBadge ? (
         <span
           className={cn(
