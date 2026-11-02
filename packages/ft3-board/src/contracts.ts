@@ -142,6 +142,8 @@ export const BoardOrchestratorsListInput = Schema.Struct({});
 export type BoardOrchestratorsListInput = typeof BoardOrchestratorsListInput.Type;
 export const BoardOrchestratorsListResult = Schema.Struct({
   orchestrators: Schema.Array(BoardOrchestrator),
+  /** Role instructions directory; empty while roles are off. */
+  rolesDir: Schema.optional(Schema.String),
 });
 export type BoardOrchestratorsListResult = typeof BoardOrchestratorsListResult.Type;
 

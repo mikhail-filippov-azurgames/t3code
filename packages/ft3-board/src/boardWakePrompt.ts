@@ -13,6 +13,7 @@ export function buildBoardWakePrompt(
   routingPolicyRef: string,
   skillPath: string,
   context: string,
+  roleLine = "",
 ): string {
   const policy = routingPolicyRef.trim();
   const skillHint =
@@ -24,6 +25,7 @@ export function buildBoardWakePrompt(
       ? "no routing policy is set, so ask the human for the routing policy before choosing a provider or model"
       : `the routing policy at ${policy}; read its current accepted revision, and pass exactly \`${policy}\` as routingEvidence.policyRef`;
   return [
+    ...(roleLine.trim() === "" ? [] : [roleLine]),
     IDENTITY,
     `Before taking any substantive board action after receiving this brief, use the exact skill \`create-orchestrator-architect\`. Call \`get_lead_binding\` for your lead thread id; reuse its active Architect, or create/get the single bound Architect with \`architect_create_or_get\`. Follow that skill and ${policyClause} to choose the Architect provider and model, and do not hard-code a provider, model, or revision.`,
     "The Architect is your durable strategic and architecture advisor, not an executor or a second lead. It does not own board cards or manage executors.",
