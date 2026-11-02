@@ -10,7 +10,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { projectDerivedText } from "@t3tools/ft3-delegation/server";
+import { projectDerivedText, rolesDir } from "@t3tools/ft3-delegation/server";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -26,6 +26,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
+import { boardWakeRulesLine, failureWords } from "./boardWakePrompt.ts";
 import { readBoardAutomationSettings } from "./settings.ts";
 import * as Contracts from "./contracts.ts";
 
@@ -125,7 +126,9 @@ export function formatCoordinatorBoardNudgeMessage(
   card: Contracts.BoardCard,
   activeChildCount: number,
   threshold: number,
+  rolesDirectory = "",
 ): string {
+  const streak = failureWords(card.failureStreak);
   const stateInstruction =
     card.readiness === "blocked"
       ? `This card is blocked and no other card can move: ${projectDerivedText("summary", card.readinessNote ?? "")}. Either fix the blocker now and set readiness to ready, or set needs_human with the exact question for the human, or, if the awaited work is still running, keep it blocked and end this turn.`
@@ -141,6 +144,7 @@ export function formatCoordinatorBoardNudgeMessage(
     `State: ${card.status}`,
     `Readiness: ${card.readiness}`,
     `Executor role: ${card.executorRole}`,
+    ...(streak === "" ? [] : [`Failures: ${streak}.`]),
     ...(card.lastError === null ? [] : [`Last error: ${formatLastError(card.lastError)}`]),
     "",
     stateInstruction,
@@ -150,6 +154,8 @@ export function formatCoordinatorBoardNudgeMessage(
       : [
           "If this card needs a human answer or decision, set readiness to needs_human with a readinessNote stating the exact question, tell the human, and end this turn. If it is blocked by an external cause, either fix it now and set ready, or set blocked with the cause and what it waits for, and end this turn. Do not move it to Backlog for this.",
         ]),
+    "",
+    boardWakeRulesLine(rolesDirectory),
   ].join("\n");
 }
 
@@ -174,6 +180,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* ThreadManagement.ThreadManagementService;
   const settingsService = yield* ServerSettingsService;
   const sql = yield* SqlClient.SqlClient;
+  const rolesDirectory = yield* rolesDir;
 
   const logReason = (reason: string, details: Record<string, unknown> = {}) =>
     Effect.logInfo("coordinator board nudge", { reason, ...details });
@@ -441,6 +448,7 @@ export const make = Effect.gen(function* () {
               currentCard,
               activeChildCount,
               latestThreshold,
+              rolesDirectory,
             ),
             attachments: [],
             createdBy: "agent",

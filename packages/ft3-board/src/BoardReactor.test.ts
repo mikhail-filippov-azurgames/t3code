@@ -40,10 +40,14 @@ import { OrchestratorDispatchError } from "../../../apps/server/src/orchestratio
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
-import { ARCHITECT_SKILL_PATH } from "../../ft3-architect/src/skillLocation.ts";
 import * as BoardReactor from "./BoardReactor.ts";
 import * as Contracts from "./contracts.ts";
-import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
+import {
+  buildBoardWakePrompt,
+  buildBoardWakeShortMessage,
+  failureWords,
+  shortBoardId,
+} from "./boardWakePrompt.ts";
 
 const parentId = ThreadId.make("board:parent");
 const childId = ThreadId.make("board:child");
@@ -61,6 +65,7 @@ const base = (threadId: ThreadId) => ({
 });
 const appThread = (id: ThreadId): OrchestrationV2AppThread => ({
   ...idleThreadProjection(liveThreadShell(id, { activeRunId: null })).thread,
+  title: id === childId ? "Mail: address matrix" : id,
   modelSelection,
   createdAt: epoch,
   updatedAt: epoch,
@@ -380,9 +385,66 @@ describe("ft3 board reactor", () => {
       yield* reactor.process(yield* f.sendRun("completed", "parent:busy", parentId));
       assert.equal(f.attempts.length, 1);
       assert.equal(f.delivered[0]!.commandId, `ft3:board:wake:${last.sequence}:${parentId}`);
-      assert.include(f.delivered[0]!.text, "Delegated task task:executor completed.");
-      assert.include(f.delivered[0]!.text, "Card card:one: status=review");
+      assert.include(
+        f.delivered[0]!.text,
+        'Executor finished "Mail: address matrix" (child): completed.',
+      );
+      assert.include(f.delivered[0]!.text, "Card review, ready.");
+      assert.include(f.delivered[0]!.text, "card:one (Implement feature)");
+      assert.notInclude(f.delivered[0]!.text, "You are the lead for this board thread.");
+      assert.match(f.delivered[0]!.text, /Rules: see your lead brief\.$/);
       assert.deepStrictEqual(yield* pending, []);
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
+  });
+
+  it.effect("wakes with the readable card state and failure count instead of the brief", () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* f.seed;
+      const reactor = yield* f.newReactor;
+      yield* reactor.process(yield* f.sendRun("failed", "executor:run:1", childId, 1));
+      yield* reactor.process(yield* f.settle());
+      yield* reactor.process(yield* f.sendRun("failed", "executor:run:2", childId, 2));
+      const text = f.delivered.at(-1)!.text;
+      assert.include(
+        text,
+        'Executor finished "Mail: address matrix" (child): failed, 2nd failure in a row. Card in_progress, ready.',
+      );
+      assert.include(text, "card:one (Implement feature)");
+      assert.notInclude(text, "status=");
+      assert.notInclude(text, "failureStreak=");
+      assert.notInclude(text, "You are the lead for this board thread.");
+      assert.notInclude(text, "Keep statuses truthful");
+      assert.match(text, /Rules: see your lead brief\.$/);
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
+  });
+
+  it.effect("names an executor by a readable handle when its thread id is url-encoded", () => {
+    const encodedChildId = ThreadId.make(
+      "thread:delegated-task:command%3Amcp%3Aaafffab1%3Adelegate-task%3Amail-address-matrix",
+    );
+    const f = fixture();
+    return Effect.gen(function* () {
+      yield* f.seed;
+      yield* f.emit({
+        ...base(encodedChildId),
+        type: "thread.created",
+        payload: appThread(encodedChildId),
+      });
+      const board = yield* Ft3Host.BoardRepository.BoardRepository;
+      yield* board.createCard({
+        ...card("card:encoded", parentId),
+        title: "Address matrix",
+        executorThreadId: encodedChildId,
+      });
+      const reactor = yield* f.newReactor;
+      yield* reactor.process(yield* f.sendRun("completed", "run:encoded", encodedChildId, 1));
+      const text = f.delivered.at(-1)!.text;
+      assert.include(text, "Executor finished mail-add: completed.");
+      assert.include(text, "Card review, ready.");
+      assert.notInclude(text, "%3A");
+      assert.notInclude(text, String(encodedChildId));
+      assert.match(text, /Rules: see your lead brief\.$/);
     }).pipe(Effect.scoped, Effect.provide(f.layer));
   });
 
@@ -400,7 +462,7 @@ describe("ft3 board reactor", () => {
       });
       yield* reactor.process(event);
       assert.equal(f.delivered.length, 1);
-      assert.include(f.delivered[0]!.text, "requested human input");
+      assert.include(f.delivered[0]!.text, "is waiting for a human answer");
       const board = yield* Ft3Host.BoardRepository.BoardRepository;
       assert.equal((yield* board.getCard(card().cardId))!.status, "in_progress");
     }).pipe(Effect.scoped, Effect.provide(f.layer));
@@ -418,7 +480,7 @@ describe("ft3 board reactor", () => {
       yield* second.process(finished);
       yield* second.process(finished);
       assert.equal(f.delivered.length, 1);
-      assert.include(f.delivered[0]!.text, "background work finished");
+      assert.include(f.delivered[0]!.text, "finished background work");
     }).pipe(Effect.scoped, Effect.provide(f.layer));
   });
 
@@ -679,7 +741,7 @@ describe("ft3 board reactor", () => {
         assert.equal(recovered.failureStreak, 1);
         assert.isNull(recovered.executorThreadId);
         assert.equal(f.delivered.length, 1);
-        assert.include(f.delivered[0]!.text, "lost when the server restarted");
+        assert.include(f.delivered[0]!.text, "lost its session when the server restarted");
         const third = yield* f.newReactor;
         yield* third.recover;
         assert.equal(f.delivered.length, 1);
@@ -724,9 +786,13 @@ describe("ft3 board reactor", () => {
       assert.equal(wake.length, 1);
       assert.equal((yield* projections.getThreadRecords(parentId, ["runs"])).runs.length, 1);
       assert.equal(f.delivered.length, 1);
-      assert.include(f.delivered[0]!.text, "policy:configured");
-      assert.include(f.delivered[0]!.text, "create-orchestrator-architect");
-      assert.include(f.delivered[0]!.text, ARCHITECT_SKILL_PATH);
+      assert.include(
+        f.delivered[0]!.text,
+        'Executor finished "Mail: address matrix" (child): completed.',
+      );
+      assert.notInclude(f.delivered[0]!.text, "create-orchestrator-architect");
+      assert.notInclude(f.delivered[0]!.text, "Keep statuses truthful");
+      assert.match(f.delivered[0]!.text, /Rules: see your lead brief\.$/);
     }).pipe(Effect.scoped, Effect.provide(f.layer));
   });
 });
@@ -752,4 +818,21 @@ it("uses the configured routing policy and has no embedded local document refere
     buildBoardWakePrompt("", "", "Card context"),
     "Current card context:\nCard context",
   );
+});
+
+it("renders a short wake with readable ids and the rules pointer", () => {
+  assert.equal(shortBoardId("79789b9c-1c2a-4f7e-9a3b-6d5e8f0a1b2c"), "79789b9c");
+  assert.equal(shortBoardId("thread:board:child"), "child");
+  assert.equal(failureWords(0), "");
+  assert.equal(failureWords(1), "first failure in a row");
+  assert.equal(failureWords(2), "2nd failure in a row");
+  assert.equal(failureWords(11), "11th failure in a row");
+  const short = buildBoardWakeShortMessage(
+    'Executor finished "Mail: address matrix" (79789b9c): interrupted, 2nd failure in a row. Card in_progress, ready.',
+    "/roles",
+  );
+  assert.isTrue(short.endsWith("Rules: see your lead brief and /roles/lead.md."));
+  assert.include(short, "2nd failure in a row");
+  assert.notInclude(short, "You are the lead for this board thread.");
+  assert.isTrue(buildBoardWakeShortMessage("Event.").endsWith("Rules: see your lead brief."));
 });

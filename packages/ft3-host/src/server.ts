@@ -1,7 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
-import { ARCHITECT_SKILL_PATH } from "@t3tools/ft3-architect/skillLocation";
 import { startupRoleConfiguration } from "@t3tools/ft3-delegation/server";
 
 export { runMigrations } from "./Migrations.ts";
@@ -18,7 +17,7 @@ export const layer = Layer.mergeAll(
 export const boardReactorLayer = () =>
   Layer.unwrap(
     Effect.promise(() => import("@t3tools/ft3-board/reactor")).pipe(
-      Effect.map((module) => module.layerWorker(ARCHITECT_SKILL_PATH)),
+      Effect.map((module) => module.layerWorker()),
     ),
   );
 

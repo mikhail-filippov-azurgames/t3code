@@ -12,7 +12,13 @@ import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/serv
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
-import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
+import {
+  boardCardIdLine,
+  buildBoardWakePrompt,
+  buildBoardWakeShortMessage,
+  cardStateWords,
+  wakeActorLabel,
+} from "./boardWakePrompt.ts";
 import { routingPolicyRef } from "./routingPolicy.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
@@ -210,6 +216,7 @@ const make = Effect.gen(function* () {
     threadId: ThreadId,
     key: string,
     context: string,
+    mode: "brief" | "event" = "brief",
   ) {
     yield* threads
       .dispatch({
@@ -217,7 +224,10 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(key),
         threadId,
         messageId: MessageId.make(key),
-        text: buildBoardWakePrompt(routingPolicyRefValue, "", context, coordinatorRoleLine),
+        text:
+          mode === "brief"
+            ? buildBoardWakePrompt(routingPolicyRefValue, "", context, coordinatorRoleLine)
+            : buildBoardWakeShortMessage(context, rolesDirectory),
         attachments: [],
         createdBy: "agent",
         creationSource: "server",
@@ -593,7 +603,12 @@ const make = Effect.gen(function* () {
       yield* wakeOrchestrator(
         card.orchestratorThreadId,
         `ft3:board:start:${card.cardId}`,
-        `Board card "${card.title}" (${card.cardId}) was started by a human. Executor role: ${card.executorRole}.\n\n${card.body}`,
+        [
+          `Card ${wakeActorLabel(card.title, card.cardId)} was started by a human. Status ${cardStateWords(next)}. Executor role: ${card.executorRole}.`,
+          boardCardIdLine([next]),
+          card.body,
+        ].join("\n\n"),
+        "event",
       );
       return next;
     }),
