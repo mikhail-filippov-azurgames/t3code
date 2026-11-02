@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../../../apps/server/src/serverActivation.ts";
+import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/server";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
 import { buildBoardWakePrompt } from "./boardWakePrompt.ts";
@@ -54,6 +55,7 @@ const failure = (operation: string) => (cause: unknown) =>
 
 const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
   const routingPolicyRefValue = yield* routingPolicyRef;
+  const coordinatorRoleLine = coordinatorBriefRoleLine(yield* rolesDir);
   const sql = yield* SqlClient.SqlClient;
   const board = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
@@ -315,7 +317,12 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* (skillPath: string) {
         commandId: CommandId.make(wake.key),
         threadId: targetId,
         messageId: MessageId.make(wake.key),
-        text: buildBoardWakePrompt(routingPolicyRefValue, skillPath, wake.context),
+        text: buildBoardWakePrompt(
+          routingPolicyRefValue,
+          skillPath,
+          wake.context,
+          coordinatorRoleLine,
+        ),
         attachments: [],
         createdBy: "agent",
         creationSource: "server",
