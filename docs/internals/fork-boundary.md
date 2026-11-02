@@ -111,9 +111,15 @@ stale, retry и fingerprint повторяют старый форк. `task_list
 legacy `coordinator_architect_binding`/`architecture_review` (миграции
 058–061, 063 старого форка) с V2-владением: `coordinator_thread_id` ссылается
 на `orchestration_v2_projection_threads` с каскадом, как отметка доски.
-Срез 1–2 перенёс чтение (`get_lead_binding`, `list_architecture_reviews`);
-срез 4 — создание/замену/отзыв связки; срез 5 — цикл ревью
-(`architecture_review_request`, `architecture_review_answer`,
+**Связка — устаревший поток.** Текущая схема: один босс, lead; архитекторы
+(`architect`, `architect-*`) — консультанты, которых lead зовёт через
+`delegate_task` на один конкретный вопрос, без привязки; планы пишет роль
+`planner`. Инструменты связки (`get_lead_binding`, `architect_create_or_get`,
+замена/отзыв, ревью, публикация) остаются только для существующих связок и их
+данных и новых вызовов не требуют; скилл `create-orchestrator-architect`
+помечен retired. Срез 1–2 перенёс чтение (`get_lead_binding`,
+`list_architecture_reviews`); срез 4 — создание/замену/отзыв связки; срез 5 —
+цикл ревью (`architecture_review_request`, `architecture_review_answer`,
 `architecture_review_cancel`). Отметка оркестратора не дублируется — проверка
 при вызове читает `BoardRepository.listOrchestrators` из `ft3-board`. Права
 повторяют `ft3-board`: capability `orchestration`, живой тред, отказ
@@ -462,16 +468,24 @@ startup (`rolesDir` из `packages/ft3-delegation/src/delegationRoles.ts` уми
 политика native-сабагентов: при заданном каталоге строка `- Subagents: use your
 native tool…` не отправляется, потому что каждый ребёнок — `delegate_task`-ребёнок.
 
+Роль `planner` пишет плановые документы. Upstream-значение `architecture`
+разрешается в файл `architect.md`: в enum контрактов оно остаётся ради
+существующих вызовов, а подстановка имени файла живёт в `ft3-delegation`
+(`ROLE_FILE_ALIASES`/`roleFileName`), без правки upstream-кода.
+
 Brief координатора (`buildBoardWakePrompt`) начинается с той же строки для
 роли `lead`; web получает каталог в `board.orchestrators.list` (`rolesDir`) и
-показывает `Coordinator · lead`. Роль меняется только при создании задачи:
-команды `delegated_task.*` после создания роль не правят, поэтому обновление
-промпта при смене роли не реализовано.
+показывает `Coordinator · lead`. Brief больше не ссылается на скилл
+`create-orchestrator-architect` и не требует связки: он называет архитекторов
+(`architect`, `architect-*`) консультантами на один вопрос через
+`delegate_task`, а для плана — роль `planner`. Роль меняется только при
+создании задачи: команды `delegated_task.*` после создания роль не правят,
+поэтому обновление промпта при смене роли не реализовано.
 
 | Upstream-файл                                                    | Правка                                                                                                                          | Зачем                                                          |
 | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `packages/contracts/src/orchestratorMcp.ts`                      | 14 id ролей форка добавлены в `OrchestratorMcpTaskRole`                                                                         | MCP-схема `delegate_task` принимает id ролей форка             |
-| `apps/server/src/provider/agentContextBudget.json`               | `mcpToolListJsonBytes` 63308 → 63487                                                                                            | рекламируемая схема `delegate_task` выросла на список id ролей |
+| `packages/contracts/src/orchestratorMcp.ts`                      | 15 id ролей форка (включая `planner`) добавлены в `OrchestratorMcpTaskRole`                                                     | MCP-схема `delegate_task` принимает id ролей форка             |
+| `apps/server/src/provider/agentContextBudget.json`               | `mcpToolListJsonBytes` измеряется тестом после добавления ролей                                                                 | рекламируемая схема `delegate_task` выросла на список id ролей |
 | `packages/contracts/src/orchestrationV2.ts`                      | те же id добавлены в `OrchestrationV2DelegatedTaskRole`                                                                         | команда `delegated_task.request` сохраняет роль в проекции     |
 | `packages/provider-core/src/server/orchestrationInstructions.ts` | секции оркестрации стали live-`let`; добавлен `setNativeSubagentGuidance(enabled)`, который фильтрует строку `- Subagents:`     | generic host-hook вместо удаления upstream-текста              |
 | `apps/server/src/mcp/OrchestratorMcpService.ts`                  | `rolesDir` в `make`; `delegatedRoleAssignment` до dispatch, `delegatedTaskPrompt` и разрешённая роль в `delegated_task.request` | проверка роли и строка инструкции живут в `ft3-delegation`     |
@@ -480,8 +494,9 @@ Brief координатора (`buildBoardWakePrompt`) начинается с 
 | `pnpm-lock.yaml`                                                 | importers `packages/ft3-delegation` и `packages/ft3-host`                                                                       | workspace-связи                                                |
 
 Тесты форка: `packages/ft3-delegation/src/delegationRoles.test.ts` (каталог
-выключен, каталог задан, дефолт `general`, неизвестная роль, строка brief,
-отсутствие native-строки), `apps/server/src/mcp/OrchestratorMcpService.delegationRoles.test.ts`
+выключен, каталог задан, дефолт `general`, `planner`, `architecture` →
+`architect.md`, неизвестная роль, строка brief, отсутствие native-строки),
+`apps/server/src/mcp/OrchestratorMcpService.delegationRoles.test.ts`
 (промпт и роль в `delegated_task.request`, отказы до dispatch) и
 `packages/ft3-board/src/BoardService.brief.test.ts` (brief с `lead` и без).
 

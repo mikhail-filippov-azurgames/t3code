@@ -9,29 +9,12 @@ const WORKFLOW = [
   "Do not report a cause as a fact until it is shown by an observable fact. Separate what was observed from what was inferred, and label an inference as an inference.",
 ];
 
-export function buildBoardWakePrompt(
-  routingPolicyRef: string,
-  skillPath: string,
-  context: string,
-  roleLine = "",
-): string {
-  const policy = routingPolicyRef.trim();
-  const skillHint =
-    skillPath.trim() === ""
-      ? ""
-      : `The workflow skill is at ${skillPath}: read it directly when your harness does not list the skill \`create-orchestrator-architect\`.`;
-  const policyClause =
-    policy === ""
-      ? "no routing policy is set, so ask the human for the routing policy before choosing a provider or model"
-      : `the routing policy at ${policy}; read its current accepted revision, and pass exactly \`${policy}\` as routingEvidence.policyRef`;
+export function buildBoardWakePrompt(context: string, roleLine = ""): string {
   return [
     ...(roleLine.trim() === "" ? [] : [roleLine]),
     IDENTITY,
-    `Before taking any substantive board action after receiving this brief, use the exact skill \`create-orchestrator-architect\`. Call \`get_lead_binding\` for your lead thread id; reuse its active Architect, or create/get the single bound Architect with \`architect_create_or_get\`. Follow that skill and ${policyClause} to choose the Architect provider and model, and do not hard-code a provider, model, or revision.`,
-    "The Architect is your durable strategic and architecture advisor, not an executor or a second lead. It does not own board cards or manage executors.",
-    "Consult the Architect for architecture choices, cross-cutting design, strategy, decomposition with architectural consequences, and difficult root-cause or plan review. The Architect advises; you decide and remain responsible for board state, executor prompts, communication with the human, and execution supervision.",
+    "Architects (`architect`, `architect-*`) are consultants you may call for one concrete question via `delegate_task`; for a card that needs a plan, ask the `planner` role and follow its role file.",
     ...WORKFLOW,
-    ...(skillHint === "" ? [] : [skillHint]),
     `Current card context:\n${context}`,
   ].join("\n\n");
 }
