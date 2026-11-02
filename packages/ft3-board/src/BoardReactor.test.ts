@@ -314,14 +314,9 @@ const savedCursor = Effect.gen(function* () {
 });
 
 describe("ft3 board reactor", () => {
-  for (const status of [
-    "completed",
-    "failed",
-    "cancelled",
-    "interrupted",
-    "rolled_back",
-  ] as const) {
-    it.effect(`wakes for executor run ${status} and records its outcome once`, () => {
+  it.effect.each(["completed", "failed", "cancelled", "interrupted", "rolled_back"] as const)(
+    "wakes for executor run %s and records its outcome once",
+    (status) => {
       const f = fixture();
       return Effect.gen(function* () {
         yield* f.seed;
@@ -338,8 +333,8 @@ describe("ft3 board reactor", () => {
         assert.equal((yield* board.listEventsForCard(updated.cardId)).length, 1);
         assert.deepStrictEqual(yield* pending, []);
       }).pipe(Effect.scoped, Effect.provide(f.layer));
-    });
-  }
+    },
+  );
 
   it.effect("wakes on delegated completion without counting its run twice", () => {
     const f = fixture();
@@ -476,30 +471,28 @@ describe("ft3 board reactor", () => {
     }).pipe(Effect.scoped, Effect.provide(f.layer));
   });
 
-  for (const status of ["running", "starting", "waiting", "queued", "preparing"] as const) {
-    it.effect(
-      `persists a wake while the coordinator is ${status} and drains when it settles`,
-      () => {
-        const f = fixture();
-        return Effect.gen(function* () {
-          yield* f.seed;
-          yield* f.sendRun(status, "parent:busy", parentId);
-          const first = yield* f.newReactor;
-          const event = yield* f.sendRun("completed");
-          yield* first.process(event);
-          assert.equal(f.attempts.length, 0);
-          assert.equal((yield* pending).length, 1);
-          assert.equal(yield* savedCursor, event.sequence);
-          const second = yield* f.newReactor;
-          yield* second.recover;
-          assert.equal(f.attempts.length, 0);
-          yield* second.process(yield* f.sendRun("completed", "parent:busy", parentId));
-          assert.equal(f.delivered.length, 1);
-          assert.deepStrictEqual(yield* pending, []);
-        }).pipe(Effect.scoped, Effect.provide(f.layer));
-      },
-    );
-  }
+  it.effect.each(["running", "starting", "waiting", "queued", "preparing"] as const)(
+    "persists a wake while the coordinator is %s and drains when it settles",
+    (status) => {
+      const f = fixture();
+      return Effect.gen(function* () {
+        yield* f.seed;
+        yield* f.sendRun(status, "parent:busy", parentId);
+        const first = yield* f.newReactor;
+        const event = yield* f.sendRun("completed");
+        yield* first.process(event);
+        assert.equal(f.attempts.length, 0);
+        assert.equal((yield* pending).length, 1);
+        assert.equal(yield* savedCursor, event.sequence);
+        const second = yield* f.newReactor;
+        yield* second.recover;
+        assert.equal(f.attempts.length, 0);
+        yield* second.process(yield* f.sendRun("completed", "parent:busy", parentId));
+        assert.equal(f.delivered.length, 1);
+        assert.deepStrictEqual(yield* pending, []);
+      }).pipe(Effect.scoped, Effect.provide(f.layer));
+    },
+  );
 
   it.effect("drops pending wakes when the human removes the coordinator mark", () => {
     const f = fixture();
