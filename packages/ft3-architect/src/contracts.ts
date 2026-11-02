@@ -12,6 +12,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import { ROUTING_POLICY_REF_MAX_LENGTH } from "@t3tools/ft3-board/routingPolicy";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -63,7 +64,9 @@ const BoundedFingerprint = TrimmedNonEmptyString.check(Schema.isMaxLength(256));
 const BoundedReviewQuestion = TrimmedNonEmptyString.check(Schema.isMaxLength(4_096));
 const BoundedAnswerSummary = Schema.String.check(Schema.isMaxLength(2_000));
 const DocumentRef = TrimmedNonEmptyString.check(Schema.isMaxLength(45));
-const PolicyDocumentRef = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
+const PolicyDocumentRef = TrimmedNonEmptyString.check(
+  Schema.isMaxLength(ROUTING_POLICY_REF_MAX_LENGTH),
+);
 const boundedArray = <Element extends Schema.Top>(element: Element, maximum: number) =>
   Schema.Array(element).check(Schema.isMaxLength(maximum));
 

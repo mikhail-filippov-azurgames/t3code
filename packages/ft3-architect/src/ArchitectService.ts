@@ -290,7 +290,7 @@ const make = Effect.gen(function* () {
       if (routingPolicyRefValue.trim() !== "" && evidence.policyRef !== routingPolicyRefValue) {
         return yield* new Contracts.ArchitectMcpFailure({
           code: "routing_evidence_mismatch",
-          message: "The routing evidence does not reference the configured routing policy.",
+          message: `The routing evidence policyRef must be exactly ${routingPolicyRefValue}.`,
         });
       }
       const selected = evidence.consideredCandidates.at(-1);

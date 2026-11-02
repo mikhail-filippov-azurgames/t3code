@@ -737,6 +737,10 @@ it("uses the configured routing policy and has no embedded local document refere
     buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
     "policy:configured",
   );
+  assert.include(
+    buildBoardWakePrompt("policy:configured", skillPath, "Card context"),
+    "pass exactly `policy:configured` as routingEvidence.policyRef",
+  );
   assert.include(buildBoardWakePrompt("", skillPath, "Card context"), "no routing policy is set");
   assert.include(buildBoardWakePrompt("", skillPath, "Card context"), skillPath);
   assert.notInclude(buildBoardWakePrompt("", skillPath, "Card context"), "oc://");
