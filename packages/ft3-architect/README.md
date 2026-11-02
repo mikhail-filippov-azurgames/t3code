@@ -6,8 +6,8 @@
 ## Экспорты
 
 - `./server` — MCP-toolkit (`architect_create_or_get`, `architect_replace`,
-  `architect_detach`, `architecture_review_*`, `prepare_coordinator_publication`,
-  `publish_to_coordinator`, чтение связки и ревью);
+  `architect_detach`, `architecture_review_*`, `prepare_lead_publication`,
+  `publish_to_lead`, чтение связки и ревью);
 - `./service` — `ArchitectService` (SQL-доступ остаётся внутри пакета);
 - `./reactor` — `ArchitectReconciler` после рестарта;
 - `./migrations` — `4_Architect`, `5_ArchitectReviewWake`;
