@@ -295,16 +295,15 @@ describe("ft3 architect toolkit through ft3-host", () => {
       yield* seedThreads;
       const server = yield* McpServer.McpServer;
       const advertised = server.tools.filter(
-        ({ tool }) =>
-          tool.name === "get_coordinator_binding" || tool.name === "list_architecture_reviews",
+        ({ tool }) => tool.name === "get_lead_binding" || tool.name === "list_architecture_reviews",
       );
       assert.deepStrictEqual(advertised.map(({ tool }) => tool.name).sort(), [
-        "get_coordinator_binding",
+        "get_lead_binding",
         "list_architecture_reviews",
       ]);
       assert.isTrue(advertised.every(({ tool }) => tool.annotations?.readOnlyHint === true));
       assert.equal(
-        failure(yield* call("get_coordinator_binding", { coordinatorThreadId: parentId })).code,
+        failure(yield* call("get_lead_binding", { coordinatorThreadId: parentId })).code,
         "capability_denied",
       );
       assert.equal(
@@ -321,8 +320,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       yield* mark();
       yield* seedArchitect;
       const got = yield* decodeGet(
-        (yield* call("get_coordinator_binding", { coordinatorThreadId: parentId }))
-          .structuredContent,
+        (yield* call("get_lead_binding", { coordinatorThreadId: parentId })).structuredContent,
       );
       assert.isNotNull(got.binding);
       assert.equal(got.binding.bindingId, "binding:1");
@@ -356,11 +354,8 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(published.reviews.length, 0);
       yield* mark(otherId);
       const other = yield* decodeGet(
-        (yield* call(
-          "get_coordinator_binding",
-          { coordinatorThreadId: otherId },
-          asThread(otherId),
-        )).structuredContent,
+        (yield* call("get_lead_binding", { coordinatorThreadId: otherId }, asThread(otherId)))
+          .structuredContent,
       );
       assert.isNull(other.binding);
     }).pipe(Effect.provide(f.layer));
@@ -373,16 +368,12 @@ describe("ft3 architect toolkit through ft3-host", () => {
       yield* mark(otherId);
       yield* seedArchitect;
       assert.equal(
-        failure(yield* call("get_coordinator_binding", { coordinatorThreadId: parentId })).code,
+        failure(yield* call("get_lead_binding", { coordinatorThreadId: parentId })).code,
         "capability_denied",
       );
       assert.equal(
         failure(
-          yield* call(
-            "get_coordinator_binding",
-            { coordinatorThreadId: parentId },
-            asThread(otherId),
-          ),
+          yield* call("get_lead_binding", { coordinatorThreadId: parentId }, asThread(otherId)),
         ).code,
         "capability_denied",
       );
@@ -397,7 +388,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
         "architect_denied",
       );
       for (const [name, args] of [
-        ["get_coordinator_binding", { coordinatorThreadId: parentId }],
+        ["get_lead_binding", { coordinatorThreadId: parentId }],
         ["list_architecture_reviews", { coordinatorThreadId: parentId }],
       ] as const) {
         assert.equal(
@@ -427,11 +418,8 @@ describe("ft3 architect toolkit through ft3-host", () => {
       yield* mark();
       yield* seedArchitect;
       const got = yield* decodeGet(
-        (yield* call(
-          "get_coordinator_binding",
-          { coordinatorThreadId: parentId },
-          asThread(architectId),
-        )).structuredContent,
+        (yield* call("get_lead_binding", { coordinatorThreadId: parentId }, asThread(architectId)))
+          .structuredContent,
       );
       assert.isNotNull(got.binding);
       assert.equal(got.binding.bindingId, "binding:1");
@@ -445,11 +433,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(listed.reviews.length, 1);
       assert.equal(
         failure(
-          yield* call(
-            "get_coordinator_binding",
-            { coordinatorThreadId: otherId },
-            asThread(architectId),
-          ),
+          yield* call("get_lead_binding", { coordinatorThreadId: otherId }, asThread(architectId)),
         ).code,
         "architect_denied",
       );
@@ -659,8 +643,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(result.binding.detachReason, "Detach the advisor.");
       assert.isUndefined(f.shells.get(architectId));
       const got = yield* decodeGet(
-        (yield* call("get_coordinator_binding", { coordinatorThreadId: parentId }))
-          .structuredContent,
+        (yield* call("get_lead_binding", { coordinatorThreadId: parentId })).structuredContent,
       );
       assert.isNull(got.binding);
     }).pipe(Effect.provide(f.layer));
@@ -847,7 +830,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       yield* mark();
       yield* seedArchitect;
       const result = yield* decodePrepare(
-        (yield* call("prepare_coordinator_publication", prepareArgs(), asThread(architectId)))
+        (yield* call("prepare_lead_publication", prepareArgs(), asThread(architectId)))
           .structuredContent,
       );
       assert.equal(result.status, "answered");
@@ -862,7 +845,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(f.createdCommands.length, 0);
       const replaced = yield* decodePrepare(
         (yield* call(
-          "prepare_coordinator_publication",
+          "prepare_lead_publication",
           prepareArgs({ summary: "Cache behind a flag.", idempotencyKey: "prepare:2" }),
           asThread(architectId),
         )).structuredContent,
@@ -874,7 +857,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(
         failure(
           yield* call(
-            "publish_to_coordinator",
+            "publish_to_lead",
             publishArgs({ reviewId: result.reviewId }),
             asThread(architectId),
           ),
@@ -896,8 +879,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
           .structuredContent,
       );
       const first = yield* decodePublish(
-        (yield* call("publish_to_coordinator", publishArgs(), asThread(architectId)))
-          .structuredContent,
+        (yield* call("publish_to_lead", publishArgs(), asThread(architectId))).structuredContent,
       );
       assert.equal(first.status, "published");
       const wake = () =>
@@ -910,8 +892,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(dispatched.commandId, "arch:publish-wake:review:1");
       assert.include(dispatched.text, "[recommendation]");
       const replay = yield* decodePublish(
-        (yield* call("publish_to_coordinator", publishArgs(), asThread(architectId)))
-          .structuredContent,
+        (yield* call("publish_to_lead", publishArgs(), asThread(architectId))).structuredContent,
       );
       assert.equal(replay.status, "published");
       assert.equal(wake().length, 1);
@@ -988,7 +969,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
           .structuredContent,
       );
       assert.equal(
-        failure(yield* call("publish_to_coordinator", publishArgs(), asThread(otherId))).code,
+        failure(yield* call("publish_to_lead", publishArgs(), asThread(otherId))).code,
         "capability_denied",
       );
       assert.equal(f.createdCommands.length, 0);
@@ -1005,7 +986,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(
         failure(
           yield* call(
-            "prepare_coordinator_publication",
+            "prepare_lead_publication",
             prepareArgs({ summary: `Token ${secret}` }),
             asThread(architectId),
           ),
@@ -1017,7 +998,7 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(
         failure(
           yield* call(
-            "publish_to_coordinator",
+            "publish_to_lead",
             publishArgs({ reviewId: "review:secret" }),
             asThread(architectId),
           ),

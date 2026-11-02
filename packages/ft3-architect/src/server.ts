@@ -10,7 +10,7 @@ import * as ArchitectService from "./ArchitectService.ts";
 import { toolkit } from "./tools.ts";
 
 const handlers = McpToolAccess.toLayer(toolkit, {
-  get_coordinator_binding: McpToolAccess.readsAsCaller((input) =>
+  get_lead_binding: McpToolAccess.readsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* ArchitectService.ArchitectService;
@@ -66,14 +66,14 @@ const handlers = McpToolAccess.toLayer(toolkit, {
       return yield* service.cancelReview(scope, input);
     }),
   ),
-  prepare_coordinator_publication: McpToolAccess.writes((input) =>
+  prepare_lead_publication: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* ArchitectService.ArchitectService;
       return yield* service.prepareCoordinatorPublication(scope, input);
     }),
   ),
-  publish_to_coordinator: McpToolAccess.writes((input) =>
+  publish_to_lead: McpToolAccess.writes((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* ArchitectService.ArchitectService;

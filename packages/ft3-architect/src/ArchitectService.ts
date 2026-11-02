@@ -198,7 +198,7 @@ const make = Effect.gen(function* () {
     if (caller.thread.threadId !== coordinatorThreadId) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "capability_denied",
-        message: "Only the coordinator thread itself (or a human on it) may query this binding.",
+        message: "Only the lead thread itself (or a human on it) may query this binding.",
       });
     }
     const orchestrators = yield* board.listOrchestrators().pipe(Effect.mapError(unavailable));
@@ -259,7 +259,7 @@ const make = Effect.gen(function* () {
     if (caller.thread.threadId !== coordinatorThreadId) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "capability_denied",
-        message: `Only the coordinator thread itself (or a human on it) may ${operation}.`,
+        message: `Only the lead thread itself (or a human on it) may ${operation}.`,
       });
     }
     const orchestrators = yield* board.listOrchestrators().pipe(Effect.mapError(unavailable));
@@ -454,7 +454,7 @@ const make = Effect.gen(function* () {
       commandId: CommandId.make(wakeId),
       threadId: binding.architectThreadId,
       messageId: MessageId.make(wakeId),
-      text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the Coordinator.`,
+      text: `Architecture review requested (${review.reason}; execution posture: ${review.executionPosture}):\n${review.question}\n\nAnswer this review by calling architecture_review_answer with reviewId ${review.reviewId}. An ordinary answer never wakes the lead.`,
       attachments: [],
       createdBy: "agent",
       creationSource: "server",
@@ -469,12 +469,12 @@ const make = Effect.gen(function* () {
     if (!scope.capabilities.has("orchestration")) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "capability_denied",
-        message: "This credential cannot prepare a coordinator publication.",
+        message: "This credential cannot prepare a lead publication.",
       });
     }
     const caller = yield* McpInvocationContext.requireThreadScope(
       scope,
-      "Prepare coordinator publication",
+      "Prepare lead publication",
     );
     const shell = yield* threads
       .getThreadShell(caller.thread.threadId)
@@ -488,7 +488,7 @@ const make = Effect.gen(function* () {
     if (shell.lineage.relationshipToParent === "subagent") {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "delegated_executor_denied",
-        message: "Delegated executor threads cannot prepare coordinator publications.",
+        message: "Delegated executor threads cannot prepare lead publications.",
       });
     }
     const binding = yield* repo
@@ -497,7 +497,7 @@ const make = Effect.gen(function* () {
     if (binding === null) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "architect_denied",
-        message: "Only a bound architect thread may prepare a coordinator publication.",
+        message: "Only a bound architect thread may prepare a lead publication.",
       });
     }
     return { caller, binding };
@@ -547,7 +547,7 @@ const make = Effect.gen(function* () {
     if (caller.thread.threadId !== review.coordinatorThreadId) {
       return yield* new Contracts.ArchitectMcpFailure({
         code: "capability_denied",
-        message: "Only the coordinator thread itself (or a human on it) may publish this review.",
+        message: "Only the lead thread itself (or a human on it) may publish this review.",
       });
     }
     const orchestrators = yield* board.listOrchestrators().pipe(Effect.mapError(unavailable));
@@ -611,7 +611,7 @@ const make = Effect.gen(function* () {
         review.publishedBy === "human"
           ? `Published by the human via the Publish button\n${
               review.origin === "coordinator-request"
-                ? `Coordinator question:\n${review.question}\n\n`
+                ? `Lead question:\n${review.question}\n\n`
                 : ""
             }Disposition: ${disposition}\nSummary: ${summary}\nStable references: ${reviewRefsJson(refs)}`
           : `Architecture review published [${disposition}]:\n${summary}\nStable references: ${reviewRefsJson(refs)}`;
@@ -914,8 +914,7 @@ const make = Effect.gen(function* () {
           }
           return yield* new Contracts.ArchitectMcpFailure({
             code: "binding_not_found",
-            message:
-              "No active architect or exact interrupted replacement exists for this coordinator.",
+            message: "No active architect or exact interrupted replacement exists for this lead.",
           });
         }
       }
@@ -967,7 +966,7 @@ const make = Effect.gen(function* () {
         }
         return yield* new Contracts.ArchitectMcpFailure({
           code: "binding_not_found",
-          message: "No active architect binding for this coordinator.",
+          message: "No active architect binding for this lead.",
         });
       }
       const closed = yield* repo
@@ -1004,7 +1003,7 @@ const make = Effect.gen(function* () {
       if (binding === null) {
         return yield* new Contracts.ArchitectMcpFailure({
           code: "binding_not_found",
-          message: "No active architect binding for this coordinator.",
+          message: "No active architect binding for this lead.",
         });
       }
       const reviewId = `arch:review:${(yield* hash(["architecture-review", input.coordinatorThreadId, input.idempotencyKey])).slice(0, 40)}`;

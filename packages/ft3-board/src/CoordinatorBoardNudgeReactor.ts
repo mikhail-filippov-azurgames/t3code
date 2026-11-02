@@ -18,7 +18,6 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
@@ -136,7 +135,7 @@ export function formatCoordinatorBoardNudgeMessage(
           ? "Plan this task and delegate it to an executor."
           : "Plan this task, then move it to Plan (todo) before delegating.";
   return [
-    `This is an automatic board check, not a message from a person. The coordinator has ${activeChildCount} active child task(s); the nudge threshold is ${threshold}.`,
+    `This is an automatic board check, not a message from a person. The lead has ${activeChildCount} active child task(s); the nudge threshold is ${threshold}.`,
     `Card: ${projectDerivedText("summary", card.title)}`,
     `Card id: ${card.cardId}`,
     `State: ${card.status}`,
@@ -169,7 +168,7 @@ export class CoordinatorBoardNudgeReactor extends Context.Service<
   }
 >()("@t3tools/ft3-board/CoordinatorBoardNudgeReactor") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const board = yield* BoardRepository.BoardRepository;
   const engine = yield* ThreadManagement.ThreadManagementService;
@@ -460,7 +459,7 @@ export const make = Effect.gen(function* () {
         sentCount += 1;
         const historyEntry = BoardRepository.buildBoardCardEvent(currentCard, {
           at: sentAt,
-          body: "Coordinator was automatically nudged to take this card.",
+          body: "The lead was automatically nudged to take this card.",
           entryId: Contracts.BoardCardEventId.make(attemptId),
         });
         yield* board.updateCard(currentCard, [historyEntry]);

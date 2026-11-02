@@ -9,7 +9,7 @@ const source = () => applyLocalLlamaExtensionPolicy(PI_T3_MCP_EXTENSION_SOURCE);
 
 describe("Pi local llama extension policy", () => {
   it("keeps the production built-in tool manifest for local llama models", async () => {
-    // Captured from the real prepare_coordinator_publication tools/list schema
+    // Captured from the real prepare_lead_publication tools/list schema
     // in the failing V2 request. Its summary.maxLength is rejected by llama.cpp.
     const prepareCoordinatorPublicationSchema = {
       type: "object",

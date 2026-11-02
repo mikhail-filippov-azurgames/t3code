@@ -111,7 +111,7 @@ stale, retry и fingerprint повторяют старый форк. `task_list
 legacy `coordinator_architect_binding`/`architecture_review` (миграции
 058–061, 063 старого форка) с V2-владением: `coordinator_thread_id` ссылается
 на `orchestration_v2_projection_threads` с каскадом, как отметка доски.
-Срез 1–2 перенёс чтение (`get_coordinator_binding`, `list_architecture_reviews`);
+Срез 1–2 перенёс чтение (`get_lead_binding`, `list_architecture_reviews`);
 срез 4 — создание/замену/отзыв связки; срез 5 — цикл ревью
 (`architecture_review_request`, `architecture_review_answer`,
 `architecture_review_cancel`). Отметка оркестратора не дублируется — проверка
@@ -128,10 +128,10 @@ legacy `coordinator_architect_binding`/`architecture_review` (миграции
 Ответ (`architecture_review_answer`) сохраняет ответ и не будит координатора,
 как в старом форке. Политика секретов `ft3-board/authorTextPolicy` применяется
 к `question`, `summary`, `reason` (запрос/ответ/отмена) и к `reason` в
-replace/detach. Срез 6 — публикация координатору: `prepare_coordinator_publication`
+replace/detach. Срез 6 — публикация координатору: `prepare_lead_publication`
 (архитектор готовит advice-запись `origin='architect-advice'` со статусом
 `answered`, никогда не будит, повторная подготовка заменяет предыдущую) и
-`publish_to_coordinator` (единственная побудка координатора за ревью,
+`publish_to_lead` (единственная побудка координатора за ревью,
 детерминированный `commandId` `arch:publish-wake:<reviewId>`, отметка
 `publish_delivered_at`; повтор не будит). Advice-запись публикует только
 человек: серверный метод `publishHumanPublication` (`published_by='human'`,
