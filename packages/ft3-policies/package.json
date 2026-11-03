@@ -10,6 +10,10 @@
     "./settings": {
       "types": "./src/settings.ts",
       "import": "./src/settings.ts"
+    },
+    "./routingPolicy": {
+      "types": "./src/routingPolicy.ts",
+      "import": "./src/routingPolicy.ts"
     }
   },
   "scripts": {
