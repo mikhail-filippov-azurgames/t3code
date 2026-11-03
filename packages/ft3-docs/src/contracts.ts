@@ -67,6 +67,9 @@ export const DocRef = Schema.Struct({
 });
 export type DocRef = typeof DocRef.Type;
 
+/** The `oc://doc` reference of a document; other packages hold stable ids, not the scheme. */
+export const docLinkOf = (stableId: string): string => `oc://doc/${stableId}`;
+
 /**
  * Parses `oc://doc/<id>[@N]`, `ocl://doc/<id>`, or a store-relative path;
  * returns null when the reference is not a document address.

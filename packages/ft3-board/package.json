@@ -55,6 +55,14 @@
       "types": "./src/contracts.ts",
       "import": "./src/contracts.ts"
     },
+    "./planning": {
+      "types": "./src/planning.ts",
+      "import": "./src/planning.ts"
+    },
+    "./planning-contracts": {
+      "types": "./src/planningContracts.ts",
+      "import": "./src/planningContracts.ts"
+    },
     "./rpc-contracts": {
       "types": "./src/rpc-contracts.ts",
       "import": "./src/rpc-contracts.ts"

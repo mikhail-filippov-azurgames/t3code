@@ -23,6 +23,7 @@ describe("ft3 migrations", () => {
         [9, "BoardRetention"],
         [10, "PolicyUsage"],
         [11, "Mail"],
+        [12, "BoardPlanning"],
         [13, "Docs"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
@@ -35,8 +36,10 @@ describe("ft3 migrations", () => {
           "ft3_architect_review",
           "ft3_board_card_deletions",
           "ft3_board_card_events",
+          "ft3_board_card_plans",
           "ft3_board_cards",
           "ft3_board_orchestrators",
+          "ft3_board_plan_versions",
           "ft3_board_reactor_background",
           "ft3_board_reactor_cursor",
           "ft3_board_reactor_outcomes",
@@ -77,6 +80,7 @@ describe("ft3 migrations", () => {
         { migration_id: 9, name: "BoardRetention" },
         { migration_id: 10, name: "PolicyUsage" },
         { migration_id: 11, name: "Mail" },
+        { migration_id: 12, name: "BoardPlanning" },
         { migration_id: 13, name: "Docs" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -109,6 +113,7 @@ describe("ft3 migrations", () => {
         [9, "BoardRetention"],
         [10, "PolicyUsage"],
         [11, "Mail"],
+        [12, "BoardPlanning"],
         [13, "Docs"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
@@ -147,6 +152,7 @@ describe("ft3 migrations", () => {
         [9, "BoardRetention"],
         [10, "PolicyUsage"],
         [11, "Mail"],
+        [12, "BoardPlanning"],
         [13, "Docs"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

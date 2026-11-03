@@ -94,8 +94,41 @@ const retention = Effect.gen(function* () {
   yield* sql`CREATE INDEX idx_ft3_board_cards_retention ON ft3_board_cards(status, archived, updated_at)`;
 });
 
+const planning = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE ft3_board_card_plans (
+      card_id TEXT NOT NULL PRIMARY KEY REFERENCES ft3_board_cards(card_id) ON DELETE CASCADE,
+      required INTEGER NOT NULL CHECK (required IN (0, 1)),
+      required_by TEXT NOT NULL CHECK (required_by IN ('human', 'lead')),
+      required_reason TEXT,
+      state TEXT NOT NULL CHECK (state IN ('required', 'drafting', 'reviewing', 'discussion', 'accepted', 'withdrawn')),
+      plan_doc_id TEXT NOT NULL,
+      planner_member_id TEXT,
+      planner_thread_id TEXT,
+      review_rounds INTEGER NOT NULL DEFAULT 0 CHECK (review_rounds BETWEEN 0 AND 2),
+      accepted_sha256 TEXT,
+      accepted_revision INTEGER NOT NULL DEFAULT 0 CHECK (accepted_revision >= 0),
+      accepted_at TEXT,
+      updated_at TEXT NOT NULL
+    )
+  `;
+  yield* sql`
+    CREATE TABLE ft3_board_plan_versions (
+      card_id TEXT NOT NULL REFERENCES ft3_board_card_plans(card_id) ON DELETE CASCADE,
+      sha256 TEXT NOT NULL,
+      phase TEXT NOT NULL CHECK (phase IN ('draft', 'review_1', 'review_2', 'discussion', 'accepted')),
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (card_id, sha256, phase)
+    )
+  `;
+  yield* sql`CREATE INDEX idx_ft3_board_card_plans_planner_thread_id ON ft3_board_card_plans(planner_thread_id)`;
+});
+
 export const migrations = {
   "2_Board": board,
   "3_BoardReactor": reactor,
   "9_BoardRetention": retention,
+  "12_BoardPlanning": planning,
 };

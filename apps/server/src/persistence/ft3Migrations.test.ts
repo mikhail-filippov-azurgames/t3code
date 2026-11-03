@@ -29,6 +29,7 @@ it.effect("initializes core and ft3 schemas through the server persistence layer
       { migration_id: 9, name: "BoardRetention" },
       { migration_id: 10, name: "PolicyUsage" },
       { migration_id: 11, name: "Mail" },
+      { migration_id: 12, name: "BoardPlanning" },
       { migration_id: 13, name: "Docs" },
     ]);
     yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;

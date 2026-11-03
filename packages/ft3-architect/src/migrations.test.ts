@@ -156,6 +156,7 @@ describe("architect migrations through ft3-host", () => {
         [9, "BoardRetention"],
         [10, "PolicyUsage"],
         [11, "Mail"],
+        [12, "BoardPlanning"],
         [13, "Docs"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);

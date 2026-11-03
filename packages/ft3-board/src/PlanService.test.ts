@@ -1,0 +1,301 @@
+import { assert, describe, it } from "@effect/vitest";
+import { docLinkOf } from "@t3tools/ft3-docs/contracts";
+import * as DocsServer from "@t3tools/ft3-docs/server";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import * as PlanService from "./PlanService.ts";
+import * as Testkit from "./planning.testkit.ts";
+
+const cardId = Testkit.CARD_ID;
+const plans = PlanService.PlanService;
+
+const versionPhases = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    readonly phase: string;
+  }>`SELECT phase FROM ft3_board_plan_versions WHERE card_id = ${cardId} ORDER BY phase`;
+  return rows.map((row) => row.phase);
+});
+
+describe("PlanService", () => {
+  it.effect("flags the card and writes its plan document at the plan path", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard("Storage plan");
+        const service = yield* plans;
+        const docs = yield* DocsServer.DocsService;
+        const record = yield* service.require({ cardId, requiredBy: "lead", reason: "storage" });
+        assert.equal(record.state, "required");
+        assert.isTrue(record.required);
+        assert.equal(record.requiredReason, "storage");
+        const ref = yield* docs.docRef(docLinkOf(record.planDocId));
+        assert.equal(ref.relPath, `corvis/plans/corvis-core/${cardId}.md`);
+        const document = yield* docs.read({ ref: docLinkOf(record.planDocId) });
+        assert.include(document.content, "schema: corvis-plan-v1");
+        assert.include(document.content, `cardId: ${cardId}`);
+        assert.include(document.content, "# Plan: Storage plan");
+      }),
+    ),
+  );
+
+  it.effect("names the plan folder by the project id when the title has no ASCII letters", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const docs = yield* DocsServer.DocsService;
+        const record = yield* service.require({ cardId, requiredBy: "human" });
+        const ref = yield* docs.docRef(docLinkOf(record.planDocId));
+        assert.equal(ref.relPath, `corvis/plans/project-corvis/${cardId}.md`);
+      }),
+      { projectTitle: "Проект" },
+    ),
+  );
+
+  it.effect("refuses to flag a card while planning is off and creates nothing", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const error = yield* service.require({ cardId, requiredBy: "human" }).pipe(Effect.flip);
+        assert.equal(error.code, "planning_disabled");
+        assert.isNull(yield* service.get(cardId));
+      }),
+      { planning: false },
+    ),
+  );
+
+  it.effect("refuses to flag a card that does not exist", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        const service = yield* plans;
+        const error = yield* service.require({ cardId, requiredBy: "human" }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_card_not_found");
+      }),
+    ),
+  );
+
+  it.effect("denies the plan document when the card's lead is itself a child", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const error = yield* service.require({ cardId, requiredBy: "lead" }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_document_denied");
+        assert.isNull(yield* service.get(cardId));
+      }),
+      { childLead: true },
+    ),
+  );
+
+  it.effect("returns the existing plan when a flagged card is flagged again", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const first = yield* service.require({ cardId, requiredBy: "lead" });
+        const second = yield* service.require({ cardId, requiredBy: "human" });
+        assert.equal(second.planDocId, first.planDocId);
+        assert.equal(second.requiredBy, "lead");
+      }),
+    ),
+  );
+
+  it.effect("withdraws the requirement and reopens the same plan on a new flag", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const first = yield* service.require({ cardId, requiredBy: "lead" });
+        const withdrawn = yield* service.withdraw(cardId);
+        assert.isFalse(withdrawn.required);
+        assert.equal(withdrawn.state, "withdrawn");
+        const reopened = yield* service.require({ cardId, requiredBy: "human" });
+        assert.equal(reopened.state, "required");
+        assert.equal(reopened.planDocId, first.planDocId);
+      }),
+    ),
+  );
+
+  it.effect("caps review rounds at two", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* service.openReviewRound(cardId);
+        yield* service.closeReviewRound(cardId);
+        yield* service.openReviewRound(cardId);
+        yield* service.closeReviewRound(cardId);
+        const error = yield* service.openReviewRound(cardId).pipe(Effect.flip);
+        assert.equal(error.code, "plan_review_rounds_exhausted");
+        const record = yield* service.get(cardId);
+        assert.equal(record?.reviewRounds, 2);
+      }),
+    ),
+  );
+
+  it.effect("refuses transitions outside the flow", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        yield* service.require({ cardId, requiredBy: "lead" });
+        const review = yield* service.openReviewRound(cardId).pipe(Effect.flip);
+        assert.equal(review.code, "plan_transition_invalid");
+        const accept = yield* service.accept({ cardId, sha256: "0".repeat(64) }).pipe(Effect.flip);
+        assert.equal(accept.code, "plan_transition_invalid");
+      }),
+    ),
+  );
+
+  it.effect("records each review and discussion step as a plan version", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.recordDraft(cardId);
+        yield* service.openReviewRound(cardId);
+        yield* service.closeReviewRound(cardId);
+        yield* service.submitForDiscussion(cardId);
+        assert.deepStrictEqual(yield* versionPhases, ["discussion", "draft", "review_1"]);
+      }),
+    ),
+  );
+
+  it.effect("accepts the digest the human saw and counts accepted revisions", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const accepted = yield* service.accept({ cardId, sha256 });
+        assert.equal(accepted.state, "accepted");
+        assert.equal(accepted.acceptedSha256, sha256);
+        assert.equal(accepted.acceptedRevision, 1);
+        yield* service.submitForDiscussion(cardId);
+        const again = yield* service.accept({ cardId, sha256 });
+        assert.equal(again.acceptedRevision, 2);
+      }),
+    ),
+  );
+
+  it.effect("refuses to accept a digest that is no longer the live plan", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const error = yield* service.accept({ cardId, sha256: "0".repeat(64) }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_changed");
+        assert.equal((yield* service.get(cardId))?.state, "discussion");
+      }),
+    ),
+  );
+
+  it.effect("refuses an invalid plan and reports the line of the first problem", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        const duplicated = Testkit.validPlan(record.planDocId).replace(
+          "| P1 | add the table | ft3-board | migration test |",
+          "| P1 | add the table | ft3-board | migration test |\n| P1 | again | ft3-board | migration test |",
+        );
+        yield* Testkit.editPlan(record.planDocId, duplicated);
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_invalid");
+        assert.equal(error.line, 20);
+        assert.include(error.reason ?? "", 'step id "P1" is repeated');
+      }),
+    ),
+  );
+
+  it.effect("finds the plan of a bound planner thread and of no other thread", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.bindPlannerThread({ cardId, threadId: Testkit.PLANNER_THREAD_ID });
+        assert.equal(
+          yield* service.planStableIdOfPlannerThread(Testkit.PLANNER_THREAD_ID),
+          record.planDocId,
+        );
+        assert.isNull(yield* service.planStableIdOfPlannerThread(Testkit.LEAD_THREAD_ID));
+      }),
+    ),
+  );
+
+  it.effect("grants a planner thread write facts for its own plan only", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const facts = yield* DocsServer.DocumentsWriteFactsPort;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.bindPlannerThread({ cardId, threadId: Testkit.PLANNER_THREAD_ID });
+        const planner = {
+          threadId: Testkit.PLANNER_THREAD_ID,
+          parentThreadId: Testkit.LEAD_THREAD_ID,
+        };
+        const decision = DocsServer.resolveDocumentsWrite(planner, yield* facts.factsOf(planner));
+        assert.deepStrictEqual(decision, {
+          _tag: "Allow",
+          scope: "document",
+          stableId: record.planDocId,
+          reason: "planner_plan",
+        });
+        const lead = { threadId: Testkit.LEAD_THREAD_ID, parentThreadId: null };
+        assert.isNull((yield* facts.factsOf(lead)).planStableId);
+      }),
+    ),
+  );
+
+  it.effect("removes the plan record and its versions with the card", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM ft3_board_cards WHERE card_id = ${cardId}`;
+        assert.isNull(yield* service.get(cardId));
+        assert.deepStrictEqual(yield* versionPhases, []);
+      }),
+    ),
+  );
+
+  it.effect("the store rejects a plan state outside the design set", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const sql = yield* SqlClient.SqlClient;
+        const error =
+          yield* sql`INSERT INTO ft3_board_card_plans (card_id, required, required_by, state, plan_doc_id, review_rounds, accepted_revision, updated_at) VALUES (${cardId}, 1, 'lead', 'done', 'doc', 0, 0, '2026-10-26T00:00:00.000Z')`.pipe(
+            Effect.flip,
+          );
+        assert.isDefined(error);
+      }),
+    ),
+  );
+});
