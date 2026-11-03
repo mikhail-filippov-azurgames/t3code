@@ -36,6 +36,7 @@ import { boardEnvironment } from "./state.ts";
 import { BoardCardDialog } from "./BoardCardDialog.tsx";
 import { BoardCardDetailDialog } from "./BoardCardDetailDialog.tsx";
 import { BoardCardPinnedPanel, useBoardCardPins } from "./BoardCardPinnedPanel.tsx";
+import { BoardCardPlanButton } from "./BoardCardPlanButton.tsx";
 import { addBoardCardPin } from "./boardCardPins.ts";
 import { BoardRoleIcon } from "./boardRoleIcons.tsx";
 import {
@@ -504,6 +505,10 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
                         Start
                       </Button>
                     ) : null}
+                    <BoardCardPlanButton
+                      environmentId={threadRef.environmentId}
+                      cardId={card.cardId}
+                    />
                     <Button
                       size="xs"
                       variant="ghost"
@@ -542,6 +547,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
       {selectedCard ? (
         <BoardCardDetailDialog
           key={selectedCard.cardId}
+          environmentId={threadRef.environmentId}
           card={selectedCard}
           events={events}
           executorTitle={

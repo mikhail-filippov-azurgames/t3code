@@ -39,6 +39,7 @@ import {
   THREAD_DETAILS_PANEL_LABEL_CLASS,
 } from "./threadDetailsPanelStyles";
 import { Menu, MenuPopup } from "../ui/menu";
+import { useFt3PinnedLineageRows } from "@t3tools/ft3-web/lineage";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -88,6 +89,7 @@ interface ThreadDetailsPanelProps extends Pick<
 
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
+  const pinnedLineageRows = useFt3PinnedLineageRows(props.environmentId);
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
@@ -255,6 +257,7 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   threadId={props.threadId}
                   showLineage={visible.lineage}
                   showSideChats={visible.sideChats}
+                  pinnedLineageRows={pinnedLineageRows}
                 />
               ) : null}
 

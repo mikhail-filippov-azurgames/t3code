@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   remove: vi.fn(),
   resend: vi.fn(),
   request: vi.fn(),
+  planForCard: vi.fn(),
 }));
 
 vi.mock("./state.ts", () => ({
@@ -36,6 +37,9 @@ vi.mock("./state.ts", () => ({
 vi.mock("~/state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("./BoardCardDialog.tsx", () => ({ BoardCardDialog: () => null }));
+vi.mock("../lineage/planThreadSource.ts", () => ({
+  usePlanThreadSource: () => ({ forCard: mocks.planForCard, forOrchestratorThread: () => [] }),
+}));
 
 const ref = {
   environmentId: EnvironmentId.make("browser-env"),
@@ -44,6 +48,7 @@ const ref = {
 
 function setup() {
   vi.clearAllMocks();
+  mocks.planForCard.mockReturnValue(null);
   const card: BoardCard = {
     cardId: BoardCardId.make("11111111-1111-4111-8111-111111111111"),
     orchestratorThreadId: ref.threadId,
@@ -118,6 +123,40 @@ describe("Board registry rendering", () => {
           .getByRole("button", { name: "Ship the board", exact: true }),
       )
       .toBeVisible();
+  });
+
+  it("hides the Plan button for a card without a planner thread", async () => {
+    using state = setup();
+    await using screen = await render(
+      <RegistryContext.Provider value={state.registry}>
+        <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
+      </RegistryContext.Provider>,
+    );
+    await expect.element(screen.getByRole("button", { name: "Start", exact: true })).toBeVisible();
+    await expect
+      .element(screen.getByRole("button", { name: "Plan", exact: true }))
+      .not.toBeInTheDocument();
+  });
+
+  it("opens the planner thread from the card's Plan button", async () => {
+    using state = setup();
+    mocks.planForCard.mockReturnValue({
+      cardId: BoardCardId.make("11111111-1111-4111-8111-111111111111"),
+      title: "Ship the board",
+      orchestratorThreadId: ref.threadId,
+      plannerThreadId: ThreadId.make("planner-thread"),
+      state: "discussion",
+      implementStarted: false,
+    });
+    await using screen = await render(
+      <RegistryContext.Provider value={state.registry}>
+        <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
+      </RegistryContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Plan", exact: true }));
+    await vi.waitFor(() =>
+      expect(screen.router?.state.location.pathname).toBe(`/${ref.environmentId}/planner-thread`),
+    );
   });
 
   it("shows a fallback for a removed surface", async () => {

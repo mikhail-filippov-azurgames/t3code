@@ -21,7 +21,8 @@
     "./kimi": "./src/kimi/index.ts",
     "./delegation": "./src/delegation/index.ts",
     "./delegation-dialogs": "./src/delegation/dialogs.ts",
-    "./policies": "./src/policies/index.ts"
+    "./policies": "./src/policies/index.ts",
+    "./lineage": "./src/lineage/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

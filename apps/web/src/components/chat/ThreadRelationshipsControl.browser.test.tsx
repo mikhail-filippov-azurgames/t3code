@@ -160,6 +160,115 @@ it.each([
   }
 });
 
+function childSubagent(
+  parent: ReturnType<typeof makeThreadProjectionFixture>,
+  childThreadId: ThreadId,
+  title: string,
+  status: "completed" | "running" = "completed",
+) {
+  return {
+    id: NodeId.make(`agent-${childThreadId}`),
+    threadId: parent.thread.id,
+    runId: null,
+    parentNodeId: NodeId.make("parent"),
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: "codex",
+    providerInstanceId: parent.thread.providerInstanceId,
+    providerThreadId: null,
+    childThreadId,
+    nativeTaskRef: null,
+    prompt: "Inspect the change",
+    title,
+    model: null,
+    status,
+    result: null,
+    startedAt: null,
+    completedAt: status === "completed" ? parent.thread.updatedAt : null,
+    updatedAt: parent.thread.updatedAt,
+  };
+}
+
+it("places pinned lineage rows above Previous agents", async () => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  state.projection = {
+    ...projection,
+    subagents: [childSubagent(projection, ThreadId.make("done-child"), "Done child")],
+  };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+      showLineage
+      showSideChats={false}
+      pinnedLineageRows={() => ({
+        rows: [<li key="plan">Plan row</li>],
+        hiddenThreadIds: new Set<string>(),
+      })}
+    />,
+  );
+
+  const planRow = screen.getByText("Plan row", { exact: true }).element();
+  const previous = screen.getByRole("button", { name: /Previous agents/ }).element();
+  expect(planRow.compareDocumentPosition(previous) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("hides a pinned planner thread from the Lineage groups", async () => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  const plannerThreadId = ThreadId.make("planner-child");
+  state.projection = {
+    ...projection,
+    subagents: [childSubagent(projection, plannerThreadId, "Planner child")],
+  };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+      showLineage
+      showSideChats={false}
+      pinnedLineageRows={() => ({
+        rows: [<li key="plan">Plan row</li>],
+        hiddenThreadIds: new Set<string>([plannerThreadId]),
+      })}
+    />,
+  );
+
+  await expect.element(screen.getByText("Plan row", { exact: true })).toBeVisible();
+  await expect
+    .element(screen.getByRole("button", { name: /Previous agents/ }))
+    .not.toBeInTheDocument();
+  await expect.element(screen.getByText("Planner child", { exact: true })).not.toBeInTheDocument();
+});
+
+it("counts a running pinned planner thread in the Lineage heading", async () => {
+  setup();
+  const projection = makeThreadProjectionFixture();
+  const plannerThreadId = ThreadId.make("running-planner");
+  state.projection = {
+    ...projection,
+    subagents: [childSubagent(projection, plannerThreadId, "Running planner", "running")],
+  };
+  await using screen = await render(
+    <ThreadRelationshipsPanel
+      environmentId={environmentId}
+      threadId={projection.thread.id}
+      showLineage
+      showSideChats={false}
+      pinnedLineageRows={() => ({
+        rows: [<li key="plan">Plan row</li>],
+        hiddenThreadIds: new Set<string>([plannerThreadId]),
+      })}
+    />,
+  );
+
+  await expect.element(screen.getByText("Lineage · 1 running", { exact: true })).toBeVisible();
+  await expect
+    .element(screen.getByText("Running planner", { exact: true }))
+    .not.toBeInTheDocument();
+});
+
 it("opens an idle child from Lineage when its shell has not been loaded", async () => {
   setup();
   const projection = makeThreadProjectionFixture();

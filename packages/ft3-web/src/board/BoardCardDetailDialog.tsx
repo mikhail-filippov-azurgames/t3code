@@ -1,3 +1,4 @@
+import type { EnvironmentId } from "@t3tools/contracts";
 import type { BoardCard, BoardCardEvent } from "@t3tools/ft3-board/contracts";
 import { CircleAlertIcon, OctagonAlertIcon } from "lucide-react";
 import { useState } from "react";
@@ -13,6 +14,7 @@ import {
   DialogTitle,
 } from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
+import { BoardCardPlanButton } from "./BoardCardPlanButton";
 import { BoardRoleIcon } from "./boardRoleIcons";
 import {
   boardExecutorRoleLabel,
@@ -25,6 +27,7 @@ import {
 } from "./board.logic";
 
 export interface BoardCardDetailDialogProps {
+  readonly environmentId?: EnvironmentId;
   readonly card: BoardCard;
   readonly events: ReadonlyArray<BoardCardEvent>;
   readonly executorTitle: string | null;
@@ -37,6 +40,7 @@ export interface BoardCardDetailDialogProps {
 }
 
 export function BoardCardDetailDialog({
+  environmentId,
   card,
   events,
   executorTitle,
@@ -113,6 +117,9 @@ export function BoardCardDetailDialog({
               <Button size="xs" variant="outline" onClick={() => onOpenExecutor(card)}>
                 {executorTitle === null ? "Open executor thread" : `Open ${executorTitle}`}
               </Button>
+            ) : null}
+            {environmentId ? (
+              <BoardCardPlanButton environmentId={environmentId} cardId={card.cardId} />
             ) : null}
           </div>
 

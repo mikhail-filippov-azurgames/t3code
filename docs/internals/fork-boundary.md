@@ -957,3 +957,21 @@ immediately». Тумблер пишется через `policies.setApplyExtern
 
 Fork-owned tests: `packages/ft3-web/src/policies/policies.logic.test.ts` and
 `packages/ft3-web/src/policies/PoliciesSettingsPanel.browser.test.tsx`.
+
+## Закреплённые строки Lineage: план (срез 25a)
+
+`packages/ft3-web/src/lineage` отдаёт закреплённые строки для секции Lineage правой панели
+треда: строка `Plan: <карточка>` над «Previous agents». Шов — опциональный проп
+`pinnedLineageRows` у `ThreadRelationshipsPanel`: функция по id треда возвращает строки и
+множество id тредов, которые из групп исключаются. Без пропа поведение upstream. Источник
+данных пока заглушка `usePlanThreadSource`; реальный источник приходит с planning RPC.
+
+| Upstream-файл                                                 | Правка                                                                                                                                       | Зачем                                         |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `apps/web/src/components/chat/ThreadRelationshipsControl.tsx` | опциональный проп `pinnedLineageRows`; строки выводятся перед группой «Previous agents», thread id из `hiddenThreadIds` исключаются из групп | ft3 добавляет строку плана без знания о плане |
+| `apps/web/src/components/chat/ThreadDetailsPanel.tsx`         | вызов `useFt3PinnedLineageRows(environmentId)` из `@t3tools/ft3-web/lineage` и передача результата в `ThreadRelationshipsPanel`              | одна точка подключения ft3-хука               |
+
+Fork-owned tests: `packages/ft3-web/src/lineage/planLineage.logic.test.ts`,
+`packages/ft3-web/src/lineage/PlanLineageRow.browser.test.tsx` и случаи `Plan` в
+`packages/ft3-web/src/board/BoardPanel.browser.test.tsx`. Случаи закреплённых строк в
+`apps/web/src/components/chat/ThreadRelationshipsControl.browser.test.tsx` входят в гейт.

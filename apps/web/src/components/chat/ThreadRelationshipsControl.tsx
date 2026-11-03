@@ -56,7 +56,7 @@ import {
   SquareIcon,
   UnplugIcon,
 } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
+import { Fragment, useRef, useState, type ReactNode } from "react";
 
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { buildThreadRouteParams } from "../../threadRoutes";
@@ -396,6 +396,11 @@ export function ThreadRelationshipsPanel(props: {
   readonly threadId: ThreadId;
   readonly showLineage: boolean;
   readonly showSideChats: boolean;
+  /** Rows shown above "Previous agents"; their threads leave the groups. */
+  readonly pinnedLineageRows?: (threadId: ThreadId) => {
+    readonly rows: ReadonlyArray<ReactNode>;
+    readonly hiddenThreadIds: ReadonlySet<string>;
+  };
 }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
@@ -493,6 +498,11 @@ export function ThreadRelationshipsPanel(props: {
   const currentProject = projects.find((project) => project.id === currentThread?.projectId);
   const latestMergeBackRun = projection === null ? null : resolveLatestMergeBackRun(projection);
   const mergeTargetThreadId = resolveMergeBackTargetThreadId(projection);
+  const pinnedLineage = props.pinnedLineageRows?.(props.threadId);
+  const pinnedRows = pinnedLineage?.rows ?? [];
+  // Pinned threads leave the groups but still count toward the running total.
+  const isUnpinnedRow = ({ threadId }: ThreadRelationshipWalkRow) =>
+    !pinnedLineage?.hiddenThreadIds.has(threadId);
   const relationshipRows = orderWebThreadLineageRows({
     graph,
     rows: immediateThreadRelationships(graph, props.threadId),
@@ -585,6 +595,7 @@ export function ThreadRelationshipsPanel(props: {
     (related.length > 0 ||
       active.length > 0 ||
       previous.length > 0 ||
+      pinnedRows.length > 0 ||
       runningCount > 0 ||
       remoteActive.length > 0 ||
       remotePrevious.length > 0 ||
@@ -950,6 +961,7 @@ export function ThreadRelationshipsPanel(props: {
             related.length > 0 ||
             active.length > 0 ||
             remoteActive.length > 0 ||
+            pinnedRows.length > 0 ||
             delegatedFrom !== undefined
           }
           data-thread-relationships-panel
@@ -988,24 +1000,31 @@ export function ThreadRelationshipsPanel(props: {
             </ThreadLineageRowList>
           )}
           {groups.map((group) => (
-            <ThreadLineageGroup key={`${scopedThreadKey(ref)}:${group.id}`} {...group}>
-              {(visibleRows) =>
-                visibleRows.map((row) =>
-                  "remote" in row ? (
-                    <RemoteSubagentRow
-                      key={row.remote.id}
-                      agent={row.remote}
-                      // Its provider instance belongs to the environment it runs in.
-                      provider={providersByEnvironment
-                        .get(row.remote.remoteChild.environmentId)
-                        ?.find((entry) => entry.instanceId === row.remote.providerInstanceId)}
-                    />
-                  ) : (
-                    renderRelationshipRow(row)
-                  ),
-                )
-              }
-            </ThreadLineageGroup>
+            <Fragment key={`${scopedThreadKey(ref)}:${group.id}`}>
+              {group.id === "previous" && pinnedRows.length > 0 ? (
+                <ThreadLineageRowList hiddenCount={0} onShowMore={() => {}}>
+                  {pinnedRows}
+                </ThreadLineageRowList>
+              ) : null}
+              <ThreadLineageGroup {...group} rows={group.rows.filter(isUnpinnedRow)}>
+                {(visibleRows) =>
+                  visibleRows.map((row) =>
+                    "remote" in row ? (
+                      <RemoteSubagentRow
+                        key={row.remote.id}
+                        agent={row.remote}
+                        // Its provider instance belongs to the environment it runs in.
+                        provider={providersByEnvironment
+                          .get(row.remote.remoteChild.environmentId)
+                          ?.find((entry) => entry.instanceId === row.remote.providerInstanceId)}
+                      />
+                    ) : (
+                      renderRelationshipRow(row)
+                    ),
+                  )
+                }
+              </ThreadLineageGroup>
+            </Fragment>
           ))}
         </ThreadDetailsSection>
       ) : null}
