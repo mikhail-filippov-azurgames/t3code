@@ -49,6 +49,7 @@ const memberInput = (overrides: Partial<AddMemberInput> = {}): AddMemberInput =>
   modelOverrideJson: null,
   humanInstruction: null,
   participantThreadId: null,
+  route: null,
   createdAt: "2026-01-01T00:00:01.000Z",
   ...overrides,
 });
@@ -171,6 +172,104 @@ it.effect("round-trips a task, members, letters and delivery state", () =>
     assert.equal(closed?.status, "closed");
     assert.equal(closed?.outcome, "succeeded");
     assert.equal(closed?.closedAt, "2026-01-01T00:00:08.000Z");
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("keeps a read delivery read and lists only deliveries a thread can receive", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.addMember(
+      memberInput({
+        route: {
+          alias: "fast",
+          level: "medium",
+          modelSelectionJson: '{"instanceId":"codex","model":"gpt-test"}',
+          policyRevision: 3,
+          policySha256: null,
+        },
+      }),
+    );
+    yield* repository.addMember(
+      memberInput({
+        memberId: "member:two",
+        roleId: "test",
+        participantThreadId: "thread:tester",
+      }),
+    );
+    const members = yield* repository.listMembers("task:one");
+    assert.equal(members[0]?.routeAlias, "fast");
+    assert.equal(members[0]?.routePolicyRevision, 3);
+    assert.isNull(members[1]?.routeAlias);
+
+    const letter = yield* repository.appendLetter(letterInput());
+    yield* repository.recordDelivery({
+      deliveryId: "delivery:one",
+      taskId: "task:one",
+      letterId: letter.letter.letterId,
+      memberId: "member:one",
+      recipient: "member:one",
+      participantThreadId: null,
+      createdAt: "2026-01-01T00:00:04.000Z",
+    });
+    yield* repository.recordDelivery({
+      deliveryId: "delivery:two",
+      taskId: "task:one",
+      letterId: letter.letter.letterId,
+      memberId: "member:two",
+      recipient: "member:two",
+      participantThreadId: null,
+      createdAt: "2026-01-01T00:00:05.000Z",
+    });
+    const pendingBefore = yield* repository.listUndeliveredDeliveries({ limit: 10 });
+    assert.deepStrictEqual(
+      pendingBefore.map((item) => [item.delivery.deliveryId, item.participantThreadId]),
+      [["delivery:two", "thread:tester"]],
+    );
+
+    yield* repository.markDeliveryRead({
+      deliveryId: "delivery:two",
+      at: "2026-01-01T00:00:06.000Z",
+    });
+    const late = yield* repository.markDeliveryDelivered({
+      deliveryId: "delivery:two",
+      at: "2026-01-01T00:00:07.000Z",
+    });
+    assert.equal(late?.state, "read");
+    assert.equal(late?.deliveredAt, "2026-01-01T00:00:06.000Z");
+    assert.equal((yield* repository.listUndeliveredDeliveries({ limit: 10 })).length, 0);
+
+    const launched = yield* repository.setParticipantThread({
+      memberId: "member:one",
+      participantThreadId: "thread:worker",
+      at: "2026-01-01T00:00:08.000Z",
+    });
+    assert.equal(launched?.participantThreadId, "thread:worker");
+    const pendingAfter = yield* repository.listUndeliveredDeliveries({ limit: 10 });
+    assert.deepStrictEqual(
+      pendingAfter.map((item) => [item.delivery.deliveryId, item.participantThreadId]),
+      [["delivery:one", "thread:worker"]],
+    );
+
+    const wake = yield* repository.recordWake({
+      wakeId: "wake:one",
+      taskId: "task:one",
+      targetThreadId: "thread:lead",
+      reason: "letter",
+      idempotencyKey: "wake-key:one",
+      createdAt: "2026-01-01T00:00:09.000Z",
+    });
+    assert.deepStrictEqual(
+      (yield* repository.listUndeliveredWakes({ limit: 10 })).map((item) => item.wakeId),
+      [wake.wake.wakeId],
+    );
+    const woken = yield* repository.markWakeDelivered({
+      wakeId: "wake:one",
+      at: "2026-01-01T00:00:10.000Z",
+    });
+    assert.equal(woken?.deliveredAt, "2026-01-01T00:00:10.000Z");
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
   }).pipe(Effect.provide(testLayer)),
 );
 

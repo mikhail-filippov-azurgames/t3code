@@ -38,6 +38,7 @@ const seedTeam = Effect.gen(function* () {
     modelOverrideJson: null,
     humanInstruction: null,
     participantThreadId: "thread:general",
+    route: null,
     createdAt: "2026-01-01T00:00:01.000Z",
   });
   yield* repository.addMember({
@@ -51,6 +52,7 @@ const seedTeam = Effect.gen(function* () {
     modelOverrideJson: null,
     humanInstruction: null,
     participantThreadId: "thread:implementation",
+    route: null,
     createdAt: "2026-01-01T00:00:02.000Z",
   });
 });

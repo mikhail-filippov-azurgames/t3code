@@ -148,6 +148,17 @@ const mail = Effect.gen(function* () {
   yield* sql`CREATE INDEX idx_ft3_mail_deliveries_task ON ft3_mail_deliveries(task_id)`;
 });
 
+/** The route a member was given at creation; `11_Mail` is already applied, so this adds columns. */
+const mailRoute = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE ft3_mail_members ADD COLUMN route_alias TEXT`;
+  yield* sql`ALTER TABLE ft3_mail_members ADD COLUMN route_level TEXT`;
+  yield* sql`ALTER TABLE ft3_mail_members ADD COLUMN route_model_selection_json TEXT`;
+  yield* sql`ALTER TABLE ft3_mail_members ADD COLUMN route_policy_revision INTEGER`;
+  yield* sql`ALTER TABLE ft3_mail_members ADD COLUMN route_policy_sha256 TEXT`;
+});
+
 export const migrations = {
   "11_Mail": mail,
+  "14_MailRoute": mailRoute,
 };

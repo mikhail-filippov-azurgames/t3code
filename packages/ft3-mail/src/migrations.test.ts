@@ -13,7 +13,10 @@ it.effect("11_Mail creates the mail tables and reruns empty", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
 
-    assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), [[11, "Mail"]]);
+    assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), [
+      [11, "Mail"],
+      [14, "MailRoute"],
+    ]);
     assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), []);
 
     const tables = yield* sql<{ readonly name: string }>`

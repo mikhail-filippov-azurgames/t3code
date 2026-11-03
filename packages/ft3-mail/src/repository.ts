@@ -80,6 +80,15 @@ export interface CreateTaskInput {
   readonly createdAt: string;
 }
 
+/** The candidate a member was routed to when its task was created. */
+export interface MailMemberRouteInput {
+  readonly alias: string;
+  readonly level: MailLevel;
+  readonly modelSelectionJson: string;
+  readonly policyRevision: number;
+  readonly policySha256: string | null;
+}
+
 export interface AddMemberInput {
   readonly memberId: string;
   readonly taskId: string;
@@ -91,7 +100,14 @@ export interface AddMemberInput {
   readonly modelOverrideJson: string | null;
   readonly humanInstruction: string | null;
   readonly participantThreadId: string | null;
+  readonly route: MailMemberRouteInput | null;
   readonly createdAt: string;
+}
+
+/** A pending delivery whose recipient thread already exists; the reconciler dispatches it. */
+export interface PendingDelivery {
+  readonly delivery: MailDelivery;
+  readonly participantThreadId: string;
 }
 
 export interface AppendLetterInput {
@@ -209,6 +225,11 @@ interface MemberRow {
   readonly modelOverrideJson: string | null;
   readonly humanInstruction: string | null;
   readonly participantThreadId: string | null;
+  readonly routeAlias: string | null;
+  readonly routeLevel: MailLevel | null;
+  readonly routeModelSelectionJson: string | null;
+  readonly routePolicyRevision: number | null;
+  readonly routePolicySha256: string | null;
   readonly status: MailMemberStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -250,6 +271,10 @@ interface DeliveryRow {
   readonly answeredAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+}
+
+interface PendingDeliveryRow extends DeliveryRow {
+  readonly participantThreadId: string;
 }
 
 interface RoundRow {
@@ -296,6 +321,9 @@ const MEMBER_COLUMNS = `
   specialization, level, response_budget_seconds AS "responseBudgetSeconds",
   documents_write AS "documentsWrite", model_override_json AS "modelOverrideJson",
   human_instruction AS "humanInstruction", participant_thread_id AS "participantThreadId",
+  route_alias AS "routeAlias", route_level AS "routeLevel",
+  route_model_selection_json AS "routeModelSelectionJson",
+  route_policy_revision AS "routePolicyRevision", route_policy_sha256 AS "routePolicySha256",
   status, created_at AS "createdAt", updated_at AS "updatedAt"
 `;
 
@@ -366,6 +394,11 @@ const toMember = (row: MemberRow): MailMember => ({
   modelOverrideJson: row.modelOverrideJson,
   humanInstruction: row.humanInstruction,
   participantThreadId: row.participantThreadId,
+  routeAlias: row.routeAlias,
+  routeLevel: row.routeLevel,
+  routeModelSelectionJson: row.routeModelSelectionJson,
+  routePolicyRevision: row.routePolicyRevision,
+  routePolicySha256: row.routePolicySha256,
   status: row.status,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
@@ -526,6 +559,21 @@ export class MailRepository extends Context.Service<
       readonly deliveryId: string;
       readonly at: string;
     }) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
+    readonly listUndeliveredDeliveries: (input: {
+      readonly limit: number;
+    }) => Effect.Effect<ReadonlyArray<PendingDelivery>, MailRepositoryError>;
+    readonly setParticipantThread: (input: {
+      readonly memberId: string;
+      readonly participantThreadId: string;
+      readonly at: string;
+    }) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    readonly markWakeDelivered: (input: {
+      readonly wakeId: string;
+      readonly at: string;
+    }) => Effect.Effect<MailWake | null, MailRepositoryError>;
+    readonly listUndeliveredWakes: (input: {
+      readonly limit: number;
+    }) => Effect.Effect<ReadonlyArray<MailWake>, MailRepositoryError>;
     readonly listTimeline: (
       input: MailTimelineInput,
     ) => Effect.Effect<ReadonlyArray<MailTimelineEntry>, MailRepositoryError>;
@@ -595,6 +643,12 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => (rows[0] === undefined ? null : toWake(rows[0]))),
     );
 
+  const findWake = (wakeId: string) =>
+    sql<WakeRow>`SELECT ${sql.literal(WAKE_COLUMNS)} FROM ft3_mail_wakes
+      WHERE wake_id = ${wakeId}`.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? null : toWake(rows[0]))),
+    );
+
   const findKindFeedback = (letterId: string) =>
     sql<KindFeedbackRow>`SELECT ${sql.literal(KIND_FEEDBACK_COLUMNS)}
       FROM ft3_mail_kind_feedback WHERE letter_id = ${letterId}`.pipe(
@@ -607,6 +661,9 @@ const make = Effect.gen(function* () {
         m.specialization, m.level, m.response_budget_seconds AS "responseBudgetSeconds",
         m.documents_write AS "documentsWrite", m.model_override_json AS "modelOverrideJson",
         m.human_instruction AS "humanInstruction", m.participant_thread_id AS "participantThreadId",
+        m.route_alias AS "routeAlias", m.route_level AS "routeLevel",
+        m.route_model_selection_json AS "routeModelSelectionJson",
+        m.route_policy_revision AS "routePolicyRevision", m.route_policy_sha256 AS "routePolicySha256",
         m.status, m.created_at AS "createdAt", m.updated_at AS "updatedAt",
         t.status AS "taskStatus"
       FROM ft3_mail_members m JOIN ft3_mail_tasks t ON t.task_id = m.task_id
@@ -646,14 +703,14 @@ const make = Effect.gen(function* () {
     const read = assignment === "read" || assignment === "answered" ? 1 : 0;
     const answered = assignment === "answered" ? 1 : 0;
     const deliveredOrRead = assignment === "delivered" || read === 1 ? 1 : 0;
+    // A state only moves forward: a late "delivered" must not downgrade a read or answered delivery.
     yield* sql`UPDATE ft3_mail_deliveries SET
         delivered_at = CASE WHEN ${deliveredOrRead} = 1 THEN COALESCE(delivered_at, ${at}) ELSE delivered_at END,
         read_at = CASE WHEN ${read} = 1 THEN COALESCE(read_at, ${at}) ELSE read_at END,
         answered_at = CASE WHEN ${answered} = 1 THEN COALESCE(answered_at, ${at}) ELSE answered_at END,
         state = CASE
-          WHEN state = 'answered' THEN 'answered'
-          WHEN ${answered} = 1 THEN 'answered'
-          WHEN ${read} = 1 THEN 'read'
+          WHEN state = 'answered' OR ${answered} = 1 THEN 'answered'
+          WHEN state = 'read' OR ${read} = 1 THEN 'read'
           WHEN ${delivered} = 1 THEN 'delivered'
           ELSE state
         END,
@@ -704,12 +761,15 @@ const make = Effect.gen(function* () {
           yield* sql`INSERT INTO ft3_mail_members (
               member_id, task_id, role_id, specialization, level, response_budget_seconds,
               documents_write, model_override_json, human_instruction, participant_thread_id,
-              status, created_at, updated_at
+              route_alias, route_level, route_model_selection_json, route_policy_revision,
+              route_policy_sha256, status, created_at, updated_at
             ) VALUES (
               ${input.memberId}, ${input.taskId}, ${input.roleId}, ${input.specialization},
               ${input.level}, ${input.responseBudgetSeconds}, ${input.documentsWrite ? 1 : 0},
               ${input.modelOverrideJson}, ${input.humanInstruction}, ${input.participantThreadId},
-              'active', ${input.createdAt}, ${input.createdAt}
+              ${input.route?.alias ?? null}, ${input.route?.level ?? null},
+              ${input.route?.modelSelectionJson ?? null}, ${input.route?.policyRevision ?? null},
+              ${input.route?.policySha256 ?? null}, 'active', ${input.createdAt}, ${input.createdAt}
             ) ON CONFLICT(member_id) DO NOTHING`;
           const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
             FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
@@ -819,6 +879,57 @@ const make = Effect.gen(function* () {
     ),
     markDeliveryAnswered: Effect.fn("MailRepository.markDeliveryAnswered")((input) =>
       mapError("markDeliveryAnswered")(updateDelivery(input.deliveryId, input.at, "answered")),
+    ),
+    listUndeliveredDeliveries: Effect.fn("MailRepository.listUndeliveredDeliveries")((input) =>
+      mapError("listUndeliveredDeliveries")(
+        sql<PendingDeliveryRow>`SELECT
+            d.delivery_id AS "deliveryId", d.task_id AS "taskId", d.letter_id AS "letterId",
+            d.member_id AS "memberId", d.recipient,
+            COALESCE(m.participant_thread_id, d.participant_thread_id) AS "participantThreadId",
+            d.state, d.delivered_at AS "deliveredAt", d.read_at AS "readAt",
+            d.answered_at AS "answeredAt", d.created_at AS "createdAt", d.updated_at AS "updatedAt"
+          FROM ft3_mail_deliveries d
+          JOIN ft3_mail_tasks t ON t.task_id = d.task_id
+          LEFT JOIN ft3_mail_members m ON m.member_id = d.member_id
+          WHERE d.state = 'pending' AND t.status = 'open'
+            AND (m.member_id IS NULL OR m.status = 'active')
+            AND COALESCE(m.participant_thread_id, d.participant_thread_id) IS NOT NULL
+          ORDER BY d.created_at ASC, d.delivery_id ASC LIMIT ${input.limit}`,
+      ).pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({
+            delivery: toDelivery(row),
+            participantThreadId: row.participantThreadId,
+          })),
+        ),
+      ),
+    ),
+    setParticipantThread: Effect.fn("MailRepository.setParticipantThread")((input) =>
+      mapError("setParticipantThread")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_members SET
+              participant_thread_id = ${input.participantThreadId}, updated_at = ${input.at}
+            WHERE member_id = ${input.memberId}`;
+          const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+            FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
+          return rows[0] === undefined ? null : toMember(rows[0]);
+        }),
+      ),
+    ),
+    markWakeDelivered: Effect.fn("MailRepository.markWakeDelivered")((input) =>
+      mapError("markWakeDelivered")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_wakes SET delivered_at = COALESCE(delivered_at, ${input.at})
+            WHERE wake_id = ${input.wakeId}`;
+          return yield* findWake(input.wakeId);
+        }),
+      ),
+    ),
+    listUndeliveredWakes: Effect.fn("MailRepository.listUndeliveredWakes")((input) =>
+      mapError("listUndeliveredWakes")(
+        sql<WakeRow>`SELECT ${sql.literal(WAKE_COLUMNS)} FROM ft3_mail_wakes
+          WHERE delivered_at IS NULL ORDER BY created_at ASC, wake_id ASC LIMIT ${input.limit}`,
+      ).pipe(Effect.map((rows) => rows.map(toWake))),
     ),
     createRound: Effect.fn("MailRepository.createRound")((input: CreateRoundInput) =>
       mapError("createRound")(

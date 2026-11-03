@@ -25,6 +25,7 @@ describe("ft3 migrations", () => {
         [11, "Mail"],
         [12, "BoardPlanning"],
         [13, "Docs"],
+        [14, "MailRoute"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
@@ -82,6 +83,7 @@ describe("ft3 migrations", () => {
         { migration_id: 11, name: "Mail" },
         { migration_id: 12, name: "BoardPlanning" },
         { migration_id: 13, name: "Docs" },
+        { migration_id: 14, name: "MailRoute" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -115,6 +117,7 @@ describe("ft3 migrations", () => {
         [11, "Mail"],
         [12, "BoardPlanning"],
         [13, "Docs"],
+        [14, "MailRoute"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
       const ft3Before = yield* sql`SELECT * FROM ft3_migrations`;
@@ -154,6 +157,7 @@ describe("ft3 migrations", () => {
         [11, "Mail"],
         [12, "BoardPlanning"],
         [13, "Docs"],
+        [14, "MailRoute"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

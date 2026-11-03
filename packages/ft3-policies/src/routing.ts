@@ -4,7 +4,11 @@
  * candidate's options to a fixed level. Only the normal service tier is handed
  * out; accelerated model ids are skipped and accelerated tier options replaced.
  */
-import type { ProviderOptionSelection } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  type ModelSelection,
+  type ProviderOptionSelection,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -33,6 +37,15 @@ export interface RoutingResolvedCandidate {
   readonly level: RoutingLevel;
   readonly options: RoutingOptionSelections;
 }
+
+/** The selection a routed candidate launches with; the options carry the policy's normal tier. */
+export const routingCandidateModelSelection = (
+  candidate: RoutingResolvedCandidate,
+): ModelSelection => ({
+  instanceId: ProviderInstanceId.make(candidate.provider.instanceId),
+  model: candidate.model,
+  ...(candidate.options.length === 0 ? {} : { options: candidate.options }),
+});
 
 export type RoutingSkipReason = "alias_unknown" | "accelerated_model" | "unavailable";
 

@@ -3,7 +3,11 @@
  * the lead and members, and the route chosen for each member. Launch, delivery
  * and wake belong to the next slice, so this service records state only.
  */
-import { RoutingPolicyService, type RoutingSkippedCandidate } from "@t3tools/ft3-policies/routing";
+import {
+  RoutingPolicyService,
+  type RoutingSkippedCandidate,
+  routingCandidateModelSelection,
+} from "@t3tools/ft3-policies/routing";
 import {
   ROUTING_ROLES,
   type RoutingLevel,
@@ -17,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
+import { ModelSelection } from "@t3tools/contracts";
 import type {
   MailDelivery,
   MailIsolation,
@@ -27,8 +32,13 @@ import type {
   MailOutcome,
   MailTask,
 } from "./contracts.ts";
-import { MailRepository, type MailRepositoryError } from "./repository.ts";
+import {
+  MailRepository,
+  type MailMemberRouteInput,
+  type MailRepositoryError,
+} from "./repository.ts";
 
+const encodeModelSelectionJson = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
 const DEFAULT_RESPONSE_BUDGET_SECONDS = 1800;
 const MIN_RESPONSE_BUDGET_SECONDS = 60;
 const MAX_RESPONSE_BUDGET_SECONDS = 86400;
@@ -303,7 +313,7 @@ const make = Effect.gen(function* () {
       : null;
   });
 
-  // Chooses and records the route of a new member; the usage row is keyed by the member id.
+  // Chooses the route of a new member; the usage row is keyed by the member id.
   const selectRoute = Effect.fn("MailService.selectRoute")(function* (
     memberId: string,
     role: RoutingRoleId,
@@ -311,7 +321,24 @@ const make = Effect.gen(function* () {
   ) {
     const selection = yield* routing.select({ role, level, delegationId: memberId });
     if (selection === null) return yield* refuse("mail_disabled", ROUTING_UNAVAILABLE);
-    return selection.selected === null ? { role, level, skipped: selection.skipped } : null;
+    const selected = selection.selected;
+    if (selected === null) {
+      return {
+        route: null,
+        noCandidate: { role, level, skipped: selection.skipped } satisfies MailNoCandidate,
+      };
+    }
+    const modelSelectionJson = yield* encodeModelSelectionJson(
+      routingCandidateModelSelection(selected),
+    ).pipe(Effect.orDie);
+    const route: MailMemberRouteInput = {
+      alias: selected.alias,
+      level: selected.level,
+      modelSelectionJson,
+      policyRevision: selection.policy.revision,
+      policySha256: selection.policy.sha256,
+    };
+    return { route, noCandidate: null };
   });
 
   const normalizeMembers = Effect.fn("MailService.normalizeMembers")(function* (
@@ -451,9 +478,12 @@ const make = Effect.gen(function* () {
           modelOverrideJson: null,
           humanInstruction: null,
           participantThreadId: null,
+          route: routes[index]?.route ?? null,
           createdAt: now,
         })
-        .pipe(Effect.map((member) => ({ member, noCandidate: routes[index] ?? null }))),
+        .pipe(
+          Effect.map((member) => ({ member, noCandidate: routes[index]?.noCandidate ?? null })),
+        ),
     );
     if (cardId !== null) {
       yield* evidence.recordCardSnapshot({
