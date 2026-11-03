@@ -37,6 +37,7 @@ import {
   type MailMemberRouteInput,
   type MailRepositoryError,
 } from "./repository.ts";
+import { MailParticipantLauncher, type MailParticipantLaunchInput } from "./participantLauncher.ts";
 
 const encodeModelSelectionJson = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
 const DEFAULT_RESPONSE_BUDGET_SECONDS = 1800;
@@ -168,11 +169,24 @@ export interface MailLetterNoCandidate extends MailNoCandidate {
   readonly memberId: string;
 }
 
+export interface MailMemberLaunched {
+  readonly memberId: string;
+  readonly participantThreadId: string;
+}
+
+export interface MailMemberLaunchFailed {
+  readonly memberId: string;
+  readonly reason: string;
+}
+
 export interface SendMailLetterResult {
   readonly letter: MailLetter;
   readonly created: boolean;
   readonly deliveries: ReadonlyArray<MailDelivery>;
   readonly noCandidate: ReadonlyArray<MailLetterNoCandidate>;
+  /** Members launched by this letter; a launch failure keeps the delivery pending for a resend. */
+  readonly launched: ReadonlyArray<MailMemberLaunched>;
+  readonly launchFailures: ReadonlyArray<MailMemberLaunchFailed>;
 }
 
 export interface CloseMailTaskInput {
@@ -271,6 +285,7 @@ const make = Effect.gen(function* () {
   const gate = yield* FeatureGate;
   const crypto = yield* Crypto.Crypto;
   const evidence = yield* MailPolicyEvidence;
+  const launcher = yield* MailParticipantLauncher;
 
   const requireMail = gate
     .require("mail")
@@ -642,7 +657,55 @@ const make = Effect.gen(function* () {
       const gap = yield* noCandidateFor(target.member.roleId, target.member.level ?? task.level);
       if (gap !== null) noCandidate.push({ memberId: target.member.memberId, ...gap });
     }
-    return { letter: appended.letter, created: appended.created, deliveries, noCandidate };
+    // The lead's letter starts a threadless routed member; a repeat reuses the same thread.
+    const launched: MailMemberLaunched[] = [];
+    const launchFailures: MailMemberLaunchFailed[] = [];
+    if (sender.kind === "lead") {
+      for (const target of targets) {
+        const member = target.member;
+        if (
+          member === null ||
+          member.participantThreadId !== null ||
+          member.routeModelSelectionJson === null
+        ) {
+          continue;
+        }
+        const launchInput: MailParticipantLaunchInput = {
+          leadThreadId: task.createdByThreadId,
+          taskTitle: task.title,
+          memberId: member.memberId,
+          roleId: member.roleId,
+          modelSelectionJson: member.routeModelSelectionJson,
+          letterBody: input.body,
+          isolation: task.isolation,
+        };
+        const outcome = yield* launcher.launch(launchInput).pipe(
+          Effect.map((threadId) => ({ launched: true, threadId }) as const),
+          Effect.catchTags({
+            MailLaunchError: (error) =>
+              Effect.succeed({ launched: false, reason: error.reason } as const),
+          }),
+        );
+        if (!outcome.launched) {
+          launchFailures.push({ memberId: member.memberId, reason: outcome.reason });
+          continue;
+        }
+        yield* repository.setParticipantThread({
+          memberId: member.memberId,
+          participantThreadId: outcome.threadId,
+          at: yield* nowIso,
+        });
+        launched.push({ memberId: member.memberId, participantThreadId: outcome.threadId });
+      }
+    }
+    return {
+      letter: appended.letter,
+      created: appended.created,
+      deliveries,
+      noCandidate,
+      launched,
+      launchFailures,
+    };
   });
 
   const closeTask = Effect.fn("MailService.closeTask")(function* (input: CloseMailTaskInput) {

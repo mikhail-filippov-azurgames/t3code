@@ -15,6 +15,11 @@ import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
 
 import { migrations } from "./migrations.ts";
+import {
+  MailLaunchError,
+  MailParticipantLauncher,
+  type MailParticipantLaunchInput,
+} from "./participantLauncher.ts";
 import { layer as mailRepositoryLayer } from "./repository.ts";
 import { layer as mailServiceLayer, MailPolicyEvidence } from "./service.ts";
 
@@ -125,16 +130,36 @@ export const policyEvidenceFake = (knownCards: ReadonlyArray<string> = ["card:on
   return { layer, cardSnapshots };
 };
 
+/** Records launch inputs and starts one thread per member; members in `fail` refuse instead. */
+export const launcherFake = (fail: ReadonlySet<string> = new Set()) => {
+  const launches: Array<MailParticipantLaunchInput> = [];
+  const layer = Layer.succeed(
+    MailParticipantLauncher,
+    MailParticipantLauncher.of({
+      launch: (input) =>
+        fail.has(input.memberId)
+          ? Effect.fail(new MailLaunchError({ reason: "the orchestrator refused the launch." }))
+          : Effect.sync(() => {
+              launches.push(input);
+              return `thread:participant:${input.memberId}`;
+            }),
+    }),
+  );
+  return { layer, launches };
+};
+
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
 export const mailHarness = (
   options: {
     readonly enabled?: boolean;
     readonly routable?: ReadonlyArray<RoutingRoleId>;
     readonly applied?: boolean;
+    readonly launchFail?: ReadonlySet<string>;
   } = {},
 ) => {
   const routing = routingFake(options);
   const evidence = policyEvidenceFake();
+  const launcher = launcherFake(options.launchFail);
   const layer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -142,9 +167,15 @@ export const mailHarness = (
         gateLayer(options.enabled ?? true),
         cryptoLayer,
         evidence.layer,
+        launcher.layer,
       ),
     ),
     Layer.provideMerge(databaseLayer),
   );
-  return { layer, selects: routing.selects, cardSnapshots: evidence.cardSnapshots };
+  return {
+    layer,
+    selects: routing.selects,
+    cardSnapshots: evidence.cardSnapshots,
+    launches: launcher.launches,
+  };
 };

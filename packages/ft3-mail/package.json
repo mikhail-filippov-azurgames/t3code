@@ -23,6 +23,10 @@
       "types": "./src/delegationLaunch.ts",
       "import": "./src/delegationLaunch.ts"
     },
+    "./launcher": {
+      "types": "./src/participantLauncher.ts",
+      "import": "./src/participantLauncher.ts"
+    },
     "./documentsWrite": {
       "types": "./src/documentsWrite.ts",
       "import": "./src/documentsWrite.ts"

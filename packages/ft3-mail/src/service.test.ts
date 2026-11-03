@@ -471,6 +471,83 @@ it.effect("replays a repeated letter once and refuses a changed payload", () => 
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("launches a threadless routed member once and reuses its thread", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "implementation" }]);
+    const taskId = created.task.taskId;
+    const member = idsOf(created, "implementation")[0] ?? "";
+
+    const sent = yield* sendAs(LEAD, taskId, "role:implementation", "request", "Start.");
+    assert.deepStrictEqual(sent.launched, [
+      { memberId: member, participantThreadId: `thread:participant:${member}` },
+    ]);
+    assert.deepStrictEqual(sent.launchFailures, []);
+    assert.equal(harness.launches.length, 1);
+    assert.equal(harness.launches[0]?.letterBody, "Start.");
+
+    // The recorded thread answers as the participant without another launch.
+    const answer = yield* sendAs(
+      `thread:participant:${member}`,
+      taskId,
+      "lead",
+      "answer",
+      "Done.",
+      "request:answer",
+    );
+    assert.isTrue(answer.created);
+    const followUp = yield* sendAs(
+      LEAD,
+      taskId,
+      "role:implementation",
+      "request",
+      "Again.",
+      "request:again",
+    );
+    assert.deepStrictEqual(followUp.launched, []);
+    assert.deepStrictEqual(followUp.launchFailures, []);
+    assert.equal(harness.launches.length, 1);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps the delivery pending when the launch is refused and retries it", () => {
+  const fail = new Set<string>();
+  const harness = mailHarness({ launchFail: fail });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "implementation" }]);
+    const taskId = created.task.taskId;
+    const member = idsOf(created, "implementation")[0] ?? "";
+    fail.add(member);
+
+    const refused = yield* sendAs(LEAD, taskId, "role:implementation", "request", "Start.");
+    assert.isTrue(refused.created);
+    assert.deepStrictEqual(refused.launched, []);
+    assert.equal(refused.launchFailures.length, 1);
+    assert.equal(refused.launchFailures[0]?.memberId, member);
+    assert.deepStrictEqual(
+      refused.deliveries.map((delivery) => delivery.state),
+      ["pending"],
+    );
+
+    // A resend heals the threadless member once the launch succeeds.
+    fail.delete(member);
+    const retried = yield* sendAs(
+      LEAD,
+      taskId,
+      "role:implementation",
+      "request",
+      "Start again.",
+      "request:retry",
+    );
+    assert.deepStrictEqual(retried.launched, [
+      { memberId: member, participantThreadId: `thread:participant:${member}` },
+    ]);
+    assert.deepStrictEqual(retried.launchFailures, []);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect(
   "closes a task only for the lead, after its members finish, and then refuses letters",
   () => {

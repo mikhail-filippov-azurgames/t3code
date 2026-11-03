@@ -1386,6 +1386,87 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
   }).pipe(Effect.provide(DelegatedTaskQuestionReactor.layer.pipe(Layer.provideMerge(layerTest)))),
 );
 
+it.effect("ignores a live question from a mail participant", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const reactor = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const parentThreadId = ThreadId.make("thread:mail-question-parent");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-mail-question-parent"),
+      threadId: parentThreadId,
+      projectId: ProjectId.make("project:mail-question"),
+      title: "Mail parent",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-mail-question-parent"),
+      threadId: parentThreadId,
+      messageId: MessageId.make("message:mail-question-parent"),
+      text: "Send the letter",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parentRun = (yield* projections.getThreadProjection(parentThreadId)).runs[0]!;
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("delegate-mail-question-task"),
+      parentThreadId,
+      parentRunId: parentRun.id,
+      parentNodeId: parentRun.rootNodeId!,
+      task: "Draft the plan",
+      completionWake: "none",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const task = (yield* projections.getThreadProjection(parentThreadId)).subagents[0]!;
+    const childRun = (yield* projections.getThreadRecords(task.childThreadId!, ["runs"])).runs[0]!;
+    const now = yield* DateTime.now;
+    const question = {
+      id: EventId.make("event:mail-question"),
+      type: "runtime-request.updated",
+      threadId: task.childThreadId!,
+      runId: childRun.id,
+      occurredAt: now,
+      payload: {
+        id: RuntimeRequestId.make("request:mail-question"),
+        nodeId: childRun.rootNodeId!,
+        providerTurnId: null,
+        nativeRequestRef: null,
+        kind: "user_input",
+        status: "pending",
+        responseCapability: {
+          type: "live",
+          providerSessionId: ProviderSessionId.make("session:mail-question"),
+        },
+        createdAt: now,
+        resolvedAt: null,
+      },
+    } satisfies OrchestrationV2DomainEvent;
+    yield* eventSink.write({ events: [question] });
+    yield* reactor.handle(question);
+    assert.isFalse(
+      (yield* projections.getThreadProjection(parentThreadId)).messages.some(
+        (message) => message.notification !== undefined,
+      ),
+    );
+  }).pipe(Effect.provide(DelegatedTaskQuestionReactor.layer.pipe(Layer.provideMerge(layerTest)))),
+);
+
 it.effect.each([false, true])("rejects thread.create for an existing id (deleted: %s)", (deleted) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;

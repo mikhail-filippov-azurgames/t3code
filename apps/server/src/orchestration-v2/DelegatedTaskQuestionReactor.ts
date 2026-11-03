@@ -142,6 +142,8 @@ const make = Effect.gen(function* () {
       ) {
         return;
       }
+      // A mail participant answers by letter; the question reactor never wakes the lead for it.
+      if (task.completionWake === "none") return;
       // A blocking delegate_task wait delivers the question itself.
       if (
         task.completionWake === "settled_only" &&

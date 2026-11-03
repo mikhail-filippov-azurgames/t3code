@@ -9,6 +9,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as MailParticipantLauncherLive from "./orchestration-v2/mailParticipantLauncher.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
@@ -643,7 +644,7 @@ const layerServerRestart = Layer.effect(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
-  Ft3Host.layer,
+  Ft3Host.layer.pipe(Layer.provide(MailParticipantLauncherLive.layer)),
   Ft3Host.reactorLayer().pipe(Layer.provide(RuntimeLayer.layerEventSink)),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
