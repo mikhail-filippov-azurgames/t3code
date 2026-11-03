@@ -1,10 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import {
-  BoardCardId,
-  type BoardCard,
-  type BoardCardLookupDetail,
-} from "@t3tools/ft3-board/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type { BoardCard, BoardCardLookupDetail } from "@t3tools/ft3-board/contracts";
 import { AsyncResult } from "effect/reactivity";
 import {
   ArchiveIcon,
@@ -24,7 +20,7 @@ import * as Schema from "effect/Schema";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -44,15 +40,12 @@ import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { readThreadShell } from "~/state/entities";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
+import { useEnvironmentQuery } from "~/state/query";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useExpandCoordinatorHistoryByDefault } from "./boardPreferences";
-import {
-  boardCardPinsKey,
-  readBoardCardPins,
-  removeBoardCardPin,
-  subscribeBoardCardPins,
-} from "./boardCardPins";
+import { removeBoardCardPin } from "./boardCardPins";
+import { pinnedCardsQuery, useBoardCardPins } from "./BoardCardPinnedPanel";
+import { BoardCardPlanButton } from "./BoardCardPlanButton";
 import {
   coordinatorSummaryExecutorLabel,
   type CoordinatorSummaryHistoryEntry,
@@ -91,26 +84,23 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
 
 const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history"]);
 
-function splitCardIds(cardIds: ReadonlyArray<string>, size: number): string[][] {
-  const chunks: string[][] = [];
-  for (let index = 0; index < cardIds.length; index += size) {
-    chunks.push(cardIds.slice(index, index + size));
-  }
-  return chunks;
-}
-
-export function BoardChatSidePanel(props: {
-  readonly threadRef: ScopedThreadRef;
-  readonly onOpenChange?: (open: boolean) => void;
-}) {
+export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = props.threadRef;
-  const { onOpenChange } = props;
   const navigate = useNavigate();
-  const key = boardCardPinsKey(environmentId, threadId);
-  const [pins, setPins] = useState(() => readBoardCardPins(environmentId, threadId));
-  const [details, setDetails] = useState<ReadonlyMap<string, BoardCardLookupDetail>>(new Map());
-  const [loadError, setLoadError] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const pins = useBoardCardPins(props.threadRef);
+  const pinned = useEnvironmentQuery(
+    pins.length > 0 ? pinnedCardsQuery(JSON.stringify({ environmentId, cardIds: pins })) : null,
+  );
+  const details = useMemo(
+    () =>
+      new Map<string, BoardCardLookupDetail>(
+        (pinned.data?.details ?? []).map((detail) => [String(detail.card.cardId), detail]),
+      ),
+    [pinned.data],
+  );
+  const loading = pinned.isPending;
+  const loadError = pinned.error !== null;
+  const refresh = pinned.refresh;
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useLocalStorage(
     `t3code:chat-side-panel-collapsed:${environmentId}:${threadId}`,
@@ -137,41 +127,19 @@ export function BoardChatSidePanel(props: {
     CHAT_PANEL_TAB_SCHEMA,
   );
   const loadHistory = useCoordinatorSummaryHistoryLoader(props.threadRef);
-  const loadSequence = useRef(0);
   const historyLoadSequence = useRef(0);
   const historyLoadingMore = useRef(false);
-  const historyStateRef = useRef<SummaryHistoryLoadState>(historyState);
-  const resolveCards = useAtomQueryRunner(boardEnvironment.resolve, {
-    reportFailure: false,
-    refresh: true,
-  });
   const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
   const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
   const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
     reportFailure: false,
   });
 
-  useEffect(() => {
-    setPins(readBoardCardPins(environmentId, threadId));
-    setDetails(new Map());
-    setLoadError(false);
-    setCollapsedCardIds(new Set());
-    setActionError(null);
-  }, [environmentId, threadId]);
-
   const currentHistoryState =
     historyState.threadId === threadId ? historyState : emptyHistoryState(threadId);
-  useLayoutEffect(() => {
-    historyStateRef.current = currentHistoryState;
-  }, [currentHistoryState]);
   // Failed coordinator history remains panel content so its error can be retried.
   const hasPanelContent =
     pins.length > 0 || currentHistoryState.entries.length > 0 || currentHistoryState.error;
-  const open = hasPanelContent && !collapsed;
-  useLayoutEffect(() => {
-    onOpenChange?.(open);
-    return () => onOpenChange?.(false);
-  }, [open, onOpenChange]);
 
   const toggleCardCollapsed = useCallback((cardId: string) => {
     setCollapsedCardIds((current) => {
@@ -187,55 +155,6 @@ export function BoardChatSidePanel(props: {
     },
     [setHistoryEntryOverrides],
   );
-
-  useEffect(
-    () =>
-      subscribeBoardCardPins((changedKey, nextPins) => {
-        if (changedKey === key) setPins(nextPins);
-      }),
-    [key],
-  );
-
-  const loadDetails = useCallback(
-    async (cardIds: ReadonlyArray<string>) => {
-      const sequence = ++loadSequence.current;
-      setLoadError(false);
-      if (cardIds.length === 0) {
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      try {
-        const loaded = new Map<string, BoardCardLookupDetail>();
-        for (const chunk of splitCardIds(cardIds, 20)) {
-          const result = await resolveCards({
-            environmentId,
-            input: { tokens: [], cardIds: chunk.map((cardId) => BoardCardId.make(cardId)) },
-          });
-          if (!AsyncResult.isSuccess(result)) throw result.cause;
-          for (const detail of result.value.details) loaded.set(String(detail.card.cardId), detail);
-        }
-        if (sequence === loadSequence.current) setDetails(loaded);
-      } catch {
-        if (sequence === loadSequence.current) {
-          setDetails(new Map());
-          setLoadError(true);
-        }
-      } finally {
-        if (sequence === loadSequence.current) setLoading(false);
-      }
-    },
-    [environmentId, resolveCards],
-  );
-
-  useEffect(() => {
-    void loadDetails(pins);
-    return () => {
-      loadSequence.current += 1;
-    };
-  }, [loadDetails, pins]);
-
-  const refresh = useCallback(() => loadDetails(pins), [loadDetails, pins]);
 
   const refreshHistory = useCallback(async () => {
     const sequence = ++historyLoadSequence.current;
@@ -264,8 +183,8 @@ export function BoardChatSidePanel(props: {
   }, [loadHistory, threadId]);
 
   const loadMoreHistory = useCallback(async () => {
-    const { nextCursor, loading } = historyStateRef.current;
-    if (nextCursor === null || loading || historyLoadingMore.current) return;
+    const { nextCursor, loading: historyLoading } = currentHistoryState;
+    if (nextCursor === null || historyLoading || historyLoadingMore.current) return;
     const sequence = historyLoadSequence.current;
     historyLoadingMore.current = true;
     setHistoryState((current) => ({ ...current, loadingMore: true, loadMoreError: false }));
@@ -286,20 +205,18 @@ export function BoardChatSidePanel(props: {
     } finally {
       if (sequence === historyLoadSequence.current) historyLoadingMore.current = false;
     }
-  }, [loadHistory, threadId]);
+  }, [currentHistoryState, loadHistory, threadId]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads the first summary-history page on mount; paging is imperative, not an atom
   useEffect(() => {
+    // oxlint-disable-next-line react/set-state-in-effect -- the keyed remount reloads the first page once per thread
     void refreshHistory();
     return () => {
       historyLoadSequence.current += 1;
     };
   }, [refreshHistory]);
 
-  // The history list can be shorter than its scroll window (short entries on a
-  // tall screen): with nothing to scroll, onScroll never fires and the next
-  // pages stay unreachable. A sentinel at the bottom of the list drives the
-  // next page instead and fires right after mount when the first page is
-  // short, which is exactly the missing load.
+  // A sentinel at the bottom of the history list drives the next page: a short list never scrolls, so onScroll cannot.
   const canLoadMoreHistory =
     currentHistoryState.nextCursor !== null &&
     !currentHistoryState.loading &&
@@ -309,6 +226,7 @@ export function BoardChatSidePanel(props: {
   // remounts as pages land: an effect reading a ref could keep observing a
   // detached node and would never fire again.
   const [historySentinel, setHistorySentinel] = useState<HTMLDivElement | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- observes the history sentinel DOM node while it is mounted
   useEffect(() => {
     if (historySentinel === null || !canLoadMoreHistory) return;
     const observer = new IntersectionObserver(
@@ -320,15 +238,7 @@ export function BoardChatSidePanel(props: {
     );
     observer.observe(historySentinel);
     return () => observer.disconnect();
-  }, [
-    canLoadMoreHistory,
-    historySentinel,
-    loadMoreHistory,
-    // Re-arm the observer after every loaded page: the sentinel moves down
-    // with the grown list, so the previous subscription would stop firing.
-    currentHistoryState.entries.length,
-    currentHistoryState.nextCursor,
-  ]);
+  }, [canLoadMoreHistory, historySentinel, loadMoreHistory]);
 
   const openThread = useCallback(
     (targetThreadId: ThreadId) => {
@@ -443,6 +353,7 @@ export function BoardChatSidePanel(props: {
             return (
               <PinnedCard
                 key={cardId}
+                environmentId={environmentId}
                 cardId={cardId}
                 detail={detail}
                 loading={loading}
@@ -728,6 +639,7 @@ function ChatSidePanelShell(props: {
 }
 
 function PinnedCard(props: {
+  readonly environmentId: EnvironmentId;
   readonly cardId: string;
   readonly detail: BoardCardLookupDetail | undefined;
   readonly loading: boolean;
@@ -852,6 +764,12 @@ function PinnedCard(props: {
                     Чат исполнителя
                   </Button>
                 ) : null}
+                <BoardCardPlanButton
+                  environmentId={props.environmentId}
+                  cardId={card.cardId}
+                  size="sm"
+                />
+
                 {isCardStartable(card) ? (
                   <Button
                     type="button"

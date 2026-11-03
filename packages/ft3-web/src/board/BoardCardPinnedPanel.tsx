@@ -1,5 +1,11 @@
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
-import { BoardCardId, type BoardCard, type BoardDelegation } from "@t3tools/ft3-board/contracts";
+import {
+  BoardCardId,
+  type BoardCard,
+  type BoardCardResolveResult,
+  type BoardDelegation,
+} from "@t3tools/ft3-board/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
 import { Button } from "~/components/ui/button";
@@ -16,6 +22,38 @@ import {
   subscribeBoardCardPins,
 } from "./boardCardPins.ts";
 import { boardEnvironment } from "./state.ts";
+
+export const pinnedCardsQuery = Atom.family((key: string) => {
+  const { environmentId, cardIds } = JSON.parse(key) as {
+    environmentId: EnvironmentId;
+    cardIds: BoardCardId[];
+  };
+  const queries = Array.from({ length: Math.ceil(cardIds.length / 20) }, (_, index) =>
+    boardEnvironment.resolve({
+      environmentId,
+      input: {
+        tokens: [],
+        cardIds: cardIds.slice(index * 20, (index + 1) * 20),
+      },
+    }),
+  );
+  return Atom.make((get) => {
+    const results = queries.map((query) => get(query));
+    const failure = results.find(AsyncResult.isFailure);
+    if (failure) return failure;
+    if (results.some((result) => !AsyncResult.isSuccess(result)))
+      return AsyncResult.initial<BoardCardResolveResult>(true);
+    return AsyncResult.success<BoardCardResolveResult>(
+      {
+        matches: [],
+        details: results.flatMap((result) =>
+          AsyncResult.isSuccess(result) ? result.value.details : [],
+        ),
+      },
+      { waiting: results.some((result) => result.waiting) },
+    );
+  });
+});
 
 export function useBoardCardPins(ref: ScopedThreadRef): readonly string[] {
   const key = boardCardPinsKey(ref.environmentId, ref.threadId);

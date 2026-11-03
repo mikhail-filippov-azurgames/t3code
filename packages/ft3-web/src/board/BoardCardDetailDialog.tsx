@@ -27,7 +27,7 @@ import {
 } from "./board.logic";
 
 export interface BoardCardDetailDialogProps {
-  readonly environmentId?: EnvironmentId;
+  readonly environmentId?: EnvironmentId | undefined;
   readonly card: BoardCard;
   readonly events: ReadonlyArray<BoardCardEvent>;
   readonly executorTitle: string | null;

@@ -1,13 +1,8 @@
 import { RegistryContext } from "@effect/atom-react";
 import type { SettledAsyncResult } from "@t3tools/client-runtime/state/runtime";
-import type {
-  BoardCard,
-  BoardCardEvent,
-  BoardCardId,
-  BoardCardResolveResult,
-} from "@t3tools/ft3-board/contracts";
+import type { BoardCard, BoardCardEvent, BoardCardId } from "@t3tools/ft3-board/contracts";
 import { ThreadId } from "@t3tools/contracts";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import {
   Archive,
   CircleAlertIcon,
@@ -35,7 +30,11 @@ import type { Ft3PanelProps } from "../panels.tsx";
 import { boardEnvironment } from "./state.ts";
 import { BoardCardDialog } from "./BoardCardDialog.tsx";
 import { BoardCardDetailDialog } from "./BoardCardDetailDialog.tsx";
-import { BoardCardPinnedPanel, useBoardCardPins } from "./BoardCardPinnedPanel.tsx";
+import {
+  BoardCardPinnedPanel,
+  pinnedCardsQuery,
+  useBoardCardPins,
+} from "./BoardCardPinnedPanel.tsx";
 import { BoardCardPlanButton } from "./BoardCardPlanButton.tsx";
 import { addBoardCardPin } from "./boardCardPins.ts";
 import { BoardRoleIcon } from "./boardRoleIcons.tsx";
@@ -54,38 +53,6 @@ import {
   shouldShowBoardReadiness,
   type BoardFilters,
 } from "./board.logic.ts";
-
-const pinnedCardsQuery = Atom.family((key: string) => {
-  const { environmentId, cardIds } = JSON.parse(key) as {
-    environmentId: Ft3PanelProps["threadRef"]["environmentId"];
-    cardIds: BoardCardId[];
-  };
-  const queries = Array.from({ length: Math.ceil(cardIds.length / 20) }, (_, index) =>
-    boardEnvironment.resolve({
-      environmentId,
-      input: {
-        tokens: [],
-        cardIds: cardIds.slice(index * 20, (index + 1) * 20),
-      },
-    }),
-  );
-  return Atom.make((get) => {
-    const results = queries.map((query) => get(query));
-    const failure = results.find(AsyncResult.isFailure);
-    if (failure) return failure;
-    if (results.some((result) => !AsyncResult.isSuccess(result)))
-      return AsyncResult.initial<BoardCardResolveResult>(true);
-    return AsyncResult.success<BoardCardResolveResult>(
-      {
-        matches: [],
-        details: results.flatMap((result) =>
-          AsyncResult.isSuccess(result) ? result.value.details : [],
-        ),
-      },
-      { waiting: results.some((result) => result.waiting) },
-    );
-  });
-});
 
 export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
   const navigate = useNavigate();

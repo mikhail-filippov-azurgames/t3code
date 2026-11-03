@@ -35,6 +35,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { toastManager } from "~/components/ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { WorkspacePageContainer } from "~/components/WorkspacePageContainer";
 import { WorkspacePageHeader } from "~/components/WorkspacePageHeader";
 import { AddOrchestratorDialog } from "./AddOrchestratorDialog";
@@ -148,12 +149,9 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
   );
 
   const grouped = useMemo(() => groupBoardCardsByStatus(visibleCards), [visibleCards]);
-  // Headlines count the same visible array the columns render, so each
-  // headline equals its column list length. The archive is broken out
-  // separately (matching every filter except the archive toggle itself), so
-  // headline + badge reconstruct the show-archived totals with no double
-  // counting and the headline stays consistent with `board_list_cards`,
-  // which excludes archived cards by default.
+  // Headlines count the visible cards, so each equals its column length. The
+  // archive is counted separately, so headline + badge add up to the
+  // show-archived total without double counting.
   const statusCounts = useMemo(() => countBoardCardsByStatus(visibleCards), [visibleCards]);
   const archiveMatchable = useMemo(
     () => filterBoardCards(scopedCards, { ...filters, showArchived: true }),
@@ -501,13 +499,17 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
                         {activeCount === 1 ? "1 task" : `${activeCount} tasks`}
                       </span>
                       {archivedCount > 0 ? (
-                        <span
-                          className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground tabular-nums"
-                          title={`${archivedCount} archived`}
-                        >
-                          <ArchiveIcon className="size-3" aria-hidden="true" />
-                          {archivedCount}
-                        </span>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <span className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground tabular-nums" />
+                            }
+                          >
+                            <ArchiveIcon className="size-3" aria-hidden="true" />
+                            {archivedCount}
+                          </TooltipTrigger>
+                          <TooltipPopup side="top">{`${archivedCount} archived`}</TooltipPopup>
+                        </Tooltip>
                       ) : null}
                     </button>
                   );
@@ -562,6 +564,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
 
       {selectedCard !== null ? (
         <BoardCardDetailDialog
+          environmentId={environmentId ?? undefined}
           card={selectedCard}
           events={events}
           executorTitle={
@@ -604,13 +607,17 @@ function BoardColumn({
         <span className="inline-flex items-center gap-1.5 tabular-nums">
           <span>{count}</span>
           {archivedCount > 0 ? (
-            <span
-              className="inline-flex items-center gap-0.5 text-muted-foreground/70"
-              title={`${archivedCount} archived`}
-            >
-              <ArchiveIcon className="size-3" aria-hidden="true" />
-              {archivedCount}
-            </span>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <span className="inline-flex items-center gap-0.5 text-muted-foreground/70" />
+                }
+              >
+                <ArchiveIcon className="size-3" aria-hidden="true" />
+                {archivedCount}
+              </TooltipTrigger>
+              <TooltipPopup side="top">{`${archivedCount} archived`}</TooltipPopup>
+            </Tooltip>
           ) : null}
         </span>
       </h2>
