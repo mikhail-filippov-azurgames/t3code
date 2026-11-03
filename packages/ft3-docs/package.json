@@ -14,6 +14,10 @@
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"
+    },
+    "./migrate-store": {
+      "types": "./src/migrateStore.ts",
+      "import": "./src/migrateStore.ts"
     }
   },
   "scripts": {
