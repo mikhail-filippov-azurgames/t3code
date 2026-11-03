@@ -5,6 +5,7 @@ import { startupRoleConfiguration } from "@t3tools/ft3-delegation/server";
 import { setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
 import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
+import { roleResolverLayer } from "@t3tools/ft3-policies/server";
 
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
@@ -56,11 +57,77 @@ const layerDocuments = Layer.unwrap(
   Layer.provide(FeatureGate.layer),
 );
 
+/**
+ * Applied policies for the whole server: one tracker that the Policies RPC,
+ * delegation and the board all read, refreshed once here so a live server that
+ * only sets `T3CODE_FT3_ROLES_DIR` still serves the same applied roles.
+ */
+const layerAppliedPolicies = Layer.unwrap(
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const current = yield* settings.getSettings.pipe(Effect.orDie);
+    const [docs, policies] = yield* Effect.all([
+      Effect.promise(() => import("@t3tools/ft3-docs/server")),
+      Effect.promise(() => import("@t3tools/ft3-policies/rpc")),
+    ]);
+    const root = resolveDocsRoot({
+      stateDir: config.stateDir,
+      configuredRoot: readDocsSettings(current.ft3).root,
+    });
+    // A store that cannot be opened leaves roles off instead of stopping the server:
+    // the tracker still serves, and every document read reports the store unavailable.
+    const storeOff = Effect.fn("DocsService.storeUnavailable")(() =>
+      Effect.fail(new docs.DocsServiceError({ code: "store_unavailable" })),
+    );
+    const unavailableDocs = docs.DocsService.of({
+      list: storeOff,
+      manifest: storeOff,
+      read: storeOff,
+      resolve: storeOff,
+      search: storeOff,
+      write: storeOff,
+      writeAsHuman: storeOff,
+      locateServerPath: Effect.fn("DocsService.storeUnavailable.locate")(() =>
+        Effect.succeed(null),
+      ),
+      setDescription: storeOff,
+      docRef: storeOff,
+    });
+    const docsService = docs
+      .docsRpcServiceLayer({ root })
+      .pipe(
+        Layer.catchCause((cause) =>
+          Layer.effect(
+            docs.DocsService,
+            Effect.logWarning(`The policy document store did not open: ${cause}`).pipe(
+              Effect.as(unavailableDocs),
+            ),
+          ),
+        ),
+      );
+    return Layer.mergeAll(
+      policies.policiesRpcServiceLayer.pipe(Layer.provideMerge(docsService)),
+      roleResolverLayer,
+    ).pipe(
+      Layer.tap((context) =>
+        policies.refreshAppliedPolicies.pipe(
+          Effect.provide(context),
+          Effect.catchCause((cause) =>
+            Effect.logWarning(`Applied policies were not refreshed at startup: ${cause}`),
+          ),
+        ),
+      ),
+    );
+  }),
+);
+
 // Startup seam: an unusable roles directory fails here, and roles disable native subagents.
 export const layer = Layer.mergeAll(
   BoardRepository.layer,
   layerStartup,
   layerDocuments,
+  layerAppliedPolicies,
   FeatureGate.layer,
 );
 
