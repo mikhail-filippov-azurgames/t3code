@@ -107,6 +107,7 @@ const stubs = {
   [FT3_WS_METHODS.piBonsaiPresetDetect]: () => Effect.succeed(null),
   [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
   [FT3_WS_METHODS.docsResolve]: () => Effect.succeed({ status: "not_found" as const }),
+  [FT3_WS_METHODS.policiesGetSnapshot]: () => Effect.succeed({ configVersion: 1, documents: [] }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -202,6 +203,10 @@ describe("FT3 RPC authorization", () => {
           profile: piProfile,
         }),
       ).toEqual(piProfile);
+      expect(yield* client[FT3_WS_METHODS.policiesGetSnapshot]({})).toEqual({
+        configVersion: 1,
+        documents: [],
+      });
     }).pipe(Effect.scoped),
   );
 
@@ -314,6 +319,9 @@ describe("FT3 RPC authorization", () => {
           profile: piProfile,
         }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
+      expect(yield* client[FT3_WS_METHODS.policiesGetSnapshot]({}).pipe(Effect.flip)).toMatchObject(
+        { _tag: "EnvironmentAuthorizationError", requiredPermission: read },
+      );
     }).pipe(Effect.scoped),
   );
 });

@@ -39,6 +39,13 @@ import {
   piRpcServiceLayer,
   piRpcs,
 } from "@t3tools/ft3-pi/rpc";
+import {
+  FT3_POLICIES_WS_METHODS,
+  policiesRpcHandlers,
+  policiesRpcScopes,
+  policiesRpcServiceLayer,
+  policiesRpcs,
+} from "@t3tools/ft3-policies/rpc";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as RpcGroup from "effect/rpc/RpcGroup";
@@ -49,6 +56,7 @@ export { BoardService } from "@t3tools/ft3-board/service";
 export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
 export { BoardSummaryHistoryService } from "@t3tools/ft3-board/rpc";
 export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
+export { PolicyChangeTracker } from "@t3tools/ft3-policies/rpc";
 
 export const FT3_WS_METHODS = {
   ...FT3_BOARD_WS_METHODS,
@@ -56,6 +64,7 @@ export const FT3_WS_METHODS = {
   ...FT3_PI_WS_METHODS,
   ...FT3_VCS_WS_METHODS,
   ...FT3_DOCS_WS_METHODS,
+  ...FT3_POLICIES_WS_METHODS,
 } as const;
 
 const ft3RpcScopes = {
@@ -64,6 +73,7 @@ const ft3RpcScopes = {
   ...piRpcScopes,
   ...ft3VcsRpcScopes,
   ...docsRpcScopes,
+  ...policiesRpcScopes,
 } as const;
 
 export class Ft3RpcScopeAuthorization extends RpcMiddleware.Service<Ft3RpcScopeAuthorization>()(
@@ -98,6 +108,7 @@ export const group = RpcGroup.make(
   ...piRpcs,
   ...ft3VcsRpcs,
   ...docsRpcs,
+  ...policiesRpcs,
 ).middleware(Ft3RpcScopeAuthorization);
 
 export const handlers = {
@@ -106,16 +117,20 @@ export const handlers = {
   ...piRpcHandlers,
   ...ft3VcsRpcHandlers,
   ...docsRpcHandlers,
+  ...policiesRpcHandlers,
 };
+
+const docsServiceLayer = Layer.unwrap(
+  Effect.map(ServerConfig.ServerConfig, (config) =>
+    docsRpcServiceLayer({ stateDir: config.stateDir }),
+  ),
+);
 
 export const serviceLayer = Layer.mergeAll(
   boardRpcServiceLayer,
   architectRpcServiceLayer,
   piRpcServiceLayer,
   ft3VcsRpcServiceLayer,
-  Layer.unwrap(
-    Effect.map(ServerConfig.ServerConfig, (config) =>
-      docsRpcServiceLayer({ stateDir: config.stateDir }),
-    ),
-  ),
+  docsServiceLayer,
+  policiesRpcServiceLayer.pipe(Layer.provide(docsServiceLayer)),
 );

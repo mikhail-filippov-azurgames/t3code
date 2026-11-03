@@ -3,6 +3,20 @@
  * are read, by shape, so headings, prose and other tables never matter and a
  * human keeps editing the document he already has.
  */
+import {
+  acceleratedCandidateIssue,
+  aliasDuplicateIssue,
+  aliasTableProviderMissingIssue,
+  candidateAliasUnknownIssue,
+  documentUnconfiguredIssue,
+  frontmatterInvalidIssue,
+  routingRoleMissingIssue,
+  routingTableDuplicateIssue,
+  routingTableMissingIssue,
+  roleMappingConflictIssue,
+  tableRowInvalidIssue,
+  type PolicyIssue,
+} from "./diagnostics.ts";
 
 export const ROUTING_LEVELS = ["low", "medium", "high", "very-high"] as const;
 export type RoutingLevel = (typeof ROUTING_LEVELS)[number];
@@ -59,29 +73,6 @@ export interface RoutingPolicy {
   readonly aliases: readonly RoutingAliasTarget[];
 }
 
-export const ROUTING_POLICY_ISSUE_CODES = [
-  "frontmatter_invalid",
-  "table_row_invalid",
-  "candidate_alias_unknown",
-  "routing_table_missing",
-  "routing_table_duplicate",
-  "alias_table_provider_missing",
-  "alias_duplicate",
-  "role_mapping_conflict",
-  "role_missing",
-  "document_unconfigured",
-  "accelerated_candidate",
-] as const;
-export type RoutingPolicyIssueCode = (typeof ROUTING_POLICY_ISSUE_CODES)[number];
-
-export interface RoutingPolicyIssue {
-  readonly code: RoutingPolicyIssueCode;
-  readonly severity: "error" | "warning";
-  /** 1-based line of the source document, or null when the defect has no line. */
-  readonly line: number | null;
-  readonly message: string;
-}
-
 export interface RoutingPolicyParseOptions {
   /** Role rows the calling feature needs in addition to `REQUIRED_ROUTING_ROLES`. */
   readonly requiredRoles?: readonly RoutingRoleId[];
@@ -90,7 +81,9 @@ export interface RoutingPolicyParseOptions {
 export interface RoutingPolicyParseResult {
   /** Null when any error was recorded; warnings alone keep the policy. */
   readonly policy: RoutingPolicy | null;
-  readonly issues: readonly RoutingPolicyIssue[];
+  /** Frontmatter revision even when an error left `policy` null. */
+  readonly revision: number | null;
+  readonly issues: readonly PolicyIssue[];
 }
 
 const ROUTING_POLICY_KEY = "routingPolicy";
@@ -144,107 +137,6 @@ interface FrontmatterReading {
   readonly actual: string;
   readonly bodyStart: number;
 }
-
-const policyIssue = (
-  code: RoutingPolicyIssueCode,
-  severity: "error" | "warning",
-  line: number | null,
-  message: string,
-): RoutingPolicyIssue => ({ code, severity, line, message });
-
-const rowIssue = (line: number, text: string, reason: string): RoutingPolicyIssue =>
-  policyIssue(
-    "table_row_invalid",
-    "error",
-    line,
-    `Routing policy line ${line}: cannot parse "${text}": ${reason}.`,
-  );
-
-const candidateAliasUnknownIssue = (line: number, alias: string): RoutingPolicyIssue =>
-  policyIssue(
-    "candidate_alias_unknown",
-    "error",
-    line,
-    `Routing policy line ${line}: candidate alias "${alias}" is not declared in any alias table.`,
-  );
-
-const routingTableMissingIssue = (): RoutingPolicyIssue =>
-  policyIssue(
-    "routing_table_missing",
-    "error",
-    null,
-    "Routing policy has no role × level table (columns low, medium, high, very-high).",
-  );
-
-const routingTableDuplicateIssue = (line: number): RoutingPolicyIssue =>
-  policyIssue(
-    "routing_table_duplicate",
-    "error",
-    line,
-    `Routing policy line ${line}: a second role × level table was found; keep exactly one.`,
-  );
-
-const aliasTableProviderMissingIssue = (line: number): RoutingPolicyIssue =>
-  policyIssue(
-    "alias_table_provider_missing",
-    "error",
-    line,
-    `Routing policy line ${line}: alias table has no preceding heading ending in (\`<providerInstanceId> / <driverKind>\`).`,
-  );
-
-const aliasDuplicateIssue = (line: number, alias: string, firstLine: number): RoutingPolicyIssue =>
-  policyIssue(
-    "alias_duplicate",
-    "error",
-    line,
-    `Routing policy line ${line}: alias "${alias}" is already declared at line ${firstLine}.`,
-  );
-
-const roleMappingConflictIssue = (
-  entry: number,
-  line: number,
-  role: RoutingRoleId,
-): RoutingPolicyIssue =>
-  policyIssue(
-    "role_mapping_conflict",
-    "error",
-    line,
-    `Roles.json entry ${entry}: "${role}" is already assigned; role mappings must be unique.`,
-  );
-
-const roleMissingIssue = (role: RoutingRoleId): RoutingPolicyIssue => {
-  const feature = role === "planner" ? "planning" : "mail";
-  return policyIssue(
-    "role_missing",
-    "error",
-    null,
-    `Role "${role}" is required by ${feature}. Add its roles.json entry and Markdown file.`,
-  );
-};
-
-const documentUnconfiguredIssue = (): RoutingPolicyIssue =>
-  policyIssue(
-    "document_unconfigured",
-    "error",
-    null,
-    `Document "${ROUTING_POLICY_KEY}" is a template. Fill it in (roles and skills: set "configured: true").`,
-  );
-
-const frontmatterInvalidIssue = (line: number, actual: string): RoutingPolicyIssue =>
-  policyIssue(
-    "frontmatter_invalid",
-    "error",
-    line,
-    `Document "${ROUTING_POLICY_KEY}" line ${line}: expected revision >= 1, got "${actual}".`,
-  );
-
-const acceleratedCandidateIssue = (line: number, alias: string): RoutingPolicyIssue =>
-  policyIssue(
-    "accelerated_candidate",
-    "warning",
-    line,
-    `Candidate "${alias}" requests an accelerated service tier and will always be skipped.`,
-  );
 
 const isLevel = (value: string): value is RoutingLevel => LEVELS.has(value);
 
@@ -409,11 +301,19 @@ export const parseRoutingPolicy = (
   content: string,
   options: RoutingPolicyParseOptions = {},
 ): RoutingPolicyParseResult => {
-  const issues: RoutingPolicyIssue[] = [];
+  const issues: PolicyIssue[] = [];
   const lines = content.split(/\r?\n/u);
   const frontmatter = readFrontmatter(lines);
   if (frontmatter.revision === null) {
-    issues.push(frontmatterInvalidIssue(frontmatter.line, frontmatter.actual));
+    issues.push(
+      frontmatterInvalidIssue(
+        ROUTING_POLICY_KEY,
+        frontmatter.line,
+        lines[frontmatter.line - 1] ?? "",
+        "revision >= 1",
+        frontmatter.actual,
+      ),
+    );
   }
 
   let cellsTable: { readonly headerLine: number; readonly rows: readonly TableRow[] } | null = null;
@@ -458,7 +358,7 @@ export const parseRoutingPolicy = (
     for (const row of table.rows) {
       if (row.cells.length !== ALIAS_TABLE_COLUMNS) {
         issues.push(
-          rowIssue(
+          tableRowInvalidIssue(
             row.line,
             row.text,
             `expected ${ALIAS_TABLE_COLUMNS} columns, got ${row.cells.length}`,
@@ -468,7 +368,7 @@ export const parseRoutingPolicy = (
       }
       const alias = stripCell(row.cells[0] ?? "");
       if (!ALIAS_PATTERN.test(alias)) {
-        issues.push(rowIssue(row.line, alias, `"${alias}" is not an alias`));
+        issues.push(tableRowInvalidIssue(row.line, alias, `"${alias}" is not an alias`));
         continue;
       }
       const firstLine = aliasLines.get(alias);
@@ -482,7 +382,9 @@ export const parseRoutingPolicy = (
       const modelCell = row.cells[1] ?? "";
       const model = MODEL_PATTERN.exec(modelCell.trim())?.[1]?.trim() ?? "";
       if (model === "") {
-        issues.push(rowIssue(row.line, modelCell, "expected the model id in backticks"));
+        issues.push(
+          tableRowInvalidIssue(row.line, modelCell, "expected the model id in backticks"),
+        );
         continue;
       }
 
@@ -492,7 +394,7 @@ export const parseRoutingPolicy = (
         const cell = row.cells[levelIndex + 2] ?? "";
         const parsed = parseOptionsCell(cell);
         if (!parsed.ok) {
-          issues.push(rowIssue(row.line, cell, parsed.reason));
+          issues.push(tableRowInvalidIssue(row.line, cell, parsed.reason));
           optionsValid = false;
           break;
         }
@@ -524,7 +426,7 @@ export const parseRoutingPolicy = (
     for (const [rowIndex, row] of cellsTable.rows.entries()) {
       if (row.cells.length !== CELL_TABLE_COLUMNS) {
         issues.push(
-          rowIssue(
+          tableRowInvalidIssue(
             row.line,
             row.text,
             `expected ${CELL_TABLE_COLUMNS} columns, got ${row.cells.length}`,
@@ -534,7 +436,7 @@ export const parseRoutingPolicy = (
       }
       const parsedRoles = parseRoleCell(row.cells[0] ?? "");
       if (!parsedRoles.ok) {
-        issues.push(rowIssue(row.line, row.cells[0] ?? "", parsedRoles.reason));
+        issues.push(tableRowInvalidIssue(row.line, row.cells[0] ?? "", parsedRoles.reason));
         continue;
       }
 
@@ -544,7 +446,7 @@ export const parseRoutingPolicy = (
         const cell = row.cells[levelIndex + 1] ?? "";
         const parsed = parseCandidateCell(cell);
         if (!parsed.ok) {
-          issues.push(rowIssue(row.line, cell, parsed.reason));
+          issues.push(tableRowInvalidIssue(row.line, cell, parsed.reason));
           cellsValid = false;
           break;
         }
@@ -555,7 +457,9 @@ export const parseRoutingPolicy = (
       let conflict = false;
       for (const role of parsedRoles.value) {
         if (roleLines.has(role)) {
-          issues.push(roleMappingConflictIssue(rowIndex + 1, row.line, role));
+          issues.push(
+            roleMappingConflictIssue(rowIndex + 1, role, { line: row.line, text: row.text }),
+          );
           conflict = true;
         }
       }
@@ -580,10 +484,13 @@ export const parseRoutingPolicy = (
       ...(options.requiredRoles ?? []),
     ]);
     for (const role of ROUTING_ROLES) {
-      if (requiredRoles.has(role) && roles[role] === undefined) issues.push(roleMissingIssue(role));
+      if (!requiredRoles.has(role) || roles[role] !== undefined) continue;
+      issues.push(routingRoleMissingIssue(role, role === "planner" ? "planning" : "mail"));
     }
 
-    if (candidateCount === 0) issues.push(documentUnconfiguredIssue());
+    if (candidateCount === 0) {
+      issues.push(documentUnconfiguredIssue(ROUTING_POLICY_KEY, {}, "error"));
+    }
   }
 
   issues.sort((left, right) => lineRank(left.line) - lineRank(right.line));
@@ -591,8 +498,9 @@ export const parseRoutingPolicy = (
   const failed = issues.some((issue) => issue.severity === "error");
   return {
     policy: failed || revision === null ? null : { revision, roles, aliases },
+    revision,
     issues,
   };
 };
 
-const lineRank = (line: number | null): number => line ?? Number.MAX_SAFE_INTEGER;
+const lineRank = (line: number | undefined): number => line ?? Number.MAX_SAFE_INTEGER;
