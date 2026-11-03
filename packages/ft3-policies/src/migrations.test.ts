@@ -18,6 +18,7 @@ const testLayer = sqlPolicyUsageRecorderLayer.pipe(
 it.effect("10_PolicyUsage creates the delegation table and reruns empty", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE ft3_board_cards (card_id TEXT PRIMARY KEY)`;
 
     assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), [[10, "PolicyUsage"]]);
     assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), []);
@@ -43,6 +44,50 @@ it.effect("10_PolicyUsage creates the delegation table and reruns empty", () =>
         "recorded_at",
       ],
     );
+
+    const cardColumns = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info('ft3_board_cards') ORDER BY cid
+    `;
+    assert.deepStrictEqual(
+      cardColumns.map((column) => column.name),
+      ["card_id", "policy_snapshot_json"],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("10_PolicyUsage skips the board-card column when the board table is absent", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+
+    assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), [[10, "PolicyUsage"]]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'ft3_board_cards'`,
+      [],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("10_PolicyUsage keeps a board-card table that already has the snapshot column", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE ft3_board_cards (
+      card_id TEXT PRIMARY KEY,
+      policy_snapshot_json TEXT
+    )`;
+    yield* sql`INSERT INTO ft3_board_cards VALUES ('card:one', '{"revision":1}')`;
+
+    assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), [[10, "PolicyUsage"]]);
+
+    const cardColumns = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info('ft3_board_cards') ORDER BY cid
+    `;
+    assert.deepStrictEqual(
+      cardColumns.map((column) => column.name),
+      ["card_id", "policy_snapshot_json"],
+    );
+    assert.deepStrictEqual(yield* sql`SELECT * FROM ft3_board_cards`, [
+      { card_id: "card:one", policy_snapshot_json: '{"revision":1}' },
+    ]);
   }).pipe(Effect.provide(testLayer)),
 );
 

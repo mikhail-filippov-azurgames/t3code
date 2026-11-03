@@ -2,9 +2,9 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 /**
- * Mail state in `statev2.sqlite` (design §10.2). Tasks own members, letters and
- * deliveries; a finished task is purged explicitly because SQLite foreign-key
- * cascades are not guaranteed on every connection.
+ * Mail state in `statev2.sqlite` (design §10.2). Tasks own members, rounds,
+ * letters, deliveries and wakes; a finished task is purged explicitly because
+ * SQLite foreign-key cascades are not guaranteed on every connection.
  */
 
 export const FT3_MAIL_TASKS_DDL = `
@@ -76,6 +76,43 @@ export const FT3_MAIL_LETTERS_DDL = `
   )
 `;
 
+export const FT3_MAIL_ROUNDS_DDL = `
+  CREATE TABLE IF NOT EXISTS ft3_mail_rounds (
+    round_id TEXT NOT NULL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES ft3_mail_tasks(task_id) ON DELETE CASCADE,
+    round_number INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    opened_at TEXT NOT NULL,
+    closed_at TEXT,
+    outcome TEXT,
+    UNIQUE (task_id, round_number)
+  )
+`;
+
+export const FT3_MAIL_WAKES_DDL = `
+  CREATE TABLE IF NOT EXISTS ft3_mail_wakes (
+    wake_id TEXT NOT NULL PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES ft3_mail_tasks(task_id) ON DELETE CASCADE,
+    target_thread_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+  )
+`;
+
+export const FT3_MAIL_KIND_FEEDBACK_DDL = `
+  CREATE TABLE IF NOT EXISTS ft3_mail_kind_feedback (
+    letter_id TEXT NOT NULL PRIMARY KEY REFERENCES ft3_mail_letters(letter_id) ON DELETE CASCADE,
+    sender_kind TEXT NOT NULL,
+    classifier_kind TEXT,
+    confidence REAL,
+    lead_kind TEXT,
+    classifier_version TEXT,
+    created_at TEXT NOT NULL
+  )
+`;
+
 export const FT3_MAIL_DELIVERIES_DDL = `
   CREATE TABLE IF NOT EXISTS ft3_mail_deliveries (
     delivery_id TEXT NOT NULL PRIMARY KEY,
@@ -99,10 +136,15 @@ const mail = Effect.gen(function* () {
   yield* sql`${sql.literal(FT3_MAIL_TASKS_DDL)}`;
   yield* sql`${sql.literal(FT3_MAIL_MEMBERS_DDL)}`;
   yield* sql`${sql.literal(FT3_MAIL_LETTERS_DDL)}`;
+  yield* sql`${sql.literal(FT3_MAIL_ROUNDS_DDL)}`;
+  yield* sql`${sql.literal(FT3_MAIL_WAKES_DDL)}`;
+  yield* sql`${sql.literal(FT3_MAIL_KIND_FEEDBACK_DDL)}`;
   yield* sql`${sql.literal(FT3_MAIL_DELIVERIES_DDL)}`;
   yield* sql`CREATE INDEX idx_ft3_mail_tasks_retention ON ft3_mail_tasks(status, closed_at)`;
   yield* sql`CREATE INDEX idx_ft3_mail_members_task ON ft3_mail_members(task_id)`;
   yield* sql`CREATE INDEX idx_ft3_mail_letters_task ON ft3_mail_letters(task_id, sequence)`;
+  yield* sql`CREATE INDEX idx_ft3_mail_rounds_task ON ft3_mail_rounds(task_id, round_number)`;
+  yield* sql`CREATE INDEX idx_ft3_mail_wakes_task ON ft3_mail_wakes(task_id)`;
   yield* sql`CREATE INDEX idx_ft3_mail_deliveries_task ON ft3_mail_deliveries(task_id)`;
 });
 

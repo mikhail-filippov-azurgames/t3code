@@ -27,6 +27,18 @@ const policyUsage = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`${sql.literal(FT3_POLICY_DELEGATIONS_DDL)}`;
   yield* sql`CREATE INDEX idx_ft3_policy_delegations_delegation ON ft3_policy_delegations(delegation_id)`;
+  // Additive: safe when the board has not migrated yet or the column already exists.
+  const boardCards = yield* sql<{ readonly name: string }>`
+    SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'ft3_board_cards'
+  `;
+  if (boardCards.length > 0) {
+    const snapshot = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info('ft3_board_cards') WHERE name = 'policy_snapshot_json'
+    `;
+    if (snapshot.length === 0) {
+      yield* sql`ALTER TABLE ft3_board_cards ADD COLUMN policy_snapshot_json TEXT`;
+    }
+  }
 });
 
 export const migrations = {

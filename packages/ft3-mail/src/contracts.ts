@@ -14,6 +14,12 @@ export type MailLetterId = typeof MailLetterId.Type;
 export const MailDeliveryId = TrimmedNonEmptyString;
 export type MailDeliveryId = typeof MailDeliveryId.Type;
 
+export const MailRoundId = TrimmedNonEmptyString;
+export type MailRoundId = typeof MailRoundId.Type;
+
+export const MailWakeId = TrimmedNonEmptyString;
+export type MailWakeId = typeof MailWakeId.Type;
+
 /** A thread or the literal `system` sender. */
 export const MailSenderId = TrimmedNonEmptyString;
 export type MailSenderId = typeof MailSenderId.Type;
@@ -24,6 +30,10 @@ export type MailLevel = typeof MailLevel.Type;
 
 export const MailIsolation = Schema.Literals(["none", "worktree"]);
 export type MailIsolation = typeof MailIsolation.Type;
+
+/** A discussion round opened inside a task: one review or discussion pass. */
+export const MailRoundKind = Schema.Literals(["review", "discussion"]);
+export type MailRoundKind = typeof MailRoundKind.Type;
 
 export const MailTaskStatus = Schema.Literals(["open", "closed"]);
 export type MailTaskStatus = typeof MailTaskStatus.Type;
@@ -129,6 +139,41 @@ export const MailDelivery = Schema.Struct({
   updatedAt: Schema.String,
 });
 export type MailDelivery = typeof MailDelivery.Type;
+
+export const MailRound = Schema.Struct({
+  roundId: MailRoundId,
+  taskId: MailTaskId,
+  roundNumber: Schema.Int.check(Schema.isGreaterThan(0)),
+  kind: MailRoundKind,
+  openedAt: Schema.String,
+  closedAt: Schema.NullOr(Schema.String),
+  outcome: Schema.NullOr(MailOutcome),
+});
+export type MailRound = typeof MailRound.Type;
+
+/** A thread wake recorded for delivery; `idempotencyKey` deduplicates a retry. */
+export const MailWake = Schema.Struct({
+  wakeId: MailWakeId,
+  taskId: MailTaskId,
+  targetThreadId: MailSenderId,
+  reason: TrimmedNonEmptyString,
+  idempotencyKey: Schema.String,
+  createdAt: Schema.String,
+  deliveredAt: Schema.NullOr(Schema.String),
+});
+export type MailWake = typeof MailWake.Type;
+
+/** How a letter was classified, kept beside the letter's own declared `kind`. */
+export const MailKindFeedback = Schema.Struct({
+  letterId: MailLetterId,
+  senderKind: MailLetterKind,
+  classifierKind: Schema.NullOr(MailLetterKind),
+  confidence: Schema.NullOr(Schema.Number),
+  leadKind: Schema.NullOr(MailLetterKind),
+  classifierVersion: Schema.NullOr(Schema.String),
+  createdAt: Schema.String,
+});
+export type MailKindFeedback = typeof MailKindFeedback.Type;
 
 /** A letter with the delivery state of every recipient the service recorded. */
 export const MailTimelineEntry = Schema.Struct({
