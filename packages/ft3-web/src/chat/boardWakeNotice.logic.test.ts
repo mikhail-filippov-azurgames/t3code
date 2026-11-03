@@ -27,6 +27,7 @@ describe("boardWakeNoticeKind", () => {
     expect(boardWakeNoticeKind("ft3:board:wake:12:thread-lead")).toBe("wake");
     expect(boardWakeNoticeKind("ft3:board:mark:thread-lead")).toBe("wake");
     expect(boardWakeNoticeKind("ft3:board:start:card-1")).toBe("wake");
+    expect(boardWakeNoticeKind("ft3:board:orphan:card-1:thread-1:2026-11-02")).toBe("wake");
     expect(boardWakeNoticeKind("ft3:board:brief:thread-lead:nonce")).toBe("brief");
     expect(boardWakeNoticeKind("board:idle-nudge:thread-lead:card-1:review:123")).toBe("nudge");
   });

@@ -19,6 +19,7 @@ const WAKE_MESSAGE_ID_PREFIXES = [
   "ft3:board:wake:",
   "ft3:board:mark:",
   "ft3:board:start:",
+  "ft3:board:orphan:",
 ] as const;
 const BRIEF_MESSAGE_ID_PREFIX = "ft3:board:brief:";
 const NUDGE_MESSAGE_ID_PREFIX = "board:idle-nudge:";
