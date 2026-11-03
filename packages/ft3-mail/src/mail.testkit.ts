@@ -109,12 +109,13 @@ export const routingFake = (options: {
 };
 
 /** The applied snapshot is fixed; each card write is recorded for the test to read. */
-export const policyEvidenceFake = () => {
+export const policyEvidenceFake = (knownCards: ReadonlyArray<string> = ["card:one"]) => {
   const cardSnapshots: Array<{ readonly cardId: string; readonly snapshotJson: string }> = [];
   const layer = Layer.succeed(
     MailPolicyEvidence,
     MailPolicyEvidence.of({
       snapshotJson: Effect.succeed('{"revision":3}'),
+      cardExists: (cardId) => Effect.succeed(knownCards.includes(cardId)),
       recordCardSnapshot: (input) =>
         Effect.sync(() => {
           cardSnapshots.push(input);

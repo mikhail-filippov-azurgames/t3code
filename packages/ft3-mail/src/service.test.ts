@@ -5,6 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import type { MailLetterKind, MailTask } from "./contracts.ts";
 import type { CreateMailTaskInput } from "./service.ts";
+import { MailRepository } from "./repository.ts";
 import { ALL_ROUTING_ROLES, mailHarness, migrateMail } from "./mail.testkit.ts";
 import {
   type MailMemberRequest,
@@ -181,6 +182,33 @@ it.effect("stores the policy snapshot on the card a task belongs to, once", () =
     assert.deepStrictEqual(harness.cardSnapshots, [
       { cardId: "card:one", snapshotJson: '{"revision":3}' },
     ]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("refuses a task for an unknown board card and creates nothing", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const repository = yield* MailRepository;
+    const input: CreateMailTaskInput = {
+      callerThreadId: LEAD,
+      clientRequestId: "request:missing-card",
+      title: "Card work",
+      brief: "Do it.",
+      level: "medium",
+      cardId: "card:missing",
+      members: [{ role: "implementation" }],
+    };
+    assert.equal(yield* refusal(mail.createTask(input)), "card_not_found");
+    assert.isNull(
+      yield* repository.getTaskByRequestKey({
+        createdByThreadId: LEAD,
+        clientRequestId: "request:missing-card",
+      }),
+    );
+    assert.equal(harness.selects.length, 0);
+    assert.deepStrictEqual(harness.cardSnapshots, []);
   }).pipe(Effect.provide(harness.layer));
 });
 
