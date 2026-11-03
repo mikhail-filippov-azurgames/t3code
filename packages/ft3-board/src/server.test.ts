@@ -19,6 +19,7 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import * as Contracts from "./contracts.ts";
 
@@ -62,7 +63,7 @@ const crypto = Layer.succeed(
   }),
 );
 
-function fixture() {
+function fixture(settings: Parameters<typeof ServerSettings.layerTest>[0] = {}) {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
     [parentId, otherId, childId, architectId].map((id) => [id, liveThreadShell(id)]),
   );
@@ -83,6 +84,7 @@ function fixture() {
     Layer.provide(threads),
     Layer.provide(providerRegistry),
     Layer.provide(crypto),
+    Layer.provide(ServerSettings.layerTest(settings)),
   );
   return { layer, shells };
 }
@@ -204,6 +206,25 @@ describe("ft3 board toolkit through ft3-host", () => {
         server.tools.filter(({ tool }) => tool.name.startsWith("board_")),
         advertised,
       );
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("refuses board tools while the board feature is off", () => {
+    const f = fixture({ ft3: { policies: { features: { board: false } } } });
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const refused = failure(yield* call("board_list_cards", {}));
+      assert.equal(refused.code, "feature_disabled");
+      assert.equal(refused.message, "board is off. Open Settings → Policies.");
+      const refusedCreate = failure(
+        yield* call("board_create_card", {
+          title: "Task",
+          body: "Body",
+          executorRole: "general",
+        }),
+      );
+      assert.equal(refusedCreate.code, "feature_disabled");
     }).pipe(Effect.provide(f.layer));
   });
 
