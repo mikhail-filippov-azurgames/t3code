@@ -1,10 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off - tests use a temporary roles directory.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -57,24 +55,21 @@ describe("ft3 host startup", () => {
     }),
   );
 
-  it.effect("starts with a configured roles directory", () =>
-    Effect.gen(function* () {
-      const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ft3-host-roles-"));
-      const exit = yield* Effect.exit(buildHostLayer({ [rolesDirEnv]: dir }));
-      assert.equal(exit._tag, "Success");
-    }),
+  it.effect(
+    "builds with the legacy roles directory set, which only the one-time migration reads",
+    () =>
+      Effect.gen(function* () {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ft3-host-roles-"));
+        const exit = yield* Effect.exit(buildHostLayer({ [rolesDirEnv]: dir }));
+        assert.equal(exit._tag, "Success");
+      }),
   );
 
-  it.effect("fails startup when the roles directory does not exist", () =>
+  it.effect("builds when the legacy roles directory does not exist", () =>
     Effect.gen(function* () {
       const missing = NodePath.join(NodeOS.tmpdir(), "t3-ft3-host-roles-missing");
-      const exit: Exit.Exit<unknown, unknown> = yield* Effect.exit(
-        buildHostLayer({ [rolesDirEnv]: missing }),
-      );
-      assert.equal(exit._tag, "Failure");
-      const message = exit._tag === "Failure" ? Cause.pretty(exit.cause) : "";
-      assert.include(message, rolesDirEnv);
-      assert.include(message, "not an existing directory");
+      const exit = yield* Effect.exit(buildHostLayer({ [rolesDirEnv]: missing }));
+      assert.equal(exit._tag, "Success");
     }),
   );
 });

@@ -18,7 +18,6 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -764,13 +763,6 @@ describe("ft3 board reactor", () => {
       yield* Layer.build(
         Ft3Host.boardReactorLayer().pipe(
           Layer.provide(
-            ConfigProvider.layer(
-              ConfigProvider.fromEnv({
-                env: { T3CODE_FT3_ROUTING_POLICY_REF: "policy:configured" },
-              }),
-            ),
-          ),
-          Layer.provide(
             Layer.mock(EventSink.EventSinkV2)({
               ...sink,
               stream: (input) =>
@@ -828,9 +820,8 @@ it("renders a short wake with readable ids and the rules pointer", () => {
   assert.equal(failureWords(11), "11th failure in a row");
   const short = buildBoardWakeShortMessage(
     'Executor finished "Mail: address matrix" (79789b9c): interrupted, 2nd failure in a row. Card in_progress, ready.',
-    "/roles",
   );
-  assert.isTrue(short.endsWith("Rules: see your lead brief and /roles/lead.md."));
+  assert.isTrue(short.endsWith("Rules: see your lead brief."));
   assert.include(short, "2nd failure in a row");
   assert.notInclude(short, "You are the lead for this board thread.");
   assert.isTrue(buildBoardWakeShortMessage("Event.").endsWith("Rules: see your lead brief."));

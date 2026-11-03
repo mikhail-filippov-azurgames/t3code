@@ -16,13 +16,15 @@ export type {
 export { delegationTextDecision } from "./delegationTextDecision.ts";
 export type { DelegationTextDecision } from "./delegationTextDecision.ts";
 export {
+  applyNativeSubagentGuidance,
   DELEGATED_ROLE_IDS,
   delegatedTaskPrompt,
-  ROLES_DIR_ENV,
-  rolesDir,
-  rolesDirPath,
-  startupRoleConfiguration,
 } from "./delegationRoles.ts";
+export {
+  DelegationLaunchPolicy,
+  type DelegationLaunch,
+  neverMailRequiredLayer,
+} from "./delegationLaunch.ts";
 export type { DelegatedRoleId } from "./delegationRoles.ts";
 export {
   delegationPermissionDecision,

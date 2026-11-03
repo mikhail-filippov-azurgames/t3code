@@ -1,16 +1,11 @@
-// @effect-diagnostics nodeBuiltinImport:off - tests write role files into a temporary directory.
 import { assert, describe, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
@@ -29,7 +24,6 @@ import * as Contracts from "./contracts.ts";
 
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
-const rolesDirEnv = "T3CODE_FT3_ROLES_DIR";
 const ROLES_MANIFEST_PATH = "policies/roles/roles.json";
 
 const cryptoLayer = Layer.succeed(
@@ -39,12 +33,6 @@ const cryptoLayer = Layer.succeed(
     digest: () => Effect.die("unused"),
   }),
 );
-
-const makeRolesDir = (): string => {
-  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ft3-brief-roles-"));
-  NodeFS.writeFileSync(NodePath.join(dir, "lead.md"), "lead");
-  return dir.replace(/\\/g, "/");
-};
 
 const appliedRoles = (leadBody: string): ReadonlyMap<string, string> =>
   new Map([
@@ -86,7 +74,6 @@ type Service = BoardService.BoardService["Service"];
 
 const wake = <A>(
   options: {
-    readonly rolesDir?: string;
     readonly applied?: ReadonlyMap<string, string>;
     readonly markFirst?: boolean;
   },
@@ -115,15 +102,6 @@ const wake = <A>(
         Layer.provide(threads),
         Layer.provide(cryptoLayer),
         Layer.provide(ServerSettings.layerTest()),
-        Layer.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromEnv(
-              options.rolesDir === undefined
-                ? { env: {} }
-                : { env: { [rolesDirEnv]: options.rolesDir } },
-            ),
-          ),
-        ),
       ),
       tracker,
     );
@@ -152,20 +130,22 @@ const wake = <A>(
       const service = yield* BoardService.BoardService;
       const result = yield* action(service);
       const orchestrators = yield* service.listOrchestrators();
-      return { result, texts: yield* Ref.get(dispatched), rolesDir: orchestrators.rolesDir };
+      return {
+        result,
+        texts: yield* Ref.get(dispatched),
+        rolesConfigured: orchestrators.rolesConfigured,
+      };
     }).pipe(Effect.provide(layer));
   });
 
-const resend = (options: {
-  readonly rolesDir?: string;
-  readonly applied?: ReadonlyMap<string, string>;
-}) => wake(options, (service) => service.resendBrief({ threadId }));
+const resend = (options: { readonly applied?: ReadonlyMap<string, string> }) =>
+  wake(options, (service) => service.resendBrief({ threadId }));
 
 describe("ft3 board Coordinator brief", () => {
   it.effect("starts with the Coordinator identity while roles are off", () =>
     Effect.gen(function* () {
       const result = yield* resend({});
-      assert.equal(result.rolesDir, "");
+      assert.equal(result.rolesConfigured, false);
       assert.equal(result.texts.length, 1);
       assert.isTrue(result.texts[0]!.startsWith("You are the lead for this board thread."));
     }),
@@ -173,12 +153,8 @@ describe("ft3 board Coordinator brief", () => {
 
   it.effect("starts with the applied lead role instruction when roles are configured", () =>
     Effect.gen(function* () {
-      const dir = makeRolesDir();
-      const result = yield* resend({
-        rolesDir: dir,
-        applied: appliedRoles("# Lead\n\nOwn the board."),
-      });
-      assert.equal(result.rolesDir, dir);
+      const result = yield* resend({ applied: appliedRoles("# Lead\n\nOwn the board.") });
+      assert.equal(result.rolesConfigured, true);
       assert.isTrue(
         result.texts[0]!.startsWith(
           "Your role is lead. Follow this role instruction before any work.\n\n# Lead\n\nOwn the board.",
@@ -206,8 +182,7 @@ describe("ft3 board Coordinator brief", () => {
 
   it.effect("sends a short wake instead of the brief when a human starts a card", () =>
     Effect.gen(function* () {
-      const dir = makeRolesDir();
-      const result = yield* wake({ rolesDir: dir }, (service) =>
+      const result = yield* wake({ applied: appliedRoles("# Lead\n\nOwn the board.") }, (service) =>
         Effect.gen(function* () {
           const card = yield* service.createHumanCard({
             orchestratorThreadId: threadId,
@@ -227,7 +202,7 @@ describe("ft3 board Coordinator brief", () => {
       assert.include(text, "Map every address to its owner.");
       assert.notInclude(text, "You are the lead for this board thread.");
       assert.notInclude(text, "Keep statuses truthful");
-      assert.isTrue(text.endsWith(`Rules: see your lead brief and ${dir}/lead.md.`));
+      assert.isTrue(text.endsWith("Rules: see your lead brief."));
     }),
   );
 });

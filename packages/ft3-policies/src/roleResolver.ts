@@ -126,6 +126,7 @@ const appliedRolesDocument: Effect.Effect<ParsedRolesDocument | null> = Effect.g
 });
 
 const roleMethods = {
+  configured: appliedRolesDocument.pipe(Effect.map((document) => document !== null)),
   resolve: Effect.fn("RoleResolver.resolve")(function* (role: string) {
     const document = yield* appliedRolesDocument;
     const resolved = findAppliedRole(document, role);
@@ -176,6 +177,8 @@ const roleMethods = {
 export class RoleResolver extends Context.Service<
   RoleResolver,
   {
+    /** True while the applied roles document is configured; roles off otherwise. */
+    readonly configured: Effect.Effect<boolean>;
     readonly resolve: (role: string) => Effect.Effect<ResolvedRole, RoleResolutionError>;
     readonly assignment: (role: string | undefined) => Effect.Effect<RoleAssignment>;
     readonly leadLine: Effect.Effect<string>;

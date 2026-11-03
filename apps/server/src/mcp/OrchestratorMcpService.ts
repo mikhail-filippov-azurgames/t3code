@@ -68,9 +68,11 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import {
+  DelegationLaunchPolicy,
   delegatedTaskPrompt,
   delegationPermissionDenial,
   delegationTextDecision,
+  neverMailRequiredLayer,
   projectDerivedText,
 } from "@t3tools/ft3-delegation/server";
 import {
@@ -1038,6 +1040,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
   const roles = yield* RoleResolver;
+  const launchPolicy = yield* DelegationLaunchPolicy;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2463,6 +2466,13 @@ const make = Effect.gen(function* () {
       }
       const delegatedRole =
         roleAssignment._tag === "assigned" ? (input.role ?? DEFAULT_DELEGATED_ROLE) : input.role;
+      const launch = yield* launchPolicy.launchFor(delegatedRole);
+      if (launch._tag === "mail_required") {
+        return yield* failure(
+          "mail_required",
+          `Role "${launch.role}" takes part in a mail task; start it with mail_task_create instead of delegate_task.`,
+        );
+      }
       const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({
@@ -3403,4 +3413,6 @@ export const layer: Layer.Layer<
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
-> = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(roleResolverLayer));
+> = Layer.effect(OrchestratorMcpService, make).pipe(
+  Layer.provide(Layer.mergeAll(roleResolverLayer, neverMailRequiredLayer)),
+);

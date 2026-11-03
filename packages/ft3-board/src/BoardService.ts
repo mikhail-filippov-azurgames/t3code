@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
-import { rolesDir } from "@t3tools/ft3-delegation/server";
+import { RoleResolver, roleResolverLayer } from "@t3tools/ft3-policies/server";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardWakeService from "./BoardWakeService.ts";
@@ -112,7 +112,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const wake = yield* BoardWakeService.BoardWakeService;
   const crypto = yield* Crypto.Crypto;
-  const rolesDirectory = yield* rolesDir;
+  const roles = yield* RoleResolver;
   const event = Effect.fn("Ft3BoardService.event")(function* (
     card: Contracts.BoardCard,
     at: string,
@@ -393,7 +393,7 @@ const make = Effect.gen(function* () {
     }),
     listOrchestrators: Effect.fn("Ft3BoardService.listOrchestrators")(function* () {
       const orchestrators = yield* repo.listOrchestrators().pipe(Effect.mapError(unavailable));
-      return { orchestrators, rolesDir: rolesDirectory };
+      return { orchestrators, rolesConfigured: yield* roles.configured };
     }),
     markOrchestrator: Effect.fn("Ft3BoardService.markOrchestrator")(function* (input) {
       yield* requireMarkableThread(input.threadId);
@@ -640,4 +640,6 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(BoardService, make).pipe(Layer.provide(BoardWakeService.layer));
+export const layer = Layer.effect(BoardService, make).pipe(
+  Layer.provide(Layer.mergeAll(BoardWakeService.layer, roleResolverLayer)),
+);

@@ -101,7 +101,7 @@ export function useSidebarRoleBadges(
         role:
           delegatedRoleByKey.get(threadKey) ?? cardRoleByThreadId.get(thread.id as string) ?? null,
         isOrchestrator: orchestratorThreadIds.has(thread.id as string),
-        rolesDir: orchestrators.data?.rolesDir ?? "",
+        rolesConfigured: orchestrators.data?.rolesConfigured === true,
       });
       if (badge !== null) {
         badges.set(threadKey, badge);

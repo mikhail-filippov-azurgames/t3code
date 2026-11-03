@@ -1,11 +1,11 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
-import { startupRoleConfiguration } from "@t3tools/ft3-delegation/server";
+import { applyNativeSubagentGuidance } from "@t3tools/ft3-delegation/server";
 import { setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
 import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
-import { roleResolverLayer } from "@t3tools/ft3-policies/server";
+import { roleResolverLayer, withRefreshHook } from "@t3tools/ft3-policies/server";
 
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
@@ -15,14 +15,11 @@ export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
 
 export { BoardRepository };
 
-// Feature-driven startup: roles off keeps upstream role behavior; documents off
-// leaves the store unread and the document brief block out of agent briefs.
-const layerStartup = Layer.unwrap(
+// Documents off leaves the store unread and the document brief block out of agent briefs.
+const layerStartup = Layer.effectDiscard(
   Effect.gen(function* () {
     const gate = yield* FeatureGate.FeatureGate;
-    const rolesEffective = yield* gate.isEffective("roles");
     setDocumentsBriefEnabled(yield* gate.isEffective("documents"));
-    return rolesEffective ? Layer.effectDiscard(startupRoleConfiguration) : Layer.empty;
   }),
 ).pipe(Layer.provide(FeatureGate.layer));
 
@@ -59,8 +56,8 @@ const layerDocuments = Layer.unwrap(
 
 /**
  * Applied policies for the whole server: one tracker that the Policies RPC,
- * delegation and the board all read, refreshed once here so a live server that
- * only sets `T3CODE_FT3_ROLES_DIR` still serves the same applied roles.
+ * delegation and the board all read, refreshed once here. Every refresh, startup
+ * or Apply, also sets the native-subagent guidance from the applied roles.
  */
 const layerAppliedPolicies = Layer.unwrap(
   Effect.gen(function* () {
@@ -106,10 +103,18 @@ const layerAppliedPolicies = Layer.unwrap(
           ),
         ),
       );
-    return Layer.mergeAll(
-      policies.policiesRpcServiceLayer.pipe(Layer.provideMerge(docsService)),
-      roleResolverLayer,
-    ).pipe(
+    const trackerWithGuidance = withRefreshHook((tracker) =>
+      tracker
+        .snapshot()
+        .pipe(
+          Effect.flatMap((snapshot) =>
+            applyNativeSubagentGuidance(
+              snapshot.documents.find((document) => document.key === "roles")?.configured === true,
+            ),
+          ),
+        ),
+    ).pipe(Layer.provide(policies.policiesRpcServiceLayer), Layer.provideMerge(docsService));
+    return Layer.mergeAll(trackerWithGuidance, roleResolverLayer).pipe(
       Layer.tap((context) =>
         policies.refreshAppliedPolicies.pipe(
           Effect.provide(context),
@@ -122,7 +127,6 @@ const layerAppliedPolicies = Layer.unwrap(
   }),
 );
 
-// Startup seam: an unusable roles directory fails here, and roles disable native subagents.
 export const layer = Layer.mergeAll(
   BoardRepository.layer,
   layerStartup,
