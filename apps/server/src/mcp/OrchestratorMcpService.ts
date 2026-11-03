@@ -68,13 +68,17 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import {
-  delegatedRoleAssignment,
   delegatedTaskPrompt,
   delegationPermissionDenial,
   delegationTextDecision,
   projectDerivedText,
-  rolesDir as delegatedRolesDir,
 } from "@t3tools/ft3-delegation/server";
+import {
+  DEFAULT_DELEGATED_ROLE,
+  RoleResolver,
+  roleInstructionLine,
+  roleResolverLayer,
+} from "@t3tools/ft3-policies/server";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
@@ -1033,7 +1037,7 @@ const make = Effect.gen(function* () {
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const remoteDelegation = yield* RemoteDelegation.RemoteDelegation;
-  const rolesDirectory = yield* delegatedRolesDir;
+  const roles = yield* RoleResolver;
 
   const requireProject = (projectId: ProjectId) =>
     projects.getById(projectId).pipe(
@@ -2453,11 +2457,12 @@ const make = Effect.gen(function* () {
       if (delegationText._tag === "Denied") {
         return yield* failure("capability_denied", delegationText.reason);
       }
-      const roleAssignment = delegatedRoleAssignment(input.role, rolesDirectory);
+      const roleAssignment = yield* roles.assignment(input.role);
       if (roleAssignment._tag === "rejected") {
         return yield* failure("invalid_request", roleAssignment.message);
       }
-      const delegatedRole = roleAssignment._tag === "assigned" ? roleAssignment.role : input.role;
+      const delegatedRole =
+        roleAssignment._tag === "assigned" ? (input.role ?? DEFAULT_DELEGATED_ROLE) : input.role;
       const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({
@@ -2537,8 +2542,10 @@ const make = Effect.gen(function* () {
           parentRunId: parentRun.id,
           parentNodeId: parentRun.rootNodeId,
           task: delegatedTaskPrompt({
-            role: delegatedRole,
-            rolesDir: rolesDirectory,
+            roleLine:
+              roleAssignment._tag === "assigned"
+                ? roleInstructionLine(roleAssignment.resolved)
+                : "",
             task: input.task,
             upstreamPrompt: taskPrompt(input),
           }),
@@ -3396,4 +3403,4 @@ export const layer: Layer.Layer<
   | SecretRequests.SecretRequests
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
-> = Layer.effect(OrchestratorMcpService, make);
+> = Layer.effect(OrchestratorMcpService, make).pipe(Layer.provide(roleResolverLayer));

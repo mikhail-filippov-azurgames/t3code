@@ -8,8 +8,9 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
-import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/server";
+import { rolesDir } from "@t3tools/ft3-delegation/server";
 import { documentsBriefLine } from "@t3tools/ft3-docs/brief";
+import { RoleResolver, roleResolverLayer } from "@t3tools/ft3-policies/server";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
@@ -118,7 +119,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const crypto = yield* Crypto.Crypto;
   const rolesDirectory = yield* rolesDir;
-  const coordinatorRoleLine = coordinatorBriefRoleLine(rolesDirectory);
+  const roles = yield* RoleResolver;
   const event = Effect.fn("Ft3BoardService.event")(function* (
     card: Contracts.BoardCard,
     at: string,
@@ -225,7 +226,7 @@ const make = Effect.gen(function* () {
         messageId: MessageId.make(key),
         text:
           mode === "brief"
-            ? buildBoardWakePrompt(context, coordinatorRoleLine, documentsBriefLine())
+            ? buildBoardWakePrompt(context, yield* roles.leadLine, documentsBriefLine())
             : buildBoardWakeShortMessage(context, rolesDirectory),
         attachments: [],
         createdBy: "agent",
@@ -659,4 +660,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(BoardService, make);
+export const layer = Layer.effect(BoardService, make).pipe(Layer.provide(roleResolverLayer));

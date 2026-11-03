@@ -35,8 +35,8 @@ export const ROLE_FILE_SCHEMA = "corvis-role-v1";
 
 /**
  * Corvis delegated role ids a `roles.json` entry may map to. Mirrors
- * `DELEGATED_ROLE_IDS` in `@t3tools/ft3-delegation`; `ft3-delegation` depends on
- * this package, so the list lives here and the resolver will consume it.
+ * `DELEGATED_ROLE_IDS` in `@t3tools/ft3-delegation`; the resolver serves these
+ * ids from the applied roles document.
  */
 export const CORVIS_ROLE_IDS = [
   "lead",
