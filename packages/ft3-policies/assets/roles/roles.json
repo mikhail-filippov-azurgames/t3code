@@ -1,0 +1,36 @@
+{
+  "schema": "corvis-role-map-v1",
+  "revision": 0,
+  "configured": false,
+  "roles": [
+    { "id": "lead", "roleId": "lead", "file": "lead.md" },
+    { "id": "planner", "roleId": "planner", "file": "planner.md" },
+    {
+      "id": "architect",
+      "roleId": "architect",
+      "file": "architect.md",
+      "upstreamRole": "architecture"
+    },
+    {
+      "id": "design",
+      "roleId": "architect-product",
+      "file": "architect-product.md",
+      "upstreamRole": "design"
+    },
+    {
+      "id": "implementation",
+      "roleId": "implementation",
+      "file": "implementation.md",
+      "upstreamRole": "implementation"
+    },
+    { "id": "test", "roleId": "test", "file": "test.md", "upstreamRole": "test" },
+    { "id": "research", "roleId": "research", "file": "research.md", "upstreamRole": "research" },
+    { "id": "general", "roleId": "general", "file": "general.md", "upstreamRole": "general" },
+    {
+      "id": "review",
+      "roleId": "review-common",
+      "file": "review-common.md",
+      "upstreamRole": "review"
+    }
+  ]
+}

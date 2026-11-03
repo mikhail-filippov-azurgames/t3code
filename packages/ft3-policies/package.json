@@ -14,6 +14,10 @@
     "./routingPolicy": {
       "types": "./src/routingPolicy.ts",
       "import": "./src/routingPolicy.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
     }
   },
   "scripts": {
