@@ -45,6 +45,7 @@ import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TextGeneration from "../../../apps/server/src/textGeneration/TextGeneration.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
+import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import * as DelegatedTaskSummaryReactor from "./DelegatedTaskSummaryReactor.ts";
 import * as SummaryRepository from "./DelegatedTaskSummaryRepository.ts";
 import * as TaskHandoffService from "./TaskHandoffService.ts";
@@ -222,6 +223,7 @@ function fixture() {
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-summary-" })),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provide(launcherFake().layer),
     ),
     DelegatedTaskSummaryReactor.layer.pipe(Layer.provideMerge(support)),
     TaskQueryService.layer.pipe(

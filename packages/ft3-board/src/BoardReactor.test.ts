@@ -42,6 +42,7 @@ import { OrchestratorDispatchError } from "../../../apps/server/src/orchestratio
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
+import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import * as BoardReactor from "./BoardReactor.ts";
 import * as Contracts from "./contracts.ts";
 import {
@@ -196,6 +197,7 @@ function fixture() {
   const attempts: Dispatch[] = [];
   const control = { failAfterCommit: false };
   const wakeOrdinalByCommand = new Map<string, number>();
+  const launcher = launcherFake();
   const managedThreads = Layer.unwrap(
     Effect.gen(function* () {
       const sink = yield* EventSink.EventSinkV2;
@@ -259,6 +261,7 @@ function fixture() {
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-reactor-" })),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provide(launcher.layer),
   );
   const emit = Effect.fn("test.emitBoardEvent")(function* (event: OrchestrationV2DomainEvent) {
     const sink = yield* EventSink.EventSinkV2;

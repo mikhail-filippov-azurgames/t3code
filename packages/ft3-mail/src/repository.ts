@@ -567,6 +567,14 @@ export class MailRepository extends Context.Service<
       readonly participantThreadId: string;
       readonly at: string;
     }) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    /** Closes a member whose participant thread settled; the lead closes the rest. */
+    readonly closeMember: (input: {
+      readonly memberId: string;
+      readonly at: string;
+    }) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    readonly getDelivery: (
+      deliveryId: string,
+    ) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
     readonly markWakeDelivered: (input: {
       readonly wakeId: string;
       readonly at: string;
@@ -915,6 +923,20 @@ const make = Effect.gen(function* () {
           return rows[0] === undefined ? null : toMember(rows[0]);
         }),
       ),
+    ),
+    closeMember: Effect.fn("MailRepository.closeMember")((input) =>
+      mapError("closeMember")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_members SET status = 'closed', updated_at = ${input.at}
+            WHERE member_id = ${input.memberId} AND status = 'active'`;
+          const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+            FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
+          return rows[0] === undefined ? null : toMember(rows[0]);
+        }),
+      ),
+    ),
+    getDelivery: Effect.fn("MailRepository.getDelivery")((deliveryId) =>
+      mapError("getDelivery")(findDelivery(deliveryId)),
     ),
     markWakeDelivered: Effect.fn("MailRepository.markWakeDelivered")((input) =>
       mapError("markWakeDelivered")(

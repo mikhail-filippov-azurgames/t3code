@@ -644,7 +644,7 @@ const layerServerRestart = Layer.effect(
 );
 
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
-  Ft3Host.layer.pipe(Layer.provide(MailParticipantLauncherLive.layer)),
+  Ft3Host.layer,
   Ft3Host.reactorLayer().pipe(Layer.provide(RuntimeLayer.layerEventSink)),
   AgentAwarenessRelay.layer,
   HeldHooksWaker.layer,
@@ -689,6 +689,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ReplayMarkers.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
+  // Serves the mail participant launcher to every branch, including the mail reactor worker.
+  Layer.provide(MailParticipantLauncherLive.layer),
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),

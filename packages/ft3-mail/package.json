@@ -23,6 +23,10 @@
       "types": "./src/delegationLaunch.ts",
       "import": "./src/delegationLaunch.ts"
     },
+    "./reactor": {
+      "types": "./src/reactor.ts",
+      "import": "./src/reactor.ts"
+    },
     "./launcher": {
       "types": "./src/participantLauncher.ts",
       "import": "./src/participantLauncher.ts"
@@ -49,6 +53,7 @@
     "effect": "catalog:"
   },
   "devDependencies": {
+    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@t3tools/shared": "workspace:*",
     "@types/node": "catalog:",

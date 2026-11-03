@@ -27,6 +27,7 @@ import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
+import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import * as ArchitectRepository from "./ArchitectRepository.ts";
 import * as ArchitectService from "./ArchitectService.ts";
 import * as Contracts from "./contracts.ts";
@@ -219,6 +220,7 @@ function fixture() {
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-architect-" })),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provide(launcherFake().layer),
   );
   return { layer, shells, createdCommands };
 }

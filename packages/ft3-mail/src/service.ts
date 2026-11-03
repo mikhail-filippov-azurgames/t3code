@@ -635,31 +635,10 @@ const make = Effect.gen(function* () {
             ),
         }),
       );
-    // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.
-    const deliveries = yield* Effect.forEach(targets, (target) =>
-      newId.pipe(
-        Effect.flatMap((deliveryId) =>
-          repository.recordDelivery({
-            deliveryId,
-            taskId: task.taskId,
-            letterId: appended.letter.letterId,
-            memberId: target.memberId,
-            recipient: target.recipient,
-            participantThreadId: target.participantThreadId,
-            createdAt: now,
-          }),
-        ),
-      ),
-    );
-    const noCandidate: MailLetterNoCandidate[] = [];
-    for (const target of targets) {
-      if (target.member === null) continue;
-      const gap = yield* noCandidateFor(target.member.roleId, target.member.level ?? task.level);
-      if (gap !== null) noCandidate.push({ memberId: target.member.memberId, ...gap });
-    }
     // The lead's letter starts a threadless routed member; a repeat reuses the same thread.
     const launched: MailMemberLaunched[] = [];
     const launchFailures: MailMemberLaunchFailed[] = [];
+    const launchedThreads = new Map<string, string>();
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
@@ -696,7 +675,46 @@ const make = Effect.gen(function* () {
           at: yield* nowIso,
         });
         launched.push({ memberId: member.memberId, participantThreadId: outcome.threadId });
+        launchedThreads.set(member.memberId, outcome.threadId);
       }
+    }
+    // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.
+    const deliveries = yield* Effect.forEach(targets, (target) =>
+      newId.pipe(
+        Effect.flatMap((deliveryId) =>
+          repository.recordDelivery({
+            deliveryId,
+            taskId: task.taskId,
+            letterId: appended.letter.letterId,
+            memberId: target.memberId,
+            recipient: target.recipient,
+            participantThreadId:
+              (target.memberId !== null ? launchedThreads.get(target.memberId) : undefined) ??
+              target.participantThreadId,
+            createdAt: now,
+          }),
+        ),
+      ),
+    );
+    // An agent thread gets a durable wake; the reactor drains it and marks the delivery.
+    yield* Effect.forEach(
+      deliveries.filter((delivery) => delivery.participantThreadId !== null),
+      (delivery) =>
+        repository.recordWake({
+          wakeId: `mail:wake:${delivery.deliveryId}`,
+          taskId: task.taskId,
+          targetThreadId: delivery.participantThreadId ?? "",
+          reason: "mail-letter",
+          idempotencyKey: `mail:wake:${delivery.deliveryId}`,
+          createdAt: now,
+        }),
+      { discard: true },
+    );
+    const noCandidate: MailLetterNoCandidate[] = [];
+    for (const target of targets) {
+      if (target.member === null) continue;
+      const gap = yield* noCandidateFor(target.member.roleId, target.member.level ?? task.level);
+      if (gap !== null) noCandidate.push({ memberId: target.member.memberId, ...gap });
     }
     return {
       letter: appended.letter,

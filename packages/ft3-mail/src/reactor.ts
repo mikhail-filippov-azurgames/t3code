@@ -1,0 +1,252 @@
+import {
+  CommandId,
+  MessageId,
+  ThreadId,
+  type OrchestrationV2StoredEvent,
+} from "@t3tools/contracts";
+import { FeatureGate } from "@t3tools/ft3-policies/server";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Schedule from "effect/Schedule";
+import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
+import type * as Scope from "effect/Scope";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
+import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { forkParked } from "../../../apps/server/src/serverActivation.ts";
+import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
+import { MailService } from "./service.ts";
+
+export class MailReactorError extends Schema.TaggedError<MailReactorError>()("MailReactorError", {
+  operation: Schema.String,
+  cause: Schema.Defect(),
+}) {
+  override get message() {
+    return `The mail reactor could not ${this.operation}.`;
+  }
+}
+
+export class MailDeliveryReactor extends Context.Service<
+  MailDeliveryReactor,
+  {
+    readonly process: (event: OrchestrationV2StoredEvent) => Effect.Effect<void, MailReactorError>;
+    readonly recover: Effect.Effect<void, MailReactorError>;
+    readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+  }
+>()("@t3tools/ft3-mail/reactor/MailDeliveryReactor") {}
+
+const terminal = (status: string) =>
+  ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
+
+/** Wake rows point at the delivery they were recorded for. */
+const WAKE_KEY_PREFIX = "mail:wake:";
+
+const parseWakeDeliveryId = (key: string): string | null =>
+  key.startsWith(WAKE_KEY_PREFIX) ? key.slice(WAKE_KEY_PREFIX.length) : null;
+
+const failure = (operation: string) => (cause: unknown) =>
+  new MailReactorError({ operation, cause });
+
+const questionBody = (input: {
+  readonly roleId: string;
+  readonly threadId: string;
+  readonly requestId: string;
+  readonly live: boolean;
+}): string => {
+  const situation = input.live
+    ? `Participant ${input.roleId} is blocked on a question and cannot continue until it is answered.`
+    : `Participant ${input.roleId} asked a question and is still working.`;
+  return `${situation} Read it with t3_pending_request action read, threadId ${input.threadId}, and requestId ${input.requestId}. Answer it with action respond when the answer follows from the task; otherwise ask the user, then answer it.`;
+};
+
+const make = Effect.fn("MailDeliveryReactor.make")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const repository = yield* MailRepository;
+  const mail = yield* MailService;
+  const gate = yield* FeatureGate;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const sink = yield* EventSink.EventSinkV2;
+  const lane = yield* Semaphore.make(1);
+
+  const cursor = Effect.fn("MailDeliveryReactor.cursor")(function* () {
+    const rows = yield* sql<{ readonly sequence: number }>`
+      SELECT sequence FROM ft3_mail_reactor_cursor WHERE id = 1`;
+    return rows[0]!.sequence;
+  });
+
+  const aliveShell = Effect.fn("MailDeliveryReactor.aliveShell")(function* (threadId: string) {
+    const shell = yield* threads.getThreadShell(ThreadId.make(threadId));
+    return shell !== null && shell.deletedAt === null ? shell : null;
+  });
+
+  const wake = Effect.fn("MailDeliveryReactor.wake")(function* (input: {
+    readonly threadId: ThreadId;
+    readonly key: string;
+    readonly text: string;
+    readonly summary: string;
+  }) {
+    const records = yield* threads.getThreadRecords(input.threadId, ["runs"]);
+    const delegatedTaskId = records.runs
+      .filter((run) => run.delegatedTaskId !== null && run.delegatedTaskId !== undefined)
+      .toSorted((left, right) => right.ordinal - left.ordinal)[0]?.delegatedTaskId;
+    yield* threads
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`mail:wake:${input.key}`),
+        threadId: input.threadId,
+        messageId: MessageId.make(`mail:wake:${input.key}`),
+        text: input.text,
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        notification: {
+          source: {
+            kind: "delegated_task",
+            taskIds: delegatedTaskId === undefined ? [] : [delegatedTaskId],
+            childThreadId: input.threadId,
+          },
+          outcome: "updated",
+          summary: input.summary,
+        },
+        createdBy: "agent",
+        creationSource: "server",
+      })
+      .pipe(Effect.mapError(failure("dispatch a mail wake")));
+  });
+
+  const deliver = Effect.fn("MailDeliveryReactor.deliver")(function* (input: {
+    readonly deliveryId: string;
+    readonly participantThreadId: string;
+    readonly key: string;
+  }) {
+    const delivery = yield* repository.getDelivery(input.deliveryId);
+    if (delivery === null) return;
+    const letter = yield* repository.getLetter(delivery.letterId);
+    const task = yield* repository.getTask(delivery.taskId);
+    if (letter === null || task === null || task.status !== "open") return;
+    if ((yield* aliveShell(input.participantThreadId)) === null) return;
+    const at = DateTime.formatIso(yield* DateTime.now);
+    yield* wake({
+      threadId: ThreadId.make(input.participantThreadId),
+      key: input.key,
+      text: `New ${letter.kind} letter in mail task "${task.title}":\n\n${letter.body}`,
+      summary: `Mail ${letter.kind} letter in "${task.title}"`,
+    });
+    yield* repository.markWakeDelivered({ wakeId: `mail:wake:${delivery.deliveryId}`, at });
+    yield* repository.markDeliveryDelivered({ deliveryId: delivery.deliveryId, at });
+  });
+
+  const drain = Effect.fn("MailDeliveryReactor.drain")(function* () {
+    const wakes = yield* repository.listUndeliveredWakes({ limit: 100 });
+    for (const queued of wakes) {
+      const deliveryId = parseWakeDeliveryId(queued.idempotencyKey);
+      if (deliveryId === null) continue;
+      yield* deliver({
+        deliveryId,
+        participantThreadId: queued.targetThreadId,
+        key: `wake:${queued.wakeId}`,
+      });
+    }
+    const pending = yield* repository.listUndeliveredDeliveries({ limit: 100 });
+    for (const { delivery, participantThreadId } of pending) {
+      yield* deliver({
+        deliveryId: delivery.deliveryId,
+        participantThreadId,
+        key: `delivery:${delivery.deliveryId}`,
+      });
+    }
+  });
+
+  const stage = Effect.fn("MailDeliveryReactor.stage")(function* (
+    stored: OrchestrationV2StoredEvent,
+  ) {
+    const { event } = stored;
+    const at = DateTime.formatIso(event.occurredAt);
+    if (event.type === "subagent.updated") {
+      const task = event.payload;
+      if (task.childThreadId === null || !terminal(task.status)) return;
+      const found = yield* repository.findParticipantByThread(task.childThreadId);
+      if (found === null || found.member.status !== "active" || found.taskStatus !== "open") {
+        return;
+      }
+      yield* repository.closeMember({ memberId: found.member.memberId, at });
+      return;
+    }
+    if (event.type !== "runtime-request.updated") return;
+    if (event.payload.kind !== "user_input" || event.payload.status !== "pending") return;
+    const found = yield* repository.findParticipantByThread(event.threadId);
+    if (found === null || found.member.status !== "active" || found.taskStatus !== "open") return;
+    yield* mail
+      .sendLetter({
+        callerThreadId: event.threadId,
+        taskId: found.member.taskId,
+        to: "lead",
+        kind: "question",
+        body: questionBody({
+          roleId: found.member.roleId,
+          threadId: event.threadId,
+          requestId: event.payload.id,
+          live: event.payload.responseCapability.type === "live",
+        }),
+        clientRequestId: `mail:question:${event.payload.id}`,
+      })
+      .pipe(Effect.mapError(failure("forward a participant question")));
+  });
+
+  const process = Effect.fn("MailDeliveryReactor.process")(
+    function* (stored: OrchestrationV2StoredEvent) {
+      if (!(yield* gate.isEffective("mail").pipe(Effect.orElseSucceed(() => false)))) return;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          if (stored.sequence <= (yield* cursor())) return;
+          yield* stage(stored);
+          yield* sql`UPDATE ft3_mail_reactor_cursor SET sequence = ${stored.sequence} WHERE id = 1`;
+        }),
+      );
+      yield* drain();
+    },
+    (effect) => lane.withPermit(effect),
+    Effect.mapError(failure("process event")),
+  );
+
+  const recover = Effect.gen(function* () {
+    if (!(yield* gate.isEffective("mail").pipe(Effect.orElseSucceed(() => false)))) return;
+    const afterSequence = yield* cursor();
+    const throughSequence = yield* sink.latestSequence();
+    if (throughSequence > afterSequence) {
+      yield* sink.stream({ afterSequence }).pipe(
+        Stream.takeUntil((stored) => stored.sequence >= throughSequence),
+        Stream.runForEach(process),
+      );
+    }
+    yield* lane.withPermit(drain());
+  }).pipe(Effect.mapError(failure("recover")));
+
+  const start = Effect.fn("MailDeliveryReactor.start")(function* () {
+    yield* forkParked(
+      Effect.gen(function* () {
+        yield* recover;
+        const afterSequence = yield* cursor();
+        yield* sink.stream({ afterSequence }).pipe(Stream.runForEach(process));
+      }).pipe(
+        Effect.tapError(() =>
+          Effect.logWarning("Mail reactor failed; resuming from its durable cursor"),
+        ),
+        Effect.retry(Schedule.spaced("1 second")),
+      ),
+    );
+  });
+  return { process, recover, start };
+});
+
+export const layer = Layer.effect(MailDeliveryReactor, make());
+
+export const layerWorker = () =>
+  Layer.effectDiscard(Effect.flatMap(MailDeliveryReactor, (reactor) => reactor.start())).pipe(
+    Layer.provide(layer),
+    Layer.provide(mailRepositoryLayer),
+  );

@@ -243,4 +243,82 @@ layer("DeletedThreadPurge", (it) => {
       assert.deepStrictEqual(yield* countFor(old), zeroCounts);
     }),
   );
+
+  it.effect("erases mail rows that reference a purged thread", () =>
+    Effect.gen(function* () {
+      yield* runCoreMigrations();
+      yield* runMigrations();
+      yield* TestClock.setTime(NOW_MS);
+      yield* seedMailTask({
+        taskId: "mail:lead-gone",
+        lead: "thread:mail-lead",
+        memberId: "mail:member-gone",
+        participant: "thread:mail-participant",
+        letterId: "mail:letter-gone",
+        deliveryId: "mail:delivery-gone",
+        wakeId: "mail:wake-gone",
+        roundId: "mail:round-gone",
+      });
+      yield* seedMailTask({
+        taskId: "mail:live",
+        lead: "thread:mail-live",
+        memberId: "mail:member-live",
+        participant: "thread:mail-participant",
+        letterId: "mail:letter-live",
+        deliveryId: "mail:delivery-live",
+        wakeId: "mail:wake-live",
+        roundId: "mail:round-live",
+      });
+      yield* purgeDeletedThread(ThreadId.make("thread:mail-participant"));
+      assert.strictEqual(
+        yield* mailCount("ft3_mail_members", "participant_thread_id", "thread:mail-participant"),
+        0,
+      );
+      assert.strictEqual(
+        yield* mailCount("ft3_mail_wakes", "target_thread_id", "thread:mail-participant"),
+        0,
+      );
+      assert.strictEqual(yield* mailCount("ft3_mail_tasks", "task_id", "mail:lead-gone"), 1);
+      assert.strictEqual(yield* mailCount("ft3_mail_letters", "task_id", "mail:lead-gone"), 1);
+
+      yield* purgeDeletedThread(ThreadId.make("thread:mail-lead"));
+      assert.strictEqual(yield* mailCount("ft3_mail_tasks", "task_id", "mail:lead-gone"), 0);
+      assert.strictEqual(yield* mailCount("ft3_mail_letters", "task_id", "mail:lead-gone"), 0);
+      assert.strictEqual(yield* mailCount("ft3_mail_deliveries", "task_id", "mail:lead-gone"), 0);
+      assert.strictEqual(yield* mailCount("ft3_mail_wakes", "task_id", "mail:lead-gone"), 0);
+      assert.strictEqual(yield* mailCount("ft3_mail_rounds", "task_id", "mail:lead-gone"), 0);
+      assert.strictEqual(yield* mailCount("ft3_mail_members", "task_id", "mail:lead-gone"), 0);
+
+      assert.strictEqual(yield* mailCount("ft3_mail_tasks", "task_id", "mail:live"), 1);
+      assert.strictEqual(yield* mailCount("ft3_mail_letters", "task_id", "mail:live"), 1);
+    }),
+  );
 });
+
+const seedMailTask = (input: {
+  readonly taskId: string;
+  readonly lead: string;
+  readonly memberId: string;
+  readonly participant: string;
+  readonly letterId: string;
+  readonly deliveryId: string;
+  readonly wakeId: string;
+  readonly roundId: string;
+}) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO ft3_mail_tasks (task_id, title, brief, level, status, created_by_thread_id, client_request_id, request_fingerprint, created_at, updated_at) VALUES (${input.taskId}, 'Refactor', 'Split the module.', 'medium', 'open', ${input.lead}, ${`mail:task:${input.taskId}`}, ${`mail:task:${input.taskId}`}, ${isoDaysAgo(15)}, ${isoDaysAgo(15)})`;
+    yield* sql`INSERT INTO ft3_mail_members (member_id, task_id, role_id, specialization, level, status, participant_thread_id, created_at, updated_at) VALUES (${input.memberId}, ${input.taskId}, 'implementation', NULL, 'medium', 'active', ${input.participant}, ${isoDaysAgo(15)}, ${isoDaysAgo(15)})`;
+    yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, sequence, sender_thread_id, recipient, kind, body, reply_to_letter_id, client_request_id, request_fingerprint, created_at) VALUES (${input.letterId}, ${input.taskId}, 1, ${input.lead}, ${`member:${input.memberId}`}, 'request', 'Start.', NULL, ${`mail:letter:${input.letterId}`}, ${`mail:letter:${input.letterId}`}, ${isoDaysAgo(15)})`;
+    yield* sql`INSERT INTO ft3_mail_deliveries (delivery_id, task_id, letter_id, member_id, recipient, participant_thread_id, state, created_at, updated_at) VALUES (${input.deliveryId}, ${input.taskId}, ${input.letterId}, ${input.memberId}, ${`member:${input.memberId}`}, ${input.participant}, 'pending', ${isoDaysAgo(15)}, ${isoDaysAgo(15)})`;
+    yield* sql`INSERT INTO ft3_mail_rounds (round_id, task_id, round_number, kind, opened_at) VALUES (${input.roundId}, ${input.taskId}, 1, 'review', ${isoDaysAgo(15)})`;
+    yield* sql`INSERT INTO ft3_mail_wakes (wake_id, task_id, target_thread_id, reason, idempotency_key, created_at, delivered_at) VALUES (${input.wakeId}, ${input.taskId}, ${input.participant}, 'mail-letter', ${`mail:wake:${input.deliveryId}`}, ${isoDaysAgo(15)}, NULL)`;
+  });
+
+const mailCount = (table: string, column: string, value: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{ readonly total: number }>`
+      SELECT COUNT(*) AS total FROM ${sql.literal(table)} WHERE ${sql.literal(column)} = ${value}`;
+    return rows[0]!.total;
+  });

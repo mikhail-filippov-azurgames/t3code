@@ -1,15 +1,6 @@
 /**
- * Physical erasure of soft-deleted threads past their purge age.
- *
- * A thread whose `orchestration_v2_projection_threads.deleted_at` is at least
- * `deletedThreadPurgeAfterDays` old (boundary inclusive) is erased at server
- * start. One thread is erased per transaction, and the pass stops cleanly when
- * its time budget runs out between threads. Whatever is left is picked up on
- * the next start.
- *
- * Never touched: worktrees and branches on disk, provider-side histories, live
- * threads, and deleted threads younger than the cutoff. No VACUUM is issued.
- *
+ * Erases soft-deleted threads past their purge age, one per transaction.
+ * Never touched: worktrees, provider histories, live or young-deleted threads.
  * @module DeletedThreadPurge
  */
 import type { ServerSettingsError, ThreadId } from "@t3tools/contracts";
@@ -64,6 +55,37 @@ export const purgeDeletedThread = Effect.fn("DeletedThreadPurge.purgeDeletedThre
       yield* exec(sql`DELETE FROM ft3_architect_binding WHERE coordinator_thread_id = ${threadId}`);
       yield* exec(sql`DELETE FROM ft3_board_orchestrators WHERE thread_id = ${threadId}`);
       yield* exec(sql`DELETE FROM ft3_board_cards WHERE executor_thread_id = ${threadId}`);
+      yield* exec(
+        sql`DELETE FROM ft3_mail_kind_feedback WHERE letter_id IN (SELECT letter_id FROM ft3_mail_letters WHERE task_id IN (SELECT task_id FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId}))`,
+      );
+      yield* exec(
+        sql`DELETE FROM ft3_mail_deliveries WHERE task_id IN (SELECT task_id FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId})`,
+      );
+      yield* exec(
+        sql`DELETE FROM ft3_mail_wakes WHERE task_id IN (SELECT task_id FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId})`,
+      );
+      yield* exec(
+        sql`DELETE FROM ft3_mail_rounds WHERE task_id IN (SELECT task_id FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId})`,
+      );
+      yield* exec(
+        sql`DELETE FROM ft3_mail_letters WHERE task_id IN (SELECT task_id FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId})`,
+      );
+      yield* exec(
+        sql`DELETE FROM ft3_mail_members WHERE task_id IN (SELECT task_id FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId})`,
+      );
+      yield* exec(sql`DELETE FROM ft3_mail_tasks WHERE created_by_thread_id = ${threadId}`);
+      yield* exec(
+        sql`DELETE FROM ft3_mail_deliveries WHERE member_id IN (SELECT member_id FROM ft3_mail_members WHERE participant_thread_id = ${threadId})`,
+      );
+      yield* exec(sql`DELETE FROM ft3_mail_members WHERE participant_thread_id = ${threadId}`);
+      yield* exec(sql`DELETE FROM ft3_mail_wakes WHERE target_thread_id = ${threadId}`);
+      yield* exec(
+        sql`DELETE FROM ft3_mail_kind_feedback WHERE letter_id IN (SELECT letter_id FROM ft3_mail_letters WHERE sender_thread_id = ${threadId})`,
+      );
+      yield* exec(
+        sql`DELETE FROM ft3_mail_deliveries WHERE letter_id IN (SELECT letter_id FROM ft3_mail_letters WHERE sender_thread_id = ${threadId})`,
+      );
+      yield* exec(sql`DELETE FROM ft3_mail_letters WHERE sender_thread_id = ${threadId}`);
       yield* exec(
         sql`DELETE FROM ft3_delegated_task_summaries WHERE child_thread_id = ${threadId} OR parent_thread_id = ${threadId}`,
       );

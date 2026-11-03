@@ -152,9 +152,19 @@ export const boardReactorLayer = () =>
     ),
   );
 
+export const mailReactorLayer = () =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const reactor = yield* Effect.promise(() => import("@t3tools/ft3-mail/reactor"));
+      // Shares the host mail stack, so the reactor sees the same tasks the tools write.
+      return reactor.layerWorker().pipe(Layer.provide(layer));
+    }),
+  );
+
 export const reactorLayer = () =>
   Layer.mergeAll(
     boardReactorLayer(),
+    mailReactorLayer(),
     Layer.unwrap(
       Effect.promise(() => import("@t3tools/ft3-board/automation")).pipe(
         Effect.map((module) => module.layerWorker()),

@@ -8,6 +8,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import { layer } from "./server.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as Crypto from "effect/Crypto";
@@ -35,6 +36,7 @@ const buildHostLayer = (env: Record<string, string>) =>
       ),
       Layer.provide(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-host-" })),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provide(launcherFake().layer),
     ),
   ).pipe(Effect.scoped);
 

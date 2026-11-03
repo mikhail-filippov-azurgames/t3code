@@ -158,7 +158,15 @@ const mailRoute = Effect.gen(function* () {
   yield* sql`ALTER TABLE ft3_mail_members ADD COLUMN route_policy_sha256 TEXT`;
 });
 
+/** The delivery reactor cursor; reruns from the stored event sequence after a restart. */
+const mailReactor = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE TABLE ft3_mail_reactor_cursor (id INTEGER PRIMARY KEY CHECK (id = 1), sequence INTEGER NOT NULL)`;
+  yield* sql`INSERT INTO ft3_mail_reactor_cursor VALUES (1, 0)`;
+});
+
 export const migrations = {
   "11_Mail": mail,
   "14_MailRoute": mailRoute,
+  "15_MailReactor": mailReactor,
 };
