@@ -6,7 +6,7 @@ import { usePrimaryEnvironmentId } from "~/state/environments";
 import { BoardThreadActionsControl } from "./BoardThreadActionsControl";
 import { resolveBoardThreadActionsControlModel } from "./boardThreadActions.logic";
 import { OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "./boardRoleIcons";
-import { useBoardOrchestratorThreadKeys, useBoardRolesDir } from "./useBoardBackend";
+import { useBoardOrchestratorThreadKeys, useBoardRolesConfigured } from "./useBoardBackend";
 import { useBoardThreadActions } from "./useBoardThreadActions";
 
 export interface CoordinatorBadgeProps {
@@ -17,12 +17,12 @@ export interface CoordinatorBadgeProps {
 /** Coordinator marker next to the thread title, as in the old fork. */
 export function CoordinatorBadge({ activeThreadId, isServerThread }: CoordinatorBadgeProps) {
   const orchestratorThreadKeys = useBoardOrchestratorThreadKeys();
-  const rolesDir = useBoardRolesDir();
+  const rolesConfigured = useBoardRolesConfigured();
   if (!isServerThread || !orchestratorThreadKeys.has(activeThreadId)) return null;
   return (
     <Badge variant="secondary" size="sm" className="ml-1 shrink-0 gap-1">
       <OrchestratorIcon aria-hidden className={`size-3 ${ORCHESTRATOR_ICON_CLASS}`} />
-      {rolesDir === "" ? "Coordinator" : "Coordinator · lead"}
+      {rolesConfigured ? "Coordinator · lead" : "Coordinator"}
     </Badge>
   );
 }

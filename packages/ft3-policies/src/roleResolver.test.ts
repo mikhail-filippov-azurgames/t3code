@@ -91,6 +91,15 @@ const resolveFailure = (role: string) =>
   });
 
 describe("RoleResolver applied roles", () => {
+  it.effect("reports configured only once the roles document is applied", () =>
+    Effect.gen(function* () {
+      const resolver = yield* RoleResolver;
+      assert.isFalse(yield* resolver.configured);
+      yield* applyRoles;
+      assert.isTrue(yield* resolver.configured);
+    }).pipe(Effect.provide(layerFor(store()))),
+  );
+
   it.effect("resolves a declared role to its applied instruction", () =>
     withRoles(
       store(),

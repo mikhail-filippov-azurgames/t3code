@@ -20,13 +20,13 @@ export function useBoardOrchestratorThreadKeys(): ReadonlySet<string> {
   );
 }
 
-/** Role instructions directory the server reads; empty while roles are off. */
-export function useBoardRolesDir(): string {
+/** Whether the server serves an applied roles document; false while roles are off. */
+export function useBoardRolesConfigured(): boolean {
   const environmentId = usePrimaryEnvironmentId();
   const query = useEnvironmentQuery(
     environmentId === null
       ? null
       : boardEnvironment.orchestratorsList({ environmentId, input: {} }),
   );
-  return query.data?.rolesDir ?? "";
+  return query.data?.rolesConfigured === true;
 }

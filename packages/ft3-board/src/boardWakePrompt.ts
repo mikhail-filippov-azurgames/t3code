@@ -30,16 +30,15 @@ export interface WakeCard {
 
 const RULES_REFERENCE = "Rules: see your lead brief";
 
-/** Names where the lead brief lives, so a short wake never restates the whole brief. */
-export function boardWakeRulesLine(rolesDirectory = ""): string {
-  const directory = rolesDirectory.trim();
-  return directory === "" ? `${RULES_REFERENCE}.` : `${RULES_REFERENCE} and ${directory}/lead.md.`;
+/** Names the applied lead brief, so a short wake never restates the whole brief. */
+export function boardWakeRulesLine(): string {
+  return `${RULES_REFERENCE}.`;
 }
 
 /** Every wake after the first one: the event lines plus where the rules live. */
-export function buildBoardWakeShortMessage(context: string, rolesDirectory = ""): string {
+export function buildBoardWakeShortMessage(context: string): string {
   const body = context.trim();
-  const rules = boardWakeRulesLine(rolesDirectory);
+  const rules = boardWakeRulesLine();
   return body === "" ? rules : `${body}\n\n${rules}`;
 }
 

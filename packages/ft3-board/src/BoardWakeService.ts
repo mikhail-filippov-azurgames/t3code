@@ -9,7 +9,6 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
-import { rolesDir } from "@t3tools/ft3-delegation/server";
 import { documentsBriefLine } from "@t3tools/ft3-docs/brief";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import { RoleResolver, roleResolverLayer } from "@t3tools/ft3-policies/server";
@@ -79,7 +78,6 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const gate = yield* FeatureGate.FeatureGate;
   const roles = yield* RoleResolver;
-  const rolesDirectory = yield* rolesDir;
 
   const wake = Effect.fn("Ft3BoardWakeService.wake")(function* (input: BoardWakeInput) {
     const enabled = yield* gate
@@ -92,7 +90,7 @@ const make = Effect.gen(function* () {
     const messageId = boardWakeMessageId(input.reason, input.key);
     const text = BRIEF_REASONS.has(input.reason)
       ? buildBoardWakePrompt(input.context, yield* roles.leadLine, documentsBriefLine())
-      : buildBoardWakeShortMessage(input.context, rolesDirectory);
+      : buildBoardWakeShortMessage(input.context);
     yield* threads
       .dispatch({
         type: "message.dispatch",

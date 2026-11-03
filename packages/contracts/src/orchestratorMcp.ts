@@ -143,7 +143,7 @@ export const OrchestratorMcpTaskRole = Schema.Literals([
   "test",
   "general",
   "architecture",
-  // ft3: role ids that need `<rolesDir>/<role>.md`; validated when roles are configured.
+  // ft3: role ids the applied roles document may declare; validated when roles are configured.
   "lead",
   "architect",
   "architect-boundaries",
@@ -887,6 +887,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "orchestration_error",
       "thread_credential_required",
       "target_required",
+      "mail_required",
     ]),
     message: Schema.String,
   },

@@ -10,7 +10,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ServerSettings,
 } from "@t3tools/contracts";
-import { projectDerivedText, rolesDir } from "@t3tools/ft3-delegation/server";
+import { projectDerivedText } from "@t3tools/ft3-delegation/server";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -126,7 +126,6 @@ export function formatCoordinatorBoardNudgeMessage(
   card: Contracts.BoardCard,
   activeChildCount: number,
   threshold: number,
-  rolesDirectory = "",
 ): string {
   const streak = failureWords(card.failureStreak);
   const stateInstruction =
@@ -155,7 +154,7 @@ export function formatCoordinatorBoardNudgeMessage(
           "If this card needs a human answer or decision, set readiness to needs_human with a readinessNote stating the exact question, tell the human, and end this turn. If it is blocked by an external cause, either fix it now and set ready, or set blocked with the cause and what it waits for, and end this turn. Do not move it to Backlog for this.",
         ]),
     "",
-    boardWakeRulesLine(rolesDirectory),
+    boardWakeRulesLine(),
   ].join("\n");
 }
 
@@ -180,7 +179,6 @@ export const make = Effect.gen(function* () {
   const engine = yield* ThreadManagement.ThreadManagementService;
   const settingsService = yield* ServerSettingsService;
   const sql = yield* SqlClient.SqlClient;
-  const rolesDirectory = yield* rolesDir;
 
   const logReason = (reason: string, details: Record<string, unknown> = {}) =>
     Effect.logInfo("coordinator board nudge", { reason, ...details });
@@ -448,7 +446,6 @@ export const make = Effect.gen(function* () {
               currentCard,
               activeChildCount,
               latestThreshold,
-              rolesDirectory,
             ),
             attachments: [],
             createdBy: "agent",

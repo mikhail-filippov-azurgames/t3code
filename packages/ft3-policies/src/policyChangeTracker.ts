@@ -8,6 +8,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
 import {
@@ -494,3 +495,43 @@ export const layer: Layer.Layer<
   never,
   PolicyDocumentLoader | PolicyAppliedStore
 > = Layer.effect(PolicyChangeTracker, make);
+
+/**
+ * Runs `onRefresh` after every refresh, so state derived from the applied
+ * documents follows Apply without a restart.
+ */
+export const withRefreshHook = (
+  onRefresh: (tracker: PolicyChangeTracker["Service"]) => Effect.Effect<void>,
+): Layer.Layer<PolicyChangeTracker, never, PolicyChangeTracker> =>
+  Layer.effect(
+    PolicyChangeTracker,
+    Effect.gen(function* () {
+      const inner = yield* PolicyChangeTracker;
+      return PolicyChangeTracker.of({
+        ...inner,
+        refresh: Effect.fn("PolicyChangeTracker.refreshWithHook")(function* (
+          input: PolicySyncInput,
+        ) {
+          const snapshot = yield* inner.refresh(input);
+          yield* onRefresh(inner);
+          return snapshot;
+        }),
+      });
+    }),
+  );
+
+/**
+ * The `oc://doc` link of the applied routing policy when the store serves it.
+ * Empty for a builtin, a path or no applied version, and when no tracker runs.
+ */
+export const appliedRoutingPolicyRef: Effect.Effect<string> = Effect.gen(function* () {
+  const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
+  if (Option.isNone(tracker)) return "";
+  const snapshot = yield* tracker.value.snapshot();
+  const routing = snapshot.documents.find((document) => document.key === "routingPolicy");
+  const source = routing?.source;
+  if (routing?.applied == null || source?.kind !== "doc" || source.address.kind !== "id") {
+    return "";
+  }
+  return `oc://doc/${source.address.stableId}`;
+});
