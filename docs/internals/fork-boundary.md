@@ -945,3 +945,23 @@ Fork-owned tests: `packages/ft3-pi/src/bundledPiMaintenance.test.ts` and the bun
 launcher case in `packages/ft3-pi/src/driver.test.ts`. The prepared-PATH test lives in
 `apps/server/src/cli/config.test.ts`, which the ft3 gate now runs with the other edited
 server tests.
+
+## Политика: источники документов и реестр функций
+
+`packages/ft3-policies` владеет контрактами и настройками политики Corvis:
+источники документов `routingPolicy` / `roles` / `leadSkills` (`builtin`, документ
+store через `DocAddress` из `@t3tools/ft3-docs/contracts` или внешний серверный
+путь), namespace `ft3.policies` (документы, `applyExternalEdits`, тумблеры
+функций) и реестр функций с графом зависимостей (`documents`, `planning`, …; без
+`architect`). Парсеры, загрузчик, snapshot и RPC приходят следующими срезами.
+
+Проект может переопределить ровно один документ политики. Переопределение едет
+через generic-ключ project settings, поэтому upstream settings service остаётся
+единственным хранилищем.
+
+| Upstream-файл                        | Правка                                                                                                                                    | Зачем                                                                          |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `packages/contracts/src/settings.ts` | optional `ft3PolicyDocuments` в `ProjectSettingsOverrides`; payload `Unknown`, типизированный decode — в `@t3tools/ft3-policies/settings` | один generic-шов project settings без импорта fork-пакета в upstream-контракты |
+
+Fork-owned tests: `packages/ft3-policies/src/features.test.ts` and
+`packages/ft3-policies/src/settings.test.ts`.

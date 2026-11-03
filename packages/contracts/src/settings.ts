@@ -1098,10 +1098,19 @@ export const ProjectSettingsOverrides = Schema.Struct({
   sidebarAutoSettleKeepPullRequests: Schema.optionalKey(Schema.Boolean),
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
+  /**
+   * Fork-owned: one policy document override per project. Kept generic so
+   * `@t3tools/contracts` stays free of fork packages; the typed schema and
+   * decode live in `@t3tools/ft3-policies/settings`.
+   */
+  ft3PolicyDocuments: Schema.optionalKey(Schema.Unknown),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
-} satisfies Record<ProjectScopedServerSettingKey | "providerInstances", unknown>);
+} satisfies Record<
+  ProjectScopedServerSettingKey | "providerInstances" | "ft3PolicyDocuments",
+  unknown
+>);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;
 
 // Whole-entry writers must round-trip unknown keys; keep the type closed to catch misspellings.

@@ -64,6 +64,7 @@ jobs:
             '@t3tools/ft3-kimi',
             '@t3tools/ft3-orchestration',
             '@t3tools/ft3-pi',
+            '@t3tools/ft3-policies',
             '@t3tools/ft3-vcs',
             '@t3tools/ft3-web'
           )
@@ -97,6 +98,7 @@ jobs:
             '@t3tools/ft3-kimi',
             '@t3tools/ft3-orchestration',
             '@t3tools/ft3-pi',
+            '@t3tools/ft3-policies',
             '@t3tools/ft3-vcs',
             '@t3tools/ft3-web'
           )
