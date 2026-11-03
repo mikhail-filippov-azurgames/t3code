@@ -6,8 +6,10 @@
  */
 import type { ProviderOptionSelection } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { PolicyChangeTracker } from "./policyChangeTracker.ts";
 import type { LoadedRoutingPolicyDocument } from "./policyDocumentLoader.ts";
@@ -195,8 +197,8 @@ export interface PolicyUsageEntry {
 }
 
 /**
- * Records delegation evidence. Persistence lands with the `10_PolicyUsage`
- * migration; until then an in-memory or no-op layer serves.
+ * Records delegation evidence in `ft3_policy_delegations`. Persistence must not
+ * fail a routing decision, so a failed insert is logged and the run continues.
  */
 export class PolicyUsageRecorder extends Context.Service<
   PolicyUsageRecorder,
@@ -229,6 +231,39 @@ export const inMemoryPolicyUsageRecorder = (): InMemoryPolicyUsageRecorder => {
     entries: () => entries,
   };
 };
+
+/** Persists recorded usage for the `10_PolicyUsage` table. */
+export const sqlPolicyUsageRecorderLayer: Layer.Layer<
+  PolicyUsageRecorder,
+  never,
+  SqlClient.SqlClient
+> = Layer.effect(
+  PolicyUsageRecorder,
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return PolicyUsageRecorder.of({
+      record: Effect.fn("PolicyUsageRecorder.record")(function* (entry: PolicyUsageEntry) {
+        const recordedAt = DateTime.formatIso(yield* DateTime.now);
+        const candidate = entry.candidate;
+        yield* sql`INSERT INTO ft3_policy_delegations (
+            delegation_id, role, level, policy_revision, policy_sha256, outcome,
+            candidate_alias, candidate_model, candidate_level,
+            candidate_provider_instance_id, candidate_provider_driver_kind, recorded_at
+          ) VALUES (
+            ${entry.delegationId}, ${entry.role}, ${entry.level}, ${entry.policy.revision},
+            ${entry.policy.sha256}, ${entry.outcome}, ${candidate?.alias ?? null},
+            ${candidate?.model ?? null}, ${candidate?.level ?? null},
+            ${candidate?.provider.instanceId ?? null},
+            ${candidate?.provider.driverKind ?? null}, ${recordedAt}
+          )`.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Policy usage was not recorded", { cause }),
+          ),
+        );
+      }),
+    });
+  }),
+);
 
 /** Normal-service policy as a service, so every create and override goes through one place. */
 export class NormalServicePolicy extends Context.Service<
