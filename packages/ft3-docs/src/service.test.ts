@@ -9,6 +9,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as Service from "./service.ts";
+import * as WriteRule from "./writeRule.ts";
 
 // The repository never carries real document ids; tests use nil-style ids.
 const NIL_ID = "00000000-0000-0000-0000-000000000000";
@@ -47,9 +48,20 @@ const moveDoc = (root: string, from: string, to: string) =>
 const allowStoreWrite = Layer.succeed(
   Service.DocumentsWriteAccess,
   Service.DocumentsWriteAccess.of({
-    decide: () => Effect.succeed({ _tag: "Allow", scope: "store" } as const),
+    decide: () =>
+      Effect.succeed({ _tag: "Allow", scope: "store", reason: "top_level_thread" } as const),
   }),
 );
+
+const lineageWithFacts = (value: WriteRule.DocumentsWriteFacts) =>
+  WriteRule.documentsWriteAccessLayer.pipe(
+    Layer.provide(
+      Layer.succeed(
+        WriteRule.DocumentsWriteFactsPort,
+        WriteRule.DocumentsWriteFactsPort.of({ factsOf: () => Effect.succeed(value) }),
+      ),
+    ),
+  );
 
 interface DocsTest {
   readonly service: Service.DocsService["Service"];
@@ -60,6 +72,8 @@ interface WithDocsOptions {
   readonly writable?: boolean;
   /** Protection port override; nothing is protected by default. */
   readonly isProtected?: boolean;
+  /** Write rule override; the default ports refuse every write. */
+  readonly writeAccess?: Layer.Layer<Service.DocumentsWriteAccess>;
 }
 
 /**
@@ -87,9 +101,11 @@ const withDocs = <A, E>(
       return yield* use(context);
     }).pipe(
       Effect.provide(
-        (options.writable === true
-          ? Service.layer({ root }).pipe(Layer.provide(allowStoreWrite))
-          : Service.layerWithDefaultPorts({ root })
+        (options.writeAccess !== undefined
+          ? Service.layer({ root }).pipe(Layer.provide(options.writeAccess))
+          : options.writable === true
+            ? Service.layer({ root }).pipe(Layer.provide(allowStoreWrite))
+            : Service.layerWithDefaultPorts({ root })
         ).pipe(Layer.provide(protection), Layer.provide(sqlLayer()), Layer.provide(cryptoLayer)),
       ),
       Effect.ensuring(removeRoot(root)),
@@ -210,7 +226,97 @@ describe("DocsService writes", () => {
           })
           .pipe(Effect.flip);
         assert.equal(error.code, "capability_denied");
+        assert.include(error.message, "write_disabled");
       }),
+    ),
+  );
+
+  it.effect("lets a top-level thread write and names the reason for a child", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          const child = { threadId: "thread:child", parentThreadId: "thread:root" };
+          const denied = yield* context.service
+            .write({
+              caller: child,
+              relPath: "project/child.md",
+              content: "# Child\n",
+              clientRequestId: "write:child",
+            })
+            .pipe(Effect.flip);
+          assert.equal(denied.code, "capability_denied");
+          assert.include(denied.message, "child_read_only");
+
+          const created = yield* context.service.write({
+            caller: { threadId: "thread:root", parentThreadId: null },
+            relPath: "project/top.md",
+            content: "# Top\n",
+            clientRequestId: "write:top",
+          });
+          assert.equal(created.relPath, "project/top.md");
+        }),
+      undefined,
+      { writeAccess: WriteRule.lineageDocumentsWrite },
+    ),
+  );
+
+  it.effect("lets a planner write only the plan document of its card", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const planner = { threadId: "thread:planner", parentThreadId: "thread:root" };
+          const plan = yield* context.service.read({ ref: `oc://doc/${NIL_ID}` });
+
+          const saved = yield* context.service.write({
+            caller: planner,
+            ref: plan.ocLink,
+            content: `---\nstable_id: ${NIL_ID}\n---\n# Plan\n\nOwned.\n`,
+            baseSha256: plan.sha256,
+            clientRequestId: "write:plan",
+          });
+          assert.equal(saved.stableId, NIL_ID);
+
+          const other = yield* context.service
+            .write({
+              caller: planner,
+              ref: "project/notes.md",
+              content: "# Notes\n\nChanged.\n",
+              clientRequestId: "write:other",
+            })
+            .pipe(Effect.flip);
+          assert.equal(other.code, "capability_denied");
+          assert.include(other.message, "planner_other_document");
+
+          const created = yield* context.service
+            .write({
+              caller: planner,
+              relPath: "project/planner-new.md",
+              content: "# New\n",
+              clientRequestId: "write:planner-new",
+            })
+            .pipe(Effect.flip);
+          assert.equal(created.code, "capability_denied");
+          assert.include(created.message, "planner_other_document");
+
+          const described = yield* context.service
+            .setDescription({
+              caller: planner,
+              ref: "project/notes.md",
+              description: "Not mine.",
+            })
+            .pipe(Effect.flip);
+          assert.equal(described.code, "capability_denied");
+          assert.include(described.message, "planner_other_document");
+        }),
+      seedFiles,
+      {
+        writeAccess: lineageWithFacts({
+          role: "planner",
+          planStableId: NIL_ID,
+          granted: false,
+        }),
+      },
     ),
   );
 

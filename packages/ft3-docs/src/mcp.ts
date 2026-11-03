@@ -13,6 +13,7 @@ import * as McpToolAccess from "../../../apps/server/src/mcp/McpToolAccess.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as Service from "./service.ts";
 import * as Contracts from "./toolContracts.ts";
+import * as WriteRule from "./writeRule.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
@@ -185,8 +186,10 @@ export interface DocsToolkitOptions {
   readonly root: string;
   /** Opens every tool call: the `documents` feature gate. */
   readonly requireEnabled: Effect.Effect<void, Contracts.DocsMcpFailure>;
-  /** Write rule override; the default refuses every write. */
+  /** Write rule override; the default is the lineage rule (design §3.5). */
   readonly writeAccess?: Layer.Layer<Service.DocumentsWriteAccess>;
+  /** Role, plan identity and grant read by the lineage rule; the default is none of them. */
+  readonly writeFacts?: Layer.Layer<WriteRule.DocumentsWriteFactsPort>;
   /** Protected-document rule override; nothing is protected by default. */
   readonly protection?: Layer.Layer<Service.DocsProtection>;
 }
@@ -194,6 +197,11 @@ export interface DocsToolkitOptions {
 /** The toolkit and its service; the guard is the host's feature gate. */
 export const mcpLayer = (options: DocsToolkitOptions) => {
   const guard = options.requireEnabled;
+  const writeAccess =
+    options.writeAccess ??
+    (options.writeFacts === undefined
+      ? WriteRule.lineageDocumentsWrite
+      : WriteRule.documentsWriteAccessLayer.pipe(Layer.provide(options.writeFacts)));
   const handlers = McpToolAccess.toLayer(toolkit, {
     docs_list: McpToolAccess.readsAsCaller((input) =>
       Effect.gen(function* () {
@@ -299,7 +307,7 @@ export const mcpLayer = (options: DocsToolkitOptions) => {
   return toolkitRegistration(toolkit, handlers).pipe(
     Layer.provide(
       Service.layer({ root: options.root }).pipe(
-        Layer.provide(options.writeAccess ?? Service.denyAllDocumentsWrite),
+        Layer.provide(writeAccess),
         Layer.provide(options.protection ?? Service.noProtectedDocuments),
       ),
     ),

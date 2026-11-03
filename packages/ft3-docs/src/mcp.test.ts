@@ -22,6 +22,7 @@ import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as Service from "./service.ts";
 import * as Contracts from "./toolContracts.ts";
 import { mcpLayer } from "./mcp.ts";
+import * as WriteRule from "./writeRule.ts";
 
 const NIL_ID = "00000000-0000-0000-0000-000000000000";
 const parentId = ThreadId.make("thread:docs-parent");
@@ -81,14 +82,23 @@ const writeDoc = (root: string, relPath: string, content: string) =>
 const allowStoreWrite = Layer.succeed(
   Service.DocumentsWriteAccess,
   Service.DocumentsWriteAccess.of({
-    decide: () => Effect.succeed({ _tag: "Allow", scope: "store" } as const),
+    decide: () =>
+      Effect.succeed({ _tag: "Allow", scope: "store", reason: "top_level_thread" } as const),
   }),
 );
+
+const factsLayer = (value: WriteRule.DocumentsWriteFacts) =>
+  Layer.succeed(
+    WriteRule.DocumentsWriteFactsPort,
+    WriteRule.DocumentsWriteFactsPort.of({ factsOf: () => Effect.succeed(value) }),
+  );
 
 interface FixtureOptions {
   readonly writable?: boolean;
   /** A guard that refuses every call, as the feature gate does when documents are off. */
   readonly documentsOff?: boolean;
+  /** Facts the lineage write rule reads; the default is no role, plan or grant. */
+  readonly writeFacts?: WriteRule.DocumentsWriteFacts;
 }
 
 function fixture(root: string, options: FixtureOptions = {}) {
@@ -115,6 +125,7 @@ function fixture(root: string, options: FixtureOptions = {}) {
           )
         : Effect.void,
     ...(options.writable === true ? { writeAccess: allowStoreWrite } : {}),
+    ...(options.writeFacts === undefined ? {} : { writeFacts: factsLayer(options.writeFacts) }),
   }).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(SqlitePersistence.layerMemory),
@@ -124,15 +135,20 @@ function fixture(root: string, options: FixtureOptions = {}) {
   );
 }
 
-const call = (name: string, args: Record<string, unknown>) =>
+const call = (name: string, args: Record<string, unknown>, threadId: ThreadId = parentId) =>
   Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
-    return yield* server
-      .callTool({ name, arguments: args })
-      .pipe(
-        Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
-        Effect.provideService(McpSchema.McpServerClient, client),
-      );
+    return yield* server.callTool({ name, arguments: args }).pipe(
+      Effect.provideService(McpInvocationContext.McpInvocationContext, {
+        ...scope,
+        thread: {
+          threadId,
+          providerSessionId: "session:docs-test",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+      }),
+      Effect.provideService(McpSchema.McpServerClient, client),
+    );
   });
 
 const decodeFailure = (result: McpSchema.CallToolResult) => {
@@ -280,18 +296,87 @@ describe("docs MCP tools", () => {
     ),
   );
 
-  it.effect("docs_write is refused while no write rule is provided", () =>
+  it.effect("docs_write follows the lineage rule: top-level writes, a child reads", () =>
     withFixture({}, () =>
       Effect.gen(function* () {
-        const failure = decodeFailure(
+        const created = structured("docs_write")(
           yield* call("docs_write", {
-            relPath: "project/new.md",
-            content: "# New\n",
-            clientRequestId: "write:denied",
+            relPath: "project/top.md",
+            content: "# Top\n",
+            clientRequestId: "write:top",
           }),
         );
-        assert.equal(failure.code, "capability_denied");
+        assert.equal(created.relPath, "project/top.md");
+
+        const denied = decodeFailure(
+          yield* call(
+            "docs_write",
+            {
+              relPath: "project/child.md",
+              content: "# Child\n",
+              clientRequestId: "write:child",
+            },
+            childId,
+          ),
+        );
+        assert.equal(denied.code, "capability_denied");
+        assert.include(denied.message, "child_read_only");
+
+        const described = decodeFailure(
+          yield* call(
+            "docs_set_description",
+            { ref: String(created.ocLink), description: "Child edit." },
+            childId,
+          ),
+        );
+        assert.equal(described.code, "capability_denied");
+        assert.include(described.message, "child_read_only");
       }),
+    ),
+  );
+
+  it.effect("a planner child writes only the plan document of its card", () =>
+    withFixture(
+      { writeFacts: { role: "planner", planStableId: NIL_ID, granted: false } },
+      (root) =>
+        Effect.gen(function* () {
+          yield* prime(root);
+          const plan = structured("docs_read")(
+            yield* call("docs_read", { ref: `oc://doc/${NIL_ID}` }, childId),
+          );
+          const saved = structured("docs_write")(
+            yield* call(
+              "docs_write",
+              {
+                ref: `oc://doc/${NIL_ID}`,
+                content: `---\nstable_id: ${NIL_ID}\n---\n# Plan\n\nOwned.\n`,
+                baseSha256: String(plan.sha256),
+                clientRequestId: "write:plan",
+              },
+              childId,
+            ),
+          );
+          assert.equal(saved.stableId, NIL_ID);
+
+          const notes = structured("docs_read")(
+            yield* call("docs_read", { ref: "project/notes.md" }, childId),
+          );
+          const other = decodeFailure(
+            yield* call(
+              "docs_write",
+              {
+                ref: "project/notes.md",
+                content: "# Notes\n\nChanged.\n",
+                baseSha256: String(notes.sha256),
+                clientRequestId: "write:other",
+              },
+              childId,
+            ),
+          );
+          assert.equal(other.code, "capability_denied");
+          assert.include(other.message, "planner_other_document");
+        }),
+      seed,
     ),
   );
 

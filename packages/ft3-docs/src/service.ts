@@ -26,11 +26,44 @@ export const DocsServiceErrorCode = Schema.Literals([
 ]);
 export type DocsServiceErrorCode = typeof DocsServiceErrorCode.Type;
 
+/** Why the write rule refused a caller; the denial message names it (design §3.5). */
+export const DocsWriteDenialReason = Schema.Literals([
+  "write_disabled",
+  "no_caller_thread",
+  "planner_plan_unknown",
+  "planner_other_document",
+  "general_without_grant",
+  "child_read_only",
+]);
+export type DocsWriteDenialReason = typeof DocsWriteDenialReason.Type;
+
+/** Why the write rule allowed a caller. */
+export type DocumentsWriteAllowReason = "top_level_thread" | "granted_general" | "planner_plan";
+
+const denialDetail = (reason: DocsWriteDenialReason): string => {
+  switch (reason) {
+    case "write_disabled":
+      return "document writes are turned off for every thread";
+    case "no_caller_thread":
+      return "the call is not attached to a thread";
+    case "planner_plan_unknown":
+      return "this planner has no plan document yet";
+    case "planner_other_document":
+      return "a planner may change only the plan document of its card";
+    case "general_without_grant":
+      return "a general child needs the lead's explicit documents:write grant";
+    case "child_read_only":
+      return "a delegated child may only read documents";
+  }
+};
+
 export class DocsServiceError extends Schema.TaggedError<DocsServiceError>()("DocsServiceError", {
   code: DocsServiceErrorCode,
   ref: Schema.optionalKey(Schema.String),
   /** Last known store path of a document that could not be resolved. */
   relPath: Schema.optionalKey(Schema.String),
+  /** The write rule's reason, present on `capability_denied`. */
+  reason: Schema.optionalKey(DocsWriteDenialReason),
   cause: Schema.optionalKey(Schema.Defect()),
 }) {
   override get message(): string {
@@ -48,7 +81,9 @@ export class DocsServiceError extends Schema.TaggedError<DocsServiceError>()("Do
       case "document_protected":
         return `Document "${this.ref ?? ""}" can be changed only by the human.`;
       case "capability_denied":
-        return "This thread may not change documents.";
+        return this.reason === undefined
+          ? "This thread may not change documents."
+          : `This thread may not change documents (${this.reason}): ${denialDetail(this.reason)}.`;
       case "invalid_input":
         return "The document request is not valid.";
       case "search_unavailable":
@@ -67,23 +102,27 @@ export interface DocsCaller {
 
 /**
  * What a caller may change. `store` covers every unprotected document of the
- * store; `document` covers exactly one (a planner and its own plan).
+ * store; `document` covers exactly one (a planner and its own plan). Every
+ * decision carries the reason it was reached, so a denial can name it.
  */
 export type DocumentsWriteDecision =
   | {
       readonly _tag: "Allow";
       readonly scope: "store";
+      readonly reason: "top_level_thread" | "granted_general";
     }
   | {
       readonly _tag: "Allow";
       readonly scope: "document";
       readonly stableId: string;
+      readonly reason: "planner_plan";
     }
-  | { readonly _tag: "Deny" };
+  | { readonly _tag: "Deny"; readonly reason: DocsWriteDenialReason };
 
 /**
- * Port of the `documents:write` rule. The lineage rule itself is a later slice;
- * this layer refuses every write until a rule is provided (deny by default).
+ * Port of the `documents:write` rule. The lineage rule lives in `writeRule.ts`
+ * and is the default the docs MCP tools use; this service stays the seam so a
+ * host can still supply its own rule.
  */
 export class DocumentsWriteAccess extends Context.Service<
   DocumentsWriteAccess,
@@ -92,11 +131,13 @@ export class DocumentsWriteAccess extends Context.Service<
   }
 >()("@t3tools/ft3-docs/service/DocumentsWriteAccess") {}
 
-/** Deny-by-default write rule: no caller may change a document yet. */
+/** Refuses every write, whatever the caller; hosts without the lineage rule use this. */
 export const denyAllDocumentsWrite: Layer.Layer<DocumentsWriteAccess> = Layer.succeed(
   DocumentsWriteAccess,
   DocumentsWriteAccess.of({
-    decide: Effect.fn("DocumentsWriteAccess.deny")(() => Effect.succeed({ _tag: "Deny" as const })),
+    decide: Effect.fn("DocumentsWriteAccess.deny")(() =>
+      Effect.succeed({ _tag: "Deny", reason: "write_disabled" } as const),
+    ),
   }),
 );
 
@@ -365,10 +406,22 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   ) {
     const decision = yield* writeAccess.decide(caller);
     if (decision._tag === "Deny") {
-      return yield* new DocsServiceError({ code: "capability_denied" });
+      return yield* new DocsServiceError({
+        code: "capability_denied",
+        reason: decision.reason,
+        ...(target === null ? {} : { ref: target.relPath }),
+      });
     }
-    if (target !== null && decision.scope === "document" && decision.stableId !== target.stableId) {
-      return yield* new DocsServiceError({ code: "capability_denied", ref: target.relPath });
+    // A document-scoped right never covers a new document or another document.
+    if (
+      decision.scope === "document" &&
+      (target === null || decision.stableId !== target.stableId)
+    ) {
+      return yield* new DocsServiceError({
+        code: "capability_denied",
+        reason: "planner_other_document",
+        ...(target === null ? {} : { ref: target.relPath }),
+      });
     }
     if (target !== null && (yield* protection.isProtected(target))) {
       return yield* new DocsServiceError({ code: "document_protected", ref: target.relPath });
