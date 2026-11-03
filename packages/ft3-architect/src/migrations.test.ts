@@ -154,6 +154,8 @@ describe("architect migrations through ft3-host", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [10, "PolicyUsage"],
+        [11, "Mail"],
         [13, "Docs"],
       ]);
       assert.deepStrictEqual(yield* runMigrations(), []);

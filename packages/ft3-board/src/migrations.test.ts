@@ -101,6 +101,8 @@ describe("board migrations through ft3-host", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [10, "PolicyUsage"],
+        [11, "Mail"],
         [13, "Docs"],
       ]);
       yield* sql`INSERT INTO ft3_board_orchestrators VALUES ('thread:retained', 'human', '2000-01-01')`;
@@ -147,6 +149,8 @@ describe("board migrations through ft3-host", () => {
           [7, "Ft3TaskHandoffs"],
           [8, "Ft3DelegatedTaskSummaryReactor"],
           [9, "BoardRetention"],
+          [10, "PolicyUsage"],
+          [11, "Mail"],
           [13, "Docs"],
         ]);
         assert.deepStrictEqual(yield* runMigrations(), []);
