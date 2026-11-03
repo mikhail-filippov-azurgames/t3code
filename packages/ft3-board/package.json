@@ -47,6 +47,10 @@
       "types": "./src/BoardDelegationService.ts",
       "import": "./src/BoardDelegationService.ts"
     },
+    "./wake": {
+      "types": "./src/BoardWakeService.ts",
+      "import": "./src/BoardWakeService.ts"
+    },
     "./contracts": {
       "types": "./src/contracts.ts",
       "import": "./src/contracts.ts"

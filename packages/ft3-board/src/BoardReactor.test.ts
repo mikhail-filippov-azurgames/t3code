@@ -257,7 +257,7 @@ function fixture() {
   const layer = Layer.mergeAll(Ft3Host.layer, managedThreads).pipe(
     Layer.provideMerge(infrastructure),
     Layer.provideMerge(SqlitePersistence.layerMemory),
-    Layer.provide(ServerSettings.layerTest()),
+    Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-reactor-" })),
     Layer.provideMerge(NodeServices.layer),
   );
