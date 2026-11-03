@@ -15,6 +15,10 @@
       "types": "./src/routingPolicy.ts",
       "import": "./src/routingPolicy.ts"
     },
+    "./routing": {
+      "types": "./src/routing.ts",
+      "import": "./src/routing.ts"
+    },
     "./rpc": {
       "types": "./src/rpc.ts",
       "import": "./src/rpc.ts"

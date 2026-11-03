@@ -13,4 +13,5 @@ export {
   roleInstructionLine,
 } from "./roleResolver.ts";
 export type { ResolvedRole, RoleAssignment } from "./roleResolver.ts";
+export * from "./routing.ts";
 export { FeatureDisabledError, FeatureGate, layer } from "./FeatureGate.ts";
