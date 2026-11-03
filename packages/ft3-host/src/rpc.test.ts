@@ -391,12 +391,12 @@ describe("FT3 RPC authorization", () => {
           key: "routingPolicy",
         }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
-      const write = AuthSettingsWriteScope;
       expect(
         yield* client[FT3_WS_METHODS.policiesReadDocument]({ key: "routingPolicy" }).pipe(
           Effect.flip,
         ),
-      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      const write = AuthSettingsWriteScope;
       expect(
         yield* client[FT3_WS_METHODS.policiesSaveDocument]({
           key: "routingPolicy",

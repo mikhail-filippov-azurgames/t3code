@@ -15,7 +15,7 @@ import {
 } from "@t3tools/ft3-policies/settings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -44,6 +44,7 @@ import {
   policyDocumentBadgeHint,
   policyDocumentReadOnlyNote,
   policyDocumentSourceLabel,
+  policyFileLabel,
 } from "./policies.logic.ts";
 import { policiesEnvironment } from "./state.ts";
 
@@ -273,7 +274,7 @@ function PolicyIssueList({
   onJumpToLine,
 }: {
   issues: ReadonlyArray<PolicyIssueSchema>;
-  onJumpToLine: (line: number) => void;
+  onJumpToLine: (file: string | null, line: number) => void;
 }) {
   return (
     <ul className="space-y-1 px-3 py-2 sm:px-4">
@@ -285,8 +286,9 @@ function PolicyIssueList({
             {line !== null ? (
               <button
                 type="button"
+                aria-label={`Go to line ${line}`}
                 className="shrink-0 font-mono text-xs text-info underline-offset-2 hover:underline"
-                onClick={() => onJumpToLine(line)}
+                onClick={() => onJumpToLine(issue.file ?? null, line)}
               >
                 L{line}
               </button>
@@ -331,6 +333,7 @@ function PolicyDocumentEditor({
   const [busy, setBusy] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
+  const pendingJumpRef = useRef<number | null>(null);
 
   const files = readQuery.data?.status === "ok" ? readQuery.data.files : [];
   const mainFile = readQuery.data?.status === "ok" ? readQuery.data.mainFile : null;
@@ -342,7 +345,7 @@ function PolicyDocumentEditor({
   const currentFile: PolicyDocumentFileSchema | null =
     files.find((file) => file.file === currentFileName) ?? null;
 
-  const jumpToLine = (line: number) => {
+  const focusLine = (line: number) => {
     const textarea = editorContainerRef.current?.querySelector("textarea");
     if (textarea === null || textarea === undefined) return;
     textarea.focus();
@@ -350,13 +353,39 @@ function PolicyDocumentEditor({
     textarea.setSelectionRange(offset, offset);
   };
 
-  const save = async (content: string, baseSha256: string) => {
+  const errors = document.errors;
+  const pendingChange = pendingQuery.data?.change ?? null;
+  const readOnly = document.source.kind === "builtin";
+
+  const jumpToLine = (file: string | null, line: number) => {
+    if (file !== null && file !== "" && file !== currentFileName) {
+      pendingJumpRef.current = line;
+      setActiveFile(file);
+      return;
+    }
+    focusLine(line);
+  };
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the jump lands once the switched file's editor has mounted
+  useEffect(() => {
+    if (currentFileName === null) return;
+    const pending = pendingJumpRef.current;
+    if (pending === null) return;
+    pendingJumpRef.current = null;
+    const textarea = editorContainerRef.current?.querySelector("textarea");
+    if (textarea === null || textarea === undefined) return;
+    textarea.focus();
+    const offset = lineStartOffset(textarea.value, pending);
+    textarea.setSelectionRange(offset, offset);
+  }, [currentFileName]);
+
+  const save = async (file: string, content: string, baseSha256: string) => {
     setBusy(true);
     setNotice(null);
     setRequestError(null);
     const result = await saveDocument({
       environmentId,
-      input: { key: document.key, baseSha256, content },
+      input: { key: document.key, file, baseSha256, content },
     });
     setBusy(false);
     if (AsyncResult.isFailure(result)) {
@@ -380,6 +409,8 @@ function PolicyDocumentEditor({
         text: "The file changed on disk or in the store since it was loaded. Reloading the latest version.",
       });
       readQuery.refresh();
+    } else if (readOnly) {
+      setNotice({ kind: "info", text: "Built-in templates are read-only; nothing was saved." });
     } else {
       setNotice({ kind: "error", text: "This document source is not writable from here." });
     }
@@ -415,9 +446,6 @@ function PolicyDocumentEditor({
     }
   };
 
-  const errors = document.errors;
-  const pendingChange = pendingQuery.data?.change ?? null;
-  const readOnly = document.source.kind === "builtin";
   const readOnlyNote = policyDocumentReadOnlyNote(document.source);
   const unappliedHint = policyDocumentBadgeHint(document);
 
@@ -458,22 +486,28 @@ function PolicyDocumentEditor({
           role="tablist"
           aria-label="Document files"
         >
-          {files.map((file) => (
-            <Button
-              key={file.file}
-              size="xs"
-              variant={file.file === currentFileName ? "default" : "outline"}
-              onClick={() => setActiveFile(file.file)}
-            >
-              {file.file}
-            </Button>
-          ))}
+          {files.map((file) => {
+            const selected = file.file === currentFileName;
+            return (
+              <Button
+                key={file.file}
+                size="xs"
+                variant={selected ? "default" : "outline"}
+                role="tab"
+                aria-selected={selected}
+                onClick={() => setActiveFile(file.file)}
+              >
+                {policyFileLabel(document.key, file.file)}
+              </Button>
+            );
+          })}
         </div>
       ) : null}
       {currentFile !== null ? (
         <div ref={editorContainerRef}>
           <PolicyFileEditor
             key={`${currentFile.file}:${currentFile.sha256}`}
+            documentKey={document.key}
             file={currentFile}
             busy={busy}
             readOnly={readOnly}
@@ -504,6 +538,11 @@ function PolicyDocumentEditor({
           </p>
           <PolicyIssueList issues={errors} onJumpToLine={jumpToLine} />
         </div>
+      ) : null}
+      {pendingQuery.error !== null ? (
+        <p className="px-3 py-2 text-sm text-destructive sm:px-4">
+          Could not load the pending change: {pendingQuery.error}
+        </p>
       ) : null}
       {pendingChange !== null ? (
         <div className="space-y-2 px-3 py-2 sm:px-4">
@@ -542,22 +581,25 @@ function PolicyDocumentEditor({
 }
 
 function PolicyFileEditor({
+  documentKey,
   file,
   busy,
   readOnly,
   onSave,
 }: {
+  documentKey: PolicyDocumentKey;
   file: PolicyDocumentFileSchema;
   busy: boolean;
   readOnly: boolean;
-  onSave: (content: string, baseSha256: string) => Promise<void>;
+  onSave: (file: string, content: string, baseSha256: string) => Promise<void>;
 }) {
   const [content, setContent] = useState(file.content);
   const dirty = content !== file.content;
+  const label = policyFileLabel(documentKey, file.file);
   return (
     <div className="space-y-2 px-3 py-2 sm:px-4">
       <Textarea
-        aria-label={readOnly ? `View ${file.file}` : `Edit ${file.file}`}
+        aria-label={readOnly ? `View ${label}` : `Edit ${label}`}
         value={content}
         readOnly={readOnly}
         onChange={(event) => setContent(event.target.value)}
@@ -568,7 +610,7 @@ function PolicyFileEditor({
           <Button
             size="sm"
             disabled={!dirty || busy}
-            onClick={() => void onSave(content, file.sha256)}
+            onClick={() => void onSave(file.file, content, file.sha256)}
           >
             Save and apply
           </Button>

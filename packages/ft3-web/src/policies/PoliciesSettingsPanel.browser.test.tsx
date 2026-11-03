@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   read: null as unknown,
   pending: null as unknown,
   readError: null as string | null,
+  pendingError: null as string | null,
   policySettings: null as unknown,
   calls: [] as Array<{ label: string; input: unknown }>,
   commandResult: null as unknown,
@@ -38,7 +39,9 @@ vi.mock("~/state/query", () => ({
     const query = (atom as { __query: string }).__query;
     const data =
       query === "snapshot" ? mocks.snapshot : query === "read" ? mocks.read : mocks.pending;
-    return { ...view, data, error: query === "read" ? mocks.readError : null };
+    const error =
+      query === "read" ? mocks.readError : query === "pending" ? mocks.pendingError : null;
+    return { ...view, data, error };
   },
 }));
 
@@ -178,6 +181,7 @@ function setup() {
   mocks.calls = [];
   mocks.commandResult = null;
   mocks.readError = null;
+  mocks.pendingError = null;
   mocks.policySettings = DEFAULT_POLICY_SETTINGS;
 }
 
@@ -216,11 +220,61 @@ describe("policies settings panel", () => {
     setup();
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
     await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
-    await userEvent.click(screen.getByText("L2"));
+    await userEvent.click(screen.getByRole("button", { name: "Go to line 2" }));
     const textarea = screen.container.querySelector("textarea");
     expect(textarea).not.toBeNull();
     expect(document.activeElement).toBe(textarea);
     expect(textarea!.selectionStart).toBe(6);
+  });
+
+  it("switches to the issue's file before jumping to its line", async () => {
+    setup();
+    mocks.snapshot = {
+      ...snapshotFixture,
+      documents: snapshotFixture.documents.map((document) =>
+        document.key === "leadSkills"
+          ? {
+              ...document,
+              errors: [
+                {
+                  code: "lead_skill_missing",
+                  severity: "error",
+                  message: 'Skill "review" is missing.',
+                  document: "leadSkills",
+                  line: 2,
+                  file: "board-orchestrator/SKILL.md",
+                },
+              ],
+            }
+          : document,
+      ),
+    };
+    mocks.read = {
+      status: "ok",
+      key: "leadSkills",
+      source: { kind: "path", path: "/etc/ft3/lead-skills.json" },
+      configured: true,
+      files: [
+        { file: "", content: "main file\nsecond line", sha256: "d".repeat(64) },
+        {
+          file: "board-orchestrator/SKILL.md",
+          content: "skill line one\nskill line two",
+          sha256: "e".repeat(64),
+        },
+      ],
+      mainFile: "",
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+    const tabs = screen.container.querySelectorAll('[role="tab"]');
+    expect(tabs).toHaveLength(2);
+    expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
+    await userEvent.click(screen.getByRole("button", { name: "Go to line 2" }));
+    const textarea = screen.container.querySelector("textarea");
+    expect(textarea).not.toBeNull();
+    expect(textarea!.value).toBe("skill line one\nskill line two");
+    expect(document.activeElement).toBe(textarea);
+    expect(textarea!.selectionStart).toBe(15);
   });
 
   it("says an invalid save is not applied and the previous version stays active", async () => {
@@ -234,12 +288,28 @@ describe("policies settings panel", () => {
     await userEvent.click(screen.getByText("Save and apply"));
     expect(mocks.calls).toHaveLength(1);
     expect(mocks.calls[0]!.label).toBe("policies.saveDocument");
-    const input = mocks.calls[0]!.input as { key: string; baseSha256: string; content: string };
+    const input = mocks.calls[0]!.input as {
+      key: string;
+      file: string;
+      baseSha256: string;
+      content: string;
+    };
     expect(input.key).toBe("leadSkills");
+    expect(input.file).toBe("routing-policy.md");
     expect(input.baseSha256).toBe("d".repeat(64));
     expect(input.content).toContain("!");
     expect(screen.container.textContent).toContain(
       "Not applied: the document has errors, so the previous version stays active.",
+    );
+  });
+
+  it("shows why the pending change could not be loaded", async () => {
+    setup();
+    mocks.pendingError = "Forbidden: orchestration:read required";
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Roles" }));
+    expect(screen.container.textContent).toContain(
+      "Could not load the pending change: Forbidden: orchestration:read required",
     );
   });
 

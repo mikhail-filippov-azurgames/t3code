@@ -13,6 +13,7 @@ import {
   policyDocumentBadgeHint,
   policyDocumentReadOnlyNote,
   policyDocumentSourceLabel,
+  policyFileLabel,
 } from "./policies.logic.ts";
 
 const documentStatus = (
@@ -79,6 +80,13 @@ describe("policy document actions and explanations", () => {
   it("opens a built-in template as View and a store or file document as Edit", () => {
     expect(policyDocumentActionLabel({ kind: "builtin" })).toBe("View");
     expect(policyDocumentActionLabel({ kind: "path", path: "/etc/policy.md" })).toBe("Edit");
+  });
+
+  it("labels the main file by the document and tree files by their path", () => {
+    expect(policyFileLabel("roles", "")).toBe("roles.json");
+    expect(policyFileLabel("roles", "lead.md")).toBe("lead.md");
+    expect(policyFileLabel("leadSkills", "")).toBe("lead-skills.json");
+    expect(policyFileLabel("routingPolicy", "")).toBe("routing-policy.md");
   });
 
   it("explains an unapplied built-in template and points at the errors", () => {

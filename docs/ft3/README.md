@@ -67,8 +67,9 @@ MCP-toolkit'ы строятся через штатные `toolkitRegistration`/
 `apps/server/src/ws.ts` делает только `WsRpcGroup.merge(Ft3Rpc.group)`, spread
 `Ft3Rpc.handlers`, `Ft3Rpc.authorizationLayer` и `Ft3Rpc.serviceLayer`; upstream-карта прав
 не правится. Web подключает контракты через `packages/client-runtime/src/rpc/protocol.ts`.
-Права: чтение доски, архитектора, VCS, статуса Pi, документов OpenContext и
-snapshot политики — `orchestration:read`; запись, запуск Pi и публикация —
+Права: чтение доски, архитектора, VCS, статуса Pi, документов OpenContext,
+snapshot и документов политики — `orchestration:read`; их запись —
+`settings:write`; остальная запись, запуск Pi и публикация —
 `orchestration:operate`. См.
 [«RPC-модуль ft3 для web (S1)»](../internals/fork-boundary.md#rpc-модуль-ft3-для-web-срез-s1)
 и [«Web extensions (S3)»](../internals/fork-boundary.md#web-extensions-s3).

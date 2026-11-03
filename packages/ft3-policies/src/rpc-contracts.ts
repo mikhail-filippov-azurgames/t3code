@@ -239,7 +239,7 @@ export const policiesRpcs = [
 export const policiesRpcScopes = {
   [FT3_POLICIES_WS_METHODS.policiesGetSnapshot]: AuthOrchestrationReadScope,
   [FT3_POLICIES_WS_METHODS.policiesGetPendingChange]: AuthOrchestrationReadScope,
-  [FT3_POLICIES_WS_METHODS.policiesReadDocument]: AuthSettingsWriteScope,
+  [FT3_POLICIES_WS_METHODS.policiesReadDocument]: AuthOrchestrationReadScope,
   [FT3_POLICIES_WS_METHODS.policiesSaveDocument]: AuthSettingsWriteScope,
   [FT3_POLICIES_WS_METHODS.policiesApplyPending]: AuthSettingsWriteScope,
   [FT3_POLICIES_WS_METHODS.policiesSetApplyExternalEdits]: AuthSettingsWriteScope,

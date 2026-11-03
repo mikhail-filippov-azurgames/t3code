@@ -38,6 +38,18 @@ export const POLICY_DOCUMENT_KEY_LABELS: Readonly<Record<PolicyDocumentKey, stri
   leadSkills: "Lead skills",
 };
 
+/** The main file's name per document; tree files carry their manifest-relative path. */
+const POLICY_MAIN_FILE_LABELS: Readonly<Record<PolicyDocumentKey, string>> = {
+  routingPolicy: "routing-policy.md",
+  roles: "roles.json",
+  leadSkills: "lead-skills.json",
+};
+
+/** Tab and editor label of one document file; "" is the main file. */
+export function policyFileLabel(key: PolicyDocumentKey, file: string): string {
+  return file === "" ? POLICY_MAIN_FILE_LABELS[key] : file;
+}
+
 /**
  * The badge state of one document. An invalid live version outranks a pending
  * external change, because the kept previous version is what actually runs.

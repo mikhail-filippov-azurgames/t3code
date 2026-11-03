@@ -2,7 +2,6 @@
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import * as NodeURL from "node:url";
 
 import type { DocsService } from "@t3tools/ft3-docs/server";
 import * as Context from "effect/Context";
@@ -16,6 +15,7 @@ import {
   type PolicyDocumentSource,
   type PolicyRequirementId,
 } from "./contracts.ts";
+import { BUILTIN_ASSET_CONTENTS } from "./builtinAssets.ts";
 import { documentMissingIssue, storeUnavailableIssue, type PolicyIssue } from "./diagnostics.ts";
 import { parseLeadSkillsDocumentSet, type ParsedLeadSkillsDocument } from "./leadSkills.ts";
 import { parseRolesDocumentSet, type ParsedRolesDocument } from "./roleDocuments.ts";
@@ -137,8 +137,6 @@ type ContentRead =
   | { readonly ok: true; readonly content: LoadedContent }
   | { readonly ok: false; readonly issues: readonly PolicyIssue[] };
 
-const PACKAGE_ROOT = NodeURL.fileURLToPath(new URL("..", import.meta.url));
-
 const sha256Hex = (content: string): string =>
   NodeCrypto.createHash("sha256").update(content, "utf8").digest("hex");
 
@@ -220,28 +218,30 @@ const liveFilesOf = (
 
 const readBuiltin = (key: PolicyDocumentKey): ContentRead => {
   const relative = assetPathOf(key);
-  const absolute = NodePath.join(PACKAGE_ROOT, ...relative.split("/"));
-  try {
-    const content = NodeFS.readFileSync(absolute, "utf8");
-    const files: Map<string, string> = isTreeKey(key)
-      ? new Map(readDirectoryFiles(NodePath.dirname(absolute)))
-      : new Map();
-    const manifest = NodePath.basename(absolute);
-    files.delete(manifest);
-    const sha256 = sha256Hex(content);
-    return {
-      ok: true,
-      content: {
-        content,
-        files,
-        sha256,
-        label: relative,
-        liveFiles: liveFilesOf({ content, sha256, absolutePath: null }, files),
-      },
-    };
-  } catch {
+  const content = BUILTIN_ASSET_CONTENTS[relative];
+  if (content === undefined) {
     return { ok: false, issues: [documentMissingIssue(key, relative)] };
   }
+  const files: Map<string, string> = new Map();
+  if (isTreeKey(key)) {
+    const directory = relative.slice(0, relative.lastIndexOf("/"));
+    const prefix = `${directory}/`;
+    for (const [asset, assetContent] of Object.entries(BUILTIN_ASSET_CONTENTS)) {
+      if (asset === relative || !asset.startsWith(prefix) || !asset.endsWith(".md")) continue;
+      files.set(asset.slice(prefix.length), assetContent);
+    }
+  }
+  const sha256 = sha256Hex(content);
+  return {
+    ok: true,
+    content: {
+      content,
+      files,
+      sha256,
+      label: relative,
+      liveFiles: liveFilesOf({ content, sha256, absolutePath: null }, files),
+    },
+  };
 };
 
 const readServerPath = (key: PolicyDocumentKey, path: string): ContentRead => {
