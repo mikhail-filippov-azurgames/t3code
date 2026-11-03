@@ -63,6 +63,33 @@ export const FT3_SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["thread delete days erased purge permanent startup"],
     scope: "environment-defaults",
   },
+  {
+    id: "ft3-policies",
+    title: "Policy documents",
+    to: "/settings/policies",
+    searchTerms: [
+      "policy routing policy roles lead skills documents editor applied pending external change invalid",
+    ],
+    scope: "environment-defaults",
+  },
+  {
+    id: "ft3-policies-external-edits",
+    title: "Apply external policy edits immediately",
+    to: "/settings/policies",
+    targetId: "ft3-policies-external-edits",
+    searchTerms: [
+      "policy external edits file changed outside apply immediately toggle diff one click",
+    ],
+    scope: "environment-defaults",
+  },
+  {
+    id: "ft3-policies-features",
+    title: "Feature toggles",
+    to: "/settings/policies",
+    targetId: "ft3-policies-features",
+    searchTerms: ["policy feature toggles board mail planning documents roles delegation"],
+    scope: "environment-defaults",
+  },
 ] as const satisfies readonly SettingsSearchItem[];
 
 export type Ft3SettingsSearchItemId = (typeof FT3_SETTINGS_SEARCH_ITEMS)[number]["id"];
