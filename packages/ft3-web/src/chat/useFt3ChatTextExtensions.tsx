@@ -54,7 +54,7 @@ import {
 import { MissingFileLinkChip } from "./MissingFileLinkChip";
 import { OpenContextDocChip } from "./OpenContextDocChip";
 import { parseOpenContextDocHref } from "./openContextDocLink";
-import { openContextEnvironment, toOpenContextDocResolveResult } from "./openContextState";
+import { docsEnvironment, toOpenContextDocResolveResult } from "./openContextState";
 
 export interface Ft3MarkdownLinkInput {
   readonly href: string;
@@ -105,7 +105,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
   const resolveCommitMentionsQuery = useAtomQueryRunner(commitsEnvironment.resolveCommitMentions, {
     reportFailure: false,
   });
-  const resolveOpenContextDocQuery = useAtomQueryRunner(openContextEnvironment.resolveDoc, {
+  const resolveOpenContextDocQuery = useAtomQueryRunner(docsEnvironment.resolveDoc, {
     reportFailure: false,
   });
   const searchProjectEntries = useAtomQueryRunner(projectEnvironment.searchEntries, {

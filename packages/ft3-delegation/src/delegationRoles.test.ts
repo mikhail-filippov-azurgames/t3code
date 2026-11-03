@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 // @effect-diagnostics nodeBuiltinImport:off - tests write role files into a temporary directory.
 import { t3OrchestrationSystemPrompt } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { docsBriefBlock, setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
@@ -37,6 +38,33 @@ describe("ft3 delegation roles", () => {
       role: undefined,
     });
     assert.deepStrictEqual(delegatedRoleAssignment("review", ""), { _tag: "off", role: "review" });
+    assert.equal(
+      delegatedTaskPrompt({
+        role: "review",
+        rolesDir: "",
+        task: "Review it.",
+        upstreamPrompt,
+      }),
+      upstreamPrompt,
+    );
+  });
+
+  it("adds the documents brief block only while documents are effective", () => {
+    const upstreamPrompt = "Act as the review sub-agent for this task.";
+    try {
+      setDocumentsBriefEnabled(true);
+      assert.equal(
+        delegatedTaskPrompt({
+          role: "review",
+          rolesDir: "",
+          task: "Review it.",
+          upstreamPrompt,
+        }),
+        `${docsBriefBlock()}\n\n${upstreamPrompt}`,
+      );
+    } finally {
+      setDocumentsBriefEnabled(false);
+    }
     assert.equal(
       delegatedTaskPrompt({
         role: "review",

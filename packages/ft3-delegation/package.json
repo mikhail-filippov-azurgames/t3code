@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
+    "@t3tools/ft3-docs": "workspace:*",
     "@t3tools/provider-core": "workspace:*",
     "effect": "catalog:"
   },

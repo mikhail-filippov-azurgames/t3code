@@ -40,7 +40,9 @@ import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/Proj
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as OrchestrationEventStore from "../../../apps/server/src/persistence/OrchestrationEventStore.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TextGeneration from "../../../apps/server/src/textGeneration/TextGeneration.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import * as DelegatedTaskSummaryReactor from "./DelegatedTaskSummaryReactor.ts";
@@ -216,7 +218,11 @@ function fixture() {
     SummaryRepository.layer,
   );
   const layer = Layer.mergeAll(
-    Ft3Host.layer.pipe(Layer.provide(ServerSettings.layerTest())),
+    Ft3Host.layer.pipe(
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-summary-" })),
+      Layer.provideMerge(NodeServices.layer),
+    ),
     DelegatedTaskSummaryReactor.layer.pipe(Layer.provideMerge(support)),
     TaskQueryService.layer.pipe(
       Layer.provideMerge(support),

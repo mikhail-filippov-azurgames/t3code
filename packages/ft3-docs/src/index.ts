@@ -183,6 +183,21 @@ export class DocsIndex extends Context.Service<
  */
 export const layer = Layer.effect(DocsIndex, make);
 
+/**
+ * The index when the runtime lacks FTS5: reconcile and writes keep working,
+ * `docs_search` reports the reason instead of failing the whole service.
+ */
+export const unavailableLayer: Layer.Layer<DocsIndex> = Layer.succeed(
+  DocsIndex,
+  DocsIndex.of({
+    indexDocuments: Effect.fn("DocsIndex.unavailable.indexDocuments")(() => Effect.void),
+    removeDocuments: Effect.fn("DocsIndex.unavailable.removeDocuments")(() => Effect.void),
+    search: Effect.fn("DocsIndex.unavailable.search")(() =>
+      Effect.fail(indexError("fts5_unavailable")),
+    ),
+  }),
+);
+
 /** Applies one reconcile report to the index; the wiring the composition uses. */
 export const applyReport = (
   index: DocsIndex["Service"],

@@ -9,10 +9,11 @@ const WORKFLOW = [
   "Do not report a cause as a fact until it is shown by an observable fact. Separate what was observed from what was inferred, and label an inference as an inference.",
 ];
 
-export function buildBoardWakePrompt(context: string, roleLine = ""): string {
+export function buildBoardWakePrompt(context: string, roleLine = "", documentsBrief = ""): string {
   return [
     ...(roleLine.trim() === "" ? [] : [roleLine]),
     IDENTITY,
+    ...(documentsBrief.trim() === "" ? [] : [documentsBrief]),
     "Architects (`architect`, `architect-*`) are consultants you may call for one concrete question via `delegate_task`; for a card that needs a plan, ask the `planner` role and follow its role file.",
     ...WORKFLOW,
     `Current card context:\n${context}`,

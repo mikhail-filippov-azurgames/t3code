@@ -19,7 +19,9 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import * as Contracts from "./contracts.ts";
 
@@ -85,6 +87,8 @@ function fixture(settings: Parameters<typeof ServerSettings.layerTest>[0] = {}) 
     Layer.provide(providerRegistry),
     Layer.provide(crypto),
     Layer.provide(ServerSettings.layerTest(settings)),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-" })),
+    Layer.provideMerge(NodeServices.layer),
   );
   return { layer, shells };
 }
