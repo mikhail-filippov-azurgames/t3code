@@ -10,6 +10,10 @@
     "./contracts": {
       "types": "./src/contracts.ts",
       "import": "./src/contracts.ts"
+    },
+    "./migrations": {
+      "types": "./src/migrations.ts",
+      "import": "./src/migrations.ts"
     }
   },
   "scripts": {
