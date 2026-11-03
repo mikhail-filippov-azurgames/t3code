@@ -14,7 +14,10 @@
   `readPolicySettings` и `resolvePolicyDocumentSources`;
 - `./routingPolicy` — `parseRoutingPolicy`: markdown-таблицы живой политики
   (клетки роль × уровень, таблицы алиасов по провайдерам) по форме, типизированная
-  `RoutingPolicy` и issues с номерами строк.
+  `RoutingPolicy` и issues с номерами строк;
+- `./rpc` и `./rpc-contracts` — `policies.getSnapshot` (scope `orchestration:read`):
+  applied-версия, последняя увиденная версия, ошибки и warning'и каждого документа
+  политики для вкладки Policies.
 
 Встроенные шаблоны — ресурсы пакета `assets/`; `assets/routing-policy.md` уже в
 формате parser'а: пустая таблица клеток на семь ролей и пустая таблица алиасов под
@@ -24,7 +27,10 @@
 
 - `./server` — строгие парсеры документов политики ролей и lead-скиллов:
   `parseRolesDocumentSet`, `parseRoleFile`, `parseLeadSkillsDocumentSet`,
-  `parseLeadSkillFile` и типы `PolicyIssue`.
+  `parseLeadSkillFile`, загрузчик `PolicyDocumentLoader` (через `DocsService`,
+  builtin-шаблон или внешний файл) и `PolicyChangeTracker` (applied-версии,
+  невалидная версия не применяется, `policy_invalid_kept`), а также единый тип
+  `PolicyIssue`.
 
 ## Встроенные шаблоны
 
@@ -78,9 +84,11 @@ warning (`accelerated_candidate`) её не отменяет.
 
 ## Границы
 
-Загрузчик, snapshot, RPC и UI — следующие задачи дизайна; пакет не читает файлы
-и не знает формат store: парсеры получают содержимое от вызывающего кода.
-Шов upstream — generic-ключ `ft3PolicyDocuments` в
+Пакет читает политику через `@t3tools/ft3-docs` (`DocsService`) и не знает формат
+store: таблицы `folders`/`docs`, `oc://`-схема, раскладка папок и frontmatter живут
+только в `ft3-docs`. Внешний файл (`{kind:"path"}`) и встроенные шаблоны читаются
+как ресурсы, без формата store. UI вкладки Policies и RPC записи документов —
+следующие задачи дизайна. Шов upstream — generic-ключ `ft3PolicyDocuments` в
 `packages/contracts/src/settings.ts`; строка — в
 [fork-boundary.md](../../docs/internals/fork-boundary.md).
 
@@ -91,4 +99,7 @@ warning (`accelerated_candidate`) её не отменяет.
 `ProjectSettingsOverrides`; routing parser: синтетическая копия формы живой
 политики, `→`/`>`, `alias@level`, каждый код ошибки с номером строки и встроенный
 шаблон; парсинг встроенных шаблонов ролей и lead-скиллов, каждый код §5 их
-парсеров, подсказки для неизвестной и недостающей роли, номера строк.
+парсеров, подсказки для неизвестной и недостающей роли, номера строк; загрузчик и
+трекер: валидное обновление применяется, невалидное сохраняет applied-версию с
+`policy_invalid_kept` и строками ошибок, исправление снова применяется, дерево
+ролей читается через `DocsService`.

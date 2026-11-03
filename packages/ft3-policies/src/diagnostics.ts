@@ -106,10 +106,11 @@ export function documentMissingIssue(
 export function documentUnconfiguredIssue(
   key: PolicyDocumentKey,
   input: Omit<PolicyIssueInput, "document"> = {},
+  severity: PolicyIssueSeverity = "warning",
 ): PolicyIssue {
   return issue(
     "document_unconfigured",
-    "warning",
+    severity,
     `Document "${key}" is a template. Fill it in (roles and skills: set "configured: true").`,
     { ...input, document: key },
   );
@@ -185,6 +186,110 @@ export function leadSkillMissingIssue(
     "error",
     `Lead skill "${skillId}" is missing at "${path}". Restore it or choose the lead-skills directory.`,
     { ...input, document: "leadSkills", subject: skillId },
+  );
+}
+
+/** A routing-policy table row that cannot be parsed, on the row's line. */
+export function tableRowInvalidIssue(line: number, text: string, reason: string): PolicyIssue {
+  return issue(
+    "table_row_invalid",
+    "error",
+    `Routing policy line ${line}: cannot parse "${text}": ${reason}.`,
+    { document: "routingPolicy", line, text },
+  );
+}
+
+/** A cell candidate that no alias table of the document declares. */
+export function candidateAliasUnknownIssue(line: number, alias: string): PolicyIssue {
+  return issue(
+    "candidate_alias_unknown",
+    "error",
+    `Routing policy line ${line}: candidate alias "${alias}" is not declared in any alias table.`,
+    { document: "routingPolicy", line, subject: alias },
+  );
+}
+
+/** The document has no role × level table at all. */
+export function routingTableMissingIssue(): PolicyIssue {
+  return issue(
+    "routing_table_missing",
+    "error",
+    "Routing policy has no role × level table (columns low, medium, high, very-high).",
+    { document: "routingPolicy" },
+  );
+}
+
+/** A second role × level table was found; only one is read. */
+export function routingTableDuplicateIssue(line: number): PolicyIssue {
+  return issue(
+    "routing_table_duplicate",
+    "error",
+    `Routing policy line ${line}: a second role × level table was found; keep exactly one.`,
+    { document: "routingPolicy", line },
+  );
+}
+
+/** An alias table without a provider heading above it. */
+export function aliasTableProviderMissingIssue(line: number): PolicyIssue {
+  return issue(
+    "alias_table_provider_missing",
+    "error",
+    `Routing policy line ${line}: alias table has no preceding heading ending in (\`<providerInstanceId> / <driverKind>\`).`,
+    { document: "routingPolicy", line },
+  );
+}
+
+/** The same alias is declared twice; the first declaration's line is named. */
+export function aliasDuplicateIssue(line: number, alias: string, firstLine: number): PolicyIssue {
+  return issue(
+    "alias_duplicate",
+    "error",
+    `Routing policy line ${line}: alias "${alias}" is already declared at line ${firstLine}.`,
+    { document: "routingPolicy", line, subject: alias },
+  );
+}
+
+/** A candidate whose model id asks for an accelerated service tier. */
+export function acceleratedCandidateIssue(line: number, alias: string): PolicyIssue {
+  return issue(
+    "accelerated_candidate",
+    "warning",
+    `Candidate "${alias}" requests an accelerated service tier and will always be skipped.`,
+    { document: "routingPolicy", line, subject: alias },
+  );
+}
+
+/** A role row the enabled feature needs is absent from the routing table. */
+export function routingRoleMissingIssue(roleId: string, feature: string): PolicyIssue {
+  return issue(
+    "role_missing",
+    "error",
+    `Role "${roleId}" is required by ${feature}. Add its roles.json entry and Markdown file.`,
+    { document: "routingPolicy", subject: roleId },
+  );
+}
+
+/** A newer version has errors, so the previously applied one keeps serving. */
+export function policyInvalidKeptIssue(key: PolicyDocumentKey, revision: number): PolicyIssue {
+  return issue(
+    "policy_invalid_kept",
+    "error",
+    `Document "${key}" has errors and was not applied; revision ${revision} stays active.`,
+    { document: key },
+  );
+}
+
+/** The store could not be read for a configured policy document. */
+export function storeUnavailableIssue(
+  key: PolicyDocumentKey,
+  label: string,
+  reason: string,
+): PolicyIssue {
+  return issue(
+    "store_unavailable",
+    "error",
+    `The document store at "${label}" is unavailable: ${reason}.`,
+    { document: key },
   );
 }
 
