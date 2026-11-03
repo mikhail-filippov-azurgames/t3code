@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - tests write role files into a temporary directory.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -15,14 +14,17 @@ import {
   type OrchestratorMcpTaskRole,
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 
+import {
+  PolicyChangeTracker,
+  layer as policyChangeTrackerLayer,
+} from "../../../../packages/ft3-policies/src/policyChangeTracker.ts";
+import { layer as policyDocumentLoaderLayer } from "../../../../packages/ft3-policies/src/policyDocumentLoader.ts";
+import { memoryPolicyDocumentPort } from "../../../../packages/ft3-policies/src/policyDocuments.testkit.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { OrchestratorCommandRejectedError } from "../orchestration-v2/Orchestrator.ts";
@@ -37,13 +39,58 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
 
-const rolesDirEnv = "T3CODE_FT3_ROLES_DIR";
+const ROLES_MANIFEST_PATH = "policies/roles/roles.json";
 
-const makeRolesDir = (roles: ReadonlyArray<string>): string => {
-  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ft3-delegation-roles-"));
-  for (const role of roles) NodeFS.writeFileSync(NodePath.join(dir, `${role}.md`), role);
-  return dir;
+const manifest = (roles: ReadonlyArray<{ id: string; roleId: string; upstreamRole?: string }>) =>
+  [
+    "{",
+    '  "schema": "corvis-role-map-v1",',
+    '  "revision": 1,',
+    '  "configured": true,',
+    '  "roles": [',
+    roles
+      .map(
+        (role) =>
+          `    { "id": "${role.id}", "roleId": "${role.roleId}", "file": "${role.roleId}.md"${
+            role.upstreamRole === undefined ? "" : `, "upstreamRole": "${role.upstreamRole}"`
+          } }`,
+      )
+      .join(",\n"),
+    "  ]",
+    "}",
+    "",
+  ].join("\n");
+
+const roleFile = (roleId: string, body: string): string =>
+  [
+    "---",
+    "schema: corvis-role-v1",
+    `roleId: ${roleId}`,
+    "revision: 1",
+    "configured: true",
+    "---",
+    "",
+    body,
+    "",
+  ].join("\n");
+
+/** An applied roles document: the general role plus the roles each case names. */
+const appliedRoles = (
+  roles: ReadonlyArray<{ id: string; roleId: string; upstreamRole?: string; body: string }>,
+): ReadonlyMap<string, string> => {
+  const files = new Map<string, string>();
+  files.set(ROLES_MANIFEST_PATH, manifest(roles));
+  for (const role of roles) {
+    files.set(`policies/roles/${role.roleId}.md`, roleFile(role.roleId, role.body));
+  }
+  return files;
 };
+
+const rolesSource = {
+  routingPolicy: { kind: "builtin" },
+  roles: { kind: "doc", address: { kind: "path", relPath: ROLES_MANIFEST_PATH } },
+  leadSkills: { kind: "builtin" },
+} as const;
 
 const codexInstanceId = ProviderInstanceId.make("codex");
 const codexDriver = ProviderDriverKind.make("codex");
@@ -119,63 +166,68 @@ const parentProjection = (threadId: ThreadId) =>
 
 type Dispatched = ReadonlyArray<{ readonly task: string; readonly role?: string }>;
 
+const trackerLayerFor = (files: ReadonlyMap<string, string>) =>
+  policyChangeTrackerLayer.pipe(
+    Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(files))),
+  );
+
 const layerFor = (
   threadId: ThreadId,
   dispatched: Ref.Ref<Dispatched>,
-  rolesDir: string | undefined,
+  applied: ReadonlyMap<string, string> | undefined,
 ) =>
-  layerOrchestratorService.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        NodeServices.layer,
-        ServerSettings.layerTest(),
-        Layer.mock(ProviderRegistry.ProviderRegistry)({
-          getProviders: Effect.succeed([codexProvider]),
-        }),
-        adapterRegistryLayer,
-        Layer.mock(ProjectService.ProjectService)({}),
-        Layer.mock(SecretRequests.SecretRequests)({}),
-        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
-        Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
-          getThreadRecords: () => Effect.succeed(parentProjection(threadId)),
-          isProviderInstanceEnabledForProject: () => Effect.succeed(true),
-          dispatch: (command: OrchestrationV2ServerCommand) =>
-            Effect.gen(function* () {
-              if (command.type === "delegated_task.request") {
-                yield* Ref.update(dispatched, (entries) => [
-                  ...entries,
-                  {
-                    task: command.task,
-                    ...(command.role === undefined ? {} : { role: command.role }),
-                  },
-                ]);
-              }
-              return yield* new OrchestratorCommandRejectedError({
-                commandId: command.commandId,
-                commandType: command.type,
-              });
-            }),
-        }),
-      ),
-    ),
-    Layer.provide(
-      ConfigProvider.layer(
-        ConfigProvider.fromEnv(
-          rolesDir === undefined ? { env: {} } : { env: { [rolesDirEnv]: rolesDir } },
+  Layer.mergeAll(
+    layerOrchestratorService.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          ServerSettings.layerTest(),
+          Layer.mock(ProviderRegistry.ProviderRegistry)({
+            getProviders: Effect.succeed([codexProvider]),
+          }),
+          adapterRegistryLayer,
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            getThreadRecords: () => Effect.succeed(parentProjection(threadId)),
+            isProviderInstanceEnabledForProject: () => Effect.succeed(true),
+            dispatch: (command: OrchestrationV2ServerCommand) =>
+              Effect.gen(function* () {
+                if (command.type === "delegated_task.request") {
+                  yield* Ref.update(dispatched, (entries) => [
+                    ...entries,
+                    {
+                      task: command.task,
+                      ...(command.role === undefined ? {} : { role: command.role }),
+                    },
+                  ]);
+                }
+                return yield* new OrchestratorCommandRejectedError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                });
+              }),
+          }),
         ),
       ),
     ),
+    applied === undefined ? Layer.empty : trackerLayerFor(applied),
   );
 
 const delegate = (
   threadId: ThreadId,
   dispatched: Ref.Ref<Dispatched>,
-  rolesDir: string | undefined,
+  applied: ReadonlyMap<string, string> | undefined,
   input: { readonly task: string; readonly role?: OrchestratorMcpTaskRole },
 ) =>
   Effect.gen(function* () {
+    const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
+    if (Option.isSome(tracker)) {
+      yield* tracker.value.refresh({ sources: rolesSource, features: { board: true } });
+    }
     const service = yield* OrchestratorMcpService.OrchestratorMcpService;
     return yield* service
       .delegateTask(scopeFor(threadId), {
@@ -185,10 +237,10 @@ const delegate = (
         clientRequestId: "delegate-roles",
       })
       .pipe(Effect.flip);
-  }).pipe(Effect.provide(layerFor(threadId, dispatched, rolesDir)));
+  }).pipe(Effect.provide(layerFor(threadId, dispatched, applied)));
 
 describe("OrchestratorMcpService delegation roles", () => {
-  it.effect("keeps today's prompt while the roles directory is unset", () =>
+  it.effect("keeps today's prompt while no roles document is applied", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-off");
       const dispatched = yield* Ref.make<Dispatched>([]);
@@ -203,13 +255,16 @@ describe("OrchestratorMcpService delegation roles", () => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-default");
       const dispatched = yield* Ref.make<Dispatched>([]);
-      const dir = makeRolesDir(["general", "lead"]);
-      yield* delegate(threadId, dispatched, dir, { task: "Fix the parser." });
+      const applied = appliedRoles([
+        { id: "general", roleId: "general", upstreamRole: "general", body: "# General\n\nDo it." },
+        { id: "lead", roleId: "lead", body: "# Lead\n\nOwn it." },
+      ]);
+      yield* delegate(threadId, dispatched, applied, { task: "Fix the parser." });
       const [entry] = yield* Ref.get(dispatched);
       assert.equal(entry!.role, "general");
       assert.isTrue(
         entry!.task.startsWith(
-          `Your role is general. Before any work, read the whole file ${dir.replace(/\\/g, "/")}/general.md and follow it.`,
+          "Your role is general. Follow this role instruction before any work.\n\n# General\n\nDo it.",
         ),
       );
       assert.include(entry!.task, "Fix the parser.");
@@ -220,24 +275,36 @@ describe("OrchestratorMcpService delegation roles", () => {
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-lead");
       const dispatched = yield* Ref.make<Dispatched>([]);
-      const dir = makeRolesDir(["general", "lead"]);
-      yield* delegate(threadId, dispatched, dir, { task: "Run the wave.", role: "lead" });
+      const applied = appliedRoles([
+        { id: "general", roleId: "general", upstreamRole: "general", body: "# General\n\nDo it." },
+        { id: "lead", roleId: "lead", body: "# Lead\n\nOwn the wave." },
+      ]);
+      yield* delegate(threadId, dispatched, applied, { task: "Run the wave.", role: "lead" });
       const [entry] = yield* Ref.get(dispatched);
       assert.equal(entry!.role, "lead");
       assert.isTrue(
         entry!.task.startsWith(
-          `Your role is lead. Before any work, read the whole file ${dir.replace(/\\/g, "/")}/lead.md and follow it.`,
+          "Your role is lead. Follow this role instruction before any work.\n\n# Lead\n\nOwn the wave.",
         ),
       );
     }),
   );
 
-  it.effect("accepts planner and resolves architecture to architect.md", () =>
+  it.effect("accepts planner and resolves architecture to the architect role", () =>
     Effect.gen(function* () {
-      const dir = makeRolesDir(["architect", "planner"]);
+      const applied = appliedRoles([
+        { id: "lead", roleId: "lead", body: "# Lead\n\nOwn the wave." },
+        { id: "planner", roleId: "planner", body: "# Planner\n\nWrite the plan." },
+        {
+          id: "architect",
+          roleId: "architect",
+          upstreamRole: "architecture",
+          body: "# Architect\n\nAdvise once.",
+        },
+      ]);
       const plannerThread = ThreadId.make("thread:ft3-roles-planner");
       const plannerDispatched = yield* Ref.make<Dispatched>([]);
-      yield* delegate(plannerThread, plannerDispatched, dir, {
+      yield* delegate(plannerThread, plannerDispatched, applied, {
         task: "Write the plan.",
         role: "planner",
       });
@@ -245,13 +312,13 @@ describe("OrchestratorMcpService delegation roles", () => {
       assert.equal(planner!.role, "planner");
       assert.isTrue(
         planner!.task.startsWith(
-          `Your role is planner. Before any work, read the whole file ${dir.replace(/\\/g, "/")}/planner.md and follow it.`,
+          "Your role is planner. Follow this role instruction before any work.\n\n# Planner\n\nWrite the plan.",
         ),
       );
 
       const architectThread = ThreadId.make("thread:ft3-roles-architecture");
       const architectDispatched = yield* Ref.make<Dispatched>([]);
-      yield* delegate(architectThread, architectDispatched, dir, {
+      yield* delegate(architectThread, architectDispatched, applied, {
         task: "Advise on the schema.",
         role: "architecture",
       });
@@ -259,29 +326,32 @@ describe("OrchestratorMcpService delegation roles", () => {
       assert.equal(architect!.role, "architecture");
       assert.isTrue(
         architect!.task.startsWith(
-          `Your role is architect. Before any work, read the whole file ${dir.replace(/\\/g, "/")}/architect.md and follow it.`,
+          "Your role is architect. Follow this role instruction before any work.\n\n# Architect\n\nAdvise once.",
         ),
       );
     }),
   );
 
-  it.effect("rejects a role id without a role file and lists the available roles", () =>
+  it.effect("rejects a role id the applied document does not declare", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-missing");
       const dispatched = yield* Ref.make<Dispatched>([]);
-      const dir = makeRolesDir(["general", "lead", "review-common"]);
-      const error = yield* delegate(threadId, dispatched, dir, {
+      const applied = appliedRoles([
+        { id: "general", roleId: "general", upstreamRole: "general", body: "# General\n\nDo it." },
+        { id: "review", roleId: "review-common", upstreamRole: "review", body: "# Review." },
+      ]);
+      const error = yield* delegate(threadId, dispatched, applied, {
         task: "Design the schema.",
         role: "architect-data",
       });
       assert.equal(error.code, "invalid_request");
-      assert.include(error.message, "architect-data.md");
-      assert.include(error.message, "review-common");
+      assert.include(error.message, "architect-data");
+      assert.include(error.message, "review");
       assert.deepStrictEqual(yield* Ref.get(dispatched), []);
     }),
   );
 
-  it.effect("rejects a roles-only role id while the roles directory is unset", () =>
+  it.effect("rejects a roles-only role id while no roles document is applied", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-off-rejected");
       const dispatched = yield* Ref.make<Dispatched>([]);
@@ -290,7 +360,7 @@ describe("OrchestratorMcpService delegation roles", () => {
         role: "lead",
       });
       assert.equal(error.code, "invalid_request");
-      assert.include(error.message, rolesDirEnv);
+      assert.include(error.message, "needs a configured roles document");
       assert.deepStrictEqual(yield* Ref.get(dispatched), []);
     }),
   );
