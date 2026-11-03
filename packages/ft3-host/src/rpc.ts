@@ -45,7 +45,6 @@ import {
   FT3_POLICIES_WS_METHODS,
   policiesRpcHandlers,
   policiesRpcScopes,
-  policiesRpcServiceLayer,
   policiesRpcs,
 } from "@t3tools/ft3-policies/rpc";
 import * as Effect from "effect/Effect";
@@ -144,5 +143,4 @@ export const serviceLayer = Layer.mergeAll(
   piRpcServiceLayer,
   ft3VcsRpcServiceLayer,
   docsServiceLayer,
-  policiesRpcServiceLayer.pipe(Layer.provide(docsServiceLayer)),
 );

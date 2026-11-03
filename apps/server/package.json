@@ -44,6 +44,7 @@
     "@t3tools/ft3-host": "workspace:*",
     "@t3tools/ft3-kimi": "workspace:*",
     "@t3tools/ft3-pi": "workspace:*",
+    "@t3tools/ft3-policies": "workspace:*",
     "@t3tools/provider-acp": "workspace:*",
     "@t3tools/provider-acp-registry": "workspace:*",
     "@t3tools/provider-core": "workspace:*",

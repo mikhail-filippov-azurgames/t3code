@@ -7,6 +7,15 @@ export * from "./policyChangeTracker.ts";
 export * from "./policyDiff.ts";
 export * from "./policyDocumentLoader.ts";
 export * from "./roleDocuments.ts";
+export {
+  DEFAULT_DELEGATED_ROLE,
+  RoleResolutionError,
+  RoleResolver,
+  findAppliedRole,
+  layer as roleResolverLayer,
+  roleInstructionLine,
+} from "./roleResolver.ts";
+export type { ResolvedRole, RoleAssignment } from "./roleResolver.ts";
 export * from "./routing.ts";
 export * from "./settings.ts";
 export { FeatureDisabledError, FeatureGate, layer } from "./FeatureGate.ts";

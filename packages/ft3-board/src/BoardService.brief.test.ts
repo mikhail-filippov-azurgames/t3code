@@ -5,6 +5,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeFS from "node:fs";
@@ -15,6 +16,13 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import { layerMemory as policyAppliedStoreLayer } from "../../ft3-policies/src/policyAppliedStore.ts";
+import {
+  PolicyChangeTracker,
+  layer as policyChangeTrackerLayer,
+} from "../../ft3-policies/src/policyChangeTracker.ts";
+import { layer as policyDocumentLoaderLayer } from "../../ft3-policies/src/policyDocumentLoader.ts";
+import { memoryPolicyDocumentPort } from "../../ft3-policies/src/policyDocuments.testkit.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
 import * as Contracts from "./contracts.ts";
@@ -22,6 +30,7 @@ import * as Contracts from "./contracts.ts";
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
 const rolesDirEnv = "T3CODE_FT3_ROLES_DIR";
+const ROLES_MANIFEST_PATH = "policies/roles/roles.json";
 
 const cryptoLayer = Layer.succeed(
   Crypto.Crypto,
@@ -37,12 +46,51 @@ const makeRolesDir = (): string => {
   return dir.replace(/\\/g, "/");
 };
 
+const appliedRoles = (leadBody: string): ReadonlyMap<string, string> =>
+  new Map([
+    [
+      ROLES_MANIFEST_PATH,
+      [
+        "{",
+        '  "schema": "corvis-role-map-v1",',
+        '  "revision": 1,',
+        '  "configured": true,',
+        '  "roles": [ { "id": "lead", "roleId": "lead", "file": "lead.md" } ]',
+        "}",
+        "",
+      ].join("\n"),
+    ],
+    [
+      "policies/roles/lead.md",
+      [
+        "---",
+        "schema: corvis-role-v1",
+        "roleId: lead",
+        "revision: 1",
+        "configured: true",
+        "---",
+        "",
+        leadBody,
+        "",
+      ].join("\n"),
+    ],
+  ]);
+
+const rolesSource = {
+  routingPolicy: { kind: "builtin" },
+  roles: { kind: "doc", address: { kind: "path", relPath: ROLES_MANIFEST_PATH } },
+  leadSkills: { kind: "builtin" },
+} as const;
+
 type Service = BoardService.BoardService["Service"];
 
 const wake = <A>(
-  rolesDir: string | undefined,
+  options: {
+    readonly rolesDir?: string;
+    readonly applied?: ReadonlyMap<string, string>;
+    readonly markFirst?: boolean;
+  },
   action: (service: Service) => Effect.Effect<A, Contracts.BoardMcpFailure>,
-  options: { readonly markFirst?: boolean } = {},
 ) =>
   Effect.gen(function* () {
     const dispatched = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -53,21 +101,37 @@ const wake = <A>(
           ? Ref.update(dispatched, (texts) => [...texts, command.text]).pipe(Effect.as({} as never))
           : Effect.succeed({} as never),
     });
-    const layer = BoardService.layer.pipe(
-      Layer.provideMerge(BoardRepository.layer),
-      Layer.provideMerge(SqlitePersistence.layerMemory),
-      Layer.provide(threads),
-      Layer.provide(cryptoLayer),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv(
-            rolesDir === undefined ? { env: {} } : { env: { [rolesDirEnv]: rolesDir } },
+    const tracker =
+      options.applied === undefined
+        ? Layer.empty
+        : policyChangeTrackerLayer.pipe(
+            Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(options.applied))),
+            Layer.provide(policyAppliedStoreLayer),
+          );
+    const layer = Layer.mergeAll(
+      BoardService.layer.pipe(
+        Layer.provideMerge(BoardRepository.layer),
+        Layer.provideMerge(SqlitePersistence.layerMemory),
+        Layer.provide(threads),
+        Layer.provide(cryptoLayer),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv(
+              options.rolesDir === undefined
+                ? { env: {} }
+                : { env: { [rolesDirEnv]: options.rolesDir } },
+            ),
           ),
         ),
       ),
+      tracker,
     );
     return yield* Effect.gen(function* () {
+      const trackerService = yield* Effect.serviceOption(PolicyChangeTracker);
+      if (Option.isSome(trackerService)) {
+        yield* trackerService.value.refresh({ sources: rolesSource, features: { board: true } });
+      }
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO orchestration_v2_projection_threads ${sql.insert({
         thread_id: threadId,
@@ -92,27 +156,32 @@ const wake = <A>(
     }).pipe(Effect.provide(layer));
   });
 
-const resend = (rolesDir: string | undefined) =>
-  wake(rolesDir, (service) => service.resendBrief({ threadId }));
+const resend = (options: {
+  readonly rolesDir?: string;
+  readonly applied?: ReadonlyMap<string, string>;
+}) => wake(options, (service) => service.resendBrief({ threadId }));
 
 describe("ft3 board Coordinator brief", () => {
   it.effect("starts with the Coordinator identity while roles are off", () =>
     Effect.gen(function* () {
-      const result = yield* resend(undefined);
+      const result = yield* resend({});
       assert.equal(result.rolesDir, "");
       assert.equal(result.texts.length, 1);
       assert.isTrue(result.texts[0]!.startsWith("You are the lead for this board thread."));
     }),
   );
 
-  it.effect("starts with the lead role instruction when roles are configured", () =>
+  it.effect("starts with the applied lead role instruction when roles are configured", () =>
     Effect.gen(function* () {
       const dir = makeRolesDir();
-      const result = yield* resend(dir);
+      const result = yield* resend({
+        rolesDir: dir,
+        applied: appliedRoles("# Lead\n\nOwn the board."),
+      });
       assert.equal(result.rolesDir, dir);
       assert.isTrue(
         result.texts[0]!.startsWith(
-          `Your role is lead. Before any work, read the whole file ${dir}/lead.md and follow it.`,
+          "Your role is lead. Follow this role instruction before any work.\n\n# Lead\n\nOwn the board.",
         ),
       );
       assert.include(result.texts[0]!, "You are the lead for this board thread.");
@@ -125,9 +194,9 @@ describe("ft3 board Coordinator brief", () => {
 
   it.effect("sends the full brief on the first bind of the lead", () =>
     Effect.gen(function* () {
-      const result = yield* wake(undefined, (service) => service.markOrchestrator({ threadId }), {
-        markFirst: false,
-      });
+      const result = yield* wake({ markFirst: false }, (service) =>
+        service.markOrchestrator({ threadId }),
+      );
       assert.equal(result.texts.length, 1);
       assert.include(result.texts[0]!, "You are the lead for this board thread.");
       assert.include(result.texts[0]!, "Keep statuses truthful");
@@ -138,7 +207,7 @@ describe("ft3 board Coordinator brief", () => {
   it.effect("sends a short wake instead of the brief when a human starts a card", () =>
     Effect.gen(function* () {
       const dir = makeRolesDir();
-      const result = yield* wake(dir, (service) =>
+      const result = yield* wake({ rolesDir: dir }, (service) =>
         Effect.gen(function* () {
           const card = yield* service.createHumanCard({
             orchestratorThreadId: threadId,

@@ -9,9 +9,10 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
-import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/server";
+import { rolesDir } from "@t3tools/ft3-delegation/server";
 import { documentsBriefLine } from "@t3tools/ft3-docs/brief";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
+import { RoleResolver, roleResolverLayer } from "@t3tools/ft3-policies/server";
 import { buildBoardWakePrompt, buildBoardWakeShortMessage } from "./boardWakePrompt.ts";
 
 /** Existing wake reasons; each owns its `ft3:board:*` id namespace. */
@@ -77,8 +78,8 @@ export class BoardWakeService extends Context.Service<
 const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const gate = yield* FeatureGate.FeatureGate;
+  const roles = yield* RoleResolver;
   const rolesDirectory = yield* rolesDir;
-  const coordinatorRoleLine = coordinatorBriefRoleLine(rolesDirectory);
 
   const wake = Effect.fn("Ft3BoardWakeService.wake")(function* (input: BoardWakeInput) {
     const enabled = yield* gate
@@ -89,15 +90,16 @@ const make = Effect.gen(function* () {
       );
     if (!enabled) return "skipped" as const;
     const messageId = boardWakeMessageId(input.reason, input.key);
+    const text = BRIEF_REASONS.has(input.reason)
+      ? buildBoardWakePrompt(input.context, yield* roles.leadLine, documentsBriefLine())
+      : buildBoardWakeShortMessage(input.context, rolesDirectory);
     yield* threads
       .dispatch({
         type: "message.dispatch",
         commandId: CommandId.make(messageId),
         threadId: input.threadId,
         messageId: MessageId.make(messageId),
-        text: BRIEF_REASONS.has(input.reason)
-          ? buildBoardWakePrompt(input.context, coordinatorRoleLine, documentsBriefLine())
-          : buildBoardWakeShortMessage(input.context, rolesDirectory),
+        text,
         attachments: [],
         createdBy: "agent",
         creationSource: "server",
@@ -115,4 +117,6 @@ const make = Effect.gen(function* () {
   return BoardWakeService.of({ wake });
 });
 
-export const layer = Layer.effect(BoardWakeService, make).pipe(Layer.provide(FeatureGate.layer));
+export const layer = Layer.effect(BoardWakeService, make).pipe(
+  Layer.provide(Layer.mergeAll(FeatureGate.layer, roleResolverLayer)),
+);

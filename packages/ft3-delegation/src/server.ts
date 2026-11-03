@@ -16,20 +16,14 @@ export type {
 export { delegationTextDecision } from "./delegationTextDecision.ts";
 export type { DelegationTextDecision } from "./delegationTextDecision.ts";
 export {
-  availableRoles,
-  coordinatorBriefRoleLine,
-  DEFAULT_DELEGATED_ROLE,
   DELEGATED_ROLE_IDS,
-  delegatedRoleAssignment,
   delegatedTaskPrompt,
   ROLES_DIR_ENV,
-  roleInstructionLine,
   rolesDir,
   rolesDirPath,
   startupRoleConfiguration,
-  UPSTREAM_ROLE_IDS,
 } from "./delegationRoles.ts";
-export type { DelegatedRoleAssignment, DelegatedRoleId } from "./delegationRoles.ts";
+export type { DelegatedRoleId } from "./delegationRoles.ts";
 export {
   delegationPermissionDecision,
   delegationPermissionDenial,
