@@ -851,7 +851,7 @@ export const OrchestrationV2DelegatedTaskRole = Schema.Literals([
   "research",
   "general",
   "design",
-  // ft3: role ids that need `<rolesDir>/<role>.md`; validated when roles are configured.
+  // ft3: role ids the applied roles document may declare; validated when roles are configured.
   "lead",
   "architect",
   "architect-boundaries",

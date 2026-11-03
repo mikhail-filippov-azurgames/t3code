@@ -11,7 +11,6 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -102,7 +101,6 @@ const codexProvider: ServerProvider = {
   skills: [],
 };
 
-const configuredPolicyRef = "policy:configured";
 const createEvidence: Contracts.CoordinatorArchitectRoutingEvidence = {
   policyRef: "policy",
   policyRevision: 1,
@@ -482,57 +480,6 @@ describe("ft3 architect toolkit through ft3-host", () => {
       assert.equal(command.type, "thread.create");
       assert.equal(command.threadId, result.architectThreadId);
     }).pipe(Effect.provide(f.layer));
-  });
-
-  it.effect("rejects routing evidence that does not reference the configured policy", () => {
-    const f = fixture();
-    const layer = f.layer.pipe(
-      Layer.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({
-            env: { T3CODE_FT3_ROUTING_POLICY_REF: configuredPolicyRef },
-          }),
-        ),
-      ),
-    );
-    return Effect.gen(function* () {
-      yield* seedThreads;
-      yield* mark();
-      const rejected = failure(yield* call("architect_create_or_get", createArgs()));
-      assert.equal(rejected.code, "routing_evidence_mismatch");
-      assert.include(
-        rejected.message,
-        `The routing evidence policyRef must be exactly ${configuredPolicyRef}.`,
-      );
-      assert.equal(f.createdCommands.length, 0);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("accepts routing evidence that references the configured policy", () => {
-    const f = fixture();
-    const layer = f.layer.pipe(
-      Layer.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromEnv({
-            env: { T3CODE_FT3_ROUTING_POLICY_REF: configuredPolicyRef },
-          }),
-        ),
-      ),
-    );
-    return Effect.gen(function* () {
-      yield* seedThreads;
-      yield* mark();
-      const result = yield* decodeCreate(
-        (yield* call(
-          "architect_create_or_get",
-          createArgs({
-            routingEvidence: { ...createEvidence, policyRef: configuredPolicyRef },
-          }),
-        )).structuredContent,
-      );
-      assert.equal(result.created, true);
-      assert.equal(result.binding.routingEvidence!.policyRef, configuredPolicyRef);
-    }).pipe(Effect.provide(layer));
   });
 
   it.effect("repeats an exact create idempotently", () => {

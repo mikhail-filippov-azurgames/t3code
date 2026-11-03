@@ -451,22 +451,22 @@ New fork-owned tests: `packages/ft3-delegation/src/delegationPermissionEnvelope.
 
 ## Delegated roles (S)
 
-`T3CODE_FT3_ROLES_DIR` — абсолютный путь к каталогу с одним Markdown-файлом
-инструкций на роль (`<rolesDir>/<role>.md`). Пустое значение выключает функцию:
-поведение делегирования и текст инструкций остаются такими же, как в upstream.
-Каталог читается один раз при сборке слоёв; несуществующий каталог роняет
-startup (`rolesDir` из `packages/ft3-delegation/src/delegationRoles.ts` умирает
-с сообщением, называющим переменную), поэтому сломанная настройка не всплывает
-в середине делегации. `Ft3Host.layer` подключает этот startup-эффект, попутно
-переключая guidance из upstream `provider-core`.
+Роли читаются из применённого документа `roles` через `RoleResolver` поверх
+`PolicyChangeTracker`. Инструкция роли — текст применённого файла, путь к
+каталогу агенту не выдаётся. Переменная `T3CODE_FT3_ROLES_DIR` читается только
+однократной миграцией env (`ft3-policies/src/envMigration.ts`); после маркера
+она игнорируется. Без применённого roles-документа роли выключены, делегирование
+совпадает с upstream.
 
-Когда каталог задан, `delegate_task` требует роль из списка ниже; роль без
-`<role>.md` отклоняется `invalid_request` с перечислением доступных ролей, а
-пропущенная роль становится `general`. Первый промпт ребёнка начинается с
-`Your role is <role>. Before any work, read the whole file <rolesDir>/<role>.md and follow it.`;
-эта строка заменяет upstream-префикс `Act as the <role> sub-agent`. Та же
-политика native-сабагентов: при заданном каталоге строка `- Subagents: use your
-native tool…` не отправляется, потому что каждый ребёнок — `delegate_task`-ребёнок.
+Когда роли настроены, `delegate_task` требует роль из списка ниже; роль, которой
+нет в документе, отклоняется `invalid_request` с перечислением доступных ролей,
+а пропущенная роль становится `general`. Первый промпт ребёнка начинается с
+`Your role is <role>. Follow this role instruction before any work.` и текстом
+инструкции; эта строка заменяет upstream-префикс `Act as the <role> sub-agent`.
+Native-сабагенты: строка `- Subagents: use your native tool…` снимается, пока
+roles-документ настроен. `applyNativeSubagentGuidance` вызывается из
+`withRefreshHook` при каждом refresh трекера (старт и Apply), поэтому guidance
+следует за применёнными ролями без рестарта.
 
 Роль `planner` пишет плановые документы. Upstream-значение `architecture`
 разрешается в файл `architect.md`: в enum контрактов оно остаётся ради
@@ -474,28 +474,31 @@ native tool…` не отправляется, потому что каждый 
 (`ROLE_FILE_ALIASES`/`roleFileName`), без правки upstream-кода.
 
 Brief координатора (`buildBoardWakePrompt`) начинается с той же строки для
-роли `lead`; web получает каталог в `board.orchestrators.list` (`rolesDir`) и
-показывает `Coordinator · lead`. Brief больше не ссылается на скилл
+роли `lead`; web получает флаг `rolesConfigured` в `board.orchestrators.list` и
+показывает `Coordinator · lead`. Короткий wake ссылается на brief координатора,
+а не на файл роли. Brief больше не ссылается на скилл
 `create-orchestrator-architect` и не требует связки: он называет архитекторов
 (`architect`, `architect-*`) консультантами на один вопрос через
 `delegate_task`, а для плана — роль `planner`. Роль меняется только при
 создании задачи: команды `delegated_task.*` после создания роль не правят,
 поэтому обновление промпта при смене роли не реализовано.
 
-| Upstream-файл                                                    | Правка                                                                                                                          | Зачем                                                          |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `packages/contracts/src/orchestratorMcp.ts`                      | 15 id ролей форка (включая `planner`) добавлены в `OrchestratorMcpTaskRole`                                                     | MCP-схема `delegate_task` принимает id ролей форка             |
-| `apps/server/src/provider/agentContextBudget.json`               | `mcpToolListJsonBytes` измеряется тестом после добавления ролей                                                                 | рекламируемая схема `delegate_task` выросла на список id ролей |
-| `packages/contracts/src/orchestrationV2.ts`                      | те же id добавлены в `OrchestrationV2DelegatedTaskRole`                                                                         | команда `delegated_task.request` сохраняет роль в проекции     |
-| `packages/provider-core/src/server/orchestrationInstructions.ts` | секции оркестрации стали live-`let`; добавлен `setNativeSubagentGuidance(enabled)`, который фильтрует строку `- Subagents:`     | generic host-hook вместо удаления upstream-текста              |
-| `apps/server/src/mcp/OrchestratorMcpService.ts`                  | `rolesDir` в `make`; `delegatedRoleAssignment` до dispatch, `delegatedTaskPrompt` и разрешённая роль в `delegated_task.request` | проверка роли и строка инструкции живут в `ft3-delegation`     |
-| `packages/ft3-host/package.json`                                 | зависимость `@t3tools/ft3-delegation`                                                                                           | startup-эффект ролей                                           |
-| `packages/ft3-delegation/package.json`                           | зависимости `@t3tools/contracts`, `@t3tools/provider-core`, `effect`                                                            | контракт роли и provider-core hook                             |
-| `pnpm-lock.yaml`                                                 | importers `packages/ft3-delegation` и `packages/ft3-host`                                                                       | workspace-связи                                                |
+| Upstream-файл                                                    | Правка                                                                                                                                                                                | Зачем                                                          |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `packages/contracts/src/orchestratorMcp.ts`                      | 15 id ролей форка (включая `planner`) добавлены в `OrchestratorMcpTaskRole`                                                                                                           | MCP-схема `delegate_task` принимает id ролей форка             |
+| `apps/server/src/provider/agentContextBudget.json`               | `mcpToolListJsonBytes` измеряется тестом после добавления ролей                                                                                                                       | рекламируемая схема `delegate_task` выросла на список id ролей |
+| `packages/contracts/src/orchestrationV2.ts`                      | те же id добавлены в `OrchestrationV2DelegatedTaskRole`                                                                                                                               | команда `delegated_task.request` сохраняет роль в проекции     |
+| `packages/provider-core/src/server/orchestrationInstructions.ts` | секции оркестрации стали live-`let`; добавлен `setNativeSubagentGuidance(enabled)`, который фильтрует строку `- Subagents:`                                                           | generic host-hook вместо удаления upstream-текста              |
+| `apps/server/src/mcp/OrchestratorMcpService.ts`                  | `RoleResolver` и `DelegationLaunchPolicy` в `make`; `roles.assignment` до dispatch, `delegatedTaskPrompt` и разрешённая роль в `delegated_task.request`; ранний отказ `mail_required` | проверка роли и строка инструкции живут в `ft3-delegation`     |
+| `packages/contracts/src/orchestratorMcp.ts`                      | код отказа `mail_required` в `OrchestratorMcpFailure`                                                                                                                                 | шов для задачи 21: роль, которая требует почту                 |
+| `packages/ft3-host/package.json`                                 | зависимость `@t3tools/ft3-delegation`                                                                                                                                                 | startup-эффект ролей                                           |
+| `packages/ft3-delegation/package.json`                           | зависимости `@t3tools/contracts`, `@t3tools/provider-core`, `effect`                                                                                                                  | контракт роли и provider-core hook                             |
+| `pnpm-lock.yaml`                                                 | importers `packages/ft3-delegation` и `packages/ft3-host`                                                                                                                             | workspace-связи                                                |
 
-Тесты форка: `packages/ft3-delegation/src/delegationRoles.test.ts` (каталог
-выключен, каталог задан, дефолт `general`, `planner`, `architecture` →
-`architect.md`, неизвестная роль, строка brief, отсутствие native-строки),
+Тесты форка: `packages/ft3-delegation/src/delegationRoles.test.ts` (промпт роли,
+guidance по применённым ролям), `packages/ft3-delegation/src/delegationLaunch.test.ts`
+(по умолчанию `direct`), `packages/ft3-policies/src/policyRefreshHook.test.ts`
+(хук после refresh, ссылка на routing policy),
 `apps/server/src/mcp/OrchestratorMcpService.delegationRoles.test.ts`
 (промпт и роль в `delegated_task.request`, отказы до dispatch) и
 `packages/ft3-board/src/BoardService.brief.test.ts` (brief с `lead` и без).
@@ -655,8 +658,7 @@ Wake text splits by purpose: the first bind of a lead (`markOrchestrator`) and t
 `resendBrief` deliver the full brief (`buildBoardWakePrompt` in `boardWakePrompt.ts`), while
 every later wake (`BoardReactor`, `startCard`, the idle nudge) delivers a short message with
 the event lines only: the card title with a short id, the outcome and failure count in
-words, the full card ids for tool calls, and a closing `Rules: see your lead brief`
-(plus `<rolesDir>/lead.md` when roles are configured).
+words, the full card ids for tool calls, and a closing `Rules: see your lead brief`.
 
 ## Pi Bonsai preset
 
