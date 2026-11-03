@@ -402,6 +402,16 @@ describe("migrateStore", () => {
         assert.deepEqual(secondReport.absPathRewrites, []);
         assert.deepEqual(secondReport.duplicates, []);
 
+        const database = new NodeSqlite.DatabaseSync(NodePath.join(root, "opencontext.db"));
+        try {
+          database
+            .prepare("UPDATE docs SET abs_path = ? WHERE rel_path = ?")
+            .run(`${NodePath.join(root, CONTEXTS, "notes")}/kept.md`, "notes/kept.md");
+        } finally {
+          database.close();
+        }
+        assert.deepEqual((yield* inspectStore(root)).absPathRewrites, []);
+
         const second = yield* migrateStore({ root, report: secondReport });
         assert.equal(second.status, "up_to_date");
         assert.isNull(second.backupDirectory);
