@@ -1726,6 +1726,9 @@ importers:
       '@t3tools/ft3-delegation':
         specifier: workspace:*
         version: link:../ft3-delegation
+      '@t3tools/ft3-docs':
+        specifier: workspace:*
+        version: link:../ft3-docs
       '@t3tools/ft3-orchestration':
         specifier: workspace:*
         version: link:../ft3-orchestration

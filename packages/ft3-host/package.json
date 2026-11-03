@@ -29,6 +29,7 @@
     "@t3tools/ft3-architect": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
     "@t3tools/ft3-delegation": "workspace:*",
+    "@t3tools/ft3-docs": "workspace:*",
     "@t3tools/ft3-orchestration": "workspace:*",
     "@t3tools/ft3-pi": "workspace:*",
     "@t3tools/ft3-policies": "workspace:*",
