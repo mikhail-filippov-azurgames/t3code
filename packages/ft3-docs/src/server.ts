@@ -10,6 +10,7 @@ export {
   denyAllDocumentsWrite,
   DocsProtection,
   DocsServiceError,
+  DocsWriteDenialReason,
   DocumentsWriteAccess,
   layer as docsServiceLayer,
   layerWithDefaultPorts as docsServiceLayerWithDefaultPorts,
@@ -25,8 +26,17 @@ export {
   type DocsSetDescriptionInput,
   type DocsWriteInput,
   type DocsWriteResult,
+  type DocumentsWriteAllowReason,
   type DocumentsWriteDecision,
 } from "./service.ts";
+export {
+  documentsWriteAccessLayer,
+  DocumentsWriteFactsPort,
+  lineageDocumentsWrite,
+  noDocumentsWriteFacts,
+  resolveDocumentsWrite,
+  type DocumentsWriteFacts,
+} from "./writeRule.ts";
 export {
   DocsFolderEntry,
   DocsListEntry as DocsListEntrySchema,
