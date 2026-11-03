@@ -92,6 +92,29 @@ const prepared = Effect.gen(function* () {
   return { settings, policies, warnings: migration.warnings };
 });
 
+/**
+ * The server startup and the Policies tab run the same refresh, so a live
+ * server serves the applied role documents without anyone opening the tab, and
+ * the legacy `T3CODE_FT3_*` environment folds in on the first refresh.
+ */
+export const refreshAppliedPolicies: Effect.Effect<
+  void,
+  never,
+  PolicyChangeTracker | ServerSettingsService | DocsService
+> = Effect.gen(function* () {
+  const { policies, warnings } = yield* prepared;
+  const tracker = yield* PolicyChangeTracker;
+  yield* tracker.refresh({
+    sources: resolvePolicyDocumentSources(policies, null),
+    features: {
+      board: policies.features.board,
+      planning: policies.features.planning,
+    },
+    applyExternalEdits: policies.applyExternalEdits,
+  });
+  yield* Effect.forEach(warnings, (issue) => Effect.logWarning(issue.message), { discard: true });
+}).pipe(Effect.withSpan("PoliciesRpc.refreshAppliedPolicies"));
+
 const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
   policies: ReturnType<typeof readPolicySettings>,
   warnings: PoliciesGetSnapshotResult["warnings"],
