@@ -54,6 +54,10 @@ export class BoardRepository extends Context.Service<
     readonly deleteCard: (
       cardId: Contracts.BoardCardId,
     ) => Effect.Effect<void, BoardRepositoryError>;
+    readonly setPolicySnapshot: (input: {
+      readonly cardId: Contracts.BoardCardId;
+      readonly policySnapshotJson: string;
+    }) => Effect.Effect<void, BoardRepositoryError>;
     readonly listEventsForCard: (
       cardId: Contracts.BoardCardId,
     ) => Effect.Effect<ReadonlyArray<Contracts.BoardCardEvent>, BoardRepositoryError>;
@@ -141,6 +145,7 @@ const decodeEvents = Schema.decodeUnknownEffect(Schema.Array(Contracts.BoardCard
 const decodeOrchestrator = Schema.decodeUnknownEffect(Contracts.BoardOrchestrator);
 const decodeOrchestrators = Schema.decodeUnknownEffect(Schema.Array(Contracts.BoardOrchestrator));
 const decodeDeletions = Schema.decodeUnknownEffect(Schema.Array(Contracts.BoardCardDeletionRecord));
+const decodeBoardCardStatus = Schema.decodeUnknownSync(Contracts.BoardCardStatus);
 const decodeAssignee = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Contracts.BoardCard.fields.assignee),
 );
@@ -318,6 +323,12 @@ const make = Effect.gen(function* () {
         Effect.mapError(databaseError("delete card")),
       ),
     ),
+    setPolicySnapshot: Effect.fn("Ft3BoardRepository.setPolicySnapshot")((input) =>
+      sql`UPDATE ft3_board_cards SET policy_snapshot_json = ${input.policySnapshotJson} WHERE card_id = ${input.cardId}`.pipe(
+        Effect.asVoid,
+        Effect.mapError(databaseError("set policy snapshot")),
+      ),
+    ),
     listEventsForCard: Effect.fn("Ft3BoardRepository.listEventsForCard")(
       function* (cardId) {
         const rows =
@@ -365,7 +376,7 @@ const make = Effect.gen(function* () {
         }>`SELECT orchestrator_thread_id AS "orchestratorThreadId", status, COUNT(*) AS "count" FROM ft3_board_cards WHERE archived = 1 GROUP BY orchestrator_thread_id, status`;
         return rows.map((row) => ({
           orchestratorThreadId: ThreadId.make(row.orchestratorThreadId),
-          status: Schema.decodeUnknownSync(Contracts.BoardCardStatus)(row.status),
+          status: decodeBoardCardStatus(row.status),
           count: row.count,
         }));
       },

@@ -72,11 +72,12 @@ import {
   delegatedTaskPrompt,
   delegationPermissionDenial,
   delegationTextDecision,
-  neverMailRequiredLayer,
   projectDerivedText,
 } from "@t3tools/ft3-delegation/server";
+import { mailDelegationLaunchLayer } from "@t3tools/ft3-mail/delegationLaunch";
 import {
   DEFAULT_DELEGATED_ROLE,
+  layer as featureGateLayer,
   RoleResolver,
   roleInstructionLine,
   roleResolverLayer,
@@ -3414,5 +3415,10 @@ export const layer: Layer.Layer<
   | ServerSettings.ServerSettingsService
   | RemoteDelegation.RemoteDelegation
 > = Layer.effect(OrchestratorMcpService, make).pipe(
-  Layer.provide(Layer.mergeAll(roleResolverLayer, neverMailRequiredLayer)),
+  Layer.provide(
+    Layer.mergeAll(
+      roleResolverLayer,
+      mailDelegationLaunchLayer.pipe(Layer.provide(featureGateLayer)),
+    ),
+  ),
 );

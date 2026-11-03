@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import { applyNativeSubagentGuidance } from "@t3tools/ft3-delegation/server";
 import { setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
@@ -127,12 +128,21 @@ const layerAppliedPolicies = Layer.unwrap(
   }),
 );
 
-export const layer = Layer.mergeAll(
-  BoardRepository.layer,
-  layerStartup,
-  layerDocuments,
-  layerAppliedPolicies,
-  FeatureGate.layer,
+// Mail reads the applied policies and the board, so it takes both from the layers beside it.
+const layerMail = Layer.unwrap(
+  Effect.promise(() => import("@t3tools/ft3-mail/server")).pipe(Effect.map((mail) => mail.layer)),
+);
+
+export const layer = layerMail.pipe(
+  Layer.provideMerge(
+    Layer.mergeAll(
+      BoardRepository.layer,
+      layerStartup,
+      layerDocuments,
+      layerAppliedPolicies,
+      FeatureGate.layer,
+    ),
+  ),
 );
 
 export const boardReactorLayer = () =>
@@ -170,11 +180,16 @@ const layerDocsToolkit = Layer.unwrap(
     const settings = yield* ServerSettings.ServerSettingsService;
     const current = yield* settings.getSettings.pipe(Effect.orDie);
     const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
+    const mail = yield* Effect.promise(() => import("@t3tools/ft3-mail/server"));
+    const sql = yield* SqlClient.SqlClient;
     return docs.docsMcpLayer({
       root: resolveDocsRoot({
         stateDir: config.stateDir,
         configuredRoot: readDocsSettings(current.ft3).root,
       }),
+      writeFacts: mail.documentsWriteFacts.pipe(
+        Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+      ),
       requireEnabled: gate
         .require("documents")
         .pipe(

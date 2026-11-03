@@ -1,12 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { DelegationLaunchPolicy } from "@t3tools/ft3-delegation/server";
 import { DocumentsWriteFactsPort } from "@t3tools/ft3-docs/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { databaseLayer, gateLayer, migrateMail } from "./mail.testkit.ts";
-import { documentsWriteFactsLayer, mailDelegationLaunchLayer } from "./participants.ts";
+import { databaseLayer, migrateMail } from "./mail.testkit.ts";
 import { MailRepository } from "./repository.ts";
+import { documentsWriteFactsLayer } from "./documentsWrite.ts";
 
 const LEAD = "thread:lead";
 
@@ -61,31 +60,6 @@ const factsOf = (threadId: string | null) =>
     const port = yield* DocumentsWriteFactsPort;
     return yield* port.factsOf({ threadId, parentThreadId: LEAD });
   });
-
-const launchOf = (role: string | undefined) =>
-  Effect.gen(function* () {
-    const policy = yield* DelegationLaunchPolicy;
-    return yield* policy.launchFor(role);
-  });
-
-const launchOn = mailDelegationLaunchLayer.pipe(Layer.provide(gateLayer(true)));
-const launchOff = mailDelegationLaunchLayer.pipe(Layer.provide(gateLayer(false)));
-
-it.effect("launches a delegated role as a mail participant only while mail is on", () =>
-  Effect.gen(function* () {
-    assert.deepStrictEqual(yield* launchOf("design").pipe(Effect.provide(launchOn)), {
-      _tag: "mail_required",
-      role: "design",
-    });
-    assert.deepStrictEqual(yield* launchOf(undefined).pipe(Effect.provide(launchOn)), {
-      _tag: "mail_required",
-      role: "general",
-    });
-    assert.deepStrictEqual(yield* launchOf("design").pipe(Effect.provide(launchOff)), {
-      _tag: "direct",
-    });
-  }),
-);
 
 it.effect("grants documents:write from the member record while its task is open", () =>
   Effect.gen(function* () {

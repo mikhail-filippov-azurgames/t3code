@@ -171,6 +171,18 @@ export interface CloseMailTaskInput {
   readonly summary: string;
 }
 
+/** The applied policy snapshot as JSON, and the board card that keeps it for a task that belongs to one. */
+export class MailPolicyEvidence extends Context.Service<
+  MailPolicyEvidence,
+  {
+    readonly snapshotJson: Effect.Effect<string>;
+    readonly recordCardSnapshot: (input: {
+      readonly cardId: string;
+      readonly snapshotJson: string;
+    }) => Effect.Effect<void>;
+  }
+>()("@t3tools/ft3-mail/service/MailPolicyEvidence") {}
+
 interface NormalizedMember {
   readonly roleId: RoutingRoleId;
   readonly specialization: string | null;
@@ -246,6 +258,7 @@ const make = Effect.gen(function* () {
   const routing = yield* RoutingPolicyService;
   const gate = yield* FeatureGate;
   const crypto = yield* Crypto.Crypto;
+  const evidence = yield* MailPolicyEvidence;
 
   const requireMail = gate
     .require("mail")
@@ -436,6 +449,13 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.map((member) => ({ member, noCandidate: routes[index] ?? null }))),
     );
+    const cardId = input.cardId ?? null;
+    if (cardId !== null) {
+      yield* evidence.recordCardSnapshot({
+        cardId,
+        snapshotJson: yield* evidence.snapshotJson,
+      });
+    }
     return { task: result.task, created: true, members: stored } satisfies MailTaskCreated;
   });
 
