@@ -1,10 +1,57 @@
-/** Server entry of `ft3-docs`: the document store, reconciliation, watch and index. */
+/** Server entry of `ft3-docs`: the store, reconciliation, watch, index and `DocsService`. */
+export { DOCS_ROOT_ENV, resolveDocsRoot } from "./root.ts";
+export {
+  DOCS_BRIEF_BLOCK,
+  docsBriefBlock,
+  documentsBriefLine,
+  setDocumentsBriefEnabled,
+} from "./brief.ts";
+export {
+  denyAllDocumentsWrite,
+  DocsProtection,
+  DocsServiceError,
+  DocumentsWriteAccess,
+  layer as docsServiceLayer,
+  layerWithDefaultPorts as docsServiceLayerWithDefaultPorts,
+  noProtectedDocuments,
+  type DocsCaller,
+  type DocsDocumentMeta,
+  type DocsListEntry,
+  type DocsListResult,
+  type DocsReadResult,
+  type DocsResolution,
+  type DocsServiceErrorCode,
+  type DocsServiceOptions,
+  type DocsSetDescriptionInput,
+  type DocsWriteInput,
+  type DocsWriteResult,
+  type DocumentsWriteDecision,
+} from "./service.ts";
+export {
+  DocsFolderEntry,
+  DocsListEntry as DocsListEntrySchema,
+  DocsListInput,
+  DocsListResult as DocsListResultSchema,
+  DocsManifestInput,
+  DocsManifestResult,
+  DocsMcpFailure,
+  DocsReadInput,
+  DocsReadResult as DocsReadResultSchema,
+  DocsResolvedDocument,
+  DocsResolveInput,
+  DocsSearchInput,
+  DocsSearchResult,
+  DocsSetDescriptionInput as DocsSetDescriptionInputSchema,
+  DocsSetDescriptionResult,
+  DocsWriteInput as DocsWriteInputSchema,
+  DocsWriteResult as DocsWriteResultSchema,
+} from "./toolContracts.ts";
+export { docsBriefBlock as docsBriefBlockText } from "./brief.ts";
 export {
   DOCS_STORE_CONTEXTS_DIRECTORY,
   DOCS_STORE_DATABASE_FILENAME,
   DocsStore,
   DocsStoreError,
-  layer,
   type DocFolderRecord,
   type DocManifestEntry,
   type DocRecord,
@@ -13,14 +60,10 @@ export {
 } from "./store.ts";
 export {
   DocsReconciler,
-  layer as reconcilerLayer,
   type DocsChanged,
-  type DocsDuplicate,
   type DocsIndexable,
-  type DocsMissing,
-  type DocsMove,
   type DocsReconcilerOptions,
-  type ReconcileError,
+  layer as reconcilerLayer,
   type ReconcileReport,
 } from "./reconciler.ts";
 export { DocsWatchService, layer as watchLayer, type DocsWatchOptions } from "./watch.ts";
@@ -29,6 +72,16 @@ export {
   DocsIndex,
   DocsIndexError,
   layer as indexLayer,
-  type DocsSearchInput,
-  type DocsSearchResult,
+  unavailableLayer as unavailableIndexLayer,
+  type DocsSearchInput as DocsIndexSearchInput,
+  type DocsSearchResult as DocsIndexSearchResult,
 } from "./index.ts";
+export { DocsService } from "./service.ts";
+export {
+  mcpLayer as docsMcpLayer,
+  toolkit as docsToolkit,
+  type DocsToolkitOptions,
+} from "./mcp.ts";
+export { runtimeLayer as docsRuntimeLayer, type DocsRuntimeOptions } from "./runtime.ts";
+export { docsRpcHandlers, docsRpcServiceLayer } from "./rpc.ts";
+export { FT3_DOCS_WS_METHODS, docsRpcs, docsRpcScopes } from "./rpc-contracts.ts";

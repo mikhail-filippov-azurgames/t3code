@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { coordinatorBriefRoleLine, rolesDir } from "@t3tools/ft3-delegation/server";
+import { documentsBriefLine } from "@t3tools/ft3-docs/brief";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
@@ -224,7 +225,7 @@ const make = Effect.gen(function* () {
         messageId: MessageId.make(key),
         text:
           mode === "brief"
-            ? buildBoardWakePrompt(context, coordinatorRoleLine)
+            ? buildBoardWakePrompt(context, coordinatorRoleLine, documentsBriefLine())
             : buildBoardWakeShortMessage(context, rolesDirectory),
         attachments: [],
         createdBy: "agent",

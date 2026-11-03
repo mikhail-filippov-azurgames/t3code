@@ -34,7 +34,9 @@ import {
 } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as OrchestrationEventStore from "../../../apps/server/src/persistence/OrchestrationEventStore.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as EventStore from "../../../apps/server/src/orchestration-v2/EventStore.ts";
 import { OrchestratorDispatchError } from "../../../apps/server/src/orchestration-v2/Orchestrator.ts";
@@ -256,6 +258,8 @@ function fixture() {
     Layer.provideMerge(infrastructure),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-reactor-" })),
+    Layer.provideMerge(NodeServices.layer),
   );
   const emit = Effect.fn("test.emitBoardEvent")(function* (event: OrchestrationV2DomainEvent) {
     const sink = yield* EventSink.EventSinkV2;
