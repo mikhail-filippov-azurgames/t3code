@@ -8,9 +8,9 @@
 
 - `./contracts` - browser-safe типы и разбор ссылок: `DocAddress`, `DocRef`,
   `parseDocRef`;
-- `./server` - серверная часть. Хранилище, реконсилятор, watcher и сервис
-  добавляются следующими задачами; сейчас это пустой модуль, который ничего не
-  открывает и не читает.
+- `./server` - серверная часть: `DocsStore` и его Effect-слой на отдельном
+  `SqlClient` (`node:sqlite`), константы раскладки store. Реконсилятор, watcher,
+  FTS и сервис документов добавляются следующими задачами.
 
 ## Формат хранилища
 
@@ -44,6 +44,37 @@ parseDocRef("oc://doc/<stable_id>[@N]" | "ocl://doc/<stable_id>" | "<rel/path.md
   `..` и пустые сегменты отклоняются.
 - `DocRef = { stableId, relPath, name, sha256? }` - метаданные разрешённого
   документа; `sha256` отсутствует, когда известен только адрес.
+
+## Хранилище: `DocsStore`
+
+`DocsStore` - единственный код, который создаёт и меняет формат store. Слой
+`DocsStore.layer({ root })` открывает `<root>/opencontext.db` своим
+`SqlClient` (`busy_timeout=5000`, `foreign_keys=ON`, `journal_mode` не
+меняется) и создаёт схему, если файл пустой.
+
+| Операция                                                      | Правило                                                                                                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `listFolders(parentRelPath?)`, `createFolder`, `removeFolder` | Один уровень; root store - строка `folders` с `rel_path = ''` и `parent_id IS NULL`, создаётся при открытии                                 |
+| `listDocs(folderRelPath?)`, `getByPath`, `getByStableId`      | Метаданные документа; `getByPath`/`getByStableId` возвращают `null`, если строки нет                                                        |
+| `createDoc`, `readDocContent`, `saveDocContent`               | Файл пишется атомарно (temp + rename); `stable_id` строки всегда записан во frontmatter                                                     |
+| `setDescription`                                              | Меняет только `docs.description` и `updated_at`                                                                                             |
+| `moveFolder`, `renameFolder`, `moveDoc`, `renameDoc`          | Файлы и каталоги физически переносятся, затем `rel_path`/`abs_path` поддерева (и `folder_id`, `name` документа) переписываются в транзакции |
+| `manifest({ folderRelPath?, limit? })`                        | Рекурсивный список; без `limit` отдаёт все строки, `abs_path` в результат не входит, лимит проверяется (целое ≥ 1)                          |
+
+Пути проверяются до любой записи: абсолютные пути, `~`, буква диска, `..`,
+пустые сегменты и NUL отклоняются с `DocsStoreError.code = "invalid_path"`.
+Документом считается файл `*.md`. Ошибки store: `invalid_path`,
+`invalid_name`, `invalid_limit`, `folder_exists`, `folder_not_found`,
+`document_exists`, `document_not_found`, `file_missing`,
+`duplicate_stable_id`, `store_unavailable`.
+
+`createDoc` с содержимым, у которого уже есть `stable_id` во frontmatter,
+сохраняет этот id (копия документа из другого store не теряет связь); иначе
+генерируется UUIDv4. `saveDocContent` пишет id строки, поэтому путь и id
+остаются согласованными.
+
+Удаления и перемещения через store не входят в MCP: их делает человек в
+файловой системе, реконсилятор (следующая задача) подхватывает результат.
 
 ## Лицензия и атрибуция
 
