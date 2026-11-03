@@ -8,6 +8,7 @@ import type {
   MailDelivery,
   MailDeliveryState,
   MailIsolation,
+  MailKindFeedback,
   MailLetter,
   MailLetterKind,
   MailLevel,
@@ -15,9 +16,12 @@ import type {
   MailMemberStatus,
   MailOutcome,
   MailPlanPhase,
+  MailRound,
+  MailRoundKind,
   MailTask,
   MailTaskStatus,
   MailTimelineEntry,
+  MailWake,
 } from "./contracts.ts";
 
 export class MailRepositoryError extends Schema.TaggedError<MailRepositoryError>()(
@@ -112,6 +116,51 @@ export interface RecordDeliveryInput {
   readonly createdAt: string;
 }
 
+export interface CreateRoundInput {
+  readonly roundId: string;
+  readonly taskId: string;
+  readonly roundNumber: number;
+  readonly kind: MailRoundKind;
+  readonly openedAt: string;
+}
+
+export interface CreateRoundResult {
+  readonly round: MailRound;
+  readonly created: boolean;
+}
+
+export interface RecordWakeInput {
+  readonly wakeId: string;
+  readonly taskId: string;
+  readonly targetThreadId: string;
+  readonly reason: string;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+}
+
+export interface RecordWakeResult {
+  readonly wake: MailWake;
+  readonly created: boolean;
+}
+
+export interface RecordKindFeedbackInput {
+  readonly letterId: string;
+  readonly senderKind: MailLetterKind;
+  readonly classifierKind: MailLetterKind | null;
+  readonly confidence: number | null;
+  readonly leadKind: MailLetterKind | null;
+  readonly classifierVersion: string | null;
+  readonly createdAt: string;
+}
+
+export interface SetLetterClassifierInput {
+  readonly letterId: string;
+  readonly classifierKind: MailLetterKind | null;
+  readonly classifierConfidence: number | null;
+  readonly kindDisputed: boolean;
+  readonly leadKind: MailLetterKind | null;
+}
+
 export interface MailTimelineInput {
   readonly taskId: string;
   readonly beforeSequence?: number;
@@ -193,6 +242,36 @@ interface DeliveryRow {
   readonly updatedAt: string;
 }
 
+interface RoundRow {
+  readonly roundId: string;
+  readonly taskId: string;
+  readonly roundNumber: number;
+  readonly kind: MailRoundKind;
+  readonly openedAt: string;
+  readonly closedAt: string | null;
+  readonly outcome: MailOutcome | null;
+}
+
+interface WakeRow {
+  readonly wakeId: string;
+  readonly taskId: string;
+  readonly targetThreadId: string;
+  readonly reason: string;
+  readonly idempotencyKey: string;
+  readonly createdAt: string;
+  readonly deliveredAt: string | null;
+}
+
+interface KindFeedbackRow {
+  readonly letterId: string;
+  readonly senderKind: MailLetterKind;
+  readonly classifierKind: MailLetterKind | null;
+  readonly confidence: number | null;
+  readonly leadKind: MailLetterKind | null;
+  readonly classifierVersion: string | null;
+  readonly createdAt: string;
+}
+
 const TASK_COLUMNS = `
   task_id AS "taskId", title, brief, level, card_id AS "cardId", isolation,
   runtime_mode AS "runtimeMode", interaction_mode AS "interactionMode",
@@ -226,6 +305,23 @@ const DELIVERY_COLUMNS = `
   member_id AS "memberId", recipient, participant_thread_id AS "participantThreadId",
   state, delivered_at AS "deliveredAt", read_at AS "readAt",
   answered_at AS "answeredAt", created_at AS "createdAt", updated_at AS "updatedAt"
+`;
+
+const ROUND_COLUMNS = `
+  round_id AS "roundId", task_id AS "taskId", round_number AS "roundNumber", kind,
+  opened_at AS "openedAt", closed_at AS "closedAt", outcome
+`;
+
+const WAKE_COLUMNS = `
+  wake_id AS "wakeId", task_id AS "taskId", target_thread_id AS "targetThreadId",
+  reason, idempotency_key AS "idempotencyKey", created_at AS "createdAt",
+  delivered_at AS "deliveredAt"
+`;
+
+const KIND_FEEDBACK_COLUMNS = `
+  letter_id AS "letterId", sender_kind AS "senderKind",
+  classifier_kind AS "classifierKind", confidence, lead_kind AS "leadKind",
+  classifier_version AS "classifierVersion", created_at AS "createdAt"
 `;
 
 const toTask = (row: TaskRow): MailTask => ({
@@ -303,6 +399,36 @@ const toDelivery = (row: DeliveryRow): MailDelivery => ({
   updatedAt: row.updatedAt,
 });
 
+const toRound = (row: RoundRow): MailRound => ({
+  roundId: row.roundId,
+  taskId: row.taskId,
+  roundNumber: row.roundNumber,
+  kind: row.kind,
+  openedAt: row.openedAt,
+  closedAt: row.closedAt,
+  outcome: row.outcome,
+});
+
+const toWake = (row: WakeRow): MailWake => ({
+  wakeId: row.wakeId,
+  taskId: row.taskId,
+  targetThreadId: row.targetThreadId,
+  reason: row.reason,
+  idempotencyKey: row.idempotencyKey,
+  createdAt: row.createdAt,
+  deliveredAt: row.deliveredAt,
+});
+
+const toKindFeedback = (row: KindFeedbackRow): MailKindFeedback => ({
+  letterId: row.letterId,
+  senderKind: row.senderKind,
+  classifierKind: row.classifierKind,
+  confidence: row.confidence,
+  leadKind: row.leadKind,
+  classifierVersion: row.classifierVersion,
+  createdAt: row.createdAt,
+});
+
 const isIdempotencyConflict = (value: unknown): value is MailIdempotencyConflict =>
   typeof value === "object" &&
   value !== null &&
@@ -348,6 +474,26 @@ export class MailRepository extends Context.Service<
     readonly recordDelivery: (
       input: RecordDeliveryInput,
     ) => Effect.Effect<MailDelivery, MailRepositoryError>;
+    readonly createRound: (
+      input: CreateRoundInput,
+    ) => Effect.Effect<CreateRoundResult, MailRepositoryError>;
+    readonly closeRound: (input: {
+      readonly roundId: string;
+      readonly outcome: MailOutcome;
+      readonly closedAt: string;
+    }) => Effect.Effect<MailRound | null, MailRepositoryError>;
+    readonly listRounds: (
+      taskId: string,
+    ) => Effect.Effect<ReadonlyArray<MailRound>, MailRepositoryError>;
+    readonly recordWake: (
+      input: RecordWakeInput,
+    ) => Effect.Effect<RecordWakeResult, MailRepositoryError>;
+    readonly recordKindFeedback: (
+      input: RecordKindFeedbackInput,
+    ) => Effect.Effect<MailKindFeedback, MailRepositoryError>;
+    readonly setLetterClassifier: (
+      input: SetLetterClassifierInput,
+    ) => Effect.Effect<MailLetter | null, MailRepositoryError>;
     readonly markDeliveryDelivered: (input: {
       readonly deliveryId: string;
       readonly at: string;
@@ -399,10 +545,40 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => (rows[0] === undefined ? null : toTask(rows[0]))),
     );
 
+  const findLetter = (letterId: string) =>
+    sql<LetterRow>`SELECT ${sql.literal(LETTER_COLUMNS)} FROM ft3_mail_letters
+      WHERE letter_id = ${letterId}`.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? null : toLetter(rows[0]))),
+    );
+
   const findDelivery = (deliveryId: string) =>
     sql<DeliveryRow>`SELECT ${sql.literal(DELIVERY_COLUMNS)} FROM ft3_mail_deliveries
       WHERE delivery_id = ${deliveryId}`.pipe(
       Effect.map((rows) => (rows[0] === undefined ? null : toDelivery(rows[0]))),
+    );
+
+  const findRoundByNumber = (input: { readonly taskId: string; readonly roundNumber: number }) =>
+    sql<RoundRow>`SELECT ${sql.literal(ROUND_COLUMNS)} FROM ft3_mail_rounds
+      WHERE task_id = ${input.taskId} AND round_number = ${input.roundNumber}`.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? null : toRound(rows[0]))),
+    );
+
+  const findRound = (roundId: string) =>
+    sql<RoundRow>`SELECT ${sql.literal(ROUND_COLUMNS)} FROM ft3_mail_rounds
+      WHERE round_id = ${roundId}`.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? null : toRound(rows[0]))),
+    );
+
+  const findWakeByKey = (idempotencyKey: string) =>
+    sql<WakeRow>`SELECT ${sql.literal(WAKE_COLUMNS)} FROM ft3_mail_wakes
+      WHERE idempotency_key = ${idempotencyKey}`.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? null : toWake(rows[0]))),
+    );
+
+  const findKindFeedback = (letterId: string) =>
+    sql<KindFeedbackRow>`SELECT ${sql.literal(KIND_FEEDBACK_COLUMNS)}
+      FROM ft3_mail_kind_feedback WHERE letter_id = ${letterId}`.pipe(
+      Effect.map((rows) => (rows[0] === undefined ? null : toKindFeedback(rows[0]))),
     );
 
   const updateDelivery = Effect.fn("MailRepository.updateDelivery")(function* (
@@ -556,10 +732,7 @@ const make = Effect.gen(function* () {
       ),
     ),
     getLetter: Effect.fn("MailRepository.getLetter")((letterId: string) =>
-      mapError("getLetter")(
-        sql<LetterRow>`SELECT ${sql.literal(LETTER_COLUMNS)} FROM ft3_mail_letters
-          WHERE letter_id = ${letterId}`,
-      ).pipe(Effect.map((rows) => (rows[0] === undefined ? null : toLetter(rows[0])))),
+      mapError("getLetter")(findLetter(letterId)),
     ),
     recordDelivery: Effect.fn("MailRepository.recordDelivery")((input: RecordDeliveryInput) =>
       mapError("recordDelivery")(
@@ -591,6 +764,107 @@ const make = Effect.gen(function* () {
     ),
     markDeliveryAnswered: Effect.fn("MailRepository.markDeliveryAnswered")((input) =>
       mapError("markDeliveryAnswered")(updateDelivery(input.deliveryId, input.at, "answered")),
+    ),
+    createRound: Effect.fn("MailRepository.createRound")((input: CreateRoundInput) =>
+      mapError("createRound")(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* findRoundByNumber({
+              taskId: input.taskId,
+              roundNumber: input.roundNumber,
+            });
+            if (existing !== null) return { round: existing, created: false };
+            yield* sql`INSERT INTO ft3_mail_rounds (
+                round_id, task_id, round_number, kind, opened_at
+              ) VALUES (
+                ${input.roundId}, ${input.taskId}, ${input.roundNumber}, ${input.kind},
+                ${input.openedAt}
+              )`;
+            const round = yield* findRound(input.roundId);
+            if (round === null) {
+              return yield* Effect.die(new Error("the inserted mail round is missing"));
+            }
+            return { round, created: true };
+          }),
+        ),
+      ),
+    ),
+    closeRound: Effect.fn("MailRepository.closeRound")((input) =>
+      mapError("closeRound")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_rounds SET
+              closed_at = ${input.closedAt}, outcome = ${input.outcome}
+            WHERE round_id = ${input.roundId}`;
+          return yield* findRound(input.roundId);
+        }),
+      ),
+    ),
+    listRounds: Effect.fn("MailRepository.listRounds")((taskId: string) =>
+      mapError("listRounds")(
+        sql<RoundRow>`SELECT ${sql.literal(ROUND_COLUMNS)} FROM ft3_mail_rounds
+          WHERE task_id = ${taskId} ORDER BY round_number ASC`,
+      ).pipe(Effect.map((rows) => rows.map(toRound))),
+    ),
+    recordWake: Effect.fn("MailRepository.recordWake")((input: RecordWakeInput) =>
+      mapError("recordWake")(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* findWakeByKey(input.idempotencyKey);
+            if (existing !== null) return { wake: existing, created: false };
+            yield* sql`INSERT INTO ft3_mail_wakes (
+                wake_id, task_id, target_thread_id, reason, idempotency_key, created_at
+              ) VALUES (
+                ${input.wakeId}, ${input.taskId}, ${input.targetThreadId}, ${input.reason},
+                ${input.idempotencyKey}, ${input.createdAt}
+              ) ON CONFLICT(idempotency_key) DO NOTHING`;
+            const wake = yield* findWakeByKey(input.idempotencyKey);
+            if (wake === null) {
+              return yield* Effect.die(new Error("the inserted mail wake is missing"));
+            }
+            return { wake, created: true };
+          }),
+        ),
+      ),
+    ),
+    recordKindFeedback: Effect.fn("MailRepository.recordKindFeedback")(
+      (input: RecordKindFeedbackInput) =>
+        mapError("recordKindFeedback")(
+          Effect.gen(function* () {
+            yield* sql`INSERT INTO ft3_mail_kind_feedback (
+                letter_id, sender_kind, classifier_kind, confidence, lead_kind,
+                classifier_version, created_at
+              ) VALUES (
+                ${input.letterId}, ${input.senderKind}, ${input.classifierKind},
+                ${input.confidence}, ${input.leadKind}, ${input.classifierVersion},
+                ${input.createdAt}
+              ) ON CONFLICT(letter_id) DO UPDATE SET
+                sender_kind = excluded.sender_kind,
+                classifier_kind = excluded.classifier_kind,
+                confidence = excluded.confidence,
+                lead_kind = excluded.lead_kind,
+                classifier_version = excluded.classifier_version,
+                created_at = excluded.created_at`;
+            const feedback = yield* findKindFeedback(input.letterId);
+            if (feedback === null) {
+              return yield* Effect.die(new Error("the recorded mail kind feedback is missing"));
+            }
+            return feedback;
+          }),
+        ),
+    ),
+    setLetterClassifier: Effect.fn("MailRepository.setLetterClassifier")(
+      (input: SetLetterClassifierInput) =>
+        mapError("setLetterClassifier")(
+          Effect.gen(function* () {
+            yield* sql`UPDATE ft3_mail_letters SET
+                classifier_kind = ${input.classifierKind},
+                classifier_confidence = ${input.classifierConfidence},
+                kind_disputed = ${input.kindDisputed ? 1 : 0},
+                lead_kind = ${input.leadKind}
+              WHERE letter_id = ${input.letterId}`;
+            return yield* findLetter(input.letterId);
+          }),
+        ),
     ),
     listTimeline: Effect.fn("MailRepository.listTimeline")((input: MailTimelineInput) =>
       mapError("listTimeline")(
@@ -626,6 +900,12 @@ const make = Effect.gen(function* () {
               ORDER BY closed_at ASC LIMIT ${input.limit}`;
             const ids = rows.map((row) => row.taskId);
             if (ids.length === 0) return 0;
+            yield* sql`DELETE FROM ft3_mail_kind_feedback
+              WHERE letter_id IN (
+                SELECT letter_id FROM ft3_mail_letters WHERE task_id IN ${sql.in(ids)}
+              )`;
+            yield* sql`DELETE FROM ft3_mail_wakes WHERE task_id IN ${sql.in(ids)}`;
+            yield* sql`DELETE FROM ft3_mail_rounds WHERE task_id IN ${sql.in(ids)}`;
             yield* sql`DELETE FROM ft3_mail_deliveries WHERE task_id IN ${sql.in(ids)}`;
             yield* sql`DELETE FROM ft3_mail_letters WHERE task_id IN ${sql.in(ids)}`;
             yield* sql`DELETE FROM ft3_mail_members WHERE task_id IN ${sql.in(ids)}`;

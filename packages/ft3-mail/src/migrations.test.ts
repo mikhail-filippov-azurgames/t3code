@@ -21,7 +21,15 @@ it.effect("11_Mail creates the mail tables and reruns empty", () =>
     `;
     assert.deepStrictEqual(
       tables.map((table) => table.name),
-      ["ft3_mail_deliveries", "ft3_mail_letters", "ft3_mail_members", "ft3_mail_tasks"],
+      [
+        "ft3_mail_deliveries",
+        "ft3_mail_kind_feedback",
+        "ft3_mail_letters",
+        "ft3_mail_members",
+        "ft3_mail_rounds",
+        "ft3_mail_tasks",
+        "ft3_mail_wakes",
+      ],
     );
 
     const taskColumns = yield* sql<{ readonly name: string }>`
@@ -100,6 +108,62 @@ it.effect("11_Mail creates the mail tables and reruns empty", () =>
         "updated_at",
       ],
     );
+
+    const roundColumns = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info('ft3_mail_rounds') ORDER BY cid
+    `;
+    assert.deepStrictEqual(
+      roundColumns.map((column) => column.name),
+      ["round_id", "task_id", "round_number", "kind", "opened_at", "closed_at", "outcome"],
+    );
+
+    const wakeColumns = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info('ft3_mail_wakes') ORDER BY cid
+    `;
+    assert.deepStrictEqual(
+      wakeColumns.map((column) => column.name),
+      [
+        "wake_id",
+        "task_id",
+        "target_thread_id",
+        "reason",
+        "idempotency_key",
+        "created_at",
+        "delivered_at",
+      ],
+    );
+
+    const feedbackColumns = yield* sql<{ readonly name: string }>`
+      SELECT name FROM pragma_table_info('ft3_mail_kind_feedback') ORDER BY cid
+    `;
+    assert.deepStrictEqual(
+      feedbackColumns.map((column) => column.name),
+      [
+        "letter_id",
+        "sender_kind",
+        "classifier_kind",
+        "confidence",
+        "lead_kind",
+        "classifier_version",
+        "created_at",
+      ],
+    );
+
+    const roundFk = yield* sql<{ readonly table: string; readonly on_delete: string }>`
+      PRAGMA foreign_key_list(ft3_mail_rounds)
+    `;
+    assert.equal(roundFk[0]!.table, "ft3_mail_tasks");
+    assert.equal(roundFk[0]!.on_delete, "CASCADE");
+    const wakeFk = yield* sql<{ readonly table: string; readonly on_delete: string }>`
+      PRAGMA foreign_key_list(ft3_mail_wakes)
+    `;
+    assert.equal(wakeFk[0]!.table, "ft3_mail_tasks");
+    assert.equal(wakeFk[0]!.on_delete, "CASCADE");
+    const feedbackFk = yield* sql<{ readonly table: string; readonly on_delete: string }>`
+      PRAGMA foreign_key_list(ft3_mail_kind_feedback)
+    `;
+    assert.equal(feedbackFk[0]!.table, "ft3_mail_letters");
+    assert.equal(feedbackFk[0]!.on_delete, "CASCADE");
 
     const memberFk = yield* sql<{ readonly table: string; readonly on_delete: string }>`
       PRAGMA foreign_key_list(ft3_mail_members)

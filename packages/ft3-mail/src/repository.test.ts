@@ -202,6 +202,122 @@ it.effect("appends a repeated letter once and rejects a changed payload", () =>
   }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect("records rounds, wakes and kind feedback idempotently", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.appendLetter(letterInput());
+
+    const opened = yield* repository.createRound({
+      roundId: "round:one",
+      taskId: "task:one",
+      roundNumber: 1,
+      kind: "review",
+      openedAt: "2026-01-01T00:00:03.000Z",
+    });
+    assert.isTrue(opened.created);
+    assert.equal(opened.round.kind, "review");
+    assert.isNull(opened.round.closedAt);
+
+    const repeatedRound = yield* repository.createRound({
+      roundId: "round:other",
+      taskId: "task:one",
+      roundNumber: 1,
+      kind: "review",
+      openedAt: "2026-01-01T00:00:04.000Z",
+    });
+    assert.isFalse(repeatedRound.created);
+    assert.equal(repeatedRound.round.roundId, "round:one");
+
+    const closed = yield* repository.closeRound({
+      roundId: "round:one",
+      outcome: "succeeded",
+      closedAt: "2026-01-01T00:00:05.000Z",
+    });
+    assert.equal(closed?.closedAt, "2026-01-01T00:00:05.000Z");
+    assert.equal(closed?.outcome, "succeeded");
+    assert.equal((yield* repository.listRounds("task:one")).length, 1);
+
+    const wake = yield* repository.recordWake({
+      wakeId: "wake:one",
+      taskId: "task:one",
+      targetThreadId: "thread:lead",
+      reason: "round-opened",
+      idempotencyKey: "wake-key:one",
+      createdAt: "2026-01-01T00:00:06.000Z",
+    });
+    assert.isTrue(wake.created);
+    assert.isNull(wake.wake.deliveredAt);
+
+    const repeatedWake = yield* repository.recordWake({
+      wakeId: "wake:other",
+      taskId: "task:one",
+      targetThreadId: "thread:lead",
+      reason: "round-opened",
+      idempotencyKey: "wake-key:one",
+      createdAt: "2026-01-01T00:00:07.000Z",
+    });
+    assert.isFalse(repeatedWake.created);
+    assert.equal(repeatedWake.wake.wakeId, "wake:one");
+
+    const feedback = yield* repository.recordKindFeedback({
+      letterId: "letter:one",
+      senderKind: "request",
+      classifierKind: "answer",
+      confidence: 0.6,
+      leadKind: "request",
+      classifierVersion: "v1",
+      createdAt: "2026-01-01T00:00:08.000Z",
+    });
+    assert.equal(feedback.classifierKind, "answer");
+    assert.equal(feedback.confidence, 0.6);
+    assert.equal(feedback.classifierVersion, "v1");
+
+    const reclassified = yield* repository.recordKindFeedback({
+      letterId: "letter:one",
+      senderKind: "request",
+      classifierKind: "question",
+      confidence: 0.4,
+      leadKind: null,
+      classifierVersion: "v2",
+      createdAt: "2026-01-01T00:00:09.000Z",
+    });
+    assert.equal(reclassified.classifierKind, "question");
+    assert.equal(reclassified.classifierVersion, "v2");
+    assert.deepStrictEqual(
+      yield* sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM ft3_mail_kind_feedback WHERE letter_id = 'letter:one'
+      `,
+      [{ count: 1 }],
+    );
+
+    const classified = yield* repository.setLetterClassifier({
+      letterId: "letter:one",
+      classifierKind: "changes",
+      classifierConfidence: 0.9,
+      kindDisputed: true,
+      leadKind: "request",
+    });
+    assert.equal(classified?.kind, "request");
+    assert.equal(classified?.classifierKind, "changes");
+    assert.equal(classified?.classifierConfidence, 0.9);
+    assert.isTrue(classified?.kindDisputed);
+    assert.equal(classified?.leadKind, "request");
+    assert.equal(
+      yield* repository.setLetterClassifier({
+        letterId: "letter:missing",
+        classifierKind: "info",
+        classifierConfidence: null,
+        kindDisputed: false,
+        leadKind: null,
+      }),
+      null,
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("purges only closed tasks older than the retention cutoff", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -226,6 +342,30 @@ it.effect("purges only closed tasks older than the retention cutoff", () =>
       recipient: "role:implementation",
       participantThreadId: "thread:worker",
       createdAt: "2026-01-01T00:00:04.000Z",
+    });
+    yield* repository.createRound({
+      roundId: "round:one",
+      taskId: "task:one",
+      roundNumber: 1,
+      kind: "discussion",
+      openedAt: "2026-01-01T00:00:05.000Z",
+    });
+    yield* repository.recordWake({
+      wakeId: "wake:one",
+      taskId: "task:one",
+      targetThreadId: "thread:lead",
+      reason: "round-opened",
+      idempotencyKey: "wake-key:one",
+      createdAt: "2026-01-01T00:00:06.000Z",
+    });
+    yield* repository.recordKindFeedback({
+      letterId: "letter:one",
+      senderKind: "request",
+      classifierKind: "request",
+      confidence: 0.8,
+      leadKind: "request",
+      classifierVersion: "v1",
+      createdAt: "2026-01-01T00:00:07.000Z",
     });
     yield* repository.closeTask({
       taskId: "task:one",
@@ -252,11 +392,17 @@ it.effect("purges only closed tasks older than the retention cutoff", () =>
       SELECT 'members' AS "table", COUNT(*) AS count FROM ft3_mail_members
       UNION ALL SELECT 'letters', COUNT(*) FROM ft3_mail_letters
       UNION ALL SELECT 'deliveries', COUNT(*) FROM ft3_mail_deliveries
+      UNION ALL SELECT 'rounds', COUNT(*) FROM ft3_mail_rounds
+      UNION ALL SELECT 'wakes', COUNT(*) FROM ft3_mail_wakes
+      UNION ALL SELECT 'feedback', COUNT(*) FROM ft3_mail_kind_feedback
     `;
     assert.deepStrictEqual(leftovers, [
       { table: "members", count: 0 },
       { table: "letters", count: 0 },
       { table: "deliveries", count: 0 },
+      { table: "rounds", count: 0 },
+      { table: "wakes", count: 0 },
+      { table: "feedback", count: 0 },
     ]);
 
     assert.equal(

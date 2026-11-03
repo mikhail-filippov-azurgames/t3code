@@ -37,6 +37,7 @@ describe("board migrations through ft3-host", () => {
           "updated_at",
           "readiness",
           "readiness_note",
+          "policy_snapshot_json",
         ],
       );
       assert.equal(columns.find((column) => column.name === "readiness")!.dflt_value, "'ready'");
