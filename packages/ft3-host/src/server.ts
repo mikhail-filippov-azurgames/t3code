@@ -3,9 +3,11 @@ import * as Layer from "effect/Layer";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import { startupRoleConfiguration } from "@t3tools/ft3-delegation/server";
 import { setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
+import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 
 import * as ServerConfig from "../../../apps/server/src/config.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 
 export { runMigrations } from "./Migrations.ts";
 export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
@@ -34,9 +36,14 @@ const layerDocuments = Layer.unwrap(
     const gate = yield* FeatureGate.FeatureGate;
     if (!(yield* gate.isEffective("documents"))) return Layer.empty;
     const config = yield* ServerConfig.ServerConfig;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const current = yield* settings.getSettings.pipe(Effect.orDie);
     const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
     return docs.docsRuntimeLayer({
-      root: docs.resolveDocsRoot({ stateDir: config.stateDir }),
+      root: resolveDocsRoot({
+        stateDir: config.stateDir,
+        configuredRoot: readDocsSettings(current.ft3).root,
+      }),
     });
   }),
 ).pipe(
@@ -89,9 +96,14 @@ const layerDocsToolkit = Layer.unwrap(
   Effect.gen(function* () {
     const gate = yield* FeatureGate.FeatureGate;
     const config = yield* ServerConfig.ServerConfig;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const current = yield* settings.getSettings.pipe(Effect.orDie);
     const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
     return docs.docsMcpLayer({
-      root: docs.resolveDocsRoot({ stateDir: config.stateDir }),
+      root: resolveDocsRoot({
+        stateDir: config.stateDir,
+        configuredRoot: readDocsSettings(current.ft3).root,
+      }),
       requireEnabled: gate
         .require("documents")
         .pipe(

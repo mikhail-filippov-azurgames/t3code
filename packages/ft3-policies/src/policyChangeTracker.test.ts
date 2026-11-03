@@ -17,6 +17,7 @@ import {
   docsPolicyDocumentReadPort,
   layer as policyDocumentLoaderLayer,
 } from "./policyDocumentLoader.ts";
+import { layerMemory as policyAppliedStoreLayer } from "./policyAppliedStore.ts";
 
 const sha256 = (content: string): string =>
   NodeCrypto.createHash("sha256").update(content, "utf8").digest("hex");
@@ -86,6 +87,8 @@ const fakeDocs = (files: ReadonlyMap<string, string>) =>
       }),
     search: () => Effect.succeed([]),
     write: () => Effect.die("unused in the policy loader tests"),
+    writeAsHuman: () => Effect.die("unused in the policy loader tests"),
+    locateServerPath: () => Effect.succeed(null),
     setDescription: () => Effect.die("unused in the policy loader tests"),
     docRef: () => Effect.die("unused in the policy loader tests"),
   });
@@ -165,7 +168,14 @@ const withTracker = (
   Effect.gen(function* () {
     const tracker = yield* PolicyChangeTracker;
     return yield* use(tracker);
-  }).pipe(Effect.provide(policyChangeTrackerLayer.pipe(Layer.provide(loaderLayer(store)))));
+  }).pipe(
+    Effect.provide(
+      policyChangeTrackerLayer.pipe(
+        Layer.provide(loaderLayer(store)),
+        Layer.provide(policyAppliedStoreLayer),
+      ),
+    ),
+  );
 
 const routingStatus = (snapshot: {
   readonly documents: readonly PolicyDocumentStatus[];
@@ -177,7 +187,11 @@ describe("PolicyChangeTracker applied versions", () => {
     const store = new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]);
     return withTracker(store, (tracker) =>
       Effect.gen(function* () {
-        const first = yield* tracker.refresh({ sources, features: { board: true } });
+        const first = yield* tracker.refresh({
+          sources,
+          features: { board: true },
+          applyExternalEdits: true,
+        });
         const initial = routingStatus(first);
         assert.equal(initial?.applied?.revision, 1);
         assert.equal(initial?.applied?.sha256, sha256(routingPolicy(1)));
@@ -186,7 +200,11 @@ describe("PolicyChangeTracker applied versions", () => {
         assert.equal(first.configVersion, 1);
 
         store.set(ROUTING_POLICY_PATH, routingPolicy(2));
-        const second = yield* tracker.refresh({ sources, features: { board: true } });
+        const second = yield* tracker.refresh({
+          sources,
+          features: { board: true },
+          applyExternalEdits: true,
+        });
         const updated = routingStatus(second);
 
         assert.equal(updated?.applied?.revision, 2);
@@ -206,11 +224,15 @@ describe("PolicyChangeTracker applied versions", () => {
     const store = new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]);
     return withTracker(store, (tracker) =>
       Effect.gen(function* () {
-        yield* tracker.refresh({ sources, features: { board: true } });
+        yield* tracker.refresh({ sources, features: { board: true }, applyExternalEdits: true });
 
         const broken = routingPolicy(2, "A1 (all low)");
         store.set(ROUTING_POLICY_PATH, broken);
-        const snapshot = yield* tracker.refresh({ sources, features: { board: true } });
+        const snapshot = yield* tracker.refresh({
+          sources,
+          features: { board: true },
+          applyExternalEdits: true,
+        });
         const status = routingStatus(snapshot);
         const line = broken.split("\n").findIndex((text) => text.includes("(all low)")) + 1;
 
@@ -241,12 +263,16 @@ describe("PolicyChangeTracker applied versions", () => {
     const store = new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]);
     return withTracker(store, (tracker) =>
       Effect.gen(function* () {
-        yield* tracker.refresh({ sources, features: { board: true } });
+        yield* tracker.refresh({ sources, features: { board: true }, applyExternalEdits: true });
         store.set(ROUTING_POLICY_PATH, routingPolicy(2, "A1 (all low)"));
-        yield* tracker.refresh({ sources, features: { board: true } });
+        yield* tracker.refresh({ sources, features: { board: true }, applyExternalEdits: true });
 
         store.set(ROUTING_POLICY_PATH, routingPolicy(3));
-        const snapshot = yield* tracker.refresh({ sources, features: { board: true } });
+        const snapshot = yield* tracker.refresh({
+          sources,
+          features: { board: true },
+          applyExternalEdits: true,
+        });
         const status = routingStatus(snapshot);
 
         assert.equal(status?.applied?.revision, 3);

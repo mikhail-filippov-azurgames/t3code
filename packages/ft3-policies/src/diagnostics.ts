@@ -34,6 +34,7 @@ export const POLICY_ISSUE_CODES = [
   "document_outside_store",
   "duplicate_stable_id",
   "store_unavailable",
+  "legacy_policy_ref_unresolved",
 ] as const;
 export type PolicyIssueCode = (typeof POLICY_ISSUE_CODES)[number];
 
@@ -276,6 +277,26 @@ export function policyInvalidKeptIssue(key: PolicyDocumentKey, revision: number)
     "error",
     `Document "${key}" has errors and was not applied; revision ${revision} stays active.`,
     { document: key },
+  );
+}
+
+/** A live external edit waits for the human: the applied version keeps serving. */
+export function documentPendingIssue(key: PolicyDocumentKey): PolicyIssue {
+  return issue(
+    "document_pending",
+    "warning",
+    `Document "${key}" changed outside Corvis and is not applied. Review the difference and apply it.`,
+    { document: key },
+  );
+}
+
+/** An env-provided routing policy reference did not resolve in the store. */
+export function legacyPolicyRefUnresolvedIssue(ref: string, reason: string): PolicyIssue {
+  return issue(
+    "legacy_policy_ref_unresolved",
+    "warning",
+    `Routing policy reference "${ref}" could not be resolved (${reason}); the built-in template stays active.`,
+    { document: "routingPolicy" },
   );
 }
 

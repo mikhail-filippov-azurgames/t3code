@@ -70,6 +70,7 @@ const loaded = (document: RoutingPolicy | null): LoadedRoutingPolicyDocument => 
   valid: document !== null,
   issues: [],
   requirements: { routingPolicy: document !== null, requestedRoles: document !== null },
+  files: [],
   document,
 });
 
@@ -78,6 +79,8 @@ const trackerLayer = (document: LoadedRoutingPolicyDocument | null) =>
     refresh: () => Effect.die("the tracker is not refreshed in routing tests"),
     snapshot: () => Effect.die("the tracker is not snapshotted in routing tests"),
     applied: (key) => Effect.succeed(key === "routingPolicy" ? document : null),
+    pendingChange: () => Effect.die("the tracker has no pending change in routing tests"),
+    live: () => Effect.die("the tracker has no live document in routing tests"),
   });
 
 const chain = (

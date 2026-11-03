@@ -24,7 +24,9 @@ import {
   docsRpcServiceLayer,
   docsRpcs,
 } from "@t3tools/ft3-docs/rpc";
+import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import {
   FT3_VCS_WS_METHODS,
   ft3VcsRpcHandlers,
@@ -120,10 +122,20 @@ export const handlers = {
   ...policiesRpcHandlers,
 };
 
+// The store root is a setting (`ft3.docs.root`), so it can point at the store
+// the machine already has instead of the empty state-directory one.
 const docsServiceLayer = Layer.unwrap(
-  Effect.map(ServerConfig.ServerConfig, (config) =>
-    docsRpcServiceLayer({ stateDir: config.stateDir }),
-  ),
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const current = yield* settings.getSettings.pipe(Effect.orDie);
+    return docsRpcServiceLayer({
+      root: resolveDocsRoot({
+        stateDir: config.stateDir,
+        configuredRoot: readDocsSettings(current.ft3).root,
+      }),
+    });
+  }),
 );
 
 export const serviceLayer = Layer.mergeAll(
