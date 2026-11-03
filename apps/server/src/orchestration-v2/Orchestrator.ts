@@ -7885,6 +7885,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         task.id === (child.forkedFrom?.type === "node" ? child.forkedFrom.nodeId : undefined),
     );
     if (original === undefined || original.result === null) return;
+    if (original.completionWake === "none") return;
     const owner =
       parent.runs.filter(isActiveRun).toSorted((a, b) => b.ordinal - a.ordinal)[0] ??
       latestExecutedRun(parent.runs);
@@ -12106,6 +12107,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       return {
         task: input.updatedTask,
+        parentRun: undefined,
+        message: undefined,
+        offer: false,
+      };
+    }
+    // A "none" task never becomes a completion offer: its result is disposed instead of waking the parent.
+    if (input.task.completionWake === "none") {
+      return {
+        task: {
+          ...input.updatedTask,
+          completionDelivery: {
+            state: "disposed" as const,
+            observedByRunId: null,
+          },
+        },
         parentRun: undefined,
         message: undefined,
         offer: false,
