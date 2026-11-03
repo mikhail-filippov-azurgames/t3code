@@ -11,6 +11,9 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import { layer } from "./server.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as FeatureGate from "@t3tools/ft3-policies/server";
+import * as Context from "effect/Context";
 
 const rolesDirEnv = "T3CODE_FT3_ROLES_DIR";
 
@@ -19,10 +22,20 @@ const buildHostLayer = (env: Record<string, string>) =>
     layer.pipe(
       Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+      Layer.provide(ServerSettings.layerTest()),
     ),
   ).pipe(Effect.scoped);
 
 describe("ft3 host startup", () => {
+  it.effect("composes the feature gate with the default toggles", () =>
+    Effect.gen(function* () {
+      const context = yield* buildHostLayer({});
+      const gate = Context.get(context, FeatureGate.FeatureGate);
+      assert.isTrue(yield* gate.isEffective("board"));
+      assert.isFalse(yield* gate.isEffective("mail"));
+    }),
+  );
+
   it.effect("builds without a roles directory", () =>
     Effect.gen(function* () {
       const exit = yield* Effect.exit(buildHostLayer({}));

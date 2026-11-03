@@ -63,6 +63,7 @@
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
     "@t3tools/ft3-delegation": "workspace:*",
+    "@t3tools/ft3-policies": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

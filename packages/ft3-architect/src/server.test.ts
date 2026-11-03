@@ -23,6 +23,7 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import * as ArchitectRepository from "./ArchitectRepository.ts";
@@ -215,6 +216,7 @@ function fixture() {
     Layer.provide(threads),
     Layer.provide(providerRegistry),
     Layer.provide(crypto),
+    Layer.provide(ServerSettings.layerTest()),
   );
   return { layer, shells, createdCommands };
 }

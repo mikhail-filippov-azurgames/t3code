@@ -34,6 +34,7 @@ import {
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import { selectHistoryPageFromCursor } from "../../../apps/server/src/orchestration-v2/threadHistoryPaging.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
@@ -285,6 +286,7 @@ function fixture() {
     Layer.provide(providerRegistry),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(crypto),
+    Layer.provide(ServerSettings.layerTest()),
   );
   return {
     layer,
@@ -658,6 +660,7 @@ describe("ft3 task toolkit through ft3-host", () => {
         Layer.provide(liveQueries),
         Layer.provide(providerRegistry),
         Layer.provide(crypto),
+        Layer.provide(ServerSettings.layerTest()),
       );
       return yield* Effect.gen(function* () {
         const first = yield* call("task_read", { taskId: aId, turnLimit: 1 });

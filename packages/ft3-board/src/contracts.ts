@@ -301,6 +301,7 @@ export class BoardMcpFailure extends Schema.TaggedError<BoardMcpFailure>()(
         "architect_denied",
         "delegated_executor_denied",
         "author_text_rejected",
+        "feature_disabled",
       ]),
     ]),
     message: Schema.String,

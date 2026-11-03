@@ -15,14 +15,12 @@ import {
   TurnItemId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
-  type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2Subagent,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
-import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -45,7 +43,6 @@ import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as TextGeneration from "../../../apps/server/src/textGeneration/TextGeneration.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
-import * as Contracts from "./contracts.ts";
 import * as DelegatedTaskSummaryReactor from "./DelegatedTaskSummaryReactor.ts";
 import * as SummaryRepository from "./DelegatedTaskSummaryRepository.ts";
 import * as TaskHandoffService from "./TaskHandoffService.ts";
@@ -170,17 +167,6 @@ const assistantItem = (id = turnId, ordinal = 1): OrchestrationV2TurnItem => ({
   streaming: false,
 });
 
-const visibleItem = (
-  item: OrchestrationV2TurnItem,
-  position: number,
-): OrchestrationV2ProjectedTurnItem => ({
-  position,
-  sourceThreadId: childId,
-  sourceItemId: item.id,
-  visibility: "local",
-  item,
-});
-
 const infrastructure = EventSink.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
@@ -230,7 +216,7 @@ function fixture() {
     SummaryRepository.layer,
   );
   const layer = Layer.mergeAll(
-    Ft3Host.layer,
+    Ft3Host.layer.pipe(Layer.provide(ServerSettings.layerTest())),
     DelegatedTaskSummaryReactor.layer.pipe(Layer.provideMerge(support)),
     TaskQueryService.layer.pipe(
       Layer.provideMerge(support),
