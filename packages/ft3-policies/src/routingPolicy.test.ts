@@ -2,9 +2,9 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeFS from "node:fs";
 
+import type { PolicyIssueCode } from "./diagnostics.ts";
 import {
   type RoutingPolicy,
-  type RoutingPolicyIssueCode,
   type RoutingPolicyParseResult,
   parseRoutingPolicy,
 } from "./routingPolicy.ts";
@@ -18,7 +18,7 @@ const lineOf = (content: string, needle: string): number => {
   return index + 1;
 };
 
-const findIssue = (result: RoutingPolicyParseResult, code: RoutingPolicyIssueCode) =>
+const findIssue = (result: RoutingPolicyParseResult, code: PolicyIssueCode) =>
   result.issues.find((issue) => issue.code === code);
 
 const requirePolicy = (result: RoutingPolicyParseResult): RoutingPolicy => {
@@ -167,6 +167,8 @@ describe("routing policy row errors", () => {
 
     expect(result.policy).toBeNull();
     expect(problem?.line).toBe(line);
+    expect(problem?.document).toBe("routingPolicy");
+    expect(problem?.text).toBe("A1 (all low)");
     expect(problem?.message).toBe(
       `Routing policy line ${line}: cannot parse "A1 (all low)": "A1 (all low)" is not an alias or alias@level.`,
     );
@@ -260,7 +262,7 @@ describe("routing policy table errors", () => {
     const problem = findIssue(result, "routing_table_missing");
 
     expect(result.policy).toBeNull();
-    expect(problem?.line).toBeNull();
+    expect(problem?.line).toBeUndefined();
     expect(problem?.message).toBe(
       "Routing policy has no role × level table (columns low, medium, high, very-high).",
     );

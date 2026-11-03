@@ -2,6 +2,7 @@ import { boardRpcs } from "@t3tools/ft3-board/rpc-contracts";
 import { architectRpcs } from "@t3tools/ft3-architect/rpc-contracts";
 import { docsRpcs } from "@t3tools/ft3-docs/rpc-contracts";
 import { piRpcs } from "@t3tools/ft3-pi/rpc-contracts";
+import { policiesRpcs } from "@t3tools/ft3-policies/rpc-contracts";
 import { ft3VcsRpcs } from "@t3tools/ft3-vcs/rpc-contracts";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 
@@ -13,4 +14,5 @@ export const group = RpcGroup.make(
   ...piRpcs,
   ...ft3VcsRpcs,
   ...docsRpcs,
+  ...policiesRpcs,
 );

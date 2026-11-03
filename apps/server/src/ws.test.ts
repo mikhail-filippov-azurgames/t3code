@@ -31,6 +31,7 @@ import {
   BoardService as Ft3BoardService,
   BoardSummaryHistoryService as Ft3BoardSummaryHistoryService,
   CommitHistoryService as Ft3CommitHistoryService,
+  PolicyChangeTracker as Ft3PolicyChangeTracker,
 } from "@t3tools/ft3-host/rpc";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -936,6 +937,7 @@ it.effect.each([
         Layer.mock(Ft3BoardSummaryHistoryService)({}),
         Layer.mock(Ft3ArchitectService)({}),
         Layer.mock(Ft3CommitHistoryService)({}),
+        Layer.mock(Ft3PolicyChangeTracker)({}),
         Layer.mock(DirectEndpoints.DirectEndpoints)({
           resolveAvailable: () => Effect.succeed(discovery === "direct-cached" ? endpoints : bound),
           resolve: () =>
@@ -1206,6 +1208,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       Layer.mock(Ft3BoardSummaryHistoryService)({}),
       Layer.mock(Ft3ArchitectService)({}),
       Layer.mock(Ft3CommitHistoryService)({}),
+      Layer.mock(Ft3PolicyChangeTracker)({}),
       Layer.mock(DirectEndpoints.DirectEndpoints)({
         resolve: () => Effect.succeed([]),
         resolveAvailable: () => Effect.succeed([]),

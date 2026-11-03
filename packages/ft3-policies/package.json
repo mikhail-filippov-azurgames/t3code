@@ -15,6 +15,14 @@
       "types": "./src/routingPolicy.ts",
       "import": "./src/routingPolicy.ts"
     },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
+    },
+    "./rpc-contracts": {
+      "types": "./src/rpc-contracts.ts",
+      "import": "./src/rpc-contracts.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"
@@ -25,12 +33,12 @@
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
+    "@t3tools/contracts": "workspace:*",
     "@t3tools/ft3-docs": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "@t3tools/contracts": "workspace:*",
     "@types/node": "catalog:",
     "vite-plus": "catalog:"
   }
