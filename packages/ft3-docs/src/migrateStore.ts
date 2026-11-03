@@ -219,6 +219,9 @@ const migrateError = (
 const describeCause = (cause: unknown): string =>
   cause instanceof Error ? `: ${cause.message}` : `: ${String(cause)}`;
 
+const sameLocation = (left: string, right: string): boolean =>
+  NodePath.resolve(left) === NodePath.resolve(right);
+
 const absoluteFor = (contextsRoot: string, relPath: string): string =>
   relPath === "" ? contextsRoot : NodePath.resolve(contextsRoot, ...relPath.split("/"));
 
@@ -366,15 +369,16 @@ const buildReport = (
     .sort((left, right) => compareRelPaths(left.relPath, right.relPath));
 
   const absPathRewrites: Array<MigrateStoreAbsPathRewrite> = [];
+  // OpenContext writes `contexts\a/b.md` on Windows; only a different location is a rewrite.
   for (const row of database.documents) {
     const to = absoluteFor(contextsRoot, row.relPath);
-    if (row.absPath !== to) {
+    if (!sameLocation(row.absPath, to)) {
       absPathRewrites.push({ table: "docs", relPath: row.relPath, from: row.absPath, to });
     }
   }
   for (const row of database.folders) {
     const to = absoluteFor(contextsRoot, row.relPath);
-    if (row.absPath !== to) {
+    if (!sameLocation(row.absPath, to)) {
       absPathRewrites.push({ table: "folders", relPath: row.relPath, from: row.absPath, to });
     }
   }
@@ -699,7 +703,7 @@ const verifyStore = Effect.fn("migrateStore.verifyStore")(function* (
   ];
   for (const row of absoluteRows) {
     const expected = absoluteFor(contextsRoot, row.relPath);
-    if (row.absPath !== expected) {
+    if (!sameLocation(row.absPath, expected)) {
       issues.push({
         code: "abs_path_mismatch",
         detail: `${row.table} "${row.relPath}": "${row.absPath}" != "${expected}"`,
