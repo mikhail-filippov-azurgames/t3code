@@ -21,6 +21,7 @@ describe("ft3 migrations", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [13, "Docs"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
@@ -40,8 +41,16 @@ describe("ft3 migrations", () => {
           "ft3_board_reactor_wakes",
           "ft3_delegated_task_summaries",
           "ft3_delegated_task_summary_reactor_cursor",
+          "ft3_docs_file_state",
+          "ft3_docs_fts",
+          "ft3_docs_fts_config",
+          "ft3_docs_fts_content",
+          "ft3_docs_fts_data",
+          "ft3_docs_fts_docsize",
+          "ft3_docs_fts_idx",
           "ft3_meta",
           "ft3_migrations",
+          "ft3_policy_applied",
           "ft3_task_handoffs",
         ],
       );
@@ -56,6 +65,7 @@ describe("ft3 migrations", () => {
         { migration_id: 7, name: "Ft3TaskHandoffs" },
         { migration_id: 8, name: "Ft3DelegatedTaskSummaryReactor" },
         { migration_id: 9, name: "BoardRetention" },
+        { migration_id: 13, name: "Docs" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -85,6 +95,7 @@ describe("ft3 migrations", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [13, "Docs"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
       const ft3Before = yield* sql`SELECT * FROM ft3_migrations`;
@@ -120,6 +131,7 @@ describe("ft3 migrations", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [13, "Docs"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

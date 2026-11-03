@@ -702,6 +702,107 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
     return yield* requireDocument(relPath);
   });
 
+  const updateLocationByStableId = Effect.fn("DocsStore.updateLocationByStableId")(
+    function* (input: { readonly stableId: string; readonly relPath: string }) {
+      const relPath = yield* requireRelPath(input.relPath);
+      const name = lastSegment(relPath);
+      if (!isDocumentName(name)) return yield* storeError("invalid_name", relPath);
+      const document = yield* findDocRowByStableId(input.stableId);
+      if (document === null) return yield* storeError("document_not_found", input.stableId);
+      if (document.relPath === relPath) return document;
+      if ((yield* findDocRow(relPath)) !== null) {
+        return yield* storeError("document_exists", relPath);
+      }
+      const at = yield* timestamp;
+      const folder = yield* ensureFolderChain(parentSegment(relPath), at);
+      yield* retryWhenBusy(
+        sql`
+        UPDATE docs
+        SET folder_id = ${folder.id}, name = ${name}, rel_path = ${relPath},
+            abs_path = ${absoluteFor(relPath)}, updated_at = ${at}
+        WHERE id = ${document.id}
+      `,
+      ).pipe(Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)));
+      return yield* requireDocument(relPath);
+    },
+  );
+
+  const registerExisting = Effect.fn("DocsStore.registerExisting")(function* (input: {
+    readonly relPath: string;
+    readonly stableId?: string;
+    readonly description?: string;
+  }) {
+    const relPath = yield* requireRelPath(input.relPath);
+    const name = lastSegment(relPath);
+    if (!isDocumentName(name)) return yield* storeError("invalid_name", relPath);
+    if ((yield* findDocRow(relPath)) !== null) {
+      return yield* storeError("document_exists", relPath);
+    }
+    const stableId = input.stableId ?? (yield* newStableId());
+    if (stableId.length === 0) return yield* storeError("invalid_path", relPath);
+    if ((yield* findDocRowByStableId(stableId)) !== null) {
+      return yield* storeError("duplicate_stable_id", relPath);
+    }
+    const at = yield* timestamp;
+    const folder = yield* ensureFolderChain(parentSegment(relPath), at);
+    yield* retryWhenBusy(
+      sql`
+        INSERT INTO docs (folder_id, name, rel_path, abs_path, description, stable_id, created_at, updated_at)
+        VALUES (${folder.id}, ${name}, ${relPath}, ${absoluteFor(relPath)}, ${input.description ?? ""}, ${stableId}, ${at}, ${at})
+      `,
+    ).pipe(Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)));
+    return yield* requireDocument(relPath);
+  });
+
+  const reassignStableId = Effect.fn("DocsStore.reassignStableId")(function* (input: {
+    readonly relPath: string;
+    readonly stableId: string;
+  }) {
+    const relPath = yield* requireRelPath(input.relPath);
+    if (input.stableId.length === 0) return yield* storeError("invalid_path", relPath);
+    const document = yield* requireDocument(relPath);
+    if (document.stableId === input.stableId) return document;
+    if ((yield* findDocRowByStableId(input.stableId)) !== null) {
+      return yield* storeError("duplicate_stable_id", relPath);
+    }
+    const at = yield* timestamp;
+    yield* retryWhenBusy(
+      sql`UPDATE docs SET stable_id = ${input.stableId}, updated_at = ${at} WHERE id = ${document.id}`,
+    ).pipe(Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)));
+    return yield* requireDocument(relPath);
+  });
+
+  const ensureFolderRow = Effect.fn("DocsStore.ensureFolderRow")(function* (relPathInput: string) {
+    const relPath = yield* requireRelPath(relPathInput);
+    const at = yield* timestamp;
+    return yield* ensureFolderChain(relPath, at);
+  });
+
+  const removeFolderRow = Effect.fn("DocsStore.removeFolderRow")(function* (relPathInput: string) {
+    const relPath = yield* requireRelPath(relPathInput);
+    if (relPath === ROOT_FOLDER_REL_PATH) return yield* storeError("invalid_path", relPath);
+    yield* requireFolder(relPath);
+    yield* retryWhenBusy(sql`DELETE FROM folders WHERE rel_path = ${relPath}`).pipe(
+      Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)),
+    );
+  });
+
+  const deleteDocRow = Effect.fn("DocsStore.deleteDocRow")(function* (relPathInput: string) {
+    const relPath = yield* requireRelPath(relPathInput);
+    yield* requireDocument(relPath);
+    yield* retryWhenBusy(sql`DELETE FROM docs WHERE rel_path = ${relPath}`).pipe(
+      Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)),
+    );
+  });
+
+  const listAllFolders = Effect.fn("DocsStore.listAllFolders")(function* () {
+    const rows = yield* databaseQuery(
+      ROOT_FOLDER_REL_PATH,
+      sql<FolderRow>`SELECT ${folderColumns} FROM folders ORDER BY rel_path`,
+    );
+    return rows.map(folderFromRow);
+  });
+
   const setDescription = Effect.fn("DocsStore.setDescription")(function* (input: {
     readonly relPath: string;
     readonly description: string;
@@ -820,6 +921,13 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
     renameDoc,
     removeDoc,
     manifest,
+    updateLocationByStableId,
+    registerExisting,
+    reassignStableId,
+    ensureFolderRow,
+    removeFolderRow,
+    deleteDocRow,
+    listAllFolders,
   });
 });
 
@@ -882,6 +990,35 @@ export class DocsStore extends Context.Service<
       readonly folderRelPath?: string;
       readonly limit?: number;
     }) => Effect.Effect<ReadonlyArray<DocManifestEntry>, DocsStoreError>;
+    /**
+     * Points an existing row at a new on-disk location, matched by stable id.
+     * Used by the reconciler when the human moved the file; never writes files.
+     */
+    readonly updateLocationByStableId: (input: {
+      readonly stableId: string;
+      readonly relPath: string;
+    }) => Effect.Effect<DocRecord, DocsStoreError>;
+    /**
+     * Inserts a row for a file that already exists on disk (reconciler
+     * registrations); generates the stable id when none is given.
+     */
+    readonly registerExisting: (input: {
+      readonly relPath: string;
+      readonly stableId?: string;
+      readonly description?: string;
+    }) => Effect.Effect<DocRecord, DocsStoreError>;
+    /** Rebinds the row at `relPath` to a different stable id; the file is untouched. */
+    readonly reassignStableId: (input: {
+      readonly relPath: string;
+      readonly stableId: string;
+    }) => Effect.Effect<DocRecord, DocsStoreError>;
+    /** Idempotent folder row for a directory that already exists on disk. */
+    readonly ensureFolderRow: (relPath: string) => Effect.Effect<DocFolderRecord, DocsStoreError>;
+    /** Deletes a folder row (cascading docs rows) without touching the disk. */
+    readonly removeFolderRow: (relPath: string) => Effect.Effect<void, DocsStoreError>;
+    /** Deletes a docs row without touching the disk; used after repeated missing passes. */
+    readonly deleteDocRow: (relPath: string) => Effect.Effect<void, DocsStoreError>;
+    readonly listAllFolders: () => Effect.Effect<ReadonlyArray<DocFolderRecord>, DocsStoreError>;
   }
 >()("@t3tools/ft3-docs/store/DocsStore") {}
 
