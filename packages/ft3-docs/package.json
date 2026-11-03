@@ -15,6 +15,10 @@
       "types": "./src/brief.ts",
       "import": "./src/brief.ts"
     },
+    "./root": {
+      "types": "./src/root.ts",
+      "import": "./src/root.ts"
+    },
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"

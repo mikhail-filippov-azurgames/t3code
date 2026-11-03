@@ -78,10 +78,15 @@ export const PolicyDocumentsSettings = Schema.Struct({
 });
 export type PolicyDocumentsSettings = typeof PolicyDocumentsSettings.Type;
 
+/** Version marker of the one-time env migration (design §12.1). */
+export const POLICY_ENV_MIGRATION_VERSION = "v1";
+
 export const PoliciesSettings = Schema.Struct({
   documents: PolicyDocumentsSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   applyExternalEdits: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   features: PolicyFeatureSettings.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  /** Set once the legacy `T3CODE_FT3_*` environment was folded into `documents`. */
+  envMigration: Schema.optionalKey(Schema.String),
 });
 export type PoliciesSettings = typeof PoliciesSettings.Type;
 
@@ -134,6 +139,14 @@ export function resolvePolicyDocumentSources(
     sources[projectOverride.key] = projectOverride.source;
   }
   return sources;
+}
+
+/** The `ft3` namespace with this settings value written into its `policies` key. */
+export function withPolicySettings(
+  ft3Namespace: Readonly<Record<string, unknown>> | undefined,
+  policies: PoliciesSettings,
+): Readonly<Record<string, unknown>> {
+  return { ...ft3Namespace, [POLICY_SETTINGS_NAMESPACE]: policies };
 }
 
 /** Requirement validity input for `resolveFeatureStates`, keyed by policy requirement. */

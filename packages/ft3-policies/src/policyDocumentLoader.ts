@@ -26,6 +26,7 @@ export interface PolicyDocumentRead {
   readonly content: string;
   readonly sha256: string;
   readonly relPath: string;
+  readonly stableId: string;
 }
 
 /** The two `DocsService` calls the loader makes; a port keeps `ft3-docs` out of this module's graph. */
@@ -45,7 +46,15 @@ export interface PolicyDocumentReadPort {
 export const docsPolicyDocumentReadPort = (
   docs: DocsService["Service"],
 ): PolicyDocumentReadPort => ({
-  read: (input) => docs.read(input),
+  read: (input) =>
+    docs.read(input).pipe(
+      Effect.map((read) => ({
+        content: read.content,
+        sha256: read.sha256,
+        relPath: read.relPath,
+        stableId: read.stableId,
+      })),
+    ),
   manifest: (input) => docs.manifest(input),
 });
 
@@ -61,6 +70,24 @@ export interface LoadPolicyDocumentInput {
   readonly features?: PolicyFeatureRequest;
 }
 
+/** Reparses already-read files, such as an applied copy loaded from the database. */
+export interface ParsePolicyDocumentInput extends LoadPolicyDocumentInput {
+  readonly files: readonly LoadedPolicyFile[];
+}
+
+/** One raw file of a policy document, as applied copies and pending diffs need it. */
+export interface LoadedPolicyFile {
+  /** "" for the main document, else the manifest-relative path of a tree file. */
+  readonly file: string;
+  readonly content: string;
+  readonly sha256: string;
+  /** Store-relative path when the file lives in the store. */
+  readonly relPath: string | null;
+  /** Host path of an unmanaged file or a store file; null for bundled templates. */
+  readonly absolutePath: string | null;
+  readonly stableId: string | null;
+}
+
 interface LoadedPolicyDocumentBase {
   readonly source: PolicyDocumentSource;
   /** SHA-256 of the main file; null when it could not be read. */
@@ -71,6 +98,8 @@ interface LoadedPolicyDocumentBase {
   readonly valid: boolean;
   readonly issues: readonly PolicyIssue[];
   readonly requirements: Readonly<Partial<Record<PolicyRequirementId, boolean>>>;
+  /** Every file of the document, the main one keyed ""; empty when it could not be read. */
+  readonly files: readonly LoadedPolicyFile[];
 }
 
 export interface LoadedRoutingPolicyDocument extends LoadedPolicyDocumentBase {
@@ -100,6 +129,8 @@ interface LoadedContent {
   readonly sha256: string;
   /** Store-relative path or package asset path, for diagnostics. */
   readonly label: string;
+  /** Raw files for applied copies and pending diffs. */
+  readonly liveFiles: readonly LoadedPolicyFile[];
 }
 
 type ContentRead =
@@ -162,6 +193,31 @@ const readDirectoryFiles = (directory: string): ReadonlyMap<string, string> => {
   return files;
 };
 
+const liveFilesOf = (
+  main: { readonly content: string; readonly sha256: string; readonly absolutePath: string | null },
+  files: ReadonlyMap<string, string>,
+): readonly LoadedPolicyFile[] => [
+  {
+    file: "",
+    content: main.content,
+    sha256: main.sha256,
+    relPath: null,
+    absolutePath: main.absolutePath,
+    stableId: null,
+  },
+  ...[...files.entries()].map(([file, content]) => ({
+    file,
+    content,
+    sha256: sha256Hex(content),
+    relPath: null,
+    absolutePath:
+      main.absolutePath === null
+        ? null
+        : NodePath.join(NodePath.dirname(main.absolutePath), ...file.split("/")),
+    stableId: null,
+  })),
+];
+
 const readBuiltin = (key: PolicyDocumentKey): ContentRead => {
   const relative = assetPathOf(key);
   const absolute = NodePath.join(PACKAGE_ROOT, ...relative.split("/"));
@@ -172,9 +228,16 @@ const readBuiltin = (key: PolicyDocumentKey): ContentRead => {
       : new Map();
     const manifest = NodePath.basename(absolute);
     files.delete(manifest);
+    const sha256 = sha256Hex(content);
     return {
       ok: true,
-      content: { content, files, sha256: sha256Hex(content), label: relative },
+      content: {
+        content,
+        files,
+        sha256,
+        label: relative,
+        liveFiles: liveFilesOf({ content, sha256, absolutePath: null }, files),
+      },
     };
   } catch {
     return { ok: false, issues: [documentMissingIssue(key, relative)] };
@@ -188,9 +251,16 @@ const readServerPath = (key: PolicyDocumentKey, path: string): ContentRead => {
       ? new Map(readDirectoryFiles(NodePath.dirname(path)))
       : new Map();
     files.delete(NodePath.basename(path));
+    const sha256 = sha256Hex(content);
     return {
       ok: true,
-      content: { content, files, sha256: sha256Hex(content), label: toPosix(path) },
+      content: {
+        content,
+        files,
+        sha256,
+        label: toPosix(path),
+        liveFiles: liveFilesOf({ content, sha256, absolutePath: path }, files),
+      },
     };
   } catch {
     return { ok: false, issues: [documentMissingIssue(key, path)] };
@@ -215,6 +285,16 @@ const readStore = Effect.fn("PolicyDocumentLoader.readStore")(function* (
     };
   }
   const files = new Map<string, string>();
+  const liveFiles: LoadedPolicyFile[] = [
+    {
+      file: "",
+      content: read.success.content,
+      sha256: read.success.sha256,
+      relPath: read.success.relPath,
+      absolutePath: null,
+      stableId: read.success.stableId,
+    },
+  ];
   if (isTreeKey(key)) {
     const relPath = read.success.relPath;
     const slash = relPath.lastIndexOf("/");
@@ -226,7 +306,16 @@ const readStore = Effect.fn("PolicyDocumentLoader.readStore")(function* (
         if (entry.relPath === relPath) continue;
         const child = yield* Effect.result(port.read({ ref: entry.relPath }));
         if (Result.isFailure(child)) continue;
-        files.set(entry.relPath.slice(prefix.length), child.success.content);
+        const file = entry.relPath.slice(prefix.length);
+        files.set(file, child.success.content);
+        liveFiles.push({
+          file,
+          content: child.success.content,
+          sha256: child.success.sha256,
+          relPath: child.success.relPath,
+          absolutePath: null,
+          stableId: child.success.stableId,
+        });
       }
     }
   }
@@ -237,6 +326,7 @@ const readStore = Effect.fn("PolicyDocumentLoader.readStore")(function* (
       files,
       sha256: read.success.sha256,
       label: read.success.relPath,
+      liveFiles,
     },
   };
 });
@@ -262,6 +352,7 @@ const loadRoutingPolicyDocument = (
       requestedRoles: document !== null,
     },
     document,
+    files: content.liveFiles,
   };
 };
 
@@ -287,6 +378,7 @@ const loadRolesDocument = (
     issues: parsed.issues,
     requirements: parsed.requirements,
     document: parsed.valid ? parsed : null,
+    files: content.liveFiles,
   };
 };
 
@@ -312,6 +404,7 @@ const loadLeadSkillsDocument = (
     issues: parsed.issues,
     requirements: parsed.requirements,
     document: parsed.valid ? parsed : null,
+    files: content.liveFiles,
   };
 };
 
@@ -328,6 +421,7 @@ const unreadDocumentIssues = (
     valid: false,
     issues,
     requirements: {},
+    files: [],
   };
   switch (key) {
     case "routingPolicy":
@@ -354,6 +448,7 @@ const parseContent = (
 };
 
 const make = Effect.fn("PolicyDocumentLoader.make")(function* (port: PolicyDocumentReadPort) {
+  yield* Effect.void;
   const loadSource = (input: LoadPolicyDocumentInput): Effect.Effect<ContentRead> => {
     const source = input.source;
     switch (source.kind) {
@@ -374,7 +469,29 @@ const make = Effect.fn("PolicyDocumentLoader.make")(function* (port: PolicyDocum
     return parseContent(input, content.content);
   });
 
-  return PolicyDocumentLoader.of({ load });
+  const parse = Effect.fn("PolicyDocumentLoader.parse")(function* (
+    input: ParsePolicyDocumentInput,
+  ) {
+    yield* Effect.void;
+    const main = input.files.find((file) => file.file === "");
+    if (main === undefined) {
+      return unreadDocumentIssues(input.key, input.source, [
+        documentMissingIssue(input.key, sourceLabel(input.key, input.source)),
+      ]);
+    }
+    const files = new Map(
+      input.files.filter((file) => file.file !== "").map((file) => [file.file, file.content]),
+    );
+    return parseContent(input, {
+      content: main.content,
+      files,
+      sha256: main.sha256,
+      label: sourceLabel(input.key, input.source),
+      liveFiles: input.files,
+    });
+  });
+
+  return PolicyDocumentLoader.of({ load, parse });
 });
 
 /**
@@ -387,6 +504,9 @@ export class PolicyDocumentLoader extends Context.Service<
   {
     readonly load: (
       input: LoadPolicyDocumentInput,
+    ) => Effect.Effect<LoadedPolicyDocument, never, never>;
+    readonly parse: (
+      input: ParsePolicyDocumentInput,
     ) => Effect.Effect<LoadedPolicyDocument, never, never>;
   }
 >()("@t3tools/ft3-policies/policyDocumentLoader") {}
