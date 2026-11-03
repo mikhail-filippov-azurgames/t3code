@@ -1692,6 +1692,9 @@ importers:
 
   packages/ft3-docs:
     dependencies:
+      '@t3tools/shared':
+        specifier: workspace:*
+        version: link:../shared
       effect:
         specifier: 4.0.5
         version: 4.0.5
