@@ -1952,6 +1952,9 @@ importers:
       '@t3tools/ft3-pi':
         specifier: workspace:*
         version: link:../ft3-pi
+      '@t3tools/ft3-policies':
+        specifier: workspace:*
+        version: link:../ft3-policies
       '@t3tools/ft3-vcs':
         specifier: workspace:*
         version: link:../ft3-vcs
