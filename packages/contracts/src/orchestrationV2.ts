@@ -919,7 +919,7 @@ export const OrchestrationV2Subagent = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
   modelSelection: Schema.optional(ModelSelection),
-  completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  completionWake: Schema.optional(Schema.Literals(["always", "settled_only", "none"])),
   completionDelivery: Schema.optional(OrchestrationV2DelegatedCompletionTaskDelivery),
   status: Schema.Literals([
     "idle",
@@ -3334,7 +3334,7 @@ export const OrchestrationV2Command = Schema.Union([
     interactionMode: ProviderInteractionMode,
     workspaceStrategy: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
     // Defaults to settled_only; fire-and-forget wakes require always.
-    completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    completionWake: Schema.optional(Schema.Literals(["always", "settled_only", "none"])),
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({
@@ -3342,7 +3342,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
-    completionWake: Schema.Literals(["always", "settled_only"]),
+    completionWake: Schema.Literals(["always", "settled_only", "none"]),
   }),
   Schema.Struct({
     type: Schema.Literal("delegated_task.completion-delivery.acknowledge"),
@@ -3444,7 +3444,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     driver: ProviderDriverKind,
     modelSelection: ModelSelection,
     remoteChild: OrchestrationV2RemoteTaskChild,
-    completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+    completionWake: Schema.optional(Schema.Literals(["always", "settled_only", "none"])),
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its
