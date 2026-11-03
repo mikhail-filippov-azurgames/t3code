@@ -4,22 +4,35 @@ import type { EnvironmentRpcSuccess } from "@t3tools/client-runtime/rpc";
 
 import type { OpenContextDocResolveResult } from "./openContextDocLink.ts";
 
-export const FT3_OPENCONTEXT_RESOLVE_DOC = "openContext.resolveDoc" as const;
+/** `docs.resolve` replaced the OpenContext resolver; the chip keeps its own shape. */
+export const FT3_DOCS_RESOLVE = "docs.resolve" as const;
 
-export const openContextEnvironment = {
+export const docsEnvironment = {
   resolveDoc: createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
-    label: "environment-data:opencontext:resolve-doc",
-    tag: FT3_OPENCONTEXT_RESOLVE_DOC,
+    label: "environment-data:docs:resolve",
+    tag: FT3_DOCS_RESOLVE,
     staleTimeMs: 15_000,
   }),
 };
 
-export type OpenContextResolveDocQueryResult = EnvironmentRpcSuccess<
-  typeof FT3_OPENCONTEXT_RESOLVE_DOC
->;
+export type DocsResolveQueryResult = EnvironmentRpcSuccess<typeof FT3_DOCS_RESOLVE>;
 
+/** Maps the store's `docs.resolve` result onto the chip's document shape. */
 export function toOpenContextDocResolveResult(
-  value: OpenContextResolveDocQueryResult,
+  value: DocsResolveQueryResult,
 ): OpenContextDocResolveResult {
-  return value;
+  switch (value.status) {
+    case "found":
+      return {
+        status: "found",
+        stableId: value.stableId,
+        name: value.name,
+        relativePath: value.relPath,
+        absolutePath: value.absolutePath,
+      };
+    case "not_found":
+      return { status: "not_found" };
+    case "unavailable":
+      return { status: "store_unavailable" };
+  }
 }

@@ -690,12 +690,11 @@ against. Relative file links resolve through the workspace index by basename or
 nested suffix, and only a completed parent listing may turn a chip into the red
 "Not found" state; an ambiguous hit or a failed query stays a plain chip. A chip click reuses the commit
 graph selection path (`selectCommitFromGraph`): the diff panel opens on
-`{ kind: "commit" }`, so the graph highlights the same commit. OpenContext
-resolution is a new `openContext.resolveDoc` method in the existing ft3-host RPC
-group, with the store snapshot scanner in
-`packages/ft3-host/src/openContextDocs.ts` (the same package that already
-composes the server RPC group), so no core contracts or `ws.ts` handler is
-added. A whole inline-code span counts as one token; fenced code, longer inline
+`{ kind: "commit" }`, so the graph highlights the same commit. Document
+resolution is the `docs.resolve` method in the ft3-docs RPC group, with the
+store, the resolver and the docs MCP tools in `packages/ft3-docs` (the ft3-host
+RPC group re-exports them), so no core contracts or `ws.ts` handler is added. A
+whole inline-code span counts as one token; fenced code, longer inline
 code, links and URLs stay plain. Commit SHAs resolve in `ft3-vcs` with
 `git cat-file --batch-check` in the thread cwd first, then in git repositories
 nested under it (bounded depth, cached); the result names the repository that
@@ -741,7 +740,6 @@ New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-web/src/chat/openContextDocLink.test.ts`,
 `packages/ft3-web/src/chat/chatCopyFilters.test.ts`,
 `packages/ft3-web/src/chat/chatCopyFilters.browser.test.tsx`,
-`packages/ft3-host/src/openContextDocs.test.ts`,
 `packages/ft3-web/src/files/openInPicker.test.ts`,
 `packages/ft3-web/src/chat/chatFileLink.test.ts`, and
 `packages/ft3-web/src/chat/chatFileLinks.browser.test.tsx`.

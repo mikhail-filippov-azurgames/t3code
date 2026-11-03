@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - role instruction files live on disk; sync reads keep role validation pure.
 import type { OrchestrationV2DelegatedTaskRole } from "@t3tools/contracts";
+import { documentsBriefLine } from "@t3tools/ft3-docs/brief";
 import { setNativeSubagentGuidance } from "@t3tools/provider-core/server/orchestrationInstructions";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -142,9 +143,8 @@ export function delegatedRoleAssignment(
 }
 
 /**
- * The child's first prompt: the role instruction when roles are configured,
- * else the upstream prompt untouched. The role line supersedes upstream's
- * `Act as the <role> sub-agent` prefix, so it is not repeated.
+ * The child's first prompt: the role instruction, else the upstream prompt.
+ * The documents brief block follows the role line while documents are on.
  */
 export function delegatedTaskPrompt(input: {
   readonly role: OrchestrationV2DelegatedTaskRole | undefined;
@@ -152,10 +152,13 @@ export function delegatedTaskPrompt(input: {
   readonly task: string;
   readonly upstreamPrompt: string;
 }): string {
+  const documents = documentsBriefLine();
+  const withDocuments = (prompt: string) =>
+    documents === "" ? prompt : `${documents}\n\n${prompt}`;
   const configured = rolesDirPath(input.rolesDir);
-  if (configured === "") return input.upstreamPrompt;
+  if (configured === "") return withDocuments(input.upstreamPrompt);
   const role = roleFileName(input.role ?? DEFAULT_DELEGATED_ROLE);
-  return `${roleInstructionLine(role, configured)}\n\n${input.task}`;
+  return `${roleInstructionLine(role, configured)}\n\n${withDocuments(input.task)}`;
 }
 
 /** Server startup: fail on an unusable roles directory and drop native-subagent guidance when on. */
