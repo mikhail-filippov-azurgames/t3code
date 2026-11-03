@@ -37,6 +37,7 @@ const ROUTING_UNAVAILABLE = "The routing policy is not applied, so no participan
 export const MailServiceErrorCode = Schema.Literals([
   "mail_disabled",
   "task_not_found",
+  "card_not_found",
   "task_closed",
   "members_active",
   "letter_not_found",
@@ -176,6 +177,7 @@ export class MailPolicyEvidence extends Context.Service<
   MailPolicyEvidence,
   {
     readonly snapshotJson: Effect.Effect<string>;
+    readonly cardExists: (cardId: string) => Effect.Effect<boolean>;
     readonly recordCardSnapshot: (input: {
       readonly cardId: string;
       readonly snapshotJson: string;
@@ -396,6 +398,10 @@ const make = Effect.gen(function* () {
       clientRequestId: input.clientRequestId,
     });
     if (existing !== null) return yield* replayTask(existing, requestFingerprint);
+    const cardId = input.cardId ?? null;
+    if (cardId !== null && !(yield* evidence.cardExists(cardId))) {
+      return yield* refuse("card_not_found", `Board card "${cardId}" was not found.`);
+    }
 
     const taskId = yield* newId;
     const rows = yield* Effect.forEach(members, (member) =>
@@ -449,7 +455,6 @@ const make = Effect.gen(function* () {
         })
         .pipe(Effect.map((member) => ({ member, noCandidate: routes[index] ?? null }))),
     );
-    const cardId = input.cardId ?? null;
     if (cardId !== null) {
       yield* evidence.recordCardSnapshot({
         cardId,
