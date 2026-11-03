@@ -360,6 +360,54 @@ describe("DocsService writes", () => {
     ),
   );
 
+  it.effect("lets the human save a policy document and refuses a stale base sha", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const live = yield* context.service.read({ ref: "project/plan.md" });
+          const saved = yield* context.service.writeAsHuman({
+            ref: "project/plan.md",
+            content: `---\nstable_id: ${NIL_ID}\n---\n# Plan\n\nHuman edit.\n`,
+            baseSha256: live.sha256,
+          });
+          assert.notEqual(saved.sha256, live.sha256);
+          assert.include(
+            (yield* context.service.read({ ref: "project/plan.md" })).content,
+            "Human edit.",
+          );
+
+          const stale = yield* context.service
+            .writeAsHuman({
+              ref: "project/plan.md",
+              content: "# Stale\n",
+              baseSha256: live.sha256,
+            })
+            .pipe(Effect.flip);
+          assert.equal(stale.code, "document_changed");
+        }),
+      seedFiles,
+    ),
+  );
+
+  it.effect("maps an absolute server path to its store row, and rejects one outside", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const inside = yield* context.service.locateServerPath(
+            NodePath.join(context.root, "contexts", "project", "plan.md"),
+          );
+          assert.deepStrictEqual(inside, { relPath: "project/plan.md", stableId: NIL_ID });
+          const outside = yield* context.service.locateServerPath(
+            NodePath.join(context.root, "elsewhere", "plan.md"),
+          );
+          assert.isNull(outside);
+        }),
+      seedFiles,
+    ),
+  );
+
   it.effect("protects a document the protection port names", () =>
     withDocs(
       (context) =>

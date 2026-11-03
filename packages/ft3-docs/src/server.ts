@@ -1,5 +1,15 @@
 /** Server entry of `ft3-docs`: the store, reconciliation, watch, index and `DocsService`. */
-export { DOCS_ROOT_ENV, resolveDocsRoot } from "./root.ts";
+export {
+  DEFAULT_DOCS_SETTINGS,
+  DOCS_ROOT_ENV,
+  DOCS_ROOT_MAX_LENGTH,
+  DOCS_SETTINGS_NAMESPACE,
+  DocsRootSetting,
+  DocsSettings,
+  decodeDocsSettingsValue,
+  readDocsSettings,
+  resolveDocsRoot,
+} from "./root.ts";
 export {
   DOCS_BRIEF_BLOCK,
   docsBriefBlock,
@@ -24,6 +34,8 @@ export {
   type DocsServiceErrorCode,
   type DocsServiceOptions,
   type DocsSetDescriptionInput,
+  type DocsHumanWriteInput,
+  type DocsPathLocation,
   type DocsWriteInput,
   type DocsWriteResult,
   type DocumentsWriteAllowReason,

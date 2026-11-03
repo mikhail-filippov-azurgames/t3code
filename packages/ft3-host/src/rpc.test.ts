@@ -1,11 +1,13 @@
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthSettingsWriteScope,
   type AuthEnvironmentScope,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as BoardContracts from "@t3tools/ft3-board/contracts";
+import type { PolicyDocumentKey } from "@t3tools/ft3-policies/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -107,7 +109,27 @@ const stubs = {
   [FT3_WS_METHODS.piBonsaiPresetDetect]: () => Effect.succeed(null),
   [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
   [FT3_WS_METHODS.docsResolve]: () => Effect.succeed({ status: "not_found" as const }),
-  [FT3_WS_METHODS.policiesGetSnapshot]: () => Effect.succeed({ configVersion: 1, documents: [] }),
+  [FT3_WS_METHODS.policiesGetSnapshot]: () =>
+    Effect.succeed({ configVersion: 1, documents: [], warnings: [] }),
+  [FT3_WS_METHODS.policiesReadDocument]: () =>
+    Effect.succeed({ status: "unavailable" as const, key: "routingPolicy" as const, issues: [] }),
+  [FT3_WS_METHODS.policiesSaveDocument]: () =>
+    Effect.succeed({
+      status: "not_writable" as const,
+      snapshot: { configVersion: 1, documents: [], warnings: [] },
+    }),
+  [FT3_WS_METHODS.policiesGetPendingChange]: ({ key }: { key: PolicyDocumentKey }) =>
+    Effect.succeed({ key, pending: false, change: null }),
+  [FT3_WS_METHODS.policiesApplyPending]: () =>
+    Effect.succeed({
+      status: "nothing_pending" as const,
+      snapshot: { configVersion: 1, documents: [], warnings: [] },
+    }),
+  [FT3_WS_METHODS.policiesSetApplyExternalEdits]: ({ enabled }: { enabled: boolean }) =>
+    Effect.succeed({
+      enabled,
+      snapshot: { configVersion: 1, documents: [], warnings: [] },
+    }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -124,7 +146,11 @@ describe("FT3 RPC scope map", () => {
 describe("FT3 RPC authorization", () => {
   it.effect("calls every FT3 RPC method through the harness with its scope", () =>
     Effect.gen(function* () {
-      const client = yield* clientWith([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]);
+      const client = yield* clientWith([
+        AuthOrchestrationReadScope,
+        AuthOrchestrationOperateScope,
+        AuthSettingsWriteScope,
+      ]);
       expect(yield* client[FT3_WS_METHODS.boardOrchestratorsList]({})).toEqual({
         orchestrators: [],
       });
@@ -206,7 +232,32 @@ describe("FT3 RPC authorization", () => {
       expect(yield* client[FT3_WS_METHODS.policiesGetSnapshot]({})).toEqual({
         configVersion: 1,
         documents: [],
+        warnings: [],
       });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesGetPendingChange]({ key: "routingPolicy" }),
+      ).toEqual({ key: "routingPolicy", pending: false, change: null });
+      expect(yield* client[FT3_WS_METHODS.policiesReadDocument]({ key: "routingPolicy" })).toEqual({
+        status: "unavailable",
+        key: "routingPolicy",
+        issues: [],
+      });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSaveDocument]({
+          key: "routingPolicy",
+          baseSha256: "a".repeat(64),
+          content: "",
+        }),
+      ).toMatchObject({ status: "not_writable" });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesApplyPending]({
+          key: "routingPolicy",
+          liveSha256: "a".repeat(64),
+        }),
+      ).toMatchObject({ status: "nothing_pending" });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSetApplyExternalEdits]({ enabled: true }),
+      ).toMatchObject({ enabled: true });
     }).pipe(Effect.scoped),
   );
 
@@ -322,6 +373,35 @@ describe("FT3 RPC authorization", () => {
       expect(yield* client[FT3_WS_METHODS.policiesGetSnapshot]({}).pipe(Effect.flip)).toMatchObject(
         { _tag: "EnvironmentAuthorizationError", requiredPermission: read },
       );
+      expect(
+        yield* client[FT3_WS_METHODS.policiesGetPendingChange]({
+          key: "routingPolicy",
+        }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      const write = AuthSettingsWriteScope;
+      expect(
+        yield* client[FT3_WS_METHODS.policiesReadDocument]({ key: "routingPolicy" }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSaveDocument]({
+          key: "routingPolicy",
+          baseSha256: "a".repeat(64),
+          content: "",
+        }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesApplyPending]({
+          key: "routingPolicy",
+          liveSha256: "a".repeat(64),
+        }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSetApplyExternalEdits]({ enabled: true }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
     }).pipe(Effect.scoped),
   );
 });
