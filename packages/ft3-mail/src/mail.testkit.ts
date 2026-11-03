@@ -16,7 +16,7 @@ import * as Migrator from "effect/sql/Migrator";
 
 import { migrations } from "./migrations.ts";
 import { layer as mailRepositoryLayer } from "./repository.ts";
-import { layer as mailServiceLayer } from "./service.ts";
+import { layer as mailServiceLayer, MailPolicyEvidence } from "./service.ts";
 
 export const ALL_ROUTING_ROLES: ReadonlyArray<RoutingRoleId> = [
   "architect",
@@ -108,6 +108,22 @@ export const routingFake = (options: {
   return { layer, selects };
 };
 
+/** The applied snapshot is fixed; each card write is recorded for the test to read. */
+export const policyEvidenceFake = () => {
+  const cardSnapshots: Array<{ readonly cardId: string; readonly snapshotJson: string }> = [];
+  const layer = Layer.succeed(
+    MailPolicyEvidence,
+    MailPolicyEvidence.of({
+      snapshotJson: Effect.succeed('{"revision":3}'),
+      recordCardSnapshot: (input) =>
+        Effect.sync(() => {
+          cardSnapshots.push(input);
+        }),
+    }),
+  );
+  return { layer, cardSnapshots };
+};
+
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
 export const mailHarness = (
   options: {
@@ -117,9 +133,17 @@ export const mailHarness = (
   } = {},
 ) => {
   const routing = routingFake(options);
+  const evidence = policyEvidenceFake();
   const layer = mailServiceLayer.pipe(
-    Layer.provide(Layer.mergeAll(routing.layer, gateLayer(options.enabled ?? true), cryptoLayer)),
+    Layer.provide(
+      Layer.mergeAll(
+        routing.layer,
+        gateLayer(options.enabled ?? true),
+        cryptoLayer,
+        evidence.layer,
+      ),
+    ),
     Layer.provideMerge(databaseLayer),
   );
-  return { layer, selects: routing.selects };
+  return { layer, selects: routing.selects, cardSnapshots: evidence.cardSnapshots };
 };

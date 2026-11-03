@@ -173,17 +173,20 @@ const trackerLayerFor = (files: ReadonlyMap<string, string>) =>
     Layer.provide(policyAppliedStoreLayer),
   );
 
+type TestSettings = Parameters<typeof ServerSettings.layerTest>[0];
+
 const layerFor = (
   threadId: ThreadId,
   dispatched: Ref.Ref<Dispatched>,
   applied: ReadonlyMap<string, string> | undefined,
+  settings?: TestSettings,
 ) =>
   Layer.mergeAll(
     layerOrchestratorService.pipe(
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
-          ServerSettings.layerTest(),
+          ServerSettings.layerTest(settings),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.succeed([codexProvider]),
           }),
@@ -224,6 +227,7 @@ const delegate = (
   dispatched: Ref.Ref<Dispatched>,
   applied: ReadonlyMap<string, string> | undefined,
   input: { readonly task: string; readonly role?: OrchestratorMcpTaskRole },
+  settings?: TestSettings,
 ) =>
   Effect.gen(function* () {
     const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
@@ -239,9 +243,25 @@ const delegate = (
         clientRequestId: "delegate-roles",
       })
       .pipe(Effect.flip);
-  }).pipe(Effect.provide(layerFor(threadId, dispatched, applied)));
+  }).pipe(Effect.provide(layerFor(threadId, dispatched, applied, settings)));
 
 describe("OrchestratorMcpService delegation roles", () => {
+  it.effect("refuses a delegated role with mail_required while mail is on", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:ft3-mail-required");
+      const dispatched = yield* Ref.make<Dispatched>([]);
+      const error = yield* delegate(
+        threadId,
+        dispatched,
+        undefined,
+        { task: "Fix the parser.", role: "implementation" },
+        { ft3: { policies: { features: { roles: true, board: true, mail: true } } } },
+      );
+      assert.equal(error.code, "mail_required");
+      assert.deepStrictEqual(yield* Ref.get(dispatched), []);
+    }),
+  );
+
   it.effect("keeps today's prompt while no roles document is applied", () =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ft3-roles-off");

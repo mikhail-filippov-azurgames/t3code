@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { MailLetterKind, MailTask } from "./contracts.ts";
+import type { CreateMailTaskInput } from "./service.ts";
 import { ALL_ROUTING_ROLES, mailHarness, migrateMail } from "./mail.testkit.ts";
 import {
   type MailMemberRequest,
@@ -157,6 +158,29 @@ it.effect("replays a repeated create without routing or writing the team again",
       replay.members.map((route) => route.member.memberId).toSorted(),
       first.members.map((route) => route.member.memberId).toSorted(),
     );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("stores the policy snapshot on the card a task belongs to, once", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const input: CreateMailTaskInput = {
+      callerThreadId: LEAD,
+      clientRequestId: "request:card",
+      title: "Card work",
+      brief: "Do it.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "implementation" }],
+    };
+    yield* mail.createTask(input);
+    yield* mail.createTask(input);
+    yield* teamOf([{ role: "test" }], "request:loose");
+    assert.deepStrictEqual(harness.cardSnapshots, [
+      { cardId: "card:one", snapshotJson: '{"revision":3}' },
+    ]);
   }).pipe(Effect.provide(harness.layer));
 });
 
