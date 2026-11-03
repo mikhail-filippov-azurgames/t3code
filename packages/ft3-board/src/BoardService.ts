@@ -1,4 +1,4 @@
-import { CommandId, MessageId, type ThreadId } from "@t3tools/contracts";
+import { CommandId, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -9,18 +9,11 @@ import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { rolesDir } from "@t3tools/ft3-delegation/server";
-import { documentsBriefLine } from "@t3tools/ft3-docs/brief";
-import { RoleResolver, roleResolverLayer } from "@t3tools/ft3-policies/server";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
+import * as BoardWakeService from "./BoardWakeService.ts";
 import * as Contracts from "./contracts.ts";
-import {
-  boardCardIdLine,
-  buildBoardWakePrompt,
-  buildBoardWakeShortMessage,
-  cardStateWords,
-  wakeActorLabel,
-} from "./boardWakePrompt.ts";
+import { boardCardIdLine, cardStateWords, wakeActorLabel } from "./boardWakePrompt.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
 export class BoardService extends Context.Service<
@@ -117,9 +110,9 @@ function buildEvent(
 const make = Effect.gen(function* () {
   const repo = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const wake = yield* BoardWakeService.BoardWakeService;
   const crypto = yield* Crypto.Crypto;
   const rolesDirectory = yield* rolesDir;
-  const roles = yield* RoleResolver;
   const event = Effect.fn("Ft3BoardService.event")(function* (
     card: Contracts.BoardCard,
     at: string,
@@ -214,26 +207,11 @@ const make = Effect.gen(function* () {
 
   const wakeOrchestrator = Effect.fn("Ft3BoardService.wakeOrchestrator")(function* (
     threadId: ThreadId,
+    reason: BoardWakeService.BoardWakeReason,
     key: string,
     context: string,
-    mode: "brief" | "event" = "brief",
   ) {
-    yield* threads
-      .dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(key),
-        threadId,
-        messageId: MessageId.make(key),
-        text:
-          mode === "brief"
-            ? buildBoardWakePrompt(context, yield* roles.leadLine, documentsBriefLine())
-            : buildBoardWakeShortMessage(context, rolesDirectory),
-        attachments: [],
-        createdBy: "agent",
-        creationSource: "server",
-        dispatchMode: { type: "start_immediately" },
-      })
-      .pipe(Effect.mapError(unavailable));
+    yield* wake.wake({ reason, key, threadId, context }).pipe(Effect.mapError(() => unavailable()));
   });
 
   return BoardService.of({
@@ -428,7 +406,8 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(repositoryFailure));
       yield* wakeOrchestrator(
         input.threadId,
-        `ft3:board:mark:${input.threadId}`,
+        "marked",
+        String(input.threadId),
         "This thread was marked a board lead by a human.",
       );
       return created;
@@ -465,7 +444,8 @@ const make = Effect.gen(function* () {
       const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
       yield* wakeOrchestrator(
         input.threadId,
-        `ft3:board:brief:${input.threadId}:${nonce}`,
+        "brief",
+        `${String(input.threadId)}:${nonce}`,
         "The board brief was re-delivered by a human.",
       );
       return {};
@@ -602,13 +582,13 @@ const make = Effect.gen(function* () {
         .pipe(Effect.mapError(repositoryFailure));
       yield* wakeOrchestrator(
         card.orchestratorThreadId,
-        `ft3:board:start:${card.cardId}`,
+        "started",
+        String(card.cardId),
         [
           `Card ${wakeActorLabel(card.title, card.cardId)} was started by a human. Status ${cardStateWords(next)}. Executor role: ${card.executorRole}.`,
           boardCardIdLine([next]),
           card.body,
         ].join("\n\n"),
-        "event",
       );
       return next;
     }),
@@ -660,4 +640,4 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(BoardService, make).pipe(Layer.provide(roleResolverLayer));
+export const layer = Layer.effect(BoardService, make).pipe(Layer.provide(BoardWakeService.layer));

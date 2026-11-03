@@ -1,9 +1,4 @@
-import {
-  CommandId,
-  MessageId,
-  ThreadId,
-  type OrchestrationV2StoredEvent,
-} from "@t3tools/contracts";
+import { ThreadId, type OrchestrationV2StoredEvent } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -18,13 +13,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../../../apps/server/src/serverActivation.ts";
-import { rolesDir } from "@t3tools/ft3-delegation/server";
 import * as BoardRepository from "./BoardRepository.ts";
+import * as BoardWakeService from "./BoardWakeService.ts";
 import * as Contracts from "./contracts.ts";
 import {
   boardCardIdLine,
   boardCardStateLine,
-  buildBoardWakeShortMessage,
   cardStateWords,
   executorBackgroundLine,
   executorFinishedLine,
@@ -61,10 +55,10 @@ const failure = (operation: string) => (cause: unknown) =>
   new BoardReactorError({ operation, cause });
 
 const make = Effect.fn("Ft3BoardReactor.make")(function* () {
-  const rolesDirectory = yield* rolesDir;
   const sql = yield* SqlClient.SqlClient;
   const board = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
+  const wake = yield* BoardWakeService.BoardWakeService;
   const sink = yield* EventSink.EventSinkV2;
   const lane = yield* Semaphore.make(1);
 
@@ -317,18 +311,18 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* () {
       yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key IN ${sql.in(
         superseded.map((wake) => wake.key),
       )}`;
-    for (const wake of latest.values()) {
-      const targetId = ThreadId.make(wake.target);
+    for (const pending of latest.values()) {
+      const targetId = ThreadId.make(pending.target);
       const marks = yield* board.listOrchestrators();
       const shell = yield* threads.getThreadShell(targetId);
-      const executor = yield* threads.getThreadShell(ThreadId.make(wake.executor));
+      const executor = yield* threads.getThreadShell(ThreadId.make(pending.executor));
       if (
         !marks.some((mark) => mark.threadId === targetId && mark.createdBy === "human") ||
         shell === null ||
         shell.deletedAt !== null ||
         executor?.deletedAt != null
       ) {
-        yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key = ${wake.key}`;
+        yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key = ${pending.key}`;
         continue;
       }
       if (
@@ -338,18 +332,20 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* () {
         hasOwnTurnWork(yield* executorRecords(targetId))
       )
         continue;
-      yield* threads.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(wake.key),
-        threadId: targetId,
-        messageId: MessageId.make(wake.key),
-        text: buildBoardWakeShortMessage(wake.context, rolesDirectory),
-        attachments: [],
-        createdBy: "agent",
-        creationSource: "server",
-        dispatchMode: { type: "start_immediately" },
-      });
-      yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key = ${wake.key}`;
+      const queued = BoardWakeService.parseBoardWakeMessageId(pending.key);
+      if (queued === null) {
+        yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key = ${pending.key}`;
+        continue;
+      }
+      yield* wake
+        .wake({
+          reason: queued.reason,
+          key: queued.key,
+          threadId: targetId,
+          context: pending.context,
+        })
+        .pipe(Effect.mapError(failure("send a board wake")));
+      yield* sql`DELETE FROM ft3_board_reactor_wakes WHERE wake_key = ${pending.key}`;
     }
   });
 
@@ -452,7 +448,8 @@ const make = Effect.fn("Ft3BoardReactor.make")(function* () {
   return BoardReactor.of({ process, recover, start });
 });
 
-export const layer = () => Layer.effect(BoardReactor, make());
+export const layer = () =>
+  Layer.effect(BoardReactor, make()).pipe(Layer.provide(BoardWakeService.layer));
 
 export const layerWorker = () =>
   Layer.effectDiscard(Effect.flatMap(BoardReactor, (reactor) => reactor.start())).pipe(
