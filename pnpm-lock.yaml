@@ -860,6 +860,9 @@ importers:
       '@t3tools/ft3-kimi':
         specifier: workspace:*
         version: link:../../packages/ft3-kimi
+      '@t3tools/ft3-mail':
+        specifier: workspace:*
+        version: link:../../packages/ft3-mail
       '@t3tools/ft3-pi':
         specifier: workspace:*
         version: link:../../packages/ft3-pi
@@ -1815,6 +1818,18 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/ft3-board':
+        specifier: workspace:*
+        version: link:../ft3-board
+      '@t3tools/ft3-delegation':
+        specifier: workspace:*
+        version: link:../ft3-delegation
+      '@t3tools/ft3-docs':
+        specifier: workspace:*
+        version: link:../ft3-docs
+      '@t3tools/ft3-policies':
+        specifier: workspace:*
+        version: link:../ft3-policies
       effect:
         specifier: 4.0.5
         version: 4.0.5

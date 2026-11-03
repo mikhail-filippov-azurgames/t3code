@@ -14,6 +14,22 @@
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"
+    },
+    "./service": {
+      "types": "./src/service.ts",
+      "import": "./src/service.ts"
+    },
+    "./delegationLaunch": {
+      "types": "./src/delegationLaunch.ts",
+      "import": "./src/delegationLaunch.ts"
+    },
+    "./documentsWrite": {
+      "types": "./src/documentsWrite.ts",
+      "import": "./src/documentsWrite.ts"
+    },
+    "./server": {
+      "types": "./src/server.ts",
+      "import": "./src/server.ts"
     }
   },
   "scripts": {
@@ -22,6 +38,10 @@
   },
   "dependencies": {
     "@t3tools/contracts": "workspace:*",
+    "@t3tools/ft3-board": "workspace:*",
+    "@t3tools/ft3-delegation": "workspace:*",
+    "@t3tools/ft3-docs": "workspace:*",
+    "@t3tools/ft3-policies": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {

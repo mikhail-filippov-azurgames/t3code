@@ -83,13 +83,15 @@ it.effect("round-trips a task, members, letters and delivery state", () =>
     yield* migrate;
     const repository = yield* MailRepository;
 
-    const task = yield* repository.createTask(taskInput());
-    assert.equal(task.taskId, "task:one");
-    assert.equal(task.status, "open");
-    assert.equal(task.responseBudgetSeconds, 1800);
+    const created = yield* repository.createTask(taskInput());
+    assert.isTrue(created.created);
+    assert.equal(created.task.taskId, "task:one");
+    assert.equal(created.task.status, "open");
+    assert.equal(created.task.responseBudgetSeconds, 1800);
 
     const repeatedCreate = yield* repository.createTask(taskInput({ taskId: "task:other" }));
-    assert.equal(repeatedCreate.taskId, "task:one");
+    assert.isFalse(repeatedCreate.created);
+    assert.equal(repeatedCreate.task.taskId, "task:one");
 
     const member = yield* repository.addMember(memberInput({ documentsWrite: true }));
     assert.equal(member.memberId, "member:one");
