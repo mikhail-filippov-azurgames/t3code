@@ -1815,6 +1815,15 @@ importers:
       '@t3tools/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@t3tools/ft3-delegation':
+        specifier: workspace:*
+        version: link:../ft3-delegation
+      '@t3tools/ft3-docs':
+        specifier: workspace:*
+        version: link:../ft3-docs
+      '@t3tools/ft3-policies':
+        specifier: workspace:*
+        version: link:../ft3-policies
       effect:
         specifier: 4.0.5
         version: 4.0.5
