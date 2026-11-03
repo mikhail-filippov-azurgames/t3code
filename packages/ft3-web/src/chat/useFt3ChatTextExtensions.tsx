@@ -462,7 +462,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
     const plugins: Array<() => unknown> = [];
     if (matches.size > 0) plugins.push(() => remarkLinkifyBoardCardMentions(matches));
     if (commitMatches.size > 0) plugins.push(() => remarkLinkifyCommitMentions(commitMatches));
-    // Cards and commits read text before a document reference splits it into a link.
+    // Document references go first, so card and commit tokens cannot split an id.
     return [...OPEN_CONTEXT_DOC_REMARK_PLUGINS, ...plugins];
   }, [commitMatches, matches]);
 
