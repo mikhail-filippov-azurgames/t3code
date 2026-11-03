@@ -694,9 +694,12 @@ graph selection path (`selectCommitFromGraph`): the diff panel opens on
 resolution is the `docs.resolve` method in the ft3-docs RPC group, with the
 store, the resolver and the docs MCP tools in `packages/ft3-docs` (the ft3-host
 RPC group re-exports them), so no core contracts or `ws.ts` handler is added. A
-whole inline-code span counts as one token; fenced code, longer inline
-code, links and URLs stay plain. Commit SHAs resolve in `ft3-vcs` with
-`git cat-file --batch-check` in the thread cwd first, then in git repositories
+document reference becomes a chip as bare prose text or as a whole inline-code
+span, and a whole inline-code span counts as one token; fenced code, longer
+inline code, links and URLs stay plain. Without a written title a document chip
+shows the resolved document name, and the stable id until it resolves. Commit
+SHAs resolve in `ft3-vcs` with `git cat-file --batch-check` in the thread cwd
+first, then in git repositories
 nested under it (bounded depth, cached); the result names the repository that
 holds the commit, and the diff panel asks `ft3-vcs` for that cwd before opening
 the patch. Unknown or ambiguous prefixes stay plain text. Typora joins the shared
@@ -738,6 +741,8 @@ New fork-owned tests: `packages/ft3-web/src/chat/boardCardMentions.test.ts`,
 `packages/ft3-web/src/chat/commitMentionsPlugin.test.ts`,
 `packages/ft3-web/src/chat/CommitMentionChip.browser.test.tsx`,
 `packages/ft3-web/src/chat/openContextDocLink.test.ts`,
+`packages/ft3-web/src/chat/openContextDocRefs.test.ts`,
+`packages/ft3-web/src/chat/openContextDocRefsPlugin.test.ts`,
 `packages/ft3-web/src/chat/chatCopyFilters.test.ts`,
 `packages/ft3-web/src/chat/chatCopyFilters.browser.test.tsx`,
 `packages/ft3-web/src/files/openInPicker.test.ts`,

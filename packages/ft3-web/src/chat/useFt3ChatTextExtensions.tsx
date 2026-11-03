@@ -54,6 +54,7 @@ import {
 import { MissingFileLinkChip } from "./MissingFileLinkChip";
 import { OpenContextDocChip } from "./OpenContextDocChip";
 import { parseOpenContextDocHref } from "./openContextDocLink";
+import { remarkLinkifyOpenContextDocRefs } from "./openContextDocRefsPlugin";
 import { docsEnvironment, toOpenContextDocResolveResult } from "./openContextState";
 
 export interface Ft3MarkdownLinkInput {
@@ -89,8 +90,9 @@ export interface Ft3ChatTextOptions {
   readonly fileLinkBaseDir?: string | undefined;
 }
 
-const EMPTY_REMARK_PLUGINS: ReadonlyArray<unknown> = [];
 const EMPTY_MISSING_FILE_TARGETS: ReadonlySet<string> = new Set();
+// Document references need no lookup, so they always run and keep one shared list.
+const OPEN_CONTEXT_DOC_REMARK_PLUGINS: ReadonlyArray<unknown> = [remarkLinkifyOpenContextDocRefs];
 
 /**
  * Board-card mentions and OpenContext document links, resolved per message.
@@ -411,12 +413,15 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
         }
         const doc = parseOpenContextDocHref(input.href);
         if (doc !== null) {
+          const writtenLabel = input.label.trim();
+          // A written reference is not a title: the chip shows the document name instead.
+          const titled = writtenLabel.length > 0 && parseOpenContextDocHref(writtenLabel) === null;
           return (
             <OpenContextDocChip
               href={doc.href}
               stableId={doc.stableId}
               resolvable={doc.scheme === "oc"}
-              label={input.label.trim() || doc.stableId}
+              label={titled ? writtenLabel : undefined}
               canOpenDocument={threadRef !== undefined}
               resolveDoc={resolveDoc}
               onOpenDocument={openDocumentInPanel}
@@ -453,10 +458,12 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
   );
 
   const remarkPlugins = useMemo(() => {
+    if (matches.size === 0 && commitMatches.size === 0) return OPEN_CONTEXT_DOC_REMARK_PLUGINS;
     const plugins: Array<() => unknown> = [];
     if (matches.size > 0) plugins.push(() => remarkLinkifyBoardCardMentions(matches));
     if (commitMatches.size > 0) plugins.push(() => remarkLinkifyCommitMentions(commitMatches));
-    return plugins.length === 0 ? EMPTY_REMARK_PLUGINS : plugins;
+    // Cards and commits read text before a document reference splits it into a link.
+    return [...OPEN_CONTEXT_DOC_REMARK_PLUGINS, ...plugins];
   }, [commitMatches, matches]);
 
   const isAllowedHref = useCallback((href: string) => parseOpenContextDocHref(href) !== null, []);

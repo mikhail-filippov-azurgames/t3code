@@ -1,5 +1,11 @@
 import { FileTextIcon, TriangleAlertIcon } from "lucide-react";
-import React, { useCallback, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { ContextChip, ContextChipLabel } from "~/components/ContextChip";
@@ -32,7 +38,8 @@ interface OpenContextDocLinkProps {
   readonly stableId: string;
   /** Cloud links have no local store document to resolve. */
   readonly resolvable: boolean;
-  readonly label: string;
+  /** Written title; absent for a bare reference, which shows the resolved name. */
+  readonly label?: string | undefined;
   readonly className?: string | undefined;
   readonly canOpenDocument: boolean;
   readonly resolveDoc: (stableId: string) => Promise<OpenContextDocResolveResult | null>;
@@ -78,6 +85,7 @@ export const OpenContextDocChip = React.memo(function OpenContextDocChip(
     onOpenDocument,
   } = props;
   const [resolution, setResolution] = useState<Resolution>({ kind: "idle" });
+  const [nameLookup, setNameLookup] = useState<{ stableId: string; name: string } | null>(null);
   const inFlightRef = useRef<Promise<Resolution> | null>(null);
   const resolutionRef = useRef<Resolution>(resolution);
 
@@ -224,6 +232,25 @@ export const OpenContextDocChip = React.memo(function OpenContextDocChip(
 
   const isWarning = resolution.kind === "not_found" || resolution.kind === "unavailable";
   const resolvedPath = resolution.kind === "found" ? resolution.doc.absolutePath : href;
+  const resolvedName = nameLookup?.stableId === stableId ? nameLookup.name : null;
+  const labelText = label ?? resolvedName ?? stableId;
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- an untitled reference shows the document name once resolved
+  useEffect(() => {
+    if (label !== undefined || !resolvable) return;
+    let current = true;
+    void resolveDoc(stableId).then(
+      (result) => {
+        if (current && result?.status === "found") {
+          setNameLookup({ stableId, name: result.name });
+        }
+      },
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [label, resolvable, resolveDoc, stableId]);
 
   return (
     <Tooltip>
@@ -240,7 +267,7 @@ export const OpenContextDocChip = React.memo(function OpenContextDocChip(
             onContextMenu={handleContextMenu}
           >
             {isWarning ? <TriangleAlertIcon aria-hidden /> : <FileTextIcon aria-hidden />}
-            <ContextChipLabel>{label}</ContextChipLabel>
+            <ContextChipLabel>{labelText}</ContextChipLabel>
           </ContextChip>
         }
       />
