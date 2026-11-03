@@ -8,7 +8,7 @@ import {
 import type { OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import { applyAuthorTextPolicy } from "@t3tools/ft3-board/authorTextPolicy";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
-import { appliedRoutingPolicyRef } from "@t3tools/ft3-board/routingPolicy";
+import { appliedRoutingPolicyRef } from "@t3tools/ft3-board/server";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
