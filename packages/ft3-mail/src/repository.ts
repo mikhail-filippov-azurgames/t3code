@@ -54,6 +54,16 @@ export interface AppendLetterResult {
   readonly created: boolean;
 }
 
+export interface CreateTaskResult {
+  readonly task: MailTask;
+  readonly created: boolean;
+}
+
+export interface ParticipantRecord {
+  readonly member: MailMember;
+  readonly taskStatus: MailTaskStatus;
+}
+
 export interface CreateTaskInput {
   readonly taskId: string;
   readonly title: string;
@@ -455,8 +465,12 @@ export class MailRepository extends Context.Service<
   {
     readonly createTask: (
       input: CreateTaskInput,
-    ) => Effect.Effect<MailTask, MailRepositoryError | MailIdempotencyConflict>;
+    ) => Effect.Effect<CreateTaskResult, MailRepositoryError | MailIdempotencyConflict>;
     readonly getTask: (taskId: string) => Effect.Effect<MailTask | null, MailRepositoryError>;
+    readonly getTaskByRequestKey: (input: {
+      readonly createdByThreadId: string;
+      readonly clientRequestId: string;
+    }) => Effect.Effect<MailTask | null, MailRepositoryError>;
     readonly closeTask: (input: {
       readonly taskId: string;
       readonly outcome: MailOutcome;
@@ -467,10 +481,16 @@ export class MailRepository extends Context.Service<
     readonly listMembers: (
       taskId: string,
     ) => Effect.Effect<ReadonlyArray<MailMember>, MailRepositoryError>;
+    readonly findParticipantByThread: (
+      threadId: string,
+    ) => Effect.Effect<ParticipantRecord | null, MailRepositoryError>;
     readonly appendLetter: (
       input: AppendLetterInput,
     ) => Effect.Effect<AppendLetterResult, MailRepositoryError | MailIdempotencyConflict>;
     readonly getLetter: (letterId: string) => Effect.Effect<MailLetter | null, MailRepositoryError>;
+    readonly listLetterDeliveries: (
+      letterId: string,
+    ) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
     readonly recordDelivery: (
       input: RecordDeliveryInput,
     ) => Effect.Effect<MailDelivery, MailRepositoryError>;
@@ -581,6 +601,42 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => (rows[0] === undefined ? null : toKindFeedback(rows[0]))),
     );
 
+  const findParticipant = (threadId: string) =>
+    sql<MemberRow & { readonly taskStatus: MailTaskStatus }>`SELECT
+        m.member_id AS "memberId", m.task_id AS "taskId", m.role_id AS "roleId",
+        m.specialization, m.level, m.response_budget_seconds AS "responseBudgetSeconds",
+        m.documents_write AS "documentsWrite", m.model_override_json AS "modelOverrideJson",
+        m.human_instruction AS "humanInstruction", m.participant_thread_id AS "participantThreadId",
+        m.status, m.created_at AS "createdAt", m.updated_at AS "updatedAt",
+        t.status AS "taskStatus"
+      FROM ft3_mail_members m JOIN ft3_mail_tasks t ON t.task_id = m.task_id
+      WHERE m.participant_thread_id = ${threadId}
+      ORDER BY m.created_at DESC, m.member_id DESC LIMIT 1`.pipe(
+      Effect.map((rows): ParticipantRecord | null => {
+        const row = rows[0];
+        return row === undefined ? null : { member: toMember(row), taskStatus: row.taskStatus };
+      }),
+    );
+
+  const insertTask = Effect.fn("MailRepository.insertTask")(function* (input: CreateTaskInput) {
+    yield* sql`INSERT INTO ft3_mail_tasks (
+        task_id, title, brief, level, card_id, isolation, runtime_mode, interaction_mode,
+        response_budget_seconds, status, created_by_thread_id, client_request_id,
+        request_fingerprint, created_at, updated_at
+      ) VALUES (
+        ${input.taskId}, ${input.title}, ${input.brief}, ${input.level}, ${input.cardId},
+        ${input.isolation}, ${input.runtimeMode}, ${input.interactionMode},
+        ${input.responseBudgetSeconds}, 'open', ${input.createdByThreadId},
+        ${input.clientRequestId}, ${input.requestFingerprint}, ${input.createdAt},
+        ${input.createdAt}
+      ) ON CONFLICT(created_by_thread_id, client_request_id) DO NOTHING`;
+    const task = yield* findTaskByKey(input);
+    if (task === null) {
+      return yield* Effect.die(new Error("the inserted mail task is missing"));
+    }
+    return task;
+  });
+
   const updateDelivery = Effect.fn("MailRepository.updateDelivery")(function* (
     deliveryId: string,
     at: string,
@@ -609,37 +665,27 @@ const make = Effect.gen(function* () {
   return MailRepository.of({
     createTask: Effect.fn("MailRepository.createTask")((input: CreateTaskInput) =>
       mapIdempotentError("createTask")(
-        Effect.gen(function* () {
-          yield* sql`INSERT INTO ft3_mail_tasks (
-              task_id, title, brief, level, card_id, isolation, runtime_mode, interaction_mode,
-              response_budget_seconds, status, created_by_thread_id, client_request_id,
-              request_fingerprint, created_at, updated_at
-            ) VALUES (
-              ${input.taskId}, ${input.title}, ${input.brief}, ${input.level}, ${input.cardId},
-              ${input.isolation}, ${input.runtimeMode}, ${input.interactionMode},
-              ${input.responseBudgetSeconds}, 'open', ${input.createdByThreadId},
-              ${input.clientRequestId}, ${input.requestFingerprint}, ${input.createdAt},
-              ${input.createdAt}
-            ) ON CONFLICT(created_by_thread_id, client_request_id) DO NOTHING`;
-          const task = yield* findTaskByKey({
-            createdByThreadId: input.createdByThreadId,
-            clientRequestId: input.clientRequestId,
-          });
-          if (task === null) {
-            return yield* Effect.die(new Error("the inserted mail task is missing"));
-          }
-          if (task.requestFingerprint !== input.requestFingerprint) {
-            return yield* new MailIdempotencyConflict({
-              operation: "createTask",
-              key: `${input.createdByThreadId}:${input.clientRequestId}`,
-            });
-          }
-          return task;
-        }),
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* findTaskByKey(input);
+            const task = existing ?? (yield* insertTask(input));
+            if (task.requestFingerprint !== input.requestFingerprint) {
+              return yield* new MailIdempotencyConflict({
+                operation: "createTask",
+                key: `${input.createdByThreadId}:${input.clientRequestId}`,
+              });
+            }
+            return { task, created: existing === null && task.taskId === input.taskId };
+          }),
+        ),
       ),
     ),
     getTask: Effect.fn("MailRepository.getTask")((taskId: string) =>
       mapError("getTask")(findTask(taskId)),
+    ),
+    getTaskByRequestKey: Effect.fn("MailRepository.getTaskByRequestKey")(
+      (input: { readonly createdByThreadId: string; readonly clientRequestId: string }) =>
+        mapError("getTaskByRequestKey")(findTaskByKey(input)),
     ),
     closeTask: Effect.fn("MailRepository.closeTask")((input) =>
       mapError("closeTask")(
@@ -680,6 +726,9 @@ const make = Effect.gen(function* () {
         sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)} FROM ft3_mail_members
           WHERE task_id = ${taskId} ORDER BY created_at ASC, member_id ASC`,
       ).pipe(Effect.map((rows) => rows.map(toMember))),
+    ),
+    findParticipantByThread: Effect.fn("MailRepository.findParticipantByThread")(
+      (threadId: string) => mapError("findParticipantByThread")(findParticipant(threadId)),
     ),
     appendLetter: Effect.fn("MailRepository.appendLetter")((input: AppendLetterInput) =>
       mapIdempotentError("appendLetter")(
@@ -733,6 +782,12 @@ const make = Effect.gen(function* () {
     ),
     getLetter: Effect.fn("MailRepository.getLetter")((letterId: string) =>
       mapError("getLetter")(findLetter(letterId)),
+    ),
+    listLetterDeliveries: Effect.fn("MailRepository.listLetterDeliveries")((letterId: string) =>
+      mapError("listLetterDeliveries")(
+        sql<DeliveryRow>`SELECT ${sql.literal(DELIVERY_COLUMNS)} FROM ft3_mail_deliveries
+          WHERE letter_id = ${letterId} ORDER BY created_at ASC, delivery_id ASC`,
+      ).pipe(Effect.map((rows) => rows.map(toDelivery))),
     ),
     recordDelivery: Effect.fn("MailRepository.recordDelivery")((input: RecordDeliveryInput) =>
       mapError("recordDelivery")(
