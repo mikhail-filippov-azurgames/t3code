@@ -5,9 +5,13 @@ import type {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  featureOffReasonText,
   issueLines,
   lineStartOffset,
+  policyDocumentActionLabel,
   policyDocumentBadge,
+  policyDocumentBadgeHint,
+  policyDocumentReadOnlyNote,
   policyDocumentSourceLabel,
 } from "./policies.logic.ts";
 
@@ -68,6 +72,46 @@ describe("policyDocumentSourceLabel", () => {
     expect(policyDocumentSourceLabel({ kind: "path", path: "/etc/policy.md" })).toBe(
       "File: /etc/policy.md",
     );
+  });
+});
+
+describe("policy document actions and explanations", () => {
+  it("opens a built-in template as View and a store or file document as Edit", () => {
+    expect(policyDocumentActionLabel({ kind: "builtin" })).toBe("View");
+    expect(policyDocumentActionLabel({ kind: "path", path: "/etc/policy.md" })).toBe("Edit");
+  });
+
+  it("explains an unapplied built-in template and points at the errors", () => {
+    const hint = policyDocumentBadgeHint(documentStatus({ applied: null, errors: [issue()] }));
+    expect(hint).toBe(
+      "Not applied yet: the built-in template has no valid version, so none is in effect. The errors below say why.",
+    );
+    expect(policyDocumentBadgeHint(documentStatus())).toBeNull();
+  });
+
+  it("explains an unapplied store document without a built-in mention", () => {
+    const hint = policyDocumentBadgeHint(
+      documentStatus({ source: { kind: "path", path: "/etc/policy.md" }, applied: null }),
+    );
+    expect(hint).toBe("Not applied yet: no valid version has been applied.");
+  });
+
+  it("marks only a built-in template as read-only", () => {
+    expect(policyDocumentReadOnlyNote({ kind: "builtin" })).toContain("read-only");
+    expect(policyDocumentReadOnlyNote({ kind: "path", path: "/etc/policy.md" })).toBeNull();
+  });
+
+  it("names the dependency or the document that keeps a feature off", () => {
+    expect(featureOffReasonText(null)).toBeNull();
+    expect(featureOffReasonText({ code: "feature_dependency_off", dependency: "roles" })).toBe(
+      "Off: it needs the roles feature, which is off.",
+    );
+    expect(featureOffReasonText({ code: "feature_document_off", requirement: "plannerRole" })).toBe(
+      "Off: its Roles document is not valid yet.",
+    );
+    expect(
+      featureOffReasonText({ code: "feature_document_off", requirement: "documentsStore" }),
+    ).toBe("Off: a required document is not valid (documentsStore).");
   });
 });
 

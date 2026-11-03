@@ -31,6 +31,33 @@ function roleMarkdown(roleId: string, overrides: Partial<Record<string, string>>
   ].join("\n");
 }
 
+function storeRoleMarkdown(overrides: Partial<Record<string, string>> = {}): string {
+  const fields = {
+    stable_id: "00000000-0000-4000-8000-000000000000",
+    status: "accepted",
+    document_status: "accepted",
+    revision: "3",
+    schema: "ced-v1",
+    schema_origin: "native",
+    project: "personal",
+    kind: "policy",
+    updated: "2026-11-02",
+    ...overrides,
+  };
+  return [
+    "---",
+    ...Object.entries(fields)
+      .filter(([, value]) => value !== "")
+      .map(([key, value]) => `${key}: ${value}`),
+    "---",
+    "",
+    "# Role",
+    "",
+    "Role body.",
+    "",
+  ].join("\n");
+}
+
 function rolesManifest(
   roles: readonly RoleEntryInput[],
   overrides: Readonly<Record<string, unknown>> = {},
@@ -355,6 +382,64 @@ describe("role document set", () => {
     );
     expect(parsed.requirements.rolesManifest).toBe(false);
   });
+
+  it("accepts ced-v1 role files, taking roleId and configured from roles.json", () => {
+    const parsed = parseRolesDocumentSet({
+      manifest: rolesManifest(baseEntries),
+      files: new Map([
+        ["lead.md", storeRoleMarkdown({ revision: "3" })],
+        ["planner.md", storeRoleMarkdown({ revision: "" })],
+        ["architect.md", storeRoleMarkdown({ revision: "" })],
+        ["implementation.md", storeRoleMarkdown({ revision: "" })],
+      ]),
+      features: { board: true, planning: true },
+    });
+
+    expect(parsed.valid).toBe(true);
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.files.get("lead.md")).toMatchObject({
+      roleId: "lead",
+      revision: 3,
+      configured: true,
+    });
+    expect(parsed.files.get("planner.md")).toMatchObject({ roleId: "planner", revision: 1 });
+    expect(parsed.requirements).toEqual({
+      rolesManifest: true,
+      leadRole: true,
+      plannerRole: true,
+      architectRole: true,
+    });
+  });
+
+  it("uses the roles.json configured flag for ced-v1 role files", () => {
+    const parsed = parseRolesDocumentSet({
+      manifest: rolesManifest(baseEntries, { configured: false }),
+      files: new Map([
+        ["lead.md", storeRoleMarkdown({ revision: "" })],
+        ["planner.md", storeRoleMarkdown({ revision: "" })],
+        ["architect.md", storeRoleMarkdown({ revision: "" })],
+        ["implementation.md", storeRoleMarkdown({ revision: "" })],
+      ]),
+      features: { board: true },
+    });
+
+    expect(parsed.files.get("lead.md")?.configured).toBe(false);
+    expect(parsed.requirements.leadRole).toBe(false);
+    expect(parsed.valid).toBe(true);
+  });
+
+  it("still reports a manifest entry without a roleId and skips its file", () => {
+    const manifest = rolesManifest([{ id: "lead", file: "lead.md" } as RoleEntryInput]);
+    const parsed = parseRolesDocumentSet({
+      manifest,
+      files: new Map([["lead.md", storeRoleMarkdown()]]),
+    });
+
+    expect(parsed.valid).toBe(false);
+    const issue = parsed.issues.find((entry) => entry.code === "frontmatter_invalid");
+    expect(issue?.message).toContain('expected roleId: a Corvis role id, got "no roleId field"');
+    expect(parsed.files.size).toBe(0);
+  });
 });
 
 describe("role file frontmatter", () => {
@@ -408,5 +493,27 @@ describe("role file frontmatter", () => {
     const issue = parsed.issues.find((entry) => entry.code === "frontmatter_invalid");
     expect(issue?.message).toContain("expected a closing --- line for the frontmatter");
     expect(parsed.file).toBeNull();
+  });
+
+  it("keeps corvis-role-v1 strict and rejects other schemas", () => {
+    const withoutConfigured = parseRoleFile(roleMarkdown("lead", { configured: "" }), "lead.md");
+    expect(withoutConfigured.issues.map((issue) => issue.message)).toContain(
+      'Document "roles" line 1: expected configured: a required field, got "no configured field".',
+    );
+
+    const unknown = parseRoleFile(roleMarkdown("lead", { schema: "foo-v1" }), "lead.md");
+    expect(unknown.file).toBeNull();
+    expect(unknown.issues.map((issue) => issue.message)).toContain(
+      'Document "roles" line 2: expected schema: corvis-role-v1 or ced-v1, got "foo-v1".',
+    );
+  });
+
+  it("requires a roles.json entry to read a ced-v1 role file", () => {
+    const parsed = parseRoleFile(storeRoleMarkdown(), "lead.md");
+
+    expect(parsed.file).toBeNull();
+    expect(parsed.issues.map((issue) => issue.message)).toContain(
+      'Document "roles" line 6: expected a roles.json entry for this ced-v1 file, got "no roles.json entry".',
+    );
   });
 });

@@ -2,7 +2,12 @@ import type {
   PolicyDocumentStatusSchema,
   PolicyIssueSchema,
 } from "@t3tools/ft3-policies/rpc-contracts";
-import type { PolicyDocumentKey, PolicyDocumentSource } from "@t3tools/ft3-policies/contracts";
+import type {
+  FeatureOffReason,
+  PolicyDocumentKey,
+  PolicyDocumentSource,
+  PolicyRequirementId,
+} from "@t3tools/ft3-policies/contracts";
 
 /**
  * Pure presentation logic of the Policies settings tab: the status badge of a
@@ -44,6 +49,53 @@ export function policyDocumentBadge(
   if (document.pending) return "pending";
   if (document.applied !== null) return "applied";
   return "unapplied";
+}
+
+/** Built-in templates open read-only, so their row action says View rather than Edit. */
+export function policyDocumentActionLabel(source: PolicyDocumentSource): "View" | "Edit" {
+  return source.kind === "builtin" ? "View" : "Edit";
+}
+
+/** Why a document has no version in effect; null once one is applied. */
+export function policyDocumentBadgeHint(
+  document: Pick<PolicyDocumentStatusSchema, "source" | "applied" | "errors">,
+): string | null {
+  if (document.applied !== null) return null;
+  const why = document.errors.length > 0 ? " The errors below say why." : "";
+  if (document.source.kind === "builtin") {
+    return `Not applied yet: the built-in template has no valid version, so none is in effect.${why}`;
+  }
+  return `Not applied yet: no valid version has been applied.${why}`;
+}
+
+export function policyDocumentReadOnlyNote(source: PolicyDocumentSource): string | null {
+  return source.kind === "builtin"
+    ? "Built-in template: read-only. Switching this document to a store document is not available in this tab yet."
+    : null;
+}
+
+const REQUIREMENT_DOCUMENT: Readonly<Record<PolicyRequirementId, PolicyDocumentKey | null>> = {
+  documentsStore: null,
+  rolesManifest: "roles",
+  leadRole: "roles",
+  plannerRole: "roles",
+  architectRole: "roles",
+  leadSkills: "leadSkills",
+  planOrchestratorSkill: "leadSkills",
+  routingPolicy: "routingPolicy",
+  requestedRoles: "routingPolicy",
+};
+
+/** The reason a requested feature is actually off; null when it has no off reason. */
+export function featureOffReasonText(reason: FeatureOffReason | null): string | null {
+  if (reason === null) return null;
+  if (reason.code === "feature_dependency_off") {
+    return `Off: it needs the ${reason.dependency} feature, which is off.`;
+  }
+  const key = REQUIREMENT_DOCUMENT[reason.requirement];
+  return key === null
+    ? `Off: a required document is not valid (${reason.requirement}).`
+    : `Off: its ${POLICY_DOCUMENT_KEY_LABELS[key]} document is not valid yet.`;
 }
 
 export function policyDocumentSourceLabel(source: PolicyDocumentSource): string {

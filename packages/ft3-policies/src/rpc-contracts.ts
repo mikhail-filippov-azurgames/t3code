@@ -13,7 +13,7 @@ import {
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { PolicyDocumentKey, PolicyDocumentSource } from "./contracts.ts";
+import { PolicyDocumentKey, PolicyDocumentSource, PolicyRequirementId } from "./contracts.ts";
 import { POLICY_ISSUE_CODES } from "./diagnostics.ts";
 
 export const FT3_POLICIES_WS_METHODS = {
@@ -74,6 +74,8 @@ export type PoliciesGetSnapshotInput = typeof PoliciesGetSnapshotInput.Type;
 export const PoliciesGetSnapshotResult = Schema.Struct({
   configVersion: Schema.Int,
   documents: Schema.Array(PolicyDocumentStatusSchema),
+  /** Requirement validity of the applied documents, every id present; the feature registry reads it. */
+  requirements: Schema.Record(PolicyRequirementId, Schema.Boolean),
   /** Migration warnings, such as an unresolvable legacy policy reference. */
   warnings: Schema.Array(PolicyIssueSchema),
 });

@@ -32,6 +32,8 @@ import {
 export const ROLES_DOCUMENT_KEY = "roles" satisfies PolicyDocumentKey;
 export const ROLES_MANIFEST_SCHEMA = "corvis-role-map-v1";
 export const ROLE_FILE_SCHEMA = "corvis-role-v1";
+/** The document store's frontmatter; such a file takes roleId and configured from roles.json. */
+export const ROLE_FILE_STORE_SCHEMA = "ced-v1";
 
 /**
  * Corvis delegated role ids a `roles.json` entry may map to. Mirrors
@@ -93,6 +95,14 @@ export interface ParsedRoleFile {
   readonly revision: number;
   readonly configured: boolean;
   readonly body: string;
+}
+
+/** What a roles.json entry says about its file; a store-schema file takes these. */
+export interface DeclaredRole {
+  readonly roleId: CorvisRoleId;
+  readonly configured: boolean;
+  /** The roles.json revision, used when the file has no `revision` of its own. */
+  readonly revision: number | null;
 }
 
 export interface ParsedRolesDocument {
@@ -508,8 +518,73 @@ function singleField(
   return first.value;
 }
 
-/** Reads one role Markdown file: strict frontmatter, free-form body. */
-export function parseRoleFile(content: string, file: string): ParsedRoleFileResult {
+/** One integer `revision` line, at least 1. */
+function revisionField(
+  frontmatter: DocumentFrontmatter,
+  lines: readonly string[],
+  file: string,
+  issues: PolicyIssue[],
+): number | null {
+  const text = singleField(frontmatter, "revision", lines, file, issues);
+  if (text === null) return null;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    const line = frontmatterField(frontmatter, "revision")?.line ?? 1;
+    issues.push(roleFileIssue(lines, line, "revision: an integer >= 1", text, file));
+    return null;
+  }
+  return value;
+}
+
+/**
+ * A `ced-v1` file keeps the store's frontmatter untouched: roleId and configured
+ * come from its roles.json entry, and its own `revision` wins over the manifest's.
+ */
+function parseStoreRoleFile(
+  frontmatter: DocumentFrontmatter,
+  lines: readonly string[],
+  file: string,
+  declared: DeclaredRole | undefined,
+  issues: PolicyIssue[],
+): ParsedRoleFileResult {
+  if (declared === undefined) {
+    const line = frontmatterField(frontmatter, "schema")?.line ?? 1;
+    issues.push(
+      roleFileIssue(
+        lines,
+        line,
+        `a roles.json entry for this ${ROLE_FILE_STORE_SCHEMA} file`,
+        "no roles.json entry",
+        file,
+      ),
+    );
+    return { file: null, issues };
+  }
+  const revision =
+    frontmatterFields(frontmatter, "revision").length > 0
+      ? revisionField(frontmatter, lines, file, issues)
+      : declared.revision;
+  if (revision === null) return { file: null, issues };
+  return {
+    file: {
+      roleId: declared.roleId,
+      revision,
+      configured: declared.configured,
+      body: frontmatter.body,
+    },
+    issues,
+  };
+}
+
+/**
+ * Reads one role Markdown file. `corvis-role-v1` frontmatter is strict and carries
+ * roleId and configured; `ced-v1` frontmatter is the store's, so those come from `declared`.
+ */
+export function parseRoleFile(
+  content: string,
+  file: string,
+  declared?: DeclaredRole,
+): ParsedRoleFileResult {
   const lines = documentLines(content);
   const frontmatter = parseDocumentFrontmatter(content);
   const issues: PolicyIssue[] = [];
@@ -545,9 +620,20 @@ export function parseRoleFile(content: string, file: string): ParsedRoleFileResu
   }
 
   const schema = singleField(frontmatter, "schema", lines, file, issues);
+  if (schema === ROLE_FILE_STORE_SCHEMA) {
+    return parseStoreRoleFile(frontmatter, lines, file, declared, issues);
+  }
   if (schema !== null && schema !== ROLE_FILE_SCHEMA) {
     const line = frontmatterField(frontmatter, "schema")?.line ?? 1;
-    issues.push(roleFileIssue(lines, line, `schema: ${ROLE_FILE_SCHEMA}`, schema, file));
+    issues.push(
+      roleFileIssue(
+        lines,
+        line,
+        `schema: ${ROLE_FILE_SCHEMA} or ${ROLE_FILE_STORE_SCHEMA}`,
+        schema,
+        file,
+      ),
+    );
   }
 
   const roleId = singleField(frontmatter, "roleId", lines, file, issues);
@@ -563,17 +649,7 @@ export function parseRoleFile(content: string, file: string): ParsedRoleFileResu
     );
   }
 
-  const revisionText = singleField(frontmatter, "revision", lines, file, issues);
-  let revision: number | null = null;
-  if (revisionText !== null) {
-    const value = Number(revisionText);
-    if (!Number.isSafeInteger(value) || value < 1) {
-      const line = frontmatterField(frontmatter, "revision")?.line ?? 1;
-      issues.push(roleFileIssue(lines, line, "revision: an integer >= 1", revisionText, file));
-    } else {
-      revision = value;
-    }
-  }
+  const revision = revisionField(frontmatter, lines, file, issues);
 
   const configuredText = singleField(frontmatter, "configured", lines, file, issues);
   let configured = false;
@@ -630,7 +706,11 @@ export function parseRolesDocumentSet(input: RolesDocumentInput): ParsedRolesDoc
       );
       continue;
     }
-    const parsed = parseRoleFile(content, entry.file);
+    const parsed = parseRoleFile(content, entry.file, {
+      roleId: entry.roleId,
+      configured: manifest.configured,
+      revision: manifest.revision,
+    });
     issues.push(...parsed.issues);
     if (parsed.file === null) continue;
     if (parsed.file.roleId !== entry.roleId) {

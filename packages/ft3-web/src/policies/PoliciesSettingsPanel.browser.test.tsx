@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   snapshot: null as unknown,
   read: null as unknown,
   pending: null as unknown,
+  readError: null as string | null,
+  policySettings: null as unknown,
   calls: [] as Array<{ label: string; input: unknown }>,
   commandResult: null as unknown,
 }));
@@ -27,7 +29,7 @@ vi.mock("./state.ts", () => ({
 vi.mock("~/state/query", () => ({
   useEnvironmentQuery: (atom: unknown) => {
     const view = {
-      error: null,
+      error: null as string | null,
       isPending: false,
       dataUpdatedAt: 0,
       refresh: () => {},
@@ -36,7 +38,13 @@ vi.mock("~/state/query", () => ({
     const query = (atom as { __query: string }).__query;
     const data =
       query === "snapshot" ? mocks.snapshot : query === "read" ? mocks.read : mocks.pending;
-    return { ...view, data };
+    return { ...view, data, error: query === "read" ? mocks.readError : null };
+  },
+}));
+
+vi.mock("~/state/server", () => ({
+  serverEnvironment: {
+    updateSettings: { label: "server.updateSettings" },
   },
 }));
 
@@ -58,7 +66,7 @@ vi.mock("~/components/settings/SettingsScopeContext", () => ({
 }));
 
 vi.mock("~/components/settings/useScopedSettings", () => ({
-  useScopedSettings: () => ({ ft3: { policies: DEFAULT_POLICY_SETTINGS } }),
+  useScopedSettings: () => ({ ft3: { policies: mocks.policySettings } }),
 }));
 
 vi.mock("~/components/settings/settingsLayout", () => ({
@@ -169,6 +177,8 @@ function setup() {
   };
   mocks.calls = [];
   mocks.commandResult = null;
+  mocks.readError = null;
+  mocks.policySettings = DEFAULT_POLICY_SETTINGS;
 }
 
 describe("policies settings panel", () => {
@@ -190,7 +200,7 @@ describe("policies settings panel", () => {
       value: { status: "applied", snapshot: snapshotFixture },
     };
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
-    await userEvent.click(screen.getByText("Roles"));
+    await userEvent.click(screen.getByRole("button", { name: "Edit Roles" }));
     expect(screen.container.textContent).toContain("- old\n+ new");
     await userEvent.click(screen.getByText("Apply external change"));
     expect(mocks.calls).toEqual([
@@ -205,7 +215,7 @@ describe("policies settings panel", () => {
   it("jumps to the error line when its number is clicked", async () => {
     setup();
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
-    await userEvent.click(screen.getByText("Lead skills"));
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
     await userEvent.click(screen.getByText("L2"));
     const textarea = screen.container.querySelector("textarea");
     expect(textarea).not.toBeNull();
@@ -219,17 +229,85 @@ describe("policies settings panel", () => {
       value: { status: "invalid", snapshot: snapshotFixture },
     };
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
-    await userEvent.click(screen.getByText("Routing policy"));
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
     await userEvent.type(screen.getByLabelText("Edit routing-policy.md"), "!");
     await userEvent.click(screen.getByText("Save and apply"));
     expect(mocks.calls).toHaveLength(1);
     expect(mocks.calls[0]!.label).toBe("policies.saveDocument");
     const input = mocks.calls[0]!.input as { key: string; baseSha256: string; content: string };
-    expect(input.key).toBe("routingPolicy");
+    expect(input.key).toBe("leadSkills");
     expect(input.baseSha256).toBe("d".repeat(64));
     expect(input.content).toContain("!");
     expect(screen.container.textContent).toContain(
       "Not applied: the document has errors, so the previous version stays active.",
     );
+  });
+
+  it("opens a built-in template read-only with a View button", async () => {
+    setup();
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "View Routing policy" }));
+    await expect
+      .element(screen.getByLabelText("View routing-policy.md"))
+      .toHaveAttribute("readonly");
+    expect(screen.container.textContent).toContain("Built-in template: read-only.");
+    expect(screen.container.textContent).not.toContain("Save and apply");
+  });
+
+  it("explains a built-in template that is not applied yet", async () => {
+    setup();
+    mocks.snapshot = {
+      ...snapshotFixture,
+      documents: snapshotFixture.documents.map((document) =>
+        document.key === "routingPolicy" ? { ...document, applied: null } : document,
+      ),
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "View Routing policy" }));
+    expect(screen.container.textContent).toContain(
+      "Not applied yet: the built-in template has no valid version",
+    );
+    expect(screen.container.querySelector('[title^="Not applied yet"]')).not.toBeNull();
+  });
+
+  it("shows why a document could not be loaded", async () => {
+    setup();
+    mocks.readError = "Forbidden: settings:write required";
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Roles" }));
+    expect(screen.container.textContent).toContain(
+      "Could not load this document: Forbidden: settings:write required",
+    );
+  });
+
+  it("saves a feature toggle through the server settings", async () => {
+    setup();
+    mocks.commandResult = { value: {} };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    const toggle = screen.container.querySelector<HTMLElement>(
+      '[role="switch"][aria-label="Enable board"]',
+    );
+    expect(toggle).not.toBeNull();
+    toggle!.click();
+    const call = mocks.calls.find((entry) => entry.label === "server.updateSettings");
+    expect(call).toBeDefined();
+    const input = call!.input as {
+      patch: { ft3: { policies: { features: Record<string, boolean> } } };
+    };
+    expect(input.patch.ft3.policies.features.board).toBe(!DEFAULT_POLICY_SETTINGS.features.board);
+  });
+
+  it("explains which document keeps a requested feature off", async () => {
+    setup();
+    mocks.policySettings = {
+      ...DEFAULT_POLICY_SETTINGS,
+      features: { ...DEFAULT_POLICY_SETTINGS.features, roles: true, board: true },
+    };
+    mocks.snapshot = {
+      ...snapshotFixture,
+      requirements: { rolesManifest: true, leadSkills: true, leadRole: false },
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    expect(screen.container.textContent).toContain("Off: its Roles document is not valid yet.");
   });
 });

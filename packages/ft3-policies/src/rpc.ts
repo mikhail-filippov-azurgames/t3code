@@ -39,7 +39,11 @@ import {
   type PoliciesSetApplyExternalEditsInput,
   type PoliciesSetApplyExternalEditsResult,
 } from "./rpc-contracts.ts";
-import type { PolicyDocumentKey } from "./contracts.ts";
+import {
+  POLICY_REQUIREMENT_IDS,
+  type PolicyDocumentKey,
+  type PolicyRequirementId,
+} from "./contracts.ts";
 
 export { FT3_POLICIES_WS_METHODS, policiesRpcs, policiesRpcScopes } from "./rpc-contracts.ts";
 export { PolicyChangeTracker } from "./policyChangeTracker.ts";
@@ -66,6 +70,9 @@ const resultOf = (snapshot: TrackerSnapshot, warnings: PoliciesGetSnapshotResult
   ({
     configVersion: snapshot.configVersion,
     documents: snapshot.documents,
+    requirements: Object.fromEntries(
+      POLICY_REQUIREMENT_IDS.map((id) => [id, snapshot.requirements[id] === true]),
+    ) as Record<PolicyRequirementId, boolean>,
     warnings,
   }) satisfies PoliciesGetSnapshotResult;
 

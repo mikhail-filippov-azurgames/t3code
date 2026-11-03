@@ -1,5 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { FEATURE_IDS } from "@t3tools/ft3-policies/contracts";
+import { FEATURE_IDS, resolveFeatureStates, type FeatureId } from "@t3tools/ft3-policies/contracts";
 import type { PolicyDocumentKey } from "@t3tools/ft3-policies/contracts";
 import type {
   PoliciesGetSnapshotResult,
@@ -8,7 +8,11 @@ import type {
   PolicyDocumentStatusSchema,
   PolicyIssueSchema,
 } from "@t3tools/ft3-policies/rpc-contracts";
-import { readPolicySettings } from "@t3tools/ft3-policies/settings";
+import {
+  readPolicySettings,
+  withPolicySettings,
+  type PoliciesSettings,
+} from "@t3tools/ft3-policies/settings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { useRef, useState } from "react";
@@ -27,13 +31,18 @@ import {
 import { useScopedSettings } from "~/components/settings/useScopedSettings";
 import { usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
+import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
   POLICY_DOCUMENT_BADGE_LABELS,
   POLICY_DOCUMENT_BADGE_VARIANTS,
   POLICY_DOCUMENT_KEY_LABELS,
+  featureOffReasonText,
   lineStartOffset,
+  policyDocumentActionLabel,
   policyDocumentBadge,
+  policyDocumentBadgeHint,
+  policyDocumentReadOnlyNote,
   policyDocumentSourceLabel,
 } from "./policies.logic.ts";
 import { policiesEnvironment } from "./state.ts";
@@ -61,12 +70,51 @@ export function PoliciesSettingsPanel() {
   const [applyEditsEnabled, setApplyEditsEnabled] = useState(policySettings.applyExternalEdits);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [togglePending, setTogglePending] = useState(false);
+  const updateServerSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    reportFailure: false,
+  });
+  const [featureOverrides, setFeatureOverrides] = useState<Partial<Record<FeatureId, boolean>>>({});
+  const [featureError, setFeatureError] = useState<string | null>(null);
 
   const snapshot =
     commandResult !== null && commandResult.at >= snapshotQuery.dataUpdatedAt
       ? commandResult.snapshot
       : snapshotQuery.data;
   const selected = snapshot?.documents.find((document) => document.key === selectedKey) ?? null;
+  const requestedFeatures: PoliciesSettings["features"] = {
+    ...policySettings.features,
+    ...featureOverrides,
+  };
+  const featureStates =
+    snapshot === null
+      ? null
+      : resolveFeatureStates({
+          requested: requestedFeatures,
+          requirements: snapshot.requirements,
+        });
+
+  const setFeature = async (feature: FeatureId, enabled: boolean) => {
+    if (environmentId === null) return;
+    const previous = requestedFeatures[feature];
+    setFeatureOverrides((current) => ({ ...current, [feature]: enabled }));
+    setFeatureError(null);
+    const result = await updateServerSettings({
+      environmentId,
+      input: {
+        patch: {
+          ft3: withPolicySettings(settings.ft3, {
+            ...policySettings,
+            features: { ...requestedFeatures, [feature]: enabled },
+          }),
+        },
+      },
+    });
+    if (AsyncResult.isFailure(result)) {
+      setFeatureOverrides((current) => ({ ...current, [feature]: previous }));
+      const cause = squashAtomCommandFailure(result);
+      setFeatureError(cause instanceof Error ? cause.message : "Could not save the feature.");
+    }
+  };
 
   const onSnapshot = (fresh: PoliciesGetSnapshotResult) => {
     setCommandResult({ snapshot: fresh, at: Date.now() });
@@ -120,6 +168,15 @@ export function PoliciesSettingsPanel() {
         </SettingsUnavailableGroup>
       </SettingsSection>
 
+      {selected !== null && environmentId !== null ? (
+        <PolicyDocumentEditor
+          key={selected.key}
+          environmentId={environmentId}
+          document={selected}
+          onSnapshot={onSnapshot}
+        />
+      ) : null}
+
       {snapshot !== null && environmentId !== null ? (
         <SettingsSection id="ft3-policies-external-edits" title="External edits">
           <SettingsRow
@@ -140,32 +197,34 @@ export function PoliciesSettingsPanel() {
         </SettingsSection>
       ) : null}
 
-      {selected !== null && environmentId !== null ? (
-        <PolicyDocumentEditor
-          key={selected.key}
-          environmentId={environmentId}
-          document={selected}
-          onSnapshot={onSnapshot}
-        />
-      ) : null}
-
-      {snapshot !== null ? (
+      {snapshot !== null && featureStates !== null && environmentId !== null ? (
         <SettingsSection id="ft3-policies-features" title="Feature toggles">
           <p className="px-3 text-xs text-muted-foreground sm:px-4">
-            Requested feature states, environment-wide. A feature only runs when its policy
-            documents are valid; an enabled feature with an invalid requirement stays off.
+            A feature runs when it is on and its dependencies and policy documents are valid.
+            Changes apply without a restart. Runtime gates check board, mail, planning and documents
+            today.
           </p>
-          {FEATURE_IDS.map((feature) => (
-            <SettingsRow
-              key={feature}
-              title={feature}
-              control={
-                <Badge variant={policySettings.features[feature] ? "success" : "secondary"}>
-                  {policySettings.features[feature] ? "On" : "Off"}
-                </Badge>
-              }
-            />
-          ))}
+          {FEATURE_IDS.map((feature) => {
+            const state = featureStates[feature];
+            const reason = state.requestedEnabled ? featureOffReasonText(state.offReason) : null;
+            return (
+              <SettingsRow
+                key={feature}
+                title={feature}
+                description={reason ?? undefined}
+                control={
+                  <Switch
+                    aria-label={`Enable ${feature}`}
+                    checked={requestedFeatures[feature]}
+                    onCheckedChange={(checked) => void setFeature(feature, Boolean(checked))}
+                  />
+                }
+              />
+            );
+          })}
+          {featureError !== null ? (
+            <p className="px-3 py-2 text-sm text-destructive sm:px-4">{featureError}</p>
+          ) : null}
         </SettingsSection>
       ) : null}
     </SettingsPageContainer>
@@ -182,24 +241,29 @@ function PolicyDocumentRow({
   onSelect: () => void;
 }) {
   const badge = policyDocumentBadge(document);
+  const hint = policyDocumentBadgeHint(document);
+  const label = POLICY_DOCUMENT_KEY_LABELS[document.key];
+  const action = policyDocumentActionLabel(document.source);
   return (
     <div className="flex items-center gap-2 px-3 py-2 sm:px-4">
-      <button
-        type="button"
-        onClick={onSelect}
-        aria-pressed={selected}
-        className="min-w-0 flex-1 text-left"
-      >
-        <span className="block truncate text-sm font-medium">
-          {POLICY_DOCUMENT_KEY_LABELS[document.key]}
-        </span>
+      <div className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{label}</span>
         <span className="block truncate text-xs text-muted-foreground">
           {policyDocumentSourceLabel(document.source)}
         </span>
-      </button>
-      <Badge variant={POLICY_DOCUMENT_BADGE_VARIANTS[badge]}>
+      </div>
+      <Badge variant={POLICY_DOCUMENT_BADGE_VARIANTS[badge]} title={hint ?? undefined}>
         {POLICY_DOCUMENT_BADGE_LABELS[badge]}
       </Badge>
+      <Button
+        size="xs"
+        variant={selected ? "default" : "outline"}
+        aria-pressed={selected}
+        aria-label={`${action} ${label}`}
+        onClick={onSelect}
+      >
+        {action}
+      </Button>
     </div>
   );
 }
@@ -353,6 +417,9 @@ function PolicyDocumentEditor({
 
   const errors = document.errors;
   const pendingChange = pendingQuery.data?.change ?? null;
+  const readOnly = document.source.kind === "builtin";
+  const readOnlyNote = policyDocumentReadOnlyNote(document.source);
+  const unappliedHint = policyDocumentBadgeHint(document);
 
   return (
     <SettingsSection
@@ -366,13 +433,24 @@ function PolicyDocumentEditor({
       {readQuery.isPending ? (
         <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">Loading document…</p>
       ) : null}
+      {readQuery.error !== null ? (
+        <p className="px-3 py-2 text-sm text-destructive sm:px-4">
+          Could not load this document: {readQuery.error}
+        </p>
+      ) : null}
       {readQuery.data?.status === "unavailable" ? (
         <p className="px-3 py-2 text-sm text-destructive sm:px-4">
-          This document is unavailable:
+          This document is unavailable.
           {readQuery.data.issues.map((issue) => (
             <span key={`${issue.code}:${issue.message}`}> {issue.message}</span>
           ))}
         </p>
+      ) : null}
+      {readOnlyNote !== null ? (
+        <p className="px-3 pt-2 text-xs text-muted-foreground sm:px-4">{readOnlyNote}</p>
+      ) : null}
+      {unappliedHint !== null ? (
+        <p className="px-3 pt-1 text-xs text-muted-foreground sm:px-4">{unappliedHint}</p>
       ) : null}
       {files.length > 1 ? (
         <div
@@ -398,6 +476,7 @@ function PolicyDocumentEditor({
             key={`${currentFile.file}:${currentFile.sha256}`}
             file={currentFile}
             busy={busy}
+            readOnly={readOnly}
             onSave={save}
           />
         </div>
@@ -419,7 +498,9 @@ function PolicyDocumentEditor({
       {errors.length > 0 ? (
         <div>
           <p className="px-3 pt-2 text-xs font-medium text-muted-foreground sm:px-4">
-            Errors: the previous version stays active until these are fixed:
+            {document.applied === null
+              ? "Errors: no version is in effect until these are fixed:"
+              : "Errors: the previous version stays active until these are fixed:"}
           </p>
           <PolicyIssueList issues={errors} onJumpToLine={jumpToLine} />
         </div>
@@ -463,10 +544,12 @@ function PolicyDocumentEditor({
 function PolicyFileEditor({
   file,
   busy,
+  readOnly,
   onSave,
 }: {
   file: PolicyDocumentFileSchema;
   busy: boolean;
+  readOnly: boolean;
   onSave: (content: string, baseSha256: string) => Promise<void>;
 }) {
   const [content, setContent] = useState(file.content);
@@ -474,21 +557,24 @@ function PolicyFileEditor({
   return (
     <div className="space-y-2 px-3 py-2 sm:px-4">
       <Textarea
-        aria-label={`Edit ${file.file}`}
+        aria-label={readOnly ? `View ${file.file}` : `Edit ${file.file}`}
         value={content}
+        readOnly={readOnly}
         onChange={(event) => setContent(event.target.value)}
         className="max-h-[50vh]"
       />
-      <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          disabled={!dirty || busy}
-          onClick={() => void onSave(content, file.sha256)}
-        >
-          Save and apply
-        </Button>
-        {dirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
-      </div>
+      {readOnly ? null : (
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={!dirty || busy}
+            onClick={() => void onSave(content, file.sha256)}
+          >
+            Save and apply
+          </Button>
+          {dirty ? <span className="text-xs text-muted-foreground">Unsaved changes</span> : null}
+        </div>
+      )}
     </div>
   );
 }

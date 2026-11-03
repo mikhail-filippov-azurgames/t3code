@@ -40,6 +40,11 @@
 обезличены: без абсолютных путей и `oc://`-идентификаторов, `configured: false`
 до заполнения человеком.
 
+Файл роли читается в одном из двух форматов: `corvis-role-v1` (шаблон; `roleId`,
+`configured` и `revision` во frontmatter) или `ced-v1` (frontmatter документного store;
+`roleId` и `configured` берутся из записи `roles.json`, `revision` — из файла, иначе из
+манифеста). Frontmatter `ced-v1` не переписывается.
+
 `roles.json` отображает имя, которое называет lead (`id`), на delegated role id
 (`roleId`) и, при необходимости, на upstream-роль (`upstreamRole`; `architecture`
 → `architect`). Поля `documentsWrite` нет: право записи документов определяется

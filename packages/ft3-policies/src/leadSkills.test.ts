@@ -232,4 +232,32 @@ describe("SKILL.md frontmatter", () => {
     expect(issue?.message).toContain("expected a closing --- line for the frontmatter");
     expect(parsed.file).toBeNull();
   });
+
+  it("accepts a store-schema ced-v1 SKILL.md with name and description", () => {
+    const content = [
+      "---",
+      "stable_id: 00000000-0000-4000-8000-000000000000",
+      "status: accepted",
+      "revision: 3",
+      "schema: ced-v1",
+      "project: personal",
+      "kind: context",
+      "name: t3-orchestrator",
+      'description: "Coordinates complex multi-stage work."',
+      "---",
+      "",
+      "# Skill",
+      "",
+    ].join("\n");
+    const parsed = parseLeadSkillsDocumentSet({
+      manifest: leadSkillsManifest([baseEntries[0]!]),
+      files: new Map([["t3-orchestrator/SKILL.md", content]]),
+    });
+
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.files.get("t3-orchestrator/SKILL.md")).toMatchObject({
+      name: "t3-orchestrator",
+      description: "Coordinates complex multi-stage work.",
+    });
+  });
 });

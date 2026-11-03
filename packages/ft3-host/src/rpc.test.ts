@@ -69,6 +69,18 @@ const piProfile = {
   reasoningEffort: "medium" as const,
 };
 
+const noRequirements = {
+  documentsStore: false,
+  rolesManifest: false,
+  leadSkills: false,
+  leadRole: false,
+  routingPolicy: false,
+  requestedRoles: false,
+  plannerRole: false,
+  architectRole: false,
+  planOrchestratorSkill: false,
+};
+
 const stubs = {
   [FT3_WS_METHODS.boardOrchestratorsList]: () => Effect.succeed({ orchestrators: [] }),
   [FT3_WS_METHODS.boardOrchestratorAdd]: () =>
@@ -110,25 +122,25 @@ const stubs = {
   [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
   [FT3_WS_METHODS.docsResolve]: () => Effect.succeed({ status: "not_found" as const }),
   [FT3_WS_METHODS.policiesGetSnapshot]: () =>
-    Effect.succeed({ configVersion: 1, documents: [], warnings: [] }),
+    Effect.succeed({ configVersion: 1, documents: [], requirements: noRequirements, warnings: [] }),
   [FT3_WS_METHODS.policiesReadDocument]: () =>
     Effect.succeed({ status: "unavailable" as const, key: "routingPolicy" as const, issues: [] }),
   [FT3_WS_METHODS.policiesSaveDocument]: () =>
     Effect.succeed({
       status: "not_writable" as const,
-      snapshot: { configVersion: 1, documents: [], warnings: [] },
+      snapshot: { configVersion: 1, documents: [], requirements: noRequirements, warnings: [] },
     }),
   [FT3_WS_METHODS.policiesGetPendingChange]: ({ key }: { key: PolicyDocumentKey }) =>
     Effect.succeed({ key, pending: false, change: null }),
   [FT3_WS_METHODS.policiesApplyPending]: () =>
     Effect.succeed({
       status: "nothing_pending" as const,
-      snapshot: { configVersion: 1, documents: [], warnings: [] },
+      snapshot: { configVersion: 1, documents: [], requirements: noRequirements, warnings: [] },
     }),
   [FT3_WS_METHODS.policiesSetApplyExternalEdits]: ({ enabled }: { enabled: boolean }) =>
     Effect.succeed({
       enabled,
-      snapshot: { configVersion: 1, documents: [], warnings: [] },
+      snapshot: { configVersion: 1, documents: [], requirements: noRequirements, warnings: [] },
     }),
 };
 
@@ -232,6 +244,7 @@ describe("FT3 RPC authorization", () => {
       expect(yield* client[FT3_WS_METHODS.policiesGetSnapshot]({})).toEqual({
         configVersion: 1,
         documents: [],
+        requirements: noRequirements,
         warnings: [],
       });
       expect(
