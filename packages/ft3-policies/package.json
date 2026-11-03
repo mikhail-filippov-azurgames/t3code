@@ -15,6 +15,14 @@
       "types": "./src/routingPolicy.ts",
       "import": "./src/routingPolicy.ts"
     },
+    "./routing": {
+      "types": "./src/routing.ts",
+      "import": "./src/routing.ts"
+    },
+    "./migrations": {
+      "types": "./src/migrations.ts",
+      "import": "./src/migrations.ts"
+    },
     "./rpc": {
       "types": "./src/rpc.ts",
       "import": "./src/rpc.ts"
@@ -39,6 +47,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
+    "@t3tools/shared": "workspace:*",
     "@types/node": "catalog:",
     "vite-plus": "catalog:"
   }

@@ -20,7 +20,7 @@ export const memoryPolicyDocumentPort = (
     if (content === undefined) {
       return Effect.fail({ code: "document_not_found", message: `no document ${ref}` });
     }
-    return Effect.succeed({ content, sha256: sha256(content), relPath: ref });
+    return Effect.succeed({ content, sha256: sha256(content), relPath: ref, stableId: ref });
   },
   manifest: ({ folder }) =>
     Effect.succeed(

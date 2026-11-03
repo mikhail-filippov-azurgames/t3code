@@ -21,6 +21,8 @@ describe("ft3 migrations", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [10, "PolicyUsage"],
+        [11, "Mail"],
         [13, "Docs"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
@@ -48,9 +50,17 @@ describe("ft3 migrations", () => {
           "ft3_docs_fts_data",
           "ft3_docs_fts_docsize",
           "ft3_docs_fts_idx",
+          "ft3_mail_deliveries",
+          "ft3_mail_kind_feedback",
+          "ft3_mail_letters",
+          "ft3_mail_members",
+          "ft3_mail_rounds",
+          "ft3_mail_tasks",
+          "ft3_mail_wakes",
           "ft3_meta",
           "ft3_migrations",
           "ft3_policy_applied",
+          "ft3_policy_delegations",
           "ft3_task_handoffs",
         ],
       );
@@ -65,6 +75,8 @@ describe("ft3 migrations", () => {
         { migration_id: 7, name: "Ft3TaskHandoffs" },
         { migration_id: 8, name: "Ft3DelegatedTaskSummaryReactor" },
         { migration_id: 9, name: "BoardRetention" },
+        { migration_id: 10, name: "PolicyUsage" },
+        { migration_id: 11, name: "Mail" },
         { migration_id: 13, name: "Docs" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -95,6 +107,8 @@ describe("ft3 migrations", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [10, "PolicyUsage"],
+        [11, "Mail"],
         [13, "Docs"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
@@ -131,6 +145,8 @@ describe("ft3 migrations", () => {
         [7, "Ft3TaskHandoffs"],
         [8, "Ft3DelegatedTaskSummaryReactor"],
         [9, "BoardRetention"],
+        [10, "PolicyUsage"],
+        [11, "Mail"],
         [13, "Docs"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

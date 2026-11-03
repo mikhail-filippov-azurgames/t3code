@@ -1,14 +1,13 @@
 import * as Effect from "effect/Effect";
 
-import { resolveDocsRoot } from "./root.ts";
 import { DocsResolveInput, DocsResolveResult, FT3_DOCS_WS_METHODS } from "./rpc-contracts.ts";
 import * as Service from "./service.ts";
 
 export { FT3_DOCS_WS_METHODS, docsRpcs, docsRpcScopes } from "./rpc-contracts.ts";
 
 export interface DocsRpcOptions {
-  /** The server state directory the store lives under when no root is configured. */
-  readonly stateDir: string;
+  /** Store root resolved by the host from `ft3.docs.root` or the state directory. */
+  readonly root: string;
 }
 
 /**
@@ -17,7 +16,7 @@ export interface DocsRpcOptions {
  * client, which the RPC composition provides.
  */
 export const docsRpcServiceLayer = (options: DocsRpcOptions) =>
-  Service.layerWithDefaultPorts({ root: resolveDocsRoot({ stateDir: options.stateDir }) });
+  Service.layerWithDefaultPorts({ root: options.root });
 
 const docsResolve = Effect.fn("DocsRpc.docsResolve")(function* (input: DocsResolveInput) {
   const service = yield* Service.DocsService;

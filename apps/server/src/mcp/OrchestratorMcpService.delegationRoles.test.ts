@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
+import { layerMemory as policyAppliedStoreLayer } from "../../../../packages/ft3-policies/src/policyAppliedStore.ts";
 import {
   PolicyChangeTracker,
   layer as policyChangeTrackerLayer,
@@ -169,6 +170,7 @@ type Dispatched = ReadonlyArray<{ readonly task: string; readonly role?: string 
 const trackerLayerFor = (files: ReadonlyMap<string, string>) =>
   policyChangeTrackerLayer.pipe(
     Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(files))),
+    Layer.provide(policyAppliedStoreLayer),
   );
 
 const layerFor = (

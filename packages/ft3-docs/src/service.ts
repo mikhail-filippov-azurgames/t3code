@@ -233,6 +233,21 @@ export interface DocsSetDescriptionInput {
   readonly description: string;
 }
 
+/** A human save from the Policies tab; the RPC scope is the authorization, not the thread rule. */
+export interface DocsHumanWriteInput {
+  readonly ref: string;
+  readonly content: string;
+  /** Live SHA the editor started from; a mismatch is `document_changed`. */
+  readonly baseSha256?: string;
+}
+
+/** Where a server path sits inside the store; null when it is outside or unregistered. */
+export interface DocsPathLocation {
+  readonly relPath: string;
+  /** Stable id of the registered row; null before the next reconcile registers the file. */
+  readonly stableId: string | null;
+}
+
 const sha256Hex = (content: string): string =>
   NodeCrypto.createHash("sha256").update(content, "utf8").digest("hex");
 
@@ -496,6 +511,49 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     } satisfies DocsWriteResult;
   });
 
+  /**
+   * A human save of an existing document. Unlike `write`, the policy write rule
+   * is not consulted: the caller reaches this service through a
+   * `settings:write` RPC, and policy documents are not writable through MCP.
+   */
+  const writeAsHuman = Effect.fn("DocsService.writeAsHuman")(function* (
+    input: DocsHumanWriteInput,
+  ) {
+    const existing = yield* locate(input.ref);
+    const live = yield* readContent(existing);
+    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
+      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
+    }
+    const saved = yield* store
+      .saveDocContent({ relPath: existing.relPath, content: input.content })
+      .pipe(Effect.mapError(mapStoreError));
+    yield* indexDocument(saved);
+    const { sha256 } = yield* readContent(saved);
+    return {
+      stableId: saved.stableId,
+      relPath: saved.relPath,
+      name: saved.name,
+      sha256,
+      ocLink: ocLinkOf(saved.stableId),
+    } satisfies DocsWriteResult;
+  });
+
+  /** Maps an absolute server path under `contexts/` to its store row, without reading the file. */
+  const locateServerPath = Effect.fn("DocsService.locateServerPath")(function* (
+    absolutePath: string,
+  ) {
+    const relative = NodePath.relative(contextsRoot, NodePath.resolve(absolutePath));
+    if (relative === "" || relative.startsWith("..") || NodePath.isAbsolute(relative)) {
+      return null satisfies DocsPathLocation | null;
+    }
+    const relPath = relative.split(NodePath.sep).join("/");
+    const document = yield* store.getByPath(relPath).pipe(Effect.mapError(mapStoreError));
+    return {
+      relPath,
+      stableId: document?.stableId ?? null,
+    } satisfies DocsPathLocation;
+  });
+
   const setDescription = Effect.fn("DocsService.setDescription")(function* (
     input: DocsSetDescriptionInput,
   ) {
@@ -530,6 +588,8 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     resolve,
     search,
     write,
+    writeAsHuman,
+    locateServerPath,
     setDescription,
     docRef,
   });
@@ -557,6 +617,14 @@ export class DocsService extends Context.Service<
       input: DocsIndex.DocsSearchInput,
     ) => Effect.Effect<ReadonlyArray<DocsIndex.DocsSearchResult>, DocsServiceError>;
     readonly write: (input: DocsWriteInput) => Effect.Effect<DocsWriteResult, DocsServiceError>;
+    /** Human save from the Policies tab; not subject to the MCP write rule. */
+    readonly writeAsHuman: (
+      input: DocsHumanWriteInput,
+    ) => Effect.Effect<DocsWriteResult, DocsServiceError>;
+    /** Store-relative identity of an absolute server path under `contexts/`. */
+    readonly locateServerPath: (
+      absolutePath: string,
+    ) => Effect.Effect<DocsPathLocation | null, DocsServiceError>;
     readonly setDescription: (input: DocsSetDescriptionInput) => Effect.Effect<
       {
         readonly stableId: string;

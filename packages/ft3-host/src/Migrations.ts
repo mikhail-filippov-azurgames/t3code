@@ -3,6 +3,8 @@ import * as Migrator from "effect/sql/Migrator";
 import { migrations as architectMigrations } from "@t3tools/ft3-architect/migrations";
 import { migrations as boardMigrations } from "@t3tools/ft3-board/migrations";
 import { migrations as docsMigrations } from "@t3tools/ft3-docs/migrations";
+import { migrations as mailMigrations } from "@t3tools/ft3-mail/migrations";
+import { migrations as policiesMigrations } from "@t3tools/ft3-policies/migrations";
 
 import Ft3Meta from "./Migrations/001_Ft3Meta.ts";
 import Ft3DelegatedTaskSummaries from "./Migrations/006_Ft3DelegatedTaskSummaries.ts";
@@ -17,6 +19,8 @@ const loader = Migrator.fromRecord({
   "6_Ft3DelegatedTaskSummaries": Ft3DelegatedTaskSummaries,
   "7_Ft3TaskHandoffs": Ft3TaskHandoffs,
   "8_Ft3DelegatedTaskSummaryReactor": Ft3DelegatedTaskSummaryReactor,
+  ...policiesMigrations,
+  ...mailMigrations,
   ...docsMigrations,
 });
 

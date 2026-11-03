@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
 import type { PolicyDocumentSource } from "./contracts.ts";
+import { layerMemory as policyAppliedStoreLayer } from "./policyAppliedStore.ts";
 import { PolicyChangeTracker, layer as policyChangeTrackerLayer } from "./policyChangeTracker.ts";
 import { layer as policyDocumentLoaderLayer } from "./policyDocumentLoader.ts";
 import { memoryPolicyDocumentPort } from "./policyDocuments.testkit.ts";
@@ -63,6 +64,7 @@ const sources = {
 const trackerLayerFor = (files: ReadonlyMap<string, string>) =>
   policyChangeTrackerLayer.pipe(
     Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(files))),
+    Layer.provide(policyAppliedStoreLayer),
   );
 
 const layerFor = (files: ReadonlyMap<string, string>) =>
@@ -149,7 +151,11 @@ describe("RoleResolver applied roles", () => {
 
         files.set(`${ROLES_FOLDER}/general.md`, roleFile("general", "# General\n\nOwn the wave."));
         files.set(ROLES_MANIFEST_PATH, manifest(5));
-        yield* tracker.refresh({ sources, features: { board: true } });
+        yield* tracker.refresh({
+          sources,
+          features: { board: true },
+          forceApplyKeys: ["roles"],
+        });
 
         const updated = yield* resolver.resolve("general");
         assert.equal(updated.revision, 5);

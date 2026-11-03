@@ -968,3 +968,24 @@ store через `DocAddress` из `@t3tools/ft3-docs/contracts` или внеш
 
 Fork-owned tests: `packages/ft3-policies/src/features.test.ts` and
 `packages/ft3-policies/src/settings.test.ts`.
+
+## Policies tab в Settings (срез S5)
+
+`packages/ft3-web/src/policies` рисует вкладку `/settings/policies`: список
+документов политики со значками состояния (applied / pending external change /
+invalid-kept), plain-text редактор поверх `policies.readDocument` /
+`policies.saveDocument` со списком ошибок parse и переходом к строке, диф
+pending-изменения с однокликовым Apply и тумблер «apply external edits
+immediately». Тумблер пишется через `policies.setApplyExternalEdits`; текущее
+значение читается из namespace `ft3.policies` через
+`readPolicySettings(settings.ft3)`. Тумблеры функций показаны read-only из того
+же namespace.
+
+| Upstream-файл                                                                       | Правка                                                                                                               | Зачем                                                                 |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `apps/web/src/components/settings/settingsSearch.ts`                                | `SettingsPath` `"/settings/policies"`, лейбл «Policies», пункт nav-группы Agents между Providers и Threads           | nav и поиск настроек знают о вкладке без знания о ft3-компоненте      |
+| `apps/web/src/components/settings/SettingsSidebarNav.tsx`                           | иконка `ScrollTextIcon` для `/settings/policies` в `SETTINGS_SECTION_ICONS`                                          | у каждого пути настроек обязательна иконка                            |
+| `apps/web/src/routes/_chat.settings.policies.tsx` + `apps/web/src/routeTree.gen.ts` | тонкий route к `PoliciesSettingsPanel` из `@t3tools/ft3-web/policies`; routeTree перегенерирован штатным генератором | TanStack Router требует файловый route; вся логика остаётся в ft3-web |
+
+Fork-owned tests: `packages/ft3-web/src/policies/policies.logic.test.ts` and
+`packages/ft3-web/src/policies/PoliciesSettingsPanel.browser.test.tsx`.

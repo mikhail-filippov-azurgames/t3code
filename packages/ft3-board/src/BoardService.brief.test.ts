@@ -15,6 +15,8 @@ import * as NodePath from "node:path";
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import { layerMemory as policyAppliedStoreLayer } from "../../ft3-policies/src/policyAppliedStore.ts";
 import {
   PolicyChangeTracker,
   layer as policyChangeTrackerLayer,
@@ -104,6 +106,7 @@ const wake = <A>(
         ? Layer.empty
         : policyChangeTrackerLayer.pipe(
             Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(options.applied))),
+            Layer.provide(policyAppliedStoreLayer),
           );
     const layer = Layer.mergeAll(
       BoardService.layer.pipe(
@@ -111,6 +114,7 @@ const wake = <A>(
         Layer.provideMerge(SqlitePersistence.layerMemory),
         Layer.provide(threads),
         Layer.provide(cryptoLayer),
+        Layer.provide(ServerSettings.layerTest()),
         Layer.provide(
           ConfigProvider.layer(
             ConfigProvider.fromEnv(

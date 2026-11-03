@@ -20,7 +20,8 @@
     "./usage": "./src/usage/index.ts",
     "./kimi": "./src/kimi/index.ts",
     "./delegation": "./src/delegation/index.ts",
-    "./delegation-dialogs": "./src/delegation/dialogs.ts"
+    "./delegation-dialogs": "./src/delegation/dialogs.ts",
+    "./policies": "./src/policies/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -33,6 +34,7 @@
     "@t3tools/ft3-architect": "workspace:*",
     "@t3tools/ft3-board": "workspace:*",
     "@t3tools/ft3-pi": "workspace:*",
+    "@t3tools/ft3-policies": "workspace:*",
     "@t3tools/ft3-vcs": "workspace:*",
     "@t3tools/shared": "workspace:*",
     "@tanstack/react-router": "^1.160.2",
