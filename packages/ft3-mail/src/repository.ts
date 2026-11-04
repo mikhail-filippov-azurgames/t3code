@@ -177,6 +177,23 @@ export interface TimeoutCandidate {
   readonly roleId: string | null;
 }
 
+export interface TimeoutNoticeFailure {
+  readonly deliveryId: string;
+  readonly reason: string;
+}
+
+export interface TimeoutNoticeLetter {
+  readonly letterId: string;
+  readonly taskId: string;
+  readonly body: string;
+  readonly sourceLetterId: string | null;
+  readonly clientRequestId: string;
+  readonly requestFingerprint: string;
+  readonly deliveryId: string;
+  readonly wakeId: string;
+  readonly createdAt: string;
+}
+
 export interface RecordKindFeedbackInput {
   readonly letterId: string;
   readonly senderKind: MailLetterKind;
@@ -539,6 +556,15 @@ export class MailRepository extends Context.Service<
     readonly recordDelivery: (
       input: RecordDeliveryInput,
     ) => Effect.Effect<MailDelivery, MailRepositoryError>;
+    /**
+     * Points an existing pending delivery at the launched participant thread;
+     * a delivery that already has a thread or moved on is left alone.
+     */
+    readonly bindDeliveryThread: (input: {
+      readonly deliveryId: string;
+      readonly participantThreadId: string;
+      readonly at: string;
+    }) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
     readonly createRound: (
       input: CreateRoundInput,
     ) => Effect.Effect<CreateRoundResult, MailRepositoryError>;
@@ -617,6 +643,23 @@ export class MailRepository extends Context.Service<
     readonly listTimeoutCandidates: (input: {
       readonly limit: number;
     }) => Effect.Effect<ReadonlyArray<TimeoutCandidate>, MailRepositoryError>;
+    /**
+     * Fails overdue deliveries and writes one lead notice letter per task in a
+     * single transaction: a crash anywhere retries from scratch with no partial
+     * rows. Deliveries that moved on concurrently are skipped; notice letters
+     * reuse their request key, so a retried scan never duplicates a notice.
+     */
+    readonly applyTimeoutNotices: (input: {
+      readonly now: string;
+      readonly failed: ReadonlyArray<TimeoutNoticeFailure>;
+      readonly letters: ReadonlyArray<TimeoutNoticeLetter>;
+    }) => Effect.Effect<
+      {
+        readonly failed: ReadonlyArray<MailDelivery>;
+        readonly letters: ReadonlyArray<MailLetter>;
+      },
+      MailRepositoryError | MailIdempotencyConflict
+    >;
     readonly getDelivery: (
       deliveryId: string,
     ) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
@@ -930,6 +973,20 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    bindDeliveryThread: Effect.fn("MailRepository.bindDeliveryThread")((input) =>
+      mapError("bindDeliveryThread")(
+        Effect.gen(function* () {
+          const bound = yield* sql<DeliveryRow>`UPDATE ft3_mail_deliveries
+            SET participant_thread_id = ${input.participantThreadId}, updated_at = ${input.at}
+            WHERE delivery_id = ${input.deliveryId} AND state = 'pending'
+              AND participant_thread_id IS NULL
+            RETURNING ${sql.literal(DELIVERY_COLUMNS)}`;
+          const row = bound[0];
+          if (row !== undefined) return toDelivery(row);
+          return yield* findDelivery(input.deliveryId);
+        }),
+      ),
+    ),
     markDeliveryDelivered: Effect.fn("MailRepository.markDeliveryDelivered")((input) =>
       mapError("markDeliveryDelivered")(updateDelivery(input.deliveryId, input.at, "delivered")),
     ),
@@ -1089,6 +1146,88 @@ const make = Effect.gen(function* () {
             WHERE wake_id = ${input.wakeId}`;
           return yield* findWake(input.wakeId);
         }),
+      ),
+    ),
+    applyTimeoutNotices: Effect.fn("MailRepository.applyTimeoutNotices")((input) =>
+      mapIdempotentError("applyTimeoutNotices")(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            // A delivery that moved on concurrently is skipped, so a concurrent
+            // scan never double-notifies the lead for it.
+            const failed: MailDelivery[] = [];
+            for (const item of input.failed) {
+              const moved = yield* sql<DeliveryRow>`UPDATE ft3_mail_deliveries
+                SET state = 'failed', failure_reason = ${item.reason}, updated_at = ${input.now}
+                WHERE delivery_id = ${item.deliveryId} AND state = 'pending'
+                RETURNING ${sql.literal(DELIVERY_COLUMNS)}`;
+              const row = moved[0];
+              if (row === undefined) continue;
+              const delivery = toDelivery(row);
+              yield* sql`UPDATE ft3_mail_wakes SET delivered_at = COALESCE(delivered_at, ${input.now})
+                WHERE wake_id = ${`mail:wake:${delivery.deliveryId}`}`;
+              failed.push(delivery);
+            }
+            const letters: MailLetter[] = [];
+            for (const plan of input.letters) {
+              if (!failed.some((delivery) => delivery.taskId === plan.taskId)) continue;
+              const task = yield* findTask(plan.taskId);
+              if (task === null || task.status !== "open") continue;
+              const key = {
+                taskId: plan.taskId,
+                senderThreadId: "system",
+                clientRequestId: plan.clientRequestId,
+              };
+              const existing = yield* findLetterByKey(key);
+              let letter: MailLetter;
+              if (existing !== null) {
+                if (existing.requestFingerprint !== plan.requestFingerprint) {
+                  return yield* new MailIdempotencyConflict({
+                    operation: "applyTimeoutNotices",
+                    key: `${plan.taskId}:system:${plan.clientRequestId}`,
+                  });
+                }
+                letter = existing;
+              } else {
+                const last = yield* sql<{
+                  readonly sequence: number;
+                }>`SELECT COALESCE(MAX(sequence), 0) AS sequence
+                  FROM ft3_mail_letters WHERE task_id = ${plan.taskId}`;
+                const sequence = (last[0]?.sequence ?? 0) + 1;
+                yield* sql`INSERT INTO ft3_mail_letters (
+                    letter_id, task_id, sequence, sender_thread_id, recipient, kind, body,
+                    reply_to_letter_id, source_letter_id, plan_phase, plan_step, plan_sha256,
+                    plan_doc_id, classifier_kind, classifier_confidence, kind_disputed, lead_kind,
+                    client_request_id, request_fingerprint, created_at
+                  ) VALUES (
+                    ${plan.letterId}, ${plan.taskId}, ${sequence}, 'system', 'lead', 'info',
+                    ${plan.body}, NULL, ${plan.sourceLetterId}, NULL, NULL, NULL, NULL, NULL,
+                    NULL, 0, NULL, ${plan.clientRequestId}, ${plan.requestFingerprint},
+                    ${plan.createdAt}
+                  )`;
+                const inserted = yield* findLetterByKey(key);
+                if (inserted === null) {
+                  return yield* Effect.die(new Error("the inserted mail notice letter is missing"));
+                }
+                letter = inserted;
+              }
+              yield* sql`INSERT INTO ft3_mail_deliveries (
+                  delivery_id, task_id, letter_id, member_id, recipient, participant_thread_id,
+                  state, created_at, updated_at
+                ) VALUES (
+                  ${plan.deliveryId}, ${plan.taskId}, ${letter.letterId}, NULL, 'lead',
+                  ${task.createdByThreadId}, 'pending', ${plan.createdAt}, ${plan.createdAt}
+                ) ON CONFLICT(letter_id, recipient) DO NOTHING`;
+              yield* sql`INSERT INTO ft3_mail_wakes (
+                  wake_id, task_id, target_thread_id, reason, idempotency_key, created_at
+                ) VALUES (
+                  ${plan.wakeId}, ${plan.taskId}, ${task.createdByThreadId}, 'member-timeout',
+                  ${`mail:wake:${plan.deliveryId}`}, ${plan.createdAt}
+                ) ON CONFLICT(idempotency_key) DO NOTHING`;
+              letters.push(letter);
+            }
+            return { failed, letters };
+          }),
+        ),
       ),
     ),
     listUndeliveredWakes: Effect.fn("MailRepository.listUndeliveredWakes")((input) =>

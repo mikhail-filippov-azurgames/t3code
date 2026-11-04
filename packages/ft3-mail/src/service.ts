@@ -44,6 +44,7 @@ import {
   type MailIdempotencyConflict,
   type MailMemberRouteInput,
   type MailRepositoryError,
+  type TimeoutNoticeLetter,
 } from "./repository.ts";
 import { MailParticipantLauncher, type MailParticipantLaunchInput } from "./participantLauncher.ts";
 
@@ -967,17 +968,41 @@ const make = Effect.gen(function* () {
     const deliveries = yield* Effect.forEach(targets, (target) =>
       newId.pipe(
         Effect.flatMap((deliveryId) =>
-          repository.recordDelivery({
-            deliveryId,
-            taskId: task.taskId,
-            letterId: appended.letter.letterId,
-            memberId: target.memberId,
-            recipient: target.recipient,
-            participantThreadId:
-              (target.memberId !== null ? launchedThreads.get(target.memberId) : undefined) ??
-              target.participantThreadId,
-            createdAt: now,
-          }),
+          repository
+            .recordDelivery({
+              deliveryId,
+              taskId: task.taskId,
+              letterId: appended.letter.letterId,
+              memberId: target.memberId,
+              recipient: target.recipient,
+              participantThreadId:
+                (target.memberId !== null ? launchedThreads.get(target.memberId) : undefined) ??
+                target.participantThreadId,
+              createdAt: now,
+            })
+            .pipe(
+              Effect.flatMap((recorded) => {
+                const launched =
+                  target.memberId !== null ? launchedThreads.get(target.memberId) : undefined;
+                if (
+                  launched === undefined ||
+                  recorded.participantThreadId !== null ||
+                  recorded.state !== "pending"
+                ) {
+                  return Effect.succeed(recorded);
+                }
+                // A resend after the policy was fixed launches the member, but the
+                // delivery row already exists without a thread: bind it instead of
+                // dropping the launch, so the wake below reaches the thread.
+                return repository
+                  .bindDeliveryThread({
+                    deliveryId: recorded.deliveryId,
+                    participantThreadId: launched,
+                    at: now,
+                  })
+                  .pipe(Effect.map((bound) => bound ?? recorded));
+              }),
+            ),
         ),
       ),
     );
@@ -1194,7 +1219,8 @@ const make = Effect.gen(function* () {
   const listTimeline = Effect.fn("MailService.listTimeline")(function* (
     input: ListMailTimelineInput,
   ) {
-    yield* requireMail;
+    // History stays readable while the mail feature is off; task access is the
+    // read permission, and every operation below still requires the feature.
     const task = yield* requireTask(input.taskId);
     yield* requireTaskAccess(task, input.callerThreadId);
     const limit = yield* requireTimelineLimit(input.limit);
@@ -1224,32 +1250,24 @@ const make = Effect.gen(function* () {
       (candidate) =>
         Date.parse(candidate.delivery.createdAt) + candidate.budgetSeconds * 1000 < nowMs,
     );
-    const failed: MailDelivery[] = [];
+    const failed = overdue.map((candidate) => ({
+      deliveryId: candidate.delivery.deliveryId,
+      reason:
+        `The ${candidate.roleId ?? "participant"} did not answer within ` +
+        `${candidate.budgetSeconds} seconds.`,
+    }));
     const failedByTask = new Map<string, Array<{ role: string; letterId: string }>>();
     for (const candidate of overdue) {
-      const reason =
-        `The ${candidate.roleId ?? "participant"} did not answer within ` +
-        `${candidate.budgetSeconds} seconds.`;
-      const failedDelivery = yield* repository.failDelivery({
-        deliveryId: candidate.delivery.deliveryId,
-        at: input.now,
-        reason,
-      });
-      // A concurrent scan may have failed it first; only failed rows notify.
-      if (failedDelivery === null || failedDelivery.state !== "failed") continue;
-      yield* repository.markWakeDelivered({
-        wakeId: `mail:wake:${failedDelivery.deliveryId}`,
-        at: input.now,
-      });
-      failed.push(failedDelivery);
-      const timedOut = failedByTask.get(failedDelivery.taskId) ?? [];
+      const timedOut = failedByTask.get(candidate.delivery.taskId) ?? [];
       timedOut.push({
         role: candidate.roleId ?? "participant",
-        letterId: failedDelivery.letterId,
+        letterId: candidate.delivery.letterId,
       });
-      failedByTask.set(failedDelivery.taskId, timedOut);
+      failedByTask.set(candidate.delivery.taskId, timedOut);
     }
-    const letters: MailLetter[] = [];
+    // The plan is reads only; one repository transaction applies every write, so
+    // a crash anywhere retries from scratch with no partial rows.
+    const letters: TimeoutNoticeLetter[] = [];
     for (const [taskId, timedOut] of failedByTask) {
       const task = yield* repository.getTask(taskId);
       if (task === null || task.status !== "open") continue;
@@ -1257,50 +1275,30 @@ const make = Effect.gen(function* () {
         (entry) => `- ${entry.role}: 1 unanswered letter (${entry.letterId})`,
       );
       const letterIds = timedOut.map((entry) => entry.letterId).toSorted();
-      const appended = yield* repository.appendLetter({
+      const deliveryId = yield* newId;
+      letters.push({
         letterId: yield* newId,
         taskId: task.taskId,
-        senderThreadId: "system",
-        recipient: "lead",
-        kind: "info",
         body:
           `The response budget expired:\n${lines.join("\n")}\n` +
           "The deliveries were marked failed; resend anything the participants still need.",
-        replyToLetterId: null,
         sourceLetterId: letterIds[0] ?? null,
-        planPhase: null,
-        planStep: null,
-        planSha256: null,
-        planDocId: null,
-        classifierKind: null,
-        classifierConfidence: null,
-        kindDisputed: false,
-        leadKind: null,
         clientRequestId: `mail:member-timeout:${task.taskId}:${input.now}`,
         requestFingerprint: yield* fingerprintOf(["member-timeout", task.taskId, letterIds]),
-        createdAt: input.now,
-      });
-      const deliveryId = yield* newId;
-      yield* repository.recordDelivery({
         deliveryId,
-        taskId: task.taskId,
-        letterId: appended.letter.letterId,
-        memberId: null,
-        recipient: "lead",
-        participantThreadId: task.createdByThreadId,
-        createdAt: input.now,
-      });
-      yield* repository.recordWake({
         wakeId: `mail:wake:${deliveryId}`,
-        taskId: task.taskId,
-        targetThreadId: task.createdByThreadId,
-        reason: "member-timeout",
-        idempotencyKey: `mail:wake:${deliveryId}`,
         createdAt: input.now,
       });
-      letters.push(appended.letter);
     }
-    return { failed, letters } satisfies TimeoutOverdueDeliveriesResult;
+    const applied = yield* repository.applyTimeoutNotices({
+      now: input.now,
+      failed,
+      letters,
+    });
+    return {
+      failed: [...applied.failed],
+      letters: [...applied.letters],
+    } satisfies TimeoutOverdueDeliveriesResult;
   });
 
   const closeTask = Effect.fn("MailService.closeTask")(function* (input: CloseMailTaskInput) {

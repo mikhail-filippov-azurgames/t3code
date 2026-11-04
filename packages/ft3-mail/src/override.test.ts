@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { mailHarness, migrateMail } from "./mail.testkit.ts";
+import { MailRepository } from "./repository.ts";
 import { MailService, MailServiceError, type MailMemberRequest } from "./service.ts";
 import type { RoutingRoleId } from "@t3tools/ft3-policies/routingPolicy";
 
@@ -171,6 +172,50 @@ it.effect("reroutes a routeless member when the letter is resent after the polic
     assert.equal(healed.launched.length, 1);
     assert.deepStrictEqual(healed.launchFailures, []);
     assert.deepStrictEqual(healed.noCandidate, []);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("binds the pending delivery and wake to the thread on a same-key resend", () => {
+  const routable: Array<RoutingRoleId> = [];
+  const harness = mailHarness({ routable });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "implementation" }], "request:team");
+    const taskId = created.task.taskId;
+    const mail = yield* MailService;
+    const repository = yield* MailRepository;
+
+    const stuck = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    assert.deepStrictEqual(stuck.launched, []);
+    assert.equal(stuck.noCandidate.length, 1);
+    assert.isNull(stuck.deliveries[0]!.participantThreadId);
+    assert.deepStrictEqual(yield* repository.listUndeliveredWakes({ limit: 10 }), []);
+
+    routable.push("implementation");
+    const healed = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    assert.isFalse(healed.created);
+    assert.equal(healed.launched.length, 1);
+    const thread = healed.launched[0]!.participantThreadId;
+    assert.equal(healed.deliveries.length, 1);
+    assert.equal(healed.deliveries[0]!.participantThreadId, thread);
+    assert.equal((yield* repository.listLetterDeliveries(healed.letter.letterId)).length, 1);
+    const wakes = yield* repository.listUndeliveredWakes({ limit: 10 });
+    assert.equal(wakes.length, 1);
+    assert.equal(wakes[0]!.targetThreadId, thread);
   }).pipe(Effect.provide(harness.layer));
 });
 

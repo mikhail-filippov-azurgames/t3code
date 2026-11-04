@@ -1,13 +1,29 @@
 import { assert, it } from "@effect/vitest";
+import { FeatureDisabledError, FeatureGate } from "@t3tools/ft3-policies/server";
+import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { MailLetterKind, MailTask } from "./contracts.ts";
 import type { CreateMailTaskInput } from "./service.ts";
 import { MailRepository } from "./repository.ts";
-import { ALL_ROUTING_ROLES, mailHarness, migrateMail } from "./mail.testkit.ts";
 import {
+  ALL_ROUTING_ROLES,
+  classifierFake,
+  cryptoLayer,
+  databaseLayer,
+  launcherFake,
+  mailHarness,
+  migrateMail,
+  policyEvidenceFake,
+  routingFake,
+  settingsLayer,
+} from "./mail.testkit.ts";
+import {
+  layer as mailServiceLayer,
   type MailMemberRequest,
   type MailTaskCreated,
   MailService,
@@ -586,4 +602,65 @@ it("matches the kind matrix for the system, the lead and participants", () => {
     mailKindAllowed({ kind: "participant", roleId: "implementation" }, "lead", "changes"),
   );
   assert.isFalse(mailKindAllowed({ kind: "participant", roleId: "planner" }, "lead", "request"));
+});
+
+const flagGateLayer = (flag: Ref.Ref<boolean>) =>
+  Layer.succeed(
+    FeatureGate,
+    FeatureGate.of({
+      states: Effect.die("unused as a value"),
+      state: () => Effect.die("unused as a value"),
+      isEffective: () => Ref.get(flag),
+      require: () =>
+        Ref.get(flag).pipe(
+          Effect.flatMap((on) =>
+            on
+              ? Effect.void
+              : Effect.fail(
+                  new FeatureDisabledError({ feature: "mail", code: "feature_disabled" }),
+                ),
+          ),
+        ),
+    }),
+  );
+
+it.effect("reads the timeline while the mail feature is off", () => {
+  const flagHarness = (flag: Ref.Ref<boolean>) => {
+    const layer = mailServiceLayer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          routingFake({}).layer,
+          flagGateLayer(flag),
+          cryptoLayer,
+          policyEvidenceFake().layer,
+          launcherFake().layer,
+          classifierFake().layer,
+          normalServicePolicyLayer,
+          settingsLayer(),
+        ),
+      ),
+      Layer.provideMerge(databaseLayer),
+    );
+    return { layer };
+  };
+  return Effect.gen(function* () {
+    const flag = yield* Ref.make(true);
+    const harness = flagHarness(flag);
+    yield* Effect.gen(function* () {
+      yield* migrateMail;
+      const created = yield* teamOf([{ role: "implementation" }]);
+      const taskId = created.task.taskId;
+      yield* sendAs(LEAD, taskId, "human", "info", "Hello.");
+      yield* Ref.set(flag, false);
+
+      const mail = yield* MailService;
+      assert.equal(
+        yield* refusal(sendAs(LEAD, taskId, "human", "info", "Blocked.", "request:blocked")),
+        "mail_disabled",
+      );
+      const entries = yield* mail.listTimeline({ taskId, callerThreadId: LEAD, limit: 10 });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0]!.letter.body, "Hello.");
+    }).pipe(Effect.provide(harness.layer));
+  });
 });

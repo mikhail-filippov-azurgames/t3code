@@ -1,10 +1,25 @@
 import { assert, it } from "@effect/vitest";
+import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Schema from "effect/Schema";
 
-import { mailHarness, migrateMail } from "./mail.testkit.ts";
-import { MailRepository } from "./repository.ts";
-import { MailService, MailServiceError } from "./service.ts";
+import {
+  classifierFake,
+  cryptoLayer,
+  gateLayer,
+  launcherFake,
+  mailHarness,
+  migrateMail,
+  policyEvidenceFake,
+  routingFake,
+  settingsLayer,
+} from "./mail.testkit.ts";
+import { layer as mailRepositoryLayer, MailRepository } from "./repository.ts";
+import { layer as mailServiceLayer, MailService, MailServiceError } from "./service.ts";
 
 const LEAD = "thread:lead";
 
@@ -123,4 +138,102 @@ it.effect("stays quiet while mail is off", () => {
       "mail_disabled",
     );
   }).pipe(Effect.provide(harness.layer));
+});
+
+interface FaultFlag {
+  predicate: ((statement: string) => boolean) | null;
+}
+
+/** The same in-memory stack as the harness, but the first matching statement dies. */
+const faultHarness = (fault: FaultFlag) => {
+  const proxied = (real: SqlClient.SqlClient) =>
+    new Proxy(real, {
+      apply: (target, thisArg, args) => {
+        const first = (args as ReadonlyArray<unknown>)[0];
+        const text = Array.isArray(first) ? first.join("") : "";
+        if (fault.predicate !== null && fault.predicate(text)) {
+          return Effect.die(new Error(`injected storage fault at: ${text.slice(0, 80)}`));
+        }
+        return (target as (...callArgs: ReadonlyArray<unknown>) => unknown).apply(
+          thisArg,
+          Array.from(args as ReadonlyArray<unknown>),
+        );
+      },
+      get: (target, property, receiver) => Reflect.get(target as object, property, receiver),
+    }) as typeof real;
+  const sqlite = NodeSqliteClient.layer({ filename: ":memory:" }).pipe(
+    Layer.flatMap((context) =>
+      Layer.succeed(SqlClient.SqlClient, proxied(Context.get(context, SqlClient.SqlClient))),
+    ),
+  );
+  const layer = mailServiceLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        routingFake({}).layer,
+        gateLayer(true),
+        cryptoLayer,
+        policyEvidenceFake().layer,
+        launcherFake().layer,
+        classifierFake().layer,
+        normalServicePolicyLayer,
+        settingsLayer(),
+      ),
+    ),
+    Layer.provideMerge(mailRepositoryLayer.pipe(Layer.provideMerge(sqlite))),
+  );
+  return { layer };
+};
+
+it.effect("restarts the timeout scan from every write boundary", () => {
+  const boundaries: ReadonlyArray<{ name: string; match: (text: string) => boolean }> = [
+    { name: "fail delivery", match: (text) => text.includes("UPDATE ft3_mail_deliveries") },
+    { name: "mark wake", match: (text) => text.includes("UPDATE ft3_mail_wakes") },
+    { name: "append notice", match: (text) => text.includes("INSERT INTO ft3_mail_letters") },
+    { name: "record delivery", match: (text) => text.includes("INSERT INTO ft3_mail_deliveries") },
+    { name: "record wake", match: (text) => text.includes("INSERT INTO ft3_mail_wakes") },
+  ];
+  return Effect.gen(function* () {
+    for (const boundary of boundaries) {
+      const fault: FaultFlag = { predicate: null };
+      const harness = faultHarness(fault);
+      yield* Effect.gen(function* () {
+        yield* migrateMail;
+        const created = yield* teamWithBudget(60);
+        const taskId = created.task.taskId;
+        const sent = yield* sendRequest(taskId, "request:letter");
+        const mail = yield* MailService;
+        const repository = yield* MailRepository;
+
+        fault.predicate = boundary.match;
+        const exit = yield* Effect.exit(mail.timeoutOverdueDeliveries({ now: afterSeconds(61) }));
+        assert.equal(exit._tag, "Failure", boundary.name);
+        fault.predicate = null;
+
+        // The crash left no partial timeout state behind.
+        assert.equal(
+          (yield* repository.getDelivery(sent.deliveries[0]!.deliveryId))?.state,
+          "pending",
+        );
+        assert.deepStrictEqual(
+          (yield* repository.listTimeline({ taskId, limit: 10 })).filter(
+            (entry) => entry.letter.senderThreadId === "system",
+          ),
+          [],
+        );
+
+        // A restart heals everything, exactly once.
+        const healed = yield* mail.timeoutOverdueDeliveries({ now: afterSeconds(61) });
+        assert.equal(healed.failed.length, 1, boundary.name);
+        assert.equal(healed.failed[0]!.deliveryId, sent.deliveries[0]!.deliveryId);
+        assert.equal(healed.letters.length, 1, boundary.name);
+        const wakes = yield* repository.listUndeliveredWakes({ limit: 10 });
+        assert.equal(wakes.length, 1, boundary.name);
+        assert.equal(wakes[0]!.targetThreadId, LEAD);
+        assert.equal(wakes[0]!.reason, "member-timeout");
+        const again = yield* mail.timeoutOverdueDeliveries({ now: afterSeconds(120) });
+        assert.deepStrictEqual(again.failed, [], boundary.name);
+        assert.deepStrictEqual(again.letters, [], boundary.name);
+      }).pipe(Effect.provide(harness.layer));
+    }
+  });
 });
