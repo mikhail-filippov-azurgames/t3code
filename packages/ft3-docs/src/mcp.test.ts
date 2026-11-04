@@ -99,6 +99,8 @@ interface FixtureOptions {
   readonly documentsOff?: boolean;
   /** Facts the lineage write rule reads; the default is no role, plan or grant. */
   readonly writeFacts?: WriteRule.DocumentsWriteFacts;
+  /** Makes getThreadShell die, so the lineage cannot be verified. */
+  readonly lineageUnverifiable?: boolean;
 }
 
 function fixture(root: string, options: FixtureOptions = {}) {
@@ -110,8 +112,18 @@ function fixture(root: string, options: FixtureOptions = {}) {
     ...child,
     lineage: { parentThreadId: parentId, rootThreadId: parentId, relationshipToParent: "subagent" },
   });
+  // The access layer resolves the caller shell before the docs handler reads the
+  // lineage with its own lookup. Failing that later lookup reproduces an
+  // unverifiable lineage while the access-layer checks still pass.
+  let lookups = 0;
   const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
-    getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
+    getThreadShell: (id) => {
+      lookups += 1;
+      if (options.lineageUnverifiable === true && lookups > 1) {
+        return Effect.fail("lineage unavailable" as never);
+      }
+      return Effect.succeed(shells.get(id) ?? null);
+    },
   });
   return mcpLayer({
     root,
@@ -377,6 +389,42 @@ describe("docs MCP tools", () => {
           assert.include(other.message, "planner_other_document");
         }),
       seed,
+    ),
+  );
+
+  it.effect("refuses writes when the calling thread's lineage cannot be verified", () =>
+    withFixture({ lineageUnverifiable: true }, () =>
+      Effect.gen(function* () {
+        const denied = decodeFailure(
+          yield* call("docs_write", {
+            relPath: "project/top.md",
+            content: "# Top\n",
+            clientRequestId: "write:lineage",
+          }),
+        );
+        assert.equal(denied.code, "capability_denied");
+        assert.include(denied.message, "lineage");
+      }),
+    ),
+  );
+
+  it.effect("refuses writes from an unknown thread", () =>
+    withFixture({}, () =>
+      Effect.gen(function* () {
+        const denied = decodeFailure(
+          yield* call(
+            "docs_write",
+            {
+              relPath: "project/top.md",
+              content: "# Top\n",
+              clientRequestId: "write:unknown",
+            },
+            ThreadId.make("thread:docs-unknown"),
+          ),
+        );
+        // The access layer refuses the unknown caller before the lineage is read.
+        assert.equal(denied.code, "thread_not_found");
+      }),
     ),
   );
 

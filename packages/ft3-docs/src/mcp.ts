@@ -5,6 +5,7 @@
  */
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
@@ -163,7 +164,12 @@ const failureCode = (code: Service.DocsServiceErrorCode): McpFailureCode => {
 const toMcpFailure = (error: Service.DocsServiceError) =>
   new Contracts.DocsMcpFailure({ code: failureCode(error.code), message: error.message });
 
-/** The calling thread's lineage; an MCP client without a thread has no parent either. */
+/**
+ * The calling thread's lineage. An MCP client without a thread has no parent
+ * either; an unverifiable lineage (a failed lookup or an unknown thread) fails
+ * the write closed with `capability_denied` instead of passing as a top-level
+ * thread. Reads never consult the lineage, so they are unaffected.
+ */
 const callerOf = Effect.gen(function* () {
   const scope = yield* McpInvocationContext.McpInvocationContext;
   const threadId = scope.thread?.threadId;
@@ -171,13 +177,29 @@ const callerOf = Effect.gen(function* () {
     return { threadId: null, parentThreadId: null } satisfies Service.DocsCaller;
   }
   const threads = yield* ThreadManagement.ThreadManagementService;
-  const shell = yield* threads.getThreadShell(threadId).pipe(Effect.orElseSucceed(() => null));
+  // `result` lifts typed failures and defects into a value but still lets an
+  // interrupted fiber die, so a failed lookup denies the write below.
+  const result = yield* Effect.result(threads.getThreadShell(threadId));
+  if (Result.isFailure(result)) {
+    return yield* new Contracts.DocsMcpFailure({
+      code: "capability_denied",
+      message:
+        "The calling thread's lineage could not be verified, so this call may not change documents. Retry once the thread service is reachable.",
+    });
+  }
+  if (result.success === null) {
+    return yield* new Contracts.DocsMcpFailure({
+      code: "capability_denied",
+      message:
+        "The calling thread is unknown, so this call may not change documents. Read documents without writing.",
+    });
+  }
   return {
     threadId: String(threadId),
     parentThreadId:
-      shell === null || shell.lineage.parentThreadId === null
+      result.success.lineage.parentThreadId === null
         ? null
-        : String(shell.lineage.parentThreadId),
+        : String(result.success.lineage.parentThreadId),
   } satisfies Service.DocsCaller;
 });
 
