@@ -44,8 +44,8 @@ describe("toCoordinatorSummaryHistoryEntry", () => {
       child: "Аудит новой графики Workshop",
       turnOrdinal: 3,
       completedAt: "2026-10-26T10:38:33.024Z",
-      currentStatus: "завершено",
-      summaryStatus: "готова",
+      currentStatus: "completed",
+      summaryStatus: "ready",
       executorRole: "research",
       executorProviderInstanceId: "claudeAgent",
       executorModel: "claude-opus-4-1",
@@ -66,10 +66,10 @@ describe("toCoordinatorSummaryHistoryEntry", () => {
     expect(
       toCoordinatorSummaryHistoryEntry(record({ currentTurnState: "running" }), undefined)
         .currentStatus,
-    ).toBe("выполняется");
+    ).toBe("running");
     expect(
       toCoordinatorSummaryHistoryEntry(record({ currentTurnState: null }), undefined).currentStatus,
-    ).toBe("неизвестно");
+    ).toBe("unknown");
   });
 });
 

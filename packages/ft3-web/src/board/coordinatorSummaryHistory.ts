@@ -37,24 +37,24 @@ export type CoordinatorSummaryHistoryLoader = (input: {
 }) => Promise<CoordinatorSummaryHistoryPage>;
 
 const CURRENT_STATUS_LABELS = {
-  pending: "ожидает",
-  running: "выполняется",
-  interrupted: "прервано",
-  completed: "завершено",
-  error: "ошибка",
+  pending: "pending",
+  running: "running",
+  interrupted: "interrupted",
+  completed: "completed",
+  error: "error",
 } as const;
 
 const SUMMARY_STATUS_LABELS = {
-  pending: "формируется",
-  ready: "готова",
-  error: "ошибка",
+  pending: "forming",
+  ready: "ready",
+  error: "error",
 } as const;
 
 function summaryTextFor(record: SummaryHistoryRecord): string {
   if (record.summaryText.length > 0) return record.summaryText;
   return record.summaryState === "error"
-    ? "Не удалось составить выжимку."
-    : "Выжимка ещё формируется.";
+    ? "Could not build the summary."
+    : "Summary is still being prepared.";
 }
 
 export function toCoordinatorSummaryHistoryEntry(
@@ -68,9 +68,7 @@ export function toCoordinatorSummaryHistoryEntry(
     turnOrdinal: record.turnOrdinal,
     completedAt: record.completedAt,
     currentStatus:
-      record.currentTurnState === null
-        ? "неизвестно"
-        : CURRENT_STATUS_LABELS[record.currentTurnState],
+      record.currentTurnState === null ? "unknown" : CURRENT_STATUS_LABELS[record.currentTurnState],
     summaryStatus: SUMMARY_STATUS_LABELS[record.summaryState],
     executorRole: record.executorRole,
     executorProviderInstanceId: record.executorProviderInstanceId,

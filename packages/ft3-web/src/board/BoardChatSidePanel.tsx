@@ -290,7 +290,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
       const ownerRef = scopeThreadRef(environmentId, card.orchestratorThreadId);
       const ownerShell = readThreadShell(ownerRef);
       if (!ownerShell) {
-        setActionError("Чат оркестратора недоступен. Проверьте соединение и повторите запрос.");
+        setActionError("The orchestrator chat is unavailable. Check the connection and try again.");
         return;
       }
       setBusyCardId(String(card.cardId));
@@ -310,7 +310,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
         setActionError(boardFailureText(result.cause));
         return;
       }
-      setActionError("Просьба отправлена оркестратору.");
+      setActionError("Request sent to the orchestrator.");
     },
     [environmentId, requestOrchestrator],
   );
@@ -326,11 +326,11 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
         type="button"
         variant="outline"
         className="absolute left-2 top-2 z-30 shadow-lg"
-        aria-label="Развернуть панель чата"
+        aria-label="Expand chat panel"
         onClick={() => setCollapsed(false)}
       >
         <PanelLeftOpenIcon className="size-4" aria-hidden="true" />
-        Панель чата
+        Chat panel
       </Button>
     );
   }
@@ -340,9 +340,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
       activeTab={activeTab}
       onSelectTab={setActiveTab}
       onCollapse={() => setCollapsed(true)}
-      refreshButtonLabel={
-        activeTab === "cards" ? "Повторить загрузку карточек" : "Обновить историю"
-      }
+      refreshButtonLabel={activeTab === "cards" ? "Reload cards" : "Refresh history"}
       onRefresh={refreshActiveTab}
       refreshing={refreshingActiveTab}
     >
@@ -372,31 +370,31 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
             );
           })}
           {pins.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Закреплённых карточек пока нет.</p>
+            <p className="text-xs text-muted-foreground">No pinned cards yet.</p>
           ) : null}
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
             <p role="status" className="text-xs text-muted-foreground">
-              Загрузка выжимок…
+              Loading summaries…
             </p>
           ) : currentHistoryState.error ? (
             <div role="alert" className="space-y-2 text-xs">
-              <p>Не удалось загрузить историю выжимок.</p>
+              <p>Could not load summary history.</p>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
                 onClick={() => void refreshHistory()}
               >
-                Повторить
+                Retry
               </Button>
             </div>
           ) : currentHistoryState.entries.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              Выжимок пока нет: ни одна делегированная задача этого чата ещё не завершила ход. Это
-              не ошибка.
+              No summaries yet: no delegated task in this chat has finished a turn. This is not an
+              error.
             </p>
           ) : (
             <>
@@ -412,19 +410,19 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
               </ol>
               {currentHistoryState.loadingMore ? (
                 <p role="status" className="mt-3 text-xs text-muted-foreground">
-                  Загрузка выжимок…
+                  Loading summaries…
                 </p>
               ) : null}
               {currentHistoryState.loadMoreError ? (
                 <div role="alert" className="mt-3 space-y-2 text-xs">
-                  <p>Не удалось загрузить следующие выжимки.</p>
+                  <p>Could not load the next summaries.</p>
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
                     onClick={() => void loadMoreHistory()}
                   >
-                    Повторить
+                    Retry
                   </Button>
                 </div>
               ) : null}
@@ -463,17 +461,17 @@ function HistoryEntry(props: {
         >
           <ChevronIcon className="size-3.5 shrink-0" aria-hidden="true" />
           <span className={cn("min-w-0", expanded ? "break-words" : "truncate")}>
-            {entry.child} · ход {entry.turnOrdinal}
+            {entry.child} · turn {entry.turnOrdinal}
           </span>
         </button>
         {entry.stale ? (
           <span className="rounded-full bg-amber-500/10 px-2 py-0.5 font-medium text-amber-700 dark:text-amber-300">
-            Устарела
+            Stale
           </span>
         ) : null}
       </div>
       <time className="mt-1 block text-[10px] text-muted-foreground" dateTime={entry.completedAt}>
-        Завершено {new Date(entry.completedAt).toLocaleString()}
+        Completed {new Date(entry.completedAt).toLocaleString()}
       </time>
       {expanded ? (
         <>
@@ -482,23 +480,23 @@ function HistoryEntry(props: {
           </p>
           <dl className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <div className="flex gap-1">
-              <dt>Текущее состояние:</dt>
+              <dt>Current state:</dt>
               <dd className="text-foreground">{entry.currentStatus}</dd>
             </div>
             <div className="flex gap-1">
-              <dt>Состояние выжимки:</dt>
+              <dt>Summary state:</dt>
               <dd className="text-foreground">{entry.summaryStatus}</dd>
             </div>
             <div className="flex gap-1">
-              <dt>Исполнитель:</dt>
+              <dt>Executor:</dt>
               <dd className="text-foreground">
-                {coordinatorSummaryExecutorLabel(entry) ?? "не задан"}
+                {coordinatorSummaryExecutorLabel(entry) ?? "not set"}
               </dd>
             </div>
             <div className="flex gap-1">
-              <dt>Роль исполнителя:</dt>
+              <dt>Executor role:</dt>
               <dd className="text-foreground capitalize">
-                {entry.executorRole === "" ? "не задана" : entry.executorRole}
+                {entry.executorRole === "" ? "not set" : entry.executorRole}
               </dd>
             </div>
           </dl>
@@ -555,7 +553,7 @@ function ChatSidePanelShell(props: {
 
   return (
     <aside
-      aria-label="Панель чата"
+      aria-label="Chat panel"
       className="absolute left-2 top-2 z-30 flex max-h-[calc(100dvh-1rem)] max-w-[calc(100%-1rem)] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
       style={{ width: size.width, height: size.height }}
       data-board-card-panel="true"
@@ -563,7 +561,7 @@ function ChatSidePanelShell(props: {
     >
       <div
         role="separator"
-        aria-label="Изменить размер панели чата"
+        aria-label="Resize chat panel"
         aria-orientation="vertical"
         className="absolute bottom-0 right-0 z-40 size-5 cursor-nwse-resize touch-none"
         data-chat-side-panel-resize="true"
@@ -578,11 +576,11 @@ function ChatSidePanelShell(props: {
         />
       </div>
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
-        <div role="tablist" aria-label="Разделы панели чата" className="flex min-w-0 flex-1 gap-1">
+        <div role="tablist" aria-label="Chat panel sections" className="flex min-w-0 flex-1 gap-1">
           {(
             [
-              ["cards", "Карточки"],
-              ["history", "История"],
+              ["cards", "Cards"],
+              ["history", "History"],
             ] as const
           ).map(([tab, label]) => (
             <button
@@ -619,7 +617,7 @@ function ChatSidePanelShell(props: {
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label="Свернуть панель чата"
+            aria-label="Collapse chat panel"
             onClick={props.onCollapse}
           >
             <ChevronDownIcon className="size-4" aria-hidden="true" />
@@ -707,7 +705,7 @@ function PinnedCard(props: {
           type="button"
           variant="ghost"
           size="icon-sm"
-          aria-label={`Снять карточку ${props.cardId}`}
+          aria-label={`Unpin card ${props.cardId}`}
           onClick={props.onRemove}
         >
           <XIcon className="size-4" aria-hidden="true" />
@@ -717,26 +715,26 @@ function PinnedCard(props: {
       {props.collapsed ? null : (
         <>
           {props.loading && !props.detail ? (
-            <p className="text-xs text-muted-foreground">Загрузка карточки…</p>
+            <p className="text-xs text-muted-foreground">Loading card…</p>
           ) : null}
           {props.loadError ? (
             <div role="alert" className="space-y-2 rounded-md bg-destructive/10 p-2 text-xs">
-              <p>Не удалось загрузить карточку. Проверьте соединение и повторите запрос.</p>
+              <p>Could not load the card. Check the connection and try again.</p>
               <Button type="button" size="sm" variant="outline" onClick={props.onRetry}>
-                Повторить
+                Retry
               </Button>
             </div>
           ) : null}
           {!props.loading && !props.loadError && !props.detail ? (
             <p role="status" className="text-xs text-muted-foreground">
-              Карточка недоступна: она могла быть удалена.
+              Card unavailable: it may have been deleted.
             </p>
           ) : null}
 
           {card && props.detail ? (
             <>
               <p className="mb-2 text-xs text-muted-foreground">
-                Оркестратор: {orchestratorThreadTitle ?? card.orchestratorThreadId}
+                Orchestrator: {orchestratorThreadTitle ?? card.orchestratorThreadId}
               </p>
               {card.body ? (
                 <p className="mb-3 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
@@ -751,7 +749,7 @@ function PinnedCard(props: {
                   onClick={() => props.onOpenThread(card.orchestratorThreadId)}
                 >
                   <MessageCircleIcon className="size-3.5" aria-hidden="true" />
-                  Чат оркестратора
+                  Orchestrator chat
                 </Button>
                 {card.executorThreadId ? (
                   <Button
@@ -761,7 +759,7 @@ function PinnedCard(props: {
                     onClick={() => props.onOpenThread(card.executorThreadId!)}
                   >
                     <MessageCircleIcon className="size-3.5" aria-hidden="true" />
-                    Чат исполнителя
+                    Executor chat
                   </Button>
                 ) : null}
                 <BoardCardPlanButton
@@ -778,7 +776,7 @@ function PinnedCard(props: {
                     onClick={() => props.onStart(card)}
                   >
                     <PlayIcon className="size-3.5" aria-hidden="true" />
-                    Запустить
+                    Start
                   </Button>
                 ) : null}
                 <Button
@@ -793,7 +791,7 @@ function PinnedCard(props: {
                   ) : (
                     <ArchiveIcon className="size-3.5" aria-hidden="true" />
                   )}
-                  {card.archived ? "Разархивировать" : "Архивировать"}
+                  {card.archived ? "Unarchive" : "Archive"}
                 </Button>
               </div>
               <form
@@ -808,14 +806,14 @@ function PinnedCard(props: {
                   className="block text-xs font-medium"
                   htmlFor={`board-request-${props.cardId}`}
                 >
-                  Просьба оркестратору
+                  Request to orchestrator
                 </label>
                 <textarea
                   id={`board-request-${props.cardId}`}
                   className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   value={requestText}
                   onChange={(event) => setRequestText(event.currentTarget.value)}
-                  placeholder="Напишите, что нужно проверить или уточнить"
+                  placeholder="Describe what to check or clarify"
                 />
                 <Button
                   type="submit"
@@ -824,7 +822,7 @@ function PinnedCard(props: {
                   disabled={props.busy || !requestText.trim()}
                 >
                   <SendIcon className="size-3.5" aria-hidden="true" />
-                  Отправить
+                  Send
                 </Button>
               </form>
               {props.actionError ? (
@@ -833,7 +831,7 @@ function PinnedCard(props: {
                 </p>
               ) : null}
               <div className="border-t border-border pt-2">
-                <h4 className="mb-1 text-xs font-semibold">История</h4>
+                <h4 className="mb-1 text-xs font-semibold">History</h4>
                 {events?.length ? (
                   <ol className="space-y-2">
                     {events.map((entry) => (
@@ -852,7 +850,7 @@ function PinnedCard(props: {
                     ))}
                   </ol>
                 ) : (
-                  <p className="text-xs text-muted-foreground">История пуста.</p>
+                  <p className="text-xs text-muted-foreground">No history.</p>
                 )}
               </div>
             </>

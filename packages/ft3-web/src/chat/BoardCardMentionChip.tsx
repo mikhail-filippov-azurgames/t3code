@@ -68,9 +68,9 @@ export const BoardCardMentionButton = (props: {
               ))}
             </ol>
           ) : (
-            <p>История пока пуста.</p>
+            <p>No history yet.</p>
           )}
-          <p className="text-muted-foreground">Нажмите, чтобы закрепить карточку.</p>
+          <p className="text-muted-foreground">Click to pin the card.</p>
         </div>
       </TooltipPopup>
     </Tooltip>
