@@ -169,6 +169,14 @@ export interface RecordWakeResult {
   readonly created: boolean;
 }
 
+/** A pending delivery of an active member, with the budget that bounds its answer. */
+export interface TimeoutCandidate {
+  readonly delivery: MailDelivery;
+  /** The member budget, falling back to the task default. */
+  readonly budgetSeconds: number;
+  readonly roleId: string | null;
+}
+
 export interface RecordKindFeedbackInput {
   readonly letterId: string;
   readonly senderKind: MailLetterKind;
@@ -599,6 +607,16 @@ export class MailRepository extends Context.Service<
       readonly at: string;
       readonly reason: string;
     }) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
+    /** Fails one pending delivery; a delivery that already moved on is left alone. */
+    readonly failDelivery: (input: {
+      readonly deliveryId: string;
+      readonly at: string;
+      readonly reason: string;
+    }) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
+    /** Pending deliveries of active members of open tasks, oldest first. */
+    readonly listTimeoutCandidates: (input: {
+      readonly limit: number;
+    }) => Effect.Effect<ReadonlyArray<TimeoutCandidate>, MailRepositoryError>;
     readonly getDelivery: (
       deliveryId: string,
     ) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
@@ -1027,6 +1045,42 @@ const make = Effect.gen(function* () {
     ),
     getDelivery: Effect.fn("MailRepository.getDelivery")((deliveryId) =>
       mapError("getDelivery")(findDelivery(deliveryId)),
+    ),
+    failDelivery: Effect.fn("MailRepository.failDelivery")((input) =>
+      mapError("failDelivery")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_deliveries
+            SET state = 'failed', failure_reason = ${input.reason}, updated_at = ${input.at}
+            WHERE delivery_id = ${input.deliveryId} AND state = 'pending'`;
+          return yield* findDelivery(input.deliveryId);
+        }),
+      ),
+    ),
+    listTimeoutCandidates: Effect.fn("MailRepository.listTimeoutCandidates")((input) =>
+      mapError("listTimeoutCandidates")(
+        sql<DeliveryRow & { readonly budgetSeconds: number; readonly roleId: string | null }>`
+          SELECT d.delivery_id AS "deliveryId", d.task_id AS "taskId",
+            d.letter_id AS "letterId", d.member_id AS "memberId", d.recipient,
+            d.participant_thread_id AS "participantThreadId", d.state,
+            d.delivered_at AS "deliveredAt", d.read_at AS "readAt",
+            d.answered_at AS "answeredAt", d.failure_reason AS "failureReason",
+            d.created_at AS "createdAt", d.updated_at AS "updatedAt",
+            COALESCE(m.response_budget_seconds, t.response_budget_seconds) AS "budgetSeconds",
+            m.role_id AS "roleId"
+          FROM ft3_mail_deliveries d
+          JOIN ft3_mail_tasks t ON t.task_id = d.task_id
+          JOIN ft3_mail_members m ON m.member_id = d.member_id
+          WHERE d.state = 'pending' AND t.status = 'open' AND m.status = 'active'
+          ORDER BY d.created_at ASC, d.delivery_id ASC LIMIT ${input.limit}`,
+      ).pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({
+            delivery: toDelivery(row),
+            budgetSeconds: row.budgetSeconds,
+            roleId: row.roleId,
+          })),
+        ),
+      ),
     ),
     markWakeDelivered: Effect.fn("MailRepository.markWakeDelivered")((input) =>
       mapError("markWakeDelivered")(

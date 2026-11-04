@@ -402,6 +402,54 @@ it.effect("settles a member with stranded mail: fails deliveries and tells the l
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("settles a member whose participant thread shell was deleted without settle", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    const repository = yield* MailRepository;
+    // The thread was deleted without the settle event: no shell, no settle.
+    yield* repository.setParticipantThread({
+      memberId: member.memberId,
+      participantThreadId: "mail-reactor:gone",
+      at: DateTime.formatIso(now),
+    });
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal((yield* repository.listMembers(created.task.taskId))[0]?.status, "closed");
+    const failed = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(failed?.state, "failed");
+    assert.include(failed?.failureReason ?? "", "was deleted");
+
+    // The deleted participant got no dispatch; its settle recorded a lead wake,
+    // and the same drain pass delivers it since the lead thread is alive.
+    assert.deepStrictEqual(
+      harness.dispatched.map((wake) => wake.threadId),
+      [leadId],
+    );
+    const timeline = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
+    const notice = timeline
+      .map((entry) => entry.letter)
+      .find((letter) => letter.senderThreadId === "system");
+    assert.include(notice?.body ?? "", "was deleted");
+
+    // A second pass stays quiet: the dead wake was marked, not retried.
+    yield* (yield* MailDeliveryReactor).recover;
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("marks a dead wake handled without dispatching after the task closes", () => {
   const harness = fixture();
   return Effect.gen(function* () {

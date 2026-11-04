@@ -283,6 +283,18 @@ export interface ListMailTimelineInput {
   readonly limit?: number | null;
 }
 
+export interface TimeoutOverdueDeliveriesInput {
+  /** ISO timestamp the scan compares delivery ages against. */
+  readonly now: string;
+}
+
+export interface TimeoutOverdueDeliveriesResult {
+  /** The pending deliveries the scan failed, oldest first. */
+  readonly failed: ReadonlyArray<MailDelivery>;
+  /** One system letter per task that lost deliveries, oldest task first. */
+  readonly letters: ReadonlyArray<MailLetter>;
+}
+
 export interface SettleMailMemberInput {
   readonly memberId: string;
   /** The terminal participant-thread status that settled the member. */
@@ -409,6 +421,17 @@ export class MailService extends Context.Service<
     readonly listTimeline: (
       input: ListMailTimelineInput,
     ) => Effect.Effect<ReadonlyArray<MailTimelineEntry>, MailServiceError | MailRepositoryError>;
+    /**
+     * Fails pending deliveries older than the member budget (or the task
+     * default) and tells each affected lead once. Members stay active: a late
+     * answer still lands, but on a failed delivery.
+     */
+    readonly timeoutOverdueDeliveries: (
+      input: TimeoutOverdueDeliveriesInput,
+    ) => Effect.Effect<
+      TimeoutOverdueDeliveriesResult,
+      MailServiceError | MailRepositoryError | MailIdempotencyConflict
+    >;
     readonly closeTask: (
       input: CloseMailTaskInput,
     ) => Effect.Effect<MailTask, MailServiceError | MailRepositoryError>;
@@ -1184,6 +1207,102 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const TIMEOUT_CANDIDATE_LIMIT = 500;
+
+  const timeoutOverdueDeliveries = Effect.fn("MailService.timeoutOverdueDeliveries")(function* (
+    input: TimeoutOverdueDeliveriesInput,
+  ) {
+    yield* requireMail;
+    const nowMs = Date.parse(input.now);
+    if (Number.isNaN(nowMs)) {
+      return yield* refuse("invalid_request", "The timeout scan needs an ISO timestamp.");
+    }
+    const candidates = yield* repository.listTimeoutCandidates({
+      limit: TIMEOUT_CANDIDATE_LIMIT,
+    });
+    const overdue = candidates.filter(
+      (candidate) =>
+        Date.parse(candidate.delivery.createdAt) + candidate.budgetSeconds * 1000 < nowMs,
+    );
+    const failed: MailDelivery[] = [];
+    const failedByTask = new Map<string, Array<{ role: string; letterId: string }>>();
+    for (const candidate of overdue) {
+      const reason =
+        `The ${candidate.roleId ?? "participant"} did not answer within ` +
+        `${candidate.budgetSeconds} seconds.`;
+      const failedDelivery = yield* repository.failDelivery({
+        deliveryId: candidate.delivery.deliveryId,
+        at: input.now,
+        reason,
+      });
+      // A concurrent scan may have failed it first; only failed rows notify.
+      if (failedDelivery === null || failedDelivery.state !== "failed") continue;
+      yield* repository.markWakeDelivered({
+        wakeId: `mail:wake:${failedDelivery.deliveryId}`,
+        at: input.now,
+      });
+      failed.push(failedDelivery);
+      const timedOut = failedByTask.get(failedDelivery.taskId) ?? [];
+      timedOut.push({
+        role: candidate.roleId ?? "participant",
+        letterId: failedDelivery.letterId,
+      });
+      failedByTask.set(failedDelivery.taskId, timedOut);
+    }
+    const letters: MailLetter[] = [];
+    for (const [taskId, timedOut] of failedByTask) {
+      const task = yield* repository.getTask(taskId);
+      if (task === null || task.status !== "open") continue;
+      const lines = timedOut.map(
+        (entry) => `- ${entry.role}: 1 unanswered letter (${entry.letterId})`,
+      );
+      const letterIds = timedOut.map((entry) => entry.letterId).toSorted();
+      const appended = yield* repository.appendLetter({
+        letterId: yield* newId,
+        taskId: task.taskId,
+        senderThreadId: "system",
+        recipient: "lead",
+        kind: "info",
+        body:
+          `The response budget expired:\n${lines.join("\n")}\n` +
+          "The deliveries were marked failed; resend anything the participants still need.",
+        replyToLetterId: null,
+        sourceLetterId: letterIds[0] ?? null,
+        planPhase: null,
+        planStep: null,
+        planSha256: null,
+        planDocId: null,
+        classifierKind: null,
+        classifierConfidence: null,
+        kindDisputed: false,
+        leadKind: null,
+        clientRequestId: `mail:member-timeout:${task.taskId}:${input.now}`,
+        requestFingerprint: yield* fingerprintOf(["member-timeout", task.taskId, letterIds]),
+        createdAt: input.now,
+      });
+      const deliveryId = yield* newId;
+      yield* repository.recordDelivery({
+        deliveryId,
+        taskId: task.taskId,
+        letterId: appended.letter.letterId,
+        memberId: null,
+        recipient: "lead",
+        participantThreadId: task.createdByThreadId,
+        createdAt: input.now,
+      });
+      yield* repository.recordWake({
+        wakeId: `mail:wake:${deliveryId}`,
+        taskId: task.taskId,
+        targetThreadId: task.createdByThreadId,
+        reason: "member-timeout",
+        idempotencyKey: `mail:wake:${deliveryId}`,
+        createdAt: input.now,
+      });
+      letters.push(appended.letter);
+    }
+    return { failed, letters } satisfies TimeoutOverdueDeliveriesResult;
+  });
+
   const closeTask = Effect.fn("MailService.closeTask")(function* (input: CloseMailTaskInput) {
     yield* requireMail;
     const task = yield* requireTask(input.taskId);
@@ -1339,6 +1458,7 @@ const make = Effect.gen(function* () {
     readLetter,
     readTask,
     listTimeline,
+    timeoutOverdueDeliveries,
     closeTask,
     settleMember,
   });

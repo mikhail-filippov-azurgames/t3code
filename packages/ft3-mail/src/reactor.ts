@@ -145,24 +145,30 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       yield* dead();
       return;
     }
-    // A closed member never gets another dispatch: its pending deliveries were
-    // failed when it settled, so a wake that still points at it is dead.
-    // A corrupt override never blocks the letter; the dispatch runs unoverridden.
+    // A closed member never gets another dispatch, and a corrupt override never
+    // blocks the letter. A shell deleted without settle closes the member
+    // instead of leaving its deliveries pending forever.
+    const member =
+      delivery.memberId === null ? null : yield* repository.getMember(delivery.memberId);
+    if (member !== null && member.status !== "active") {
+      yield* dead();
+      return;
+    }
     let modelSelection: ModelSelection | undefined;
-    if (delivery.memberId !== null) {
-      const member = yield* repository.getMember(delivery.memberId);
-      if (member === null || member.status !== "active") {
-        yield* dead();
-        return;
-      }
-      if (member.modelOverrideJson !== null) {
-        const decoded = yield* decodeParticipantModelSelection(member.modelOverrideJson).pipe(
-          Effect.option,
-        );
-        if (decoded._tag === "Some") modelSelection = decoded.value;
-      }
+    if (member !== null && member.modelOverrideJson !== null) {
+      const decoded = yield* decodeParticipantModelSelection(member.modelOverrideJson).pipe(
+        Effect.option,
+      );
+      if (decoded._tag === "Some") modelSelection = decoded.value;
     }
     if ((yield* aliveShell(input.participantThreadId)) === null) {
+      if (member !== null) {
+        yield* mail.settleMember({
+          memberId: member.memberId,
+          settledAs: "was deleted",
+          at,
+        });
+      }
       yield* dead();
       return;
     }

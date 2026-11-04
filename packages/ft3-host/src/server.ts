@@ -230,10 +230,20 @@ export const mailReactorLayer = () =>
     }),
   );
 
+export const mailTimeoutReactorLayer = () =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const reactor = yield* Effect.promise(() => import("@t3tools/ft3-mail/timeoutReactor"));
+      // Shares the host mail stack, so the scan fails the same deliveries the tools record.
+      return reactor.layerWorker().pipe(Layer.provide(layer));
+    }),
+  );
+
 export const reactorLayer = () =>
   Layer.mergeAll(
     boardReactorLayer(),
     mailReactorLayer(),
+    mailTimeoutReactorLayer(),
     Layer.unwrap(
       Effect.promise(() => import("@t3tools/ft3-board/automation")).pipe(
         Effect.map((module) => module.layerWorker()),

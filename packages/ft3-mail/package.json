@@ -43,6 +43,10 @@
       "types": "./src/settings.ts",
       "import": "./src/settings.ts"
     },
+    "./timeoutReactor": {
+      "types": "./src/timeoutReactor.ts",
+      "import": "./src/timeoutReactor.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"
