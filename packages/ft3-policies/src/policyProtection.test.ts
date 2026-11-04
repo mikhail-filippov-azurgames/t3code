@@ -17,12 +17,16 @@ const builtin: Readonly<Record<PolicyDocumentKey, PolicyDocumentSource>> = {
 
 describe("policy document protection identities", () => {
   it("protects nothing when every document is built in", () => {
-    const identities = protectedDocumentIdentities(builtin, "/store");
+    const identities = protectedDocumentIdentities(builtin, "/store", "linux");
     expect(identities.stableIds.size).toBe(0);
     expect(identities.relPaths.size).toBe(0);
     expect(identities.prefixes.size).toBe(0);
     expect(
-      isProtectedDocument(identities, { stableId: "plan-1", relPath: "corvis/plans/a.md" }),
+      isProtectedDocument(
+        identities,
+        { stableId: "plan-1", relPath: "corvis/plans/a.md" },
+        "linux",
+      ),
     ).toBe(false);
   });
 
@@ -33,14 +37,19 @@ describe("policy document protection identities", () => {
         routingPolicy: { kind: "doc", address: { kind: "id", stableId: "policy-1" } },
       },
       "/store",
+      "linux",
     );
     expect(identities.stableIds.has("policy-1")).toBe(true);
     expect(identities.prefixes.size).toBe(0);
     expect(
-      isProtectedDocument(identities, { stableId: "policy-1", relPath: "policies/moved.md" }),
+      isProtectedDocument(
+        identities,
+        { stableId: "policy-1", relPath: "policies/moved.md" },
+        "linux",
+      ),
     ).toBe(true);
     expect(
-      isProtectedDocument(identities, { stableId: "other", relPath: "policies/moved.md" }),
+      isProtectedDocument(identities, { stableId: "other", relPath: "policies/moved.md" }, "linux"),
     ).toBe(false);
   });
 
@@ -51,15 +60,16 @@ describe("policy document protection identities", () => {
         routingPolicy: { kind: "doc", address: { kind: "path", relPath: "policies/routing.md" } },
       },
       "/store",
+      "linux",
     );
     expect(identities.relPaths.has("policies/routing.md")).toBe(true);
     expect(identities.prefixes.size).toBe(0);
-    expect(isProtectedDocument(identities, { stableId: "x", relPath: "policies/routing.md" })).toBe(
-      true,
-    );
-    expect(isProtectedDocument(identities, { stableId: "x", relPath: "policies/sibling.md" })).toBe(
-      false,
-    );
+    expect(
+      isProtectedDocument(identities, { stableId: "x", relPath: "policies/routing.md" }, "linux"),
+    ).toBe(true);
+    expect(
+      isProtectedDocument(identities, { stableId: "x", relPath: "policies/sibling.md" }, "linux"),
+    ).toBe(false);
   });
 
   it("protects a roles tree by manifest path and folder prefix", () => {
@@ -69,17 +79,30 @@ describe("policy document protection identities", () => {
         roles: { kind: "doc", address: { kind: "path", relPath: "policies/roles/roles.json" } },
       },
       "/store",
+      "linux",
     );
     expect(identities.relPaths.has("policies/roles/roles.json")).toBe(true);
     expect(identities.prefixes.has("policies/roles/")).toBe(true);
     expect(
-      isProtectedDocument(identities, { stableId: "a", relPath: "policies/roles/roles.json" }),
+      isProtectedDocument(
+        identities,
+        { stableId: "a", relPath: "policies/roles/roles.json" },
+        "linux",
+      ),
     ).toBe(true);
     expect(
-      isProtectedDocument(identities, { stableId: "b", relPath: "policies/roles/architect.md" }),
+      isProtectedDocument(
+        identities,
+        { stableId: "b", relPath: "policies/roles/architect.md" },
+        "linux",
+      ),
     ).toBe(true);
     expect(
-      isProtectedDocument(identities, { stableId: "c", relPath: "policies/lead-skills.json" }),
+      isProtectedDocument(
+        identities,
+        { stableId: "c", relPath: "policies/lead-skills.json" },
+        "linux",
+      ),
     ).toBe(false);
   });
 
@@ -90,11 +113,12 @@ describe("policy document protection identities", () => {
         leadSkills: { kind: "doc", address: { kind: "path", relPath: "lead-skills.json" } },
       },
       "/store",
+      "linux",
     );
     expect(identities.prefixes.has("")).toBe(true);
-    expect(isProtectedDocument(identities, { stableId: "x", relPath: "anywhere/note.md" })).toBe(
-      true,
-    );
+    expect(
+      isProtectedDocument(identities, { stableId: "x", relPath: "anywhere/note.md" }, "linux"),
+    ).toBe(true);
   });
 
   it("protects an in-store path source by its store path", () => {
@@ -106,6 +130,7 @@ describe("policy document protection identities", () => {
         roles: { kind: "path", path: `${root}/contexts/policies/roles/roles.json` },
       },
       root,
+      "linux",
     );
     expect(identities.relPaths.has("policies/routing.md")).toBe(true);
     expect(identities.relPaths.has("policies/roles/roles.json")).toBe(true);
@@ -130,14 +155,22 @@ describe("policy document protection identities", () => {
       expect(identities.stableIds.has("roles-manifest")).toBe(true);
       expect(identities.prefixes.has("policies/roles/")).toBe(true);
       expect(
-        isProtectedDocument(identities, { stableId: "other", relPath: "policies/roles/lead.md" }),
+        isProtectedDocument(
+          identities,
+          { stableId: "other", relPath: "policies/roles/lead.md" },
+          "linux",
+        ),
       ).toBe(true);
       expect(
-        isProtectedDocument(identities, { stableId: "plan-9", relPath: "corvis/plans/a.md" }),
+        isProtectedDocument(
+          identities,
+          { stableId: "plan-9", relPath: "corvis/plans/a.md" },
+          "linux",
+        ),
       ).toBe(true);
-      expect(isProtectedDocument(identities, { stableId: "free", relPath: "notes/free.md" })).toBe(
-        false,
-      );
+      expect(
+        isProtectedDocument(identities, { stableId: "free", relPath: "notes/free.md" }, "linux"),
+      ).toBe(false);
     }),
   );
 
@@ -156,11 +189,19 @@ describe("policy document protection identities", () => {
       );
       expect(identities.prefixes.size).toBe(0);
       expect(
-        isProtectedDocument(identities, { stableId: "x", relPath: "policies/roles/lead.md" }),
+        isProtectedDocument(
+          identities,
+          { stableId: "x", relPath: "policies/roles/lead.md" },
+          "linux",
+        ),
       ).toBe(false);
       // The manifest document itself stays protected by its stable id.
       expect(
-        isProtectedDocument(identities, { stableId: "gone", relPath: "policies/roles/roles.json" }),
+        isProtectedDocument(
+          identities,
+          { stableId: "gone", relPath: "policies/roles/roles.json" },
+          "linux",
+        ),
       ).toBe(true);
     }),
   );
@@ -191,6 +232,49 @@ describe("policy document protection identities", () => {
       expect(failed.code).toBe("store_unavailable");
     }),
   );
+
+  it("compares exact paths case-insensitively on Windows only", () => {
+    const sources: Readonly<Record<PolicyDocumentKey, PolicyDocumentSource>> = {
+      ...builtin,
+      routingPolicy: { kind: "doc", address: { kind: "path", relPath: "policies/routing.md" } },
+    };
+    const windows = protectedDocumentIdentities(sources, "/store", "win32");
+    expect(
+      isProtectedDocument(windows, { stableId: "x", relPath: "Policies/Routing.md" }, "win32"),
+    ).toBe(true);
+    const posix = protectedDocumentIdentities(sources, "/store", "linux");
+    expect(
+      isProtectedDocument(posix, { stableId: "x", relPath: "policies/routing.md" }, "linux"),
+    ).toBe(true);
+    expect(
+      isProtectedDocument(posix, { stableId: "x", relPath: "Policies/Routing.md" }, "linux"),
+    ).toBe(false);
+  });
+
+  it("matches tree prefixes case-insensitively on Windows only", () => {
+    const sources: Readonly<Record<PolicyDocumentKey, PolicyDocumentSource>> = {
+      ...builtin,
+      roles: { kind: "doc", address: { kind: "path", relPath: "policies/roles/roles.json" } },
+    };
+    const windows = protectedDocumentIdentities(sources, "/store", "win32");
+    expect(windows.prefixes.has("policies/roles/")).toBe(true);
+    expect(
+      isProtectedDocument(
+        windows,
+        { stableId: "y", relPath: "POLICIES\\roles\\architect.md" },
+        "win32",
+      ),
+    ).toBe(true);
+    const posix = protectedDocumentIdentities(sources, "/store", "linux");
+    expect(
+      isProtectedDocument(
+        posix,
+        { stableId: "y", relPath: "POLICIES/roles/architect.md" },
+        "linux",
+      ),
+    ).toBe(false);
+  });
+
   it("ignores a path source outside the store", () => {
     const identities = protectedDocumentIdentities(
       {
@@ -198,10 +282,11 @@ describe("policy document protection identities", () => {
         routingPolicy: { kind: "path", path: "/elsewhere/routing.md" },
       },
       "/store",
+      "linux",
     );
     expect(identities.relPaths.size).toBe(0);
-    expect(isProtectedDocument(identities, { stableId: "x", relPath: "policies/routing.md" })).toBe(
-      false,
-    );
+    expect(
+      isProtectedDocument(identities, { stableId: "x", relPath: "policies/routing.md" }, "linux"),
+    ).toBe(false);
   });
 });

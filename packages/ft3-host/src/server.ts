@@ -7,6 +7,7 @@ import { setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
 import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import { roleResolverLayer, withRefreshHook } from "@t3tools/ft3-policies/server";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
@@ -67,6 +68,7 @@ export const docsProtectionLayer = (
           const sources = FeatureGate.resolvePolicyDocumentSources(
             FeatureGate.readPolicySettings(live.ft3),
           );
+          const platform = yield* HostProcess.Platform;
           const identities = yield* FeatureGate.resolveProtectedIdentities(sources, root, {
             manifestRelPathOf: (stableId) =>
               store.getByStableId(stableId).pipe(
@@ -90,7 +92,7 @@ export const docsProtectionLayer = (
               Effect.mapError(() => new docs.DocsServiceError({ code: "store_unavailable" })),
             ),
           });
-          return FeatureGate.isProtectedDocument(identities, document);
+          return FeatureGate.isProtectedDocument(identities, document, platform);
         }),
       });
     }),

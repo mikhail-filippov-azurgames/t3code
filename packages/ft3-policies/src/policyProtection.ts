@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 import * as Effect from "effect/Effect";
 
 import type { DocsServiceError } from "@t3tools/ft3-docs/server";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import type { PolicyDocumentKey, PolicyDocumentSource } from "./contracts.ts";
 
@@ -31,6 +32,15 @@ const folderPrefixOf = (relPath: string): string => {
 const isTreeKey = (key: PolicyDocumentKey): boolean => key !== "routingPolicy";
 
 /**
+ * Store paths compare with forward slashes everywhere and, on Windows,
+ * case-insensitively. Stable ids stay exact: only paths go through here.
+ */
+export function normalizeProtectedPath(relPath: string, platform: NodeJS.Platform): string {
+  const slashed = relPath.replace(/\\/g, "/");
+  return platform === "win32" ? slashed.toLowerCase() : slashed;
+}
+
+/**
  * The protected identities of one policy document source. `root` is the
  * store root (`contexts/` and `opencontext.db` live directly under it);
  * `{kind:"path"}` sources outside it are unmanaged files docs MCP cannot
@@ -39,6 +49,7 @@ const isTreeKey = (key: PolicyDocumentKey): boolean => key !== "routingPolicy";
 export function protectedDocumentIdentities(
   sources: Readonly<Record<PolicyDocumentKey, PolicyDocumentSource>>,
   root: string,
+  platform: NodeJS.Platform,
 ): ProtectedDocumentIdentities {
   const stableIds = new Set<string>();
   const relPaths = new Set<string>();
@@ -53,13 +64,14 @@ export function protectedDocumentIdentities(
         stableIds.add(source.address.stableId);
         continue;
       }
-      relPaths.add(source.address.relPath);
-      if (isTreeKey(key)) prefixes.add(folderPrefixOf(source.address.relPath));
+      const at = normalizeProtectedPath(source.address.relPath, platform);
+      relPaths.add(at);
+      if (isTreeKey(key)) prefixes.add(folderPrefixOf(at));
       continue;
     }
     const relative = NodePath.relative(contextsRoot, NodePath.resolve(source.path));
     if (relative === "" || relative.startsWith("..") || NodePath.isAbsolute(relative)) continue;
-    const relPath = relative.split(NodePath.sep).join("/");
+    const relPath = normalizeProtectedPath(relative.split(NodePath.sep).join("/"), platform);
     relPaths.add(relPath);
     if (isTreeKey(key)) prefixes.add(folderPrefixOf(relPath));
   }
@@ -70,11 +82,13 @@ export function protectedDocumentIdentities(
 export function isProtectedDocument(
   identities: ProtectedDocumentIdentities,
   document: { readonly stableId: string; readonly relPath: string },
+  platform: NodeJS.Platform,
 ): boolean {
   if (identities.stableIds.has(document.stableId)) return true;
-  if (identities.relPaths.has(document.relPath)) return true;
+  const relPath = normalizeProtectedPath(document.relPath, platform);
+  if (identities.relPaths.has(relPath)) return true;
   for (const prefix of identities.prefixes) {
-    if (prefix === "" || document.relPath.startsWith(prefix)) return true;
+    if (prefix === "" || relPath.startsWith(prefix)) return true;
   }
   return false;
 }
@@ -101,14 +115,15 @@ export const resolveProtectedIdentities = Effect.fn("protectedDocumentIdentities
     root: string,
     lookups: ProtectionLookups,
   ) {
-    const base = protectedDocumentIdentities(sources, root);
+    const platform = yield* HostProcess.Platform;
+    const base = protectedDocumentIdentities(sources, root, platform);
     const prefixes = new Set(base.prefixes);
     for (const [key, source] of Object.entries(sources) as ReadonlyArray<
       [PolicyDocumentKey, PolicyDocumentSource]
     >) {
       if (!isTreeKey(key) || source.kind !== "doc" || source.address.kind !== "id") continue;
       const relPath = yield* lookups.manifestRelPathOf(source.address.stableId);
-      if (relPath !== null) prefixes.add(folderPrefixOf(relPath));
+      if (relPath !== null) prefixes.add(folderPrefixOf(normalizeProtectedPath(relPath, platform)));
     }
     const stableIds = new Set(base.stableIds);
     for (const stableId of yield* lookups.planStableIds) stableIds.add(stableId);
