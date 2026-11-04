@@ -55,7 +55,11 @@ import { MissingFileLinkChip } from "./MissingFileLinkChip";
 import { OpenContextDocChip } from "./OpenContextDocChip";
 import { parseOpenContextDocHref } from "./openContextDocLink";
 import { remarkLinkifyOpenContextDocRefs } from "./openContextDocRefsPlugin";
-import { docsEnvironment, toOpenContextDocResolveResult } from "./openContextState";
+import {
+  docsEnvironment,
+  toOpenContextDocResolveResult,
+  useOpenContextDocsEnabled,
+} from "./openContextState";
 
 export interface Ft3MarkdownLinkInput {
   readonly href: string;
@@ -91,8 +95,9 @@ export interface Ft3ChatTextOptions {
 }
 
 const EMPTY_MISSING_FILE_TARGETS: ReadonlySet<string> = new Set();
-// Document references need no lookup, so they always run and keep one shared list.
+// Document references need no lookup, so one shared list; used only while documents are on.
 const OPEN_CONTEXT_DOC_REMARK_PLUGINS: ReadonlyArray<unknown> = [remarkLinkifyOpenContextDocRefs];
+const NO_REMARK_PLUGINS: ReadonlyArray<unknown> = [];
 
 /**
  * Board-card mentions and OpenContext document links, resolved per message.
@@ -117,6 +122,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
     reportFailure: false,
   });
   const resolvedTheme = useRenderedAppearance();
+  const documentsEnabled = useOpenContextDocsEnabled(environmentId);
 
   const threadId = threadRef?.threadId ?? null;
   const lookupText = isStreaming || threadId === null || environmentId === null ? null : text;
@@ -413,6 +419,8 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
         }
         const doc = parseOpenContextDocHref(input.href);
         if (doc !== null) {
+          // Documents off: keep the text, with no chip, lookup, or anchor to a non-web scheme.
+          if (!documentsEnabled) return <span>{input.label}</span>;
           const writtenLabel = input.label.trim();
           // A written reference is not a title: the chip shows the document name instead.
           const titled = writtenLabel.length > 0 && parseOpenContextDocHref(writtenLabel) === null;
@@ -444,6 +452,7 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
       },
     [
       cwd,
+      documentsEnabled,
       environmentId,
       fileLinkBaseDir,
       matches,
@@ -458,13 +467,14 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
   );
 
   const remarkPlugins = useMemo(() => {
-    if (matches.size === 0 && commitMatches.size === 0) return OPEN_CONTEXT_DOC_REMARK_PLUGINS;
+    const docPlugins = documentsEnabled ? OPEN_CONTEXT_DOC_REMARK_PLUGINS : NO_REMARK_PLUGINS;
+    if (matches.size === 0 && commitMatches.size === 0) return docPlugins;
     const plugins: Array<() => unknown> = [];
     if (matches.size > 0) plugins.push(() => remarkLinkifyBoardCardMentions(matches));
     if (commitMatches.size > 0) plugins.push(() => remarkLinkifyCommitMentions(commitMatches));
     // Document references go first, so card and commit tokens cannot split an id.
-    return [...OPEN_CONTEXT_DOC_REMARK_PLUGINS, ...plugins];
-  }, [commitMatches, matches]);
+    return [...docPlugins, ...plugins];
+  }, [commitMatches, documentsEnabled, matches]);
 
   const isAllowedHref = useCallback((href: string) => parseOpenContextDocHref(href) !== null, []);
 

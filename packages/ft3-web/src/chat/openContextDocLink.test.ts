@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { openContextDocMenuItems, parseOpenContextDocHref } from "./openContextDocLink";
+import { DEFAULT_POLICY_SETTINGS, withPolicySettings } from "@t3tools/ft3-policies/settings";
+
+import {
+  openContextDocMenuItems,
+  openContextDocsEnabled,
+  parseOpenContextDocHref,
+} from "./openContextDocLink";
 
 describe("open context document links", () => {
   it.each([
@@ -82,5 +88,17 @@ describe("open context document links", () => {
       { id: "status", label, disabled: true },
       { id: "copy-link", label: "Copy link", icon: "copy" },
     ]);
+  });
+
+  it("follows the documents feature toggle and stays off until settings load", () => {
+    const withDocuments = (documents: boolean) => ({
+      ft3: withPolicySettings(undefined, {
+        ...DEFAULT_POLICY_SETTINGS,
+        features: { ...DEFAULT_POLICY_SETTINGS.features, documents },
+      }),
+    });
+    expect(openContextDocsEnabled(null)).toBe(false);
+    expect(openContextDocsEnabled(withDocuments(true))).toBe(true);
+    expect(openContextDocsEnabled(withDocuments(false))).toBe(false);
   });
 });

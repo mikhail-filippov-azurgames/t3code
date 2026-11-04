@@ -1,11 +1,10 @@
-import type { ContextMenuItem } from "@t3tools/contracts";
+import type { ContextMenuItem, ServerSettings } from "@t3tools/contracts";
+import { resolveFeatureStates } from "@t3tools/ft3-policies/contracts";
+import { readPolicySettings } from "@t3tools/ft3-policies/settings";
 
 /**
- * The OpenContext document convention: `oc://doc/<stable_id>` for a local store
- * document and `ocl://doc/<stable_id>` for its cloud counterpart, written by
- * agents and the store's own tooling. The parser is explicit rather than a
- * loosened file-path rule — an `oc:`/`ocl:` href is a document reference, never
- * a workspace path or an external web link.
+ * `oc://doc/<stable_id>` names a local store document, `ocl://doc/<stable_id>` its cloud copy.
+ * An `oc:`/`ocl:` href is always a document reference, never a workspace path or web link.
  */
 const OPEN_CONTEXT_DOC_HREF_PATTERN = /^(oc|ocl):\/\/doc\/([^/@?#\s]+)(@[1-9]\d*)?\/?$/i;
 
@@ -94,3 +93,10 @@ export type OpenContextDocResolveResult =
   | OpenContextDocResolutionFound
   | { readonly status: "not_found" }
   | { readonly status: "store_unavailable" };
+
+/** Unknown settings count as off, so no reference resolves before the environment reports them. */
+export function openContextDocsEnabled(settings: Pick<ServerSettings, "ft3"> | null): boolean {
+  if (settings === null) return false;
+  const requested = readPolicySettings(settings.ft3).features;
+  return resolveFeatureStates({ requested }).documents.effectiveEnabled;
+}
