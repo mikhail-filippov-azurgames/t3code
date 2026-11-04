@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 
 import type { PolicyDocumentSource } from "./contracts.ts";
 import { legacyPolicyRefUnresolvedIssue, type PolicyIssue } from "./diagnostics.ts";
+import { LEAD_SKILLS_MANIFEST_SCHEMA } from "./leadSkills.ts";
 import {
   POLICY_ENV_MIGRATION_VERSION,
   type PoliciesSettings,
@@ -50,6 +51,20 @@ export interface PolicyEnvMigrationResult {
 }
 
 const trimmed = (value: string | undefined): string => value?.trim() ?? "";
+
+/** The legacy lead-skills manifest counts only when it parses as one (design §12.1). */
+const leadSkillsManifestValid = (path: string): boolean => {
+  try {
+    const parsed: unknown = JSON.parse(NodeFS.readFileSync(path, "utf8"));
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      (parsed as { schema?: unknown }).schema === LEAD_SKILLS_MANIFEST_SCHEMA
+    );
+  } catch {
+    return false;
+  }
+};
 
 /** A store document by stable id, else a store path, else an unmanaged server file. */
 const sourceForServerPath = Effect.fn("PolicyEnvMigration.sourceForServerPath")(function* (
@@ -122,7 +137,11 @@ export const migratePolicyEnvironment = Effect.fn("PolicyEnvMigration.run")(func
       documents.roles = yield* sourceForServerPath(input.docs, manifest);
     }
     const skills = NodePath.join(rolesDir, "skills", "lead", "lead-skills.json");
-    if (documents.leadSkills.kind === "builtin" && NodeFS.existsSync(skills)) {
+    if (
+      documents.leadSkills.kind === "builtin" &&
+      NodeFS.existsSync(skills) &&
+      leadSkillsManifestValid(skills)
+    ) {
       documents.leadSkills = yield* sourceForServerPath(input.docs, skills);
     }
   }

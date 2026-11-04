@@ -23,7 +23,7 @@ const rolesDirectory = (): string => {
   NodeFS.mkdirSync(NodePath.join(directory, "skills", "lead"), { recursive: true });
   NodeFS.writeFileSync(
     NodePath.join(directory, "skills", "lead", "lead-skills.json"),
-    "{}",
+    '{ "schema": "corvis-lead-skills-v1" }',
     "utf8",
   );
   return directory;
@@ -96,6 +96,25 @@ describe("policy env migration", () => {
         NodePath.resolve(roles, "roles.json"),
       );
       assert.equal(result.settings.documents.leadSkills.kind, "path");
+    });
+  });
+
+  it.effect("keeps the builtin template when the legacy lead-skills manifest is not one", () => {
+    const roles = rolesDirectory();
+    NodeFS.writeFileSync(
+      NodePath.join(roles, "skills", "lead", "lead-skills.json"),
+      "{ not json",
+      "utf8",
+    );
+    return Effect.gen(function* () {
+      const result = yield* migratePolicyEnvironment({
+        settings: DEFAULT_POLICY_SETTINGS,
+        docs: docsPort(),
+        environment: { [ROLES_DIR_ENV]: roles },
+      });
+
+      assert.equal(result.settings.documents.roles.kind, "path");
+      assert.equal(result.settings.documents.leadSkills.kind, "builtin");
     });
   });
 
