@@ -1,4 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeAssert from "node:assert/strict";
+import * as NodePath from "node:path";
 import * as NodeSqlite from "node:sqlite";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -49,7 +51,7 @@ it.effect("reads Go limits with the instance's XDG credentials and preserves res
         FileSystem.FileSystem,
         FileSystem.makeNoop({
           readFileString: (path) => {
-            NodeAssert.equal(path, "/instance/data/opencode/auth.json");
+            NodeAssert.equal(path, NodePath.join("/instance/data", "opencode", "auth.json"));
             return Effect.succeed(
               JSON.stringify({ "opencode-go": { type: "api", key: "instance-key" } }),
             );
