@@ -8,9 +8,14 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { type DocRef, parseDocRef } from "./contracts.ts";
+import { DocsChangeBus } from "./events.ts";
 import * as DocsIndex from "./index.ts";
 import * as DocsReconciler from "./reconciler.ts";
+import type { DocsChanged } from "./reconciler.ts";
 import * as DocsStore from "./store.ts";
+
+/** Shared change bus service-side writes publish to; provided by the composition. */
+export { DocsChangeBus };
 
 /** Every way `DocsService` refuses or fails a call (design §5). */
 export const DocsServiceErrorCode = Schema.Literals([
@@ -284,7 +289,14 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   const index = yield* DocsIndex.DocsIndex;
   const writeAccess = yield* DocumentsWriteAccess;
   const protection = yield* DocsProtection;
+  const changeBus = yield* Effect.serviceOption(DocsChangeBus);
   const contextsRoot = NodePath.resolve(options.root, DocsStore.DOCS_STORE_CONTEXTS_DIRECTORY);
+
+  // Service-side writes surface on the shared change bus next to watch
+  // reports, so a subscriber that never touches the filesystem still sees
+  // them. Without a bus there are no subscribers, so nothing is emitted.
+  const emit = (change: DocsChanged) =>
+    changeBus._tag === "Some" ? changeBus.value.publish(change) : Effect.void;
 
   const absolutePathOf = (relPath: string): string =>
     NodePath.resolve(contextsRoot, ...relPath.split("/"));
@@ -482,6 +494,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         })
         .pipe(Effect.mapError(mapStoreError));
       yield* indexDocument(created);
+      yield* emit({ kind: "added", stableId: created.stableId, relPath: created.relPath });
       const { sha256 } = yield* readContent(created);
       return {
         stableId: created.stableId,
@@ -505,6 +518,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         .pipe(Effect.mapError(mapStoreError));
     }
     yield* indexDocument(saved);
+    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     const { sha256 } = yield* readContent(saved);
     return {
       stableId: saved.stableId,
@@ -532,6 +546,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
       .saveDocContent({ relPath: existing.relPath, content: input.content })
       .pipe(Effect.mapError(mapStoreError));
     yield* indexDocument(saved);
+    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     const { sha256 } = yield* readContent(saved);
     return {
       stableId: saved.stableId,
@@ -566,6 +581,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     const saved = yield* store
       .setDescription({ relPath: document.relPath, description: input.description })
       .pipe(Effect.mapError(mapStoreError));
+    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     return {
       stableId: saved.stableId,
       relPath: saved.relPath,

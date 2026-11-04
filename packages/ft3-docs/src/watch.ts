@@ -6,10 +6,10 @@ import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
+import * as DocsEvents from "./events.ts";
 import { DocsReconciler, type DocsChanged } from "./reconciler.ts";
 
 export interface DocsWatchEvent {
@@ -26,14 +26,18 @@ export interface DocsWatchOptions {
   readonly debounce?: Duration.Input;
   /** Raw watch events; defaults to a recursive `node:fs` watcher on `contexts/`. Tests inject this. */
   readonly events?: Stream.Stream<DocsWatchEvent, never>;
+  /**
+   * Shared change bus the reconcile reports publish to. A fresh bus is
+   * created when omitted, so the watcher still works standalone.
+   */
+  readonly bus?: Layer.Layer<DocsEvents.DocsChangeBus>;
 }
 
 const make = Effect.fn("DocsWatchService.make")(function* (options: DocsWatchOptions) {
   const reconciler = yield* DocsReconciler;
+  const bus = yield* DocsEvents.DocsChangeBus;
   const contextsRoot = NodePath.resolve(options.root, "contexts");
   const debounce = options.debounce ?? Duration.millis(250);
-
-  const changes = yield* PubSub.unbounded<DocsChanged>();
 
   const rawEvents = yield* Queue.unbounded<DocsWatchEvent>();
   if (options.events === undefined) {
@@ -59,9 +63,9 @@ const make = Effect.fn("DocsWatchService.make")(function* (options: DocsWatchOpt
     readonly changed: ReadonlyArray<DocsChanged>;
     readonly removed: ReadonlyArray<DocsChanged>;
   }) =>
-    Effect.forEach([...report.changed, ...report.removed], (entry) =>
-      PubSub.publish(changes, entry).pipe(Effect.asVoid),
-    ).pipe(Effect.asVoid);
+    Effect.forEach([...report.changed, ...report.removed], (entry) => bus.publish(entry)).pipe(
+      Effect.asVoid,
+    );
 
   const pipeline = (options.events ?? Stream.fromQueue(rawEvents)).pipe(
     Stream.filter((event) => event.failed || !reconciler.isSelfWrite(event.path)),
@@ -78,7 +82,7 @@ const make = Effect.fn("DocsWatchService.make")(function* (options: DocsWatchOpt
   yield* Effect.forkScoped(Stream.runDrain(pipeline)).pipe(Effect.asVoid);
 
   return DocsWatchService.of({
-    changes: Stream.unwrap(Effect.map(PubSub.subscribe(changes), Stream.fromSubscription)),
+    changes: bus.changes,
   });
 });
 
@@ -94,4 +98,7 @@ export class DocsWatchService extends Context.Service<
  * Watches `contexts/` recursively and reconciles after a 250 ms debounce; a
  * watcher failure triggers a full pass (design §3.3). Requires `DocsReconciler`.
  */
-export const layer = (options: DocsWatchOptions) => Layer.effect(DocsWatchService, make(options));
+export const layer = (options: DocsWatchOptions) =>
+  Layer.effect(DocsWatchService, make(options)).pipe(
+    Layer.provide(options.bus ?? DocsEvents.layer()),
+  );

@@ -31,6 +31,19 @@ const layerStartup = Layer.effectDiscard(
  * effective. A store that cannot be opened leaves the feature off instead of
  * stopping the server.
  */
+/**
+ * One change bus for the whole server: the docs runtime (watch reports) and
+ * the docs toolkit (service-side writes) publish to the same bus, so a
+ * subscriber that never touches the filesystem still sees every change. The
+ * single shared layer value keeps one bus instance per server build.
+ */
+const docsChangeBus = Layer.unwrap(
+  Effect.map(
+    Effect.promise(() => import("@t3tools/ft3-docs/server")),
+    (docs) => docs.docsChangeBusLayer(),
+  ),
+);
+
 const layerDocuments = Layer.unwrap(
   Effect.gen(function* () {
     const gate = yield* FeatureGate.FeatureGate;
@@ -44,6 +57,7 @@ const layerDocuments = Layer.unwrap(
         stateDir: config.stateDir,
         configuredRoot: readDocsSettings(current.ft3).root,
       }),
+      bus: docsChangeBus,
     });
   }),
 ).pipe(
@@ -259,6 +273,7 @@ const layerDocsToolkit = Layer.unwrap(
       root,
       writeFacts,
       protection,
+      events: docsChangeBus,
       requireEnabled: gate
         .require("documents")
         .pipe(

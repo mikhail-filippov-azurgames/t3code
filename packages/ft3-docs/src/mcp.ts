@@ -219,6 +219,11 @@ export interface DocsToolkitOptions {
    * the store it resolves through needs randomness, so `Crypto` propagates.
    */
   readonly protection?: Layer.Layer<Service.DocsProtection, never, Crypto.Crypto>;
+  /**
+   * Shared change bus service-side writes publish to; without it nothing is
+   * emitted. The host shares one bus between the runtime and this toolkit.
+   */
+  readonly events?: Layer.Layer<Service.DocsChangeBus>;
 }
 
 /** The toolkit and its service; the guard is the host's feature gate. */
@@ -331,12 +336,14 @@ export const mcpLayer = (options: DocsToolkitOptions) => {
     ),
   });
 
+  const services = Service.layer({ root: options.root }).pipe(
+    Layer.provide(writeAccess),
+    Layer.provide(options.protection ?? Service.noProtectedDocuments),
+  );
+
   return toolkitRegistration(toolkit, handlers).pipe(
     Layer.provide(
-      Service.layer({ root: options.root }).pipe(
-        Layer.provide(writeAccess),
-        Layer.provide(options.protection ?? Service.noProtectedDocuments),
-      ),
+      options.events === undefined ? services : services.pipe(Layer.provide(options.events)),
     ),
   );
 };

@@ -4,10 +4,13 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import type { DocsChanged } from "./reconciler.ts";
 import * as Service from "./service.ts";
 import * as WriteRule from "./writeRule.ts";
 
@@ -74,6 +77,8 @@ interface WithDocsOptions {
   readonly isProtected?: boolean;
   /** Write rule override; the default ports refuse every write. */
   readonly writeAccess?: Layer.Layer<Service.DocumentsWriteAccess>;
+  /** Change bus service-side writes publish to; nothing is emitted without it. */
+  readonly events?: Layer.Layer<Service.DocsChangeBus>;
 }
 
 /**
@@ -95,18 +100,20 @@ const withDocs = <A, E>(
             Service.DocsProtection.of({ isProtected: () => Effect.succeed(true) }),
           )
         : Service.noProtectedDocuments;
+    const services = (
+      options.writeAccess !== undefined
+        ? Service.layer({ root }).pipe(Layer.provide(options.writeAccess))
+        : options.writable === true
+          ? Service.layer({ root }).pipe(Layer.provide(allowStoreWrite))
+          : Service.layerWithDefaultPorts({ root })
+    ).pipe(Layer.provide(protection), Layer.provide(sqlLayer()), Layer.provide(cryptoLayer));
     return yield* Effect.gen(function* () {
       if (setup !== undefined) yield* Effect.orDie(setup(root));
       const context = { root, service: yield* Service.DocsService } satisfies DocsTest;
       return yield* use(context);
     }).pipe(
       Effect.provide(
-        (options.writeAccess !== undefined
-          ? Service.layer({ root }).pipe(Layer.provide(options.writeAccess))
-          : options.writable === true
-            ? Service.layer({ root }).pipe(Layer.provide(allowStoreWrite))
-            : Service.layerWithDefaultPorts({ root })
-        ).pipe(Layer.provide(protection), Layer.provide(sqlLayer()), Layer.provide(cryptoLayer)),
+        options.events === undefined ? services : services.pipe(Layer.provide(options.events)),
       ),
       Effect.ensuring(removeRoot(root)),
     );
@@ -500,6 +507,58 @@ describe("DocsService writes", () => {
       seedFiles,
       { isProtected: true },
     ),
+  );
+
+  it.effect("publishes added and changed events for service-side writes", () =>
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Array<DocsChanged>>([]);
+      const events = Layer.succeed(
+        Service.DocsChangeBus,
+        Service.DocsChangeBus.of({
+          publish: (change) => Ref.update(seen, (all) => [...all, change]),
+          changes: Stream.empty,
+        }),
+      );
+      return yield* withDocs(
+        (context) =>
+          Effect.gen(function* () {
+            const caller = { threadId: "thread:root", parentThreadId: null };
+            const created = yield* context.service.write({
+              caller,
+              relPath: "project/first.md",
+              content: "# First\n",
+              clientRequestId: "write:first",
+            });
+            const live = yield* context.service.read({ ref: `oc://doc/${created.stableId}` });
+            yield* context.service.write({
+              caller,
+              ref: `oc://doc/${created.stableId}`,
+              content: "# First\n\nMore.\n",
+              baseSha256: live.sha256,
+              clientRequestId: "write:second",
+            });
+            yield* context.service.setDescription({
+              caller,
+              ref: `oc://doc/${created.stableId}`,
+              description: "First doc.",
+            });
+            const edited = yield* context.service.read({ ref: `oc://doc/${created.stableId}` });
+            yield* context.service.writeAsHuman({
+              ref: `oc://doc/${created.stableId}`,
+              content: "# First\n\nHuman.\n",
+              baseSha256: edited.sha256,
+            });
+            assert.deepStrictEqual(yield* Ref.get(seen), [
+              { kind: "added", stableId: created.stableId, relPath: "project/first.md" },
+              { kind: "changed", stableId: created.stableId, relPath: "project/first.md" },
+              { kind: "changed", stableId: created.stableId, relPath: "project/first.md" },
+              { kind: "changed", stableId: created.stableId, relPath: "project/first.md" },
+            ]);
+          }),
+        seedFiles,
+        { writable: true, events },
+      );
+    }),
   );
 });
 

@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as DocsEvents from "./events.ts";
 import * as DocsIndex from "./index.ts";
 import * as DocsReconciler from "./reconciler.ts";
 import * as DocsStore from "./store.ts";
@@ -13,6 +14,12 @@ import * as DocsWatch from "./watch.ts";
 export interface DocsRuntimeOptions {
   /** Store root: `contexts/` and `opencontext.db` live directly under it. */
   readonly root: string;
+  /**
+   * Shared change bus watch reports publish to; a fresh one is created when
+   * omitted. The host shares it with the MCP toolkit, whose service-side
+   * writes publish to the same bus.
+   */
+  readonly bus?: Layer.Layer<DocsEvents.DocsChangeBus>;
 }
 
 const index = Layer.catch(() => DocsIndex.unavailableLayer)(DocsIndex.layer);
@@ -33,10 +40,10 @@ const titleOf = (content: string, relPath: string): string => {
 export const runtimeLayer = (options: DocsRuntimeOptions) => {
   const store = DocsStore.layer(options);
   const reconciler = DocsReconciler.layer(options).pipe(Layer.provide(store));
-  const watcher = DocsWatch.layer({ root: options.root }).pipe(
-    Layer.provide(reconciler),
-    Layer.provide(store),
-  );
+  const watcher = DocsWatch.layer({
+    root: options.root,
+    ...(options.bus === undefined ? {} : { bus: options.bus }),
+  }).pipe(Layer.provide(reconciler), Layer.provide(store));
   const services = Layer.mergeAll(store, reconciler, watcher, index);
 
   // One pass at start: a document created outside Corvis is found and indexed

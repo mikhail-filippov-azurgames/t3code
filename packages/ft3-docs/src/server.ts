@@ -82,6 +82,7 @@ export {
   type DocsStoreErrorCode,
   type DocsStoreOptions,
 } from "./store.ts";
+export { DocsChangeBus, layer as docsChangeBusLayer } from "./events.ts";
 export {
   DocsReconciler,
   type DocsChanged,
