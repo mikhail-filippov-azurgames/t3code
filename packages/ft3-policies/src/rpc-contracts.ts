@@ -1,8 +1,7 @@
 /**
  * Browser-safe RPC contracts of `ft3-policies`: the snapshot, the Policies-tab
- * editor, pending external edits and the `applyExternalEdits` toggle
- * (design §6.3). Reads use `orchestration:read`; every write needs
- * `settings:write`, the same scope as editing Settings.
+ * editor, pending external edits and the source pickers (design §6.3). Reads
+ * use `orchestration:read`; writes need `settings:write`, like editing Settings.
  */
 import {
   AuthOrchestrationReadScope,
@@ -30,6 +29,8 @@ export const FT3_POLICIES_WS_METHODS = {
   policiesSetApplyExternalEdits: "policies.setApplyExternalEdits",
   policiesSetDocument: "policies.setDocument",
   policiesSetFeature: "policies.setFeature",
+  policiesListStoreDocuments: "policies.listStoreDocuments",
+  policiesBrowseServerDirectory: "policies.browseServerDirectory",
 } as const;
 
 /** One diagnostic with its source line, as the Policies tab lists it. */
@@ -259,6 +260,66 @@ export const PoliciesSetFeatureResult = Schema.Struct({
 });
 export type PoliciesSetFeatureResult = typeof PoliciesSetFeatureResult.Type;
 
+/**
+ * One document of the docs store, as the source picker's list shows it.
+ */
+export const PoliciesStoreDocumentEntrySchema = Schema.Struct({
+  stableId: TrimmedNonEmptyString,
+  relPath: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  description: Schema.String,
+});
+export type PoliciesStoreDocumentEntrySchema = typeof PoliciesStoreDocumentEntrySchema.Type;
+
+export const PoliciesListStoreDocumentsInput = Schema.Struct({
+  query: Schema.optionalKey(TrimmedNonEmptyString.check(Schema.isMaxLength(512))),
+});
+export type PoliciesListStoreDocumentsInput = typeof PoliciesListStoreDocumentsInput.Type;
+
+export const PoliciesListStoreDocumentsResult = Schema.Struct({
+  documents: Schema.Array(PoliciesStoreDocumentEntrySchema),
+});
+export type PoliciesListStoreDocumentsResult = typeof PoliciesListStoreDocumentsResult.Type;
+
+const ServerDirectoryPath = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
+
+export const PoliciesBrowseServerDirectoryInput = Schema.Struct({
+  /** Absolute path of the server-side directory to list; a native dialog can't serve remote clients. */
+  directory: ServerDirectoryPath,
+});
+export type PoliciesBrowseServerDirectoryInput = typeof PoliciesBrowseServerDirectoryInput.Type;
+
+export const PoliciesServerDirectoryEntrySchema = Schema.Struct({
+  name: TrimmedNonEmptyString,
+  path: TrimmedNonEmptyString,
+});
+export type PoliciesServerDirectoryEntrySchema = typeof PoliciesServerDirectoryEntrySchema.Type;
+
+export const PoliciesBrowseServerDirectoryResult = Schema.Struct({
+  /** The directory's parent, or null at a filesystem root. */
+  parent: Schema.NullOr(TrimmedNonEmptyString),
+  directories: Schema.Array(PoliciesServerDirectoryEntrySchema),
+  /** Policy-relevant files only (.json/.md), so a folder of noise stays out of the picker. */
+  files: Schema.Array(PoliciesServerDirectoryEntrySchema),
+});
+export type PoliciesBrowseServerDirectoryResult = typeof PoliciesBrowseServerDirectoryResult.Type;
+
+export class PoliciesDirectoryBrowseError extends Schema.TaggedError<PoliciesDirectoryBrowseError>()(
+  "PoliciesDirectoryBrowseError",
+  {
+    directory: TrimmedNonEmptyString,
+    code: Schema.Literals(["not_absolute", "not_directory", "read_failed"]),
+    message: TrimmedNonEmptyString,
+  },
+) {}
+
+export class PoliciesStoreDocumentsError extends Schema.TaggedError<PoliciesStoreDocumentsError>()(
+  "PoliciesStoreDocumentsError",
+  {
+    message: TrimmedNonEmptyString,
+  },
+) {}
+
 export const policiesRpcs = [
   Rpc.make(FT3_POLICIES_WS_METHODS.policiesGetSnapshot, {
     payload: PoliciesGetSnapshotInput,
@@ -300,6 +361,16 @@ export const policiesRpcs = [
     success: PoliciesSetFeatureResult,
     error: EnvironmentAuthorizationError,
   }),
+  Rpc.make(FT3_POLICIES_WS_METHODS.policiesListStoreDocuments, {
+    payload: PoliciesListStoreDocumentsInput,
+    success: PoliciesListStoreDocumentsResult,
+    error: Schema.Union([PoliciesStoreDocumentsError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(FT3_POLICIES_WS_METHODS.policiesBrowseServerDirectory, {
+    payload: PoliciesBrowseServerDirectoryInput,
+    success: PoliciesBrowseServerDirectoryResult,
+    error: Schema.Union([PoliciesDirectoryBrowseError, EnvironmentAuthorizationError]),
+  }),
 ] as const;
 
 export const policiesRpcScopes = {
@@ -311,4 +382,6 @@ export const policiesRpcScopes = {
   [FT3_POLICIES_WS_METHODS.policiesSetApplyExternalEdits]: AuthSettingsWriteScope,
   [FT3_POLICIES_WS_METHODS.policiesSetDocument]: AuthSettingsWriteScope,
   [FT3_POLICIES_WS_METHODS.policiesSetFeature]: AuthSettingsWriteScope,
+  [FT3_POLICIES_WS_METHODS.policiesListStoreDocuments]: AuthOrchestrationReadScope,
+  [FT3_POLICIES_WS_METHODS.policiesBrowseServerDirectory]: AuthSettingsWriteScope,
 } as const;

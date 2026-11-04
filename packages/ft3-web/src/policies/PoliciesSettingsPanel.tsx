@@ -8,6 +8,7 @@ import {
 } from "@t3tools/ft3-policies/contracts";
 import type { PolicyDocumentKey } from "@t3tools/ft3-policies/contracts";
 import type {
+  PoliciesBrowseServerDirectoryResult,
   PoliciesGetSnapshotResult,
   PoliciesSaveDocumentResult,
   PolicyDocumentFileSchema,
@@ -17,10 +18,17 @@ import type {
 import { readPolicySettings, type PoliciesSettings } from "@t3tools/ft3-policies/settings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogHeader,
+  DialogPopup,
+  DialogTitle,
+} from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
@@ -39,8 +47,10 @@ import {
   POLICY_DOCUMENT_BADGE_LABELS,
   POLICY_DOCUMENT_BADGE_VARIANTS,
   POLICY_DOCUMENT_KEY_LABELS,
+  type PolicyAttentionCause,
   featureOffReasonText,
   lineStartOffset,
+  policyAttentionCauses,
   policyDocumentActionLabel,
   policyDocumentBadge,
   policyDocumentBadgeHint,
@@ -53,6 +63,9 @@ import { policiesEnvironment } from "./state.ts";
 /** One editor is mounted at a time, so a constant panel id is enough. */
 const POLICY_FILE_PANEL_ID = "policy-document-file-panel";
 const policyFileTabId = (file: string) => `policy-document-file-tab:${file}`;
+/** The banner's document causes scroll to and select these rows. */
+const policyDocumentRowId = (key: PolicyDocumentKey) => `ft3-policy-document-row:${key}`;
+const policyFeatureRowId = (feature: FeatureId) => `ft3-policy-feature-row:${feature}`;
 
 export function PoliciesSettingsPanel() {
   const scope = useOptionalSettingsScope();
@@ -86,6 +99,7 @@ export function PoliciesSettingsPanel() {
       ? commandResult
       : snapshotQuery.data;
   const selected = snapshot?.documents.find((document) => document.key === selectedKey) ?? null;
+  const attentionCauses = snapshot === null ? [] : policyAttentionCauses(snapshot);
   const requestedFeatures: PoliciesSettings["features"] = {
     ...policySettings.features,
     ...featureOverrides,
@@ -137,6 +151,16 @@ export function PoliciesSettingsPanel() {
     snapshotQuery.refresh();
   };
 
+  /** A banner cause selects its document row, or scrolls to the feature's toggle row. */
+  const jumpToAttentionCause = (cause: PolicyAttentionCause) => {
+    if (cause.kind === "document") setSelectedKey(cause.key);
+    const rowId =
+      cause.kind === "document"
+        ? policyDocumentRowId(cause.key)
+        : policyFeatureRowId(cause.feature);
+    document.getElementById(rowId)?.scrollIntoView({ block: "nearest" });
+  };
+
   const toggleApplyExternalEdits = async (enabled: boolean) => {
     if (environmentId === null || togglePending) return;
     setTogglePending(true);
@@ -173,11 +197,25 @@ export function PoliciesSettingsPanel() {
               Could not load policies: {snapshotQuery.error}
             </p>
           ) : null}
-          {snapshot?.needsAttention ? (
-            <p className="px-3 py-2 text-sm text-warning sm:px-4">
-              Attention: an enabled feature is not effective, a policy document has warnings, or an
-              external change waits for a review below.
-            </p>
+          {attentionCauses.length > 0 ? (
+            <div className="px-3 py-2 sm:px-4">
+              <p className="text-sm font-medium text-warning">Attention:</p>
+              <ul className="list-disc space-y-1 pl-5">
+                {attentionCauses.map((cause) => (
+                  <li
+                    key={`${cause.kind}:${cause.kind === "feature" ? cause.feature : cause.key}:${cause.text}`}
+                  >
+                    <button
+                      type="button"
+                      className="text-left text-sm text-warning underline-offset-2 hover:underline"
+                      onClick={() => jumpToAttentionCause(cause)}
+                    >
+                      {cause.text}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
           {snapshot?.documents.map((document) => (
             <PolicyDocumentRow
@@ -233,6 +271,7 @@ export function PoliciesSettingsPanel() {
             return (
               <SettingsRow
                 key={feature}
+                id={policyFeatureRowId(feature)}
                 title={feature}
                 description={reason ?? undefined}
                 control={
@@ -268,7 +307,10 @@ function PolicyDocumentRow({
   const label = POLICY_DOCUMENT_KEY_LABELS[document.key];
   const action = policyDocumentActionLabel(document.source);
   return (
-    <div className="flex items-center gap-2 px-3 py-2 sm:px-4">
+    <div
+      id={policyDocumentRowId(document.key)}
+      className="flex items-center gap-2 px-3 py-2 sm:px-4"
+    >
       <div className="min-w-0 flex-1">
         <span className="block truncate text-sm font-medium">{label}</span>
         <span className="block truncate text-xs text-muted-foreground">
@@ -506,6 +548,7 @@ function PolicyDocumentEditor({
       ) : null}
       <PolicyDocumentSourceControl
         key={JSON.stringify(document.source)}
+        environmentId={environmentId}
         document={document}
         onChange={async (key, source) => {
           const failure = await onChangeSource(key, source);
@@ -642,9 +685,11 @@ function PolicyDocumentEditor({
 }
 
 function PolicyDocumentSourceControl({
+  environmentId,
   document,
   onChange,
 }: {
+  environmentId: EnvironmentId;
   document: PolicyDocumentStatusSchema;
   onChange: (key: PolicyDocumentKey, source: PolicyDocumentSource) => Promise<string | null>;
 }) {
@@ -661,6 +706,44 @@ function PolicyDocumentSourceControl({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [storePickerOpen, setStorePickerOpen] = useState(false);
+  const [serverPickerOpen, setServerPickerOpen] = useState(false);
+  const browseServerDirectory = useAtomCommand(policiesEnvironment.browseServerDirectory, {
+    reportFailure: false,
+  });
+  const [serverDirectory, setServerDirectory] = useState("");
+  const [serverListing, setServerListing] = useState<PoliciesBrowseServerDirectoryResult | null>(
+    null,
+  );
+  const [serverBrowseError, setServerBrowseError] = useState<string | null>(null);
+  const [serverBrowsePending, setServerBrowsePending] = useState(false);
+
+  const loadServerDirectory = useCallback(
+    async (target: string) => {
+      setServerBrowsePending(true);
+      setServerBrowseError(null);
+      const result = await browseServerDirectory({ environmentId, input: { directory: target } });
+      setServerBrowsePending(false);
+      if (AsyncResult.isFailure(result)) {
+        const cause = squashAtomCommandFailure(result);
+        setServerBrowseError(
+          cause instanceof Error ? cause.message : "Could not list the server directory.",
+        );
+        return;
+      }
+      setServerDirectory(target);
+      setServerListing(result.value);
+    },
+    [browseServerDirectory, environmentId],
+  );
+
+  /** Opening the picker lists the current source's directory; the click is the trigger. */
+  const openServerPicker = () => {
+    setServerPickerOpen(true);
+    const start = serverDirectoryOf(address);
+    setServerDirectory(start === "" ? address : start);
+    if (start !== "") void loadServerDirectory(start);
+  };
 
   const sourceOf = (): PolicyDocumentSource | string => {
     if (kind === "builtin") return { kind: "builtin" };
@@ -723,19 +806,29 @@ function PolicyDocumentSourceControl({
           <option value="path">Server file</option>
         </select>
         {kind === "builtin" ? null : (
-          <Input
-            aria-label={`Source ${kind === "doc" ? "store path or oc:// link" : "server path"}`}
-            className="h-7 w-72 text-xs"
-            placeholder={
-              kind === "doc" ? "roles/roles.json or oc://doc/<id>" : "/srv/ft3/roles.json"
-            }
-            value={address}
-            onChange={(event) => {
-              setAddress(event.target.value);
-              setError(null);
-              setNotice(null);
-            }}
-          />
+          <>
+            <Input
+              aria-label={`Source ${kind === "doc" ? "store path or oc:// link" : "server path"}`}
+              className="h-7 w-72 text-xs"
+              placeholder={
+                kind === "doc" ? "roles/roles.json or oc://doc/<id>" : "/srv/ft3/roles.json"
+              }
+              value={address}
+              onChange={(event) => {
+                setAddress(event.target.value);
+                setError(null);
+                setNotice(null);
+              }}
+            />
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label={kind === "doc" ? "Browse store documents" : "Browse server files"}
+              onClick={() => (kind === "doc" ? setStorePickerOpen(true) : openServerPicker())}
+            >
+              Browse…
+            </Button>
+          </>
         )}
         <Button
           size="xs"
@@ -748,7 +841,223 @@ function PolicyDocumentSourceControl({
       </div>
       {error !== null ? <p className="text-xs text-destructive">{error}</p> : null}
       {notice !== null ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+      <StoreDocumentPickerDialog
+        environmentId={environmentId}
+        open={storePickerOpen}
+        onOpenChange={setStorePickerOpen}
+        onSelect={(relPath) => {
+          setAddress(relPath);
+          setError(null);
+          setNotice(null);
+        }}
+      />
+      <ServerFilePickerDialog
+        open={serverPickerOpen}
+        onOpenChange={setServerPickerOpen}
+        directory={serverDirectory}
+        onDirectoryChange={setServerDirectory}
+        listing={serverListing}
+        pending={serverBrowsePending}
+        error={serverBrowseError}
+        onNavigate={(target) => void loadServerDirectory(target)}
+        onSelect={(path) => {
+          setAddress(path);
+          setError(null);
+          setNotice(null);
+        }}
+      />
     </div>
+  );
+}
+
+/** The directory to start browsing in for a server path: its parent when the path names a file. */
+function serverDirectoryOf(path: string): string {
+  const trimmed = path.trim().replace(/[\\/]+$/, "");
+  const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (index < 0) return "";
+  return trimmed.slice(index + 1).includes(".") ? trimmed.slice(0, index) : trimmed;
+}
+
+function StoreDocumentPickerDialog({
+  environmentId,
+  open,
+  onOpenChange,
+  onSelect,
+}: {
+  environmentId: EnvironmentId;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSelect: (relPath: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const trimmed = query.trim();
+  const listQuery = useEnvironmentQuery(
+    open
+      ? policiesEnvironment.listStoreDocuments({
+          environmentId,
+          input: trimmed === "" ? {} : { query: trimmed },
+        })
+      : null,
+  );
+  const documents = listQuery.data?.documents ?? [];
+  if (!open) return null;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>Choose a store document</DialogTitle>
+          <DialogDescription>
+            Pick a document from the Corvis document store; the source field is filled with its
+            store path.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Input
+            aria-label="Search documents"
+            placeholder="Search by title, path or text"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {listQuery.isPending ? (
+            <p className="text-sm text-muted-foreground">Loading documents…</p>
+          ) : null}
+          {listQuery.error !== null ? (
+            <p className="text-sm text-destructive">Could not load documents: {listQuery.error}</p>
+          ) : null}
+          {!listQuery.isPending && listQuery.error === null && documents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No documents found.</p>
+          ) : null}
+          <ul className="max-h-72 space-y-1 overflow-auto">
+            {documents.map((document) => (
+              <li key={document.stableId}>
+                <button
+                  type="button"
+                  className="block w-full rounded-md px-2 py-1 text-left hover:bg-muted"
+                  onClick={() => {
+                    onSelect(document.relPath);
+                    onOpenChange(false);
+                  }}
+                >
+                  <span className="block truncate text-sm">{document.name}</span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {document.relPath}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+function ServerFilePickerDialog({
+  open,
+  onOpenChange,
+  directory,
+  onDirectoryChange,
+  listing,
+  pending,
+  error,
+  onNavigate,
+  onSelect,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  directory: string;
+  onDirectoryChange: (directory: string) => void;
+  listing: PoliciesBrowseServerDirectoryResult | null;
+  pending: boolean;
+  error: string | null;
+  onNavigate: (directory: string) => void;
+  onSelect: (path: string) => void;
+}) {
+  if (!open) return null;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>Choose a server file</DialogTitle>
+          <DialogDescription>
+            Browse the server's filesystem; only .json and .md files are listed.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Input
+              aria-label="Server directory"
+              className="h-7 flex-1 text-xs"
+              placeholder="/srv/ft3"
+              value={directory}
+              onChange={(event) => onDirectoryChange(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") onNavigate(directory.trim());
+              }}
+            />
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={pending || directory.trim() === ""}
+              onClick={() => onNavigate(directory.trim())}
+            >
+              List
+            </Button>
+          </div>
+          {pending ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+          {error !== null ? <p className="text-sm text-destructive">{error}</p> : null}
+          {listing !== null && !pending ? (
+            <ul className="max-h-72 space-y-1 overflow-auto">
+              {listing.parent !== null ? (
+                <li>
+                  <button
+                    type="button"
+                    className="block w-full rounded-md px-2 py-1 text-left text-sm hover:bg-muted"
+                    onClick={() => onNavigate(listing?.parent ?? "")}
+                  >
+                    ..
+                  </button>
+                </li>
+              ) : null}
+              {listing.directories.map((entry) => (
+                <li key={entry.path}>
+                  <button
+                    type="button"
+                    className="block w-full rounded-md px-2 py-1 text-left text-sm hover:bg-muted"
+                    onClick={() => onNavigate(entry.path)}
+                  >
+                    {entry.name}/
+                  </button>
+                </li>
+              ))}
+              {listing.files.map((entry) => (
+                <li key={entry.path}>
+                  <button
+                    type="button"
+                    className="block w-full rounded-md px-2 py-1 text-left hover:bg-muted"
+                    onClick={() => {
+                      onSelect(entry.path);
+                      onOpenChange(false);
+                    }}
+                  >
+                    <span className="block truncate text-sm">{entry.name}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {entry.path}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {listing !== null &&
+          !pending &&
+          listing.directories.length === 0 &&
+          listing.files.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No policy files here.</p>
+          ) : null}
+        </div>
+      </DialogPopup>
+    </Dialog>
   );
 }
 

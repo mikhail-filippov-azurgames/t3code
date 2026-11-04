@@ -10,11 +10,13 @@ const mocks = vi.hoisted(() => ({
   snapshot: null as unknown,
   read: null as unknown,
   pending: null as unknown,
+  storeDocuments: null as unknown,
   readError: null as string | null,
   pendingError: null as string | null,
   policySettings: null as unknown,
   calls: [] as Array<{ label: string; input: unknown }>,
   refreshes: [] as string[],
+  queries: [] as unknown[],
   commandResult: null as unknown,
 }));
 
@@ -23,11 +25,13 @@ vi.mock("./state.ts", () => ({
     snapshot: (target: unknown) => ({ __query: "snapshot", target }),
     readDocument: (target: unknown) => ({ __query: "read", target }),
     pendingChange: (target: unknown) => ({ __query: "pending", target }),
+    listStoreDocuments: (target: unknown) => ({ __query: "store-documents", target }),
     saveDocument: { label: "policies.saveDocument" },
     applyPending: { label: "policies.applyPending" },
     setApplyExternalEdits: { label: "policies.setApplyExternalEdits" },
     setDocument: { label: "policies.setDocument" },
     setFeature: { label: "policies.setFeature" },
+    browseServerDirectory: { label: "policies.browseServerDirectory" },
   },
 }));
 
@@ -40,8 +44,17 @@ vi.mock("~/state/query", () => ({
     };
     if (atom === null) return { ...view, data: null, refresh: () => {} };
     const query = (atom as { __query: string }).__query;
+    if (query === "store-documents") {
+      mocks.queries.push((atom as { target: { input: unknown } }).target.input);
+    }
     const data =
-      query === "snapshot" ? mocks.snapshot : query === "read" ? mocks.read : mocks.pending;
+      query === "snapshot"
+        ? mocks.snapshot
+        : query === "read"
+          ? mocks.read
+          : query === "pending"
+            ? mocks.pending
+            : mocks.storeDocuments;
     const error =
       query === "read" ? mocks.readError : query === "pending" ? mocks.pendingError : null;
     return {
@@ -201,10 +214,27 @@ function setup() {
   };
   mocks.calls = [];
   mocks.refreshes = [];
+  mocks.queries = [];
   mocks.commandResult = null;
   mocks.readError = null;
   mocks.pendingError = null;
   mocks.policySettings = DEFAULT_POLICY_SETTINGS;
+  mocks.storeDocuments = {
+    documents: [
+      {
+        stableId: "id-roles",
+        relPath: "roles/roles.json",
+        name: "roles.json",
+        description: "Role map",
+      },
+      {
+        stableId: "id-routing",
+        relPath: "policies/routing-policy.md",
+        name: "routing-policy.md",
+        description: "",
+      },
+    ],
+  };
 }
 
 describe("policies settings panel", () => {
@@ -496,5 +526,135 @@ describe("policies settings panel", () => {
     await userEvent.click(screen.getByText("Change source"));
     expect(mocks.calls).toEqual([]);
     expect(screen.container.textContent).toContain("is not a store path or an oc://doc/<id> link.");
+  });
+
+  it("lists a concrete cause per attention reason and selects the document on jump", async () => {
+    setup();
+    mocks.snapshot = {
+      ...snapshotFixture,
+      needsAttention: true,
+      features: featureStatesOf({
+        board: {
+          id: "board",
+          requestedEnabled: true,
+          effectiveEnabled: false,
+          offReason: { code: "feature_document_off", requirement: "rolesManifest" },
+        },
+      }),
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    const text = screen.container.textContent ?? "";
+    expect(text).toContain(
+      "Feature board is not effective: Off: its Roles document is not valid yet.",
+    );
+    expect(text).toContain("Roles: external change waits for review");
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Roles: external change waits for review" }),
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Edit Roles" }))
+      .toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("hides the banner when the snapshot has no attention cause left", async () => {
+    setup();
+    mocks.snapshot = {
+      ...snapshotFixture,
+      documents: snapshotFixture.documents.map((document) => ({
+        ...document,
+        pending: false,
+        kept: false,
+        warnings: [],
+        errors: [],
+      })),
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    expect(screen.container.textContent).not.toContain("Attention:");
+  });
+
+  it("fills a store document source from the Browse picker", async () => {
+    setup();
+    mocks.commandResult = { value: { snapshot: snapshotFixture } };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "doc");
+    await userEvent.click(screen.getByRole("button", { name: "Browse store documents" }));
+    // The modal dialog's inert layer swallows pointer events in this harness, so drive the DOM.
+    (screen.getByText("roles.json").element() as HTMLElement).click();
+    const input = screen.getByLabelText("Source store path or oc:// link");
+    await vi.waitFor(() => {
+      expect((input.element() as HTMLInputElement).value).toBe("roles/roles.json");
+    });
+    await userEvent.click(screen.getByText("Change source"));
+    expect(mocks.calls).toEqual([
+      {
+        label: "policies.setDocument",
+        input: {
+          key: "leadSkills",
+          source: { kind: "doc", address: { kind: "path", relPath: "roles/roles.json" } },
+        },
+      },
+    ]);
+  });
+
+  it("filters store documents through the picker search", async () => {
+    setup();
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "doc");
+    await userEvent.click(screen.getByRole("button", { name: "Browse store documents" }));
+    const search = screen.getByLabelText("Search documents").element() as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    setValue.call(search, "routing");
+    search.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() => {
+      expect(mocks.queries.at(-1)).toEqual({ query: "routing" });
+    });
+  });
+
+  it("fills a server file source from the Browse picker", async () => {
+    setup();
+    mocks.commandResult = {
+      value: {
+        parent: "/etc/ft3",
+        directories: [{ name: "nested", path: "/etc/ft3/nested" }],
+        files: [{ name: "roles.json", path: "/etc/ft3/roles.json" }],
+      },
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "path");
+    await userEvent.click(screen.getByRole("button", { name: "Browse server files" }));
+    // The picker lists the current source path's directory when it opens.
+    await vi.waitFor(() => {
+      expect(mocks.calls).toEqual([
+        {
+          label: "policies.browseServerDirectory",
+          input: { directory: "/etc/ft3" },
+        },
+      ]);
+    });
+    // The modal dialog's inert layer swallows pointer events in this harness, so drive the DOM.
+    (screen.getByText("roles.json").element() as HTMLElement).click();
+    const input = screen.getByLabelText("Source server path");
+    await vi.waitFor(() => {
+      expect((input.element() as HTMLInputElement).value).toBe("/etc/ft3/roles.json");
+    });
+    mocks.commandResult = { value: { snapshot: snapshotFixture } };
+    await userEvent.click(screen.getByText("Change source"));
+    expect(mocks.calls).toEqual([
+      {
+        label: "policies.browseServerDirectory",
+        input: { directory: "/etc/ft3" },
+      },
+      {
+        label: "policies.setDocument",
+        input: { key: "leadSkills", source: { kind: "path", path: "/etc/ft3/roles.json" } },
+      },
+    ]);
   });
 });

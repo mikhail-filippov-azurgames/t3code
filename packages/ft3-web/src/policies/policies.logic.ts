@@ -1,12 +1,15 @@
 import type {
   PolicyDocumentStatusSchema,
+  PoliciesGetSnapshotResult,
   PolicyIssueSchema,
 } from "@t3tools/ft3-policies/rpc-contracts";
-import type {
-  FeatureOffReason,
-  PolicyDocumentKey,
-  PolicyDocumentSource,
-  PolicyRequirementId,
+import {
+  FEATURE_IDS,
+  type FeatureId,
+  type FeatureOffReason,
+  type PolicyDocumentKey,
+  type PolicyDocumentSource,
+  type PolicyRequirementId,
 } from "@t3tools/ft3-policies/contracts";
 
 /**
@@ -82,7 +85,7 @@ export function policyDocumentBadgeHint(
 
 export function policyDocumentReadOnlyNote(source: PolicyDocumentSource): string | null {
   return source.kind === "builtin"
-    ? "Built-in template: read-only. Switching this document to a store document is not available in this tab yet."
+    ? "Built-in template: read-only. Switch the source to a store document or a server file to edit it here."
     : null;
 }
 
@@ -145,4 +148,53 @@ export function lineStartOffset(content: string, line: number): number {
     offset = nextNewline + 1;
   }
   return Math.min(offset, content.length);
+}
+
+/**
+ * One concrete reason the snapshot needs attention, as the banner lists it.
+ * `document` causes select that document's row; `feature` causes scroll to the
+ * feature's toggle row.
+ */
+export type PolicyAttentionCause =
+  | { readonly kind: "feature"; readonly feature: FeatureId; readonly text: string }
+  | { readonly kind: "document"; readonly key: PolicyDocumentKey; readonly text: string };
+
+/**
+ * Every concrete attention cause in a snapshot, in banner order: ineffective
+ * enabled features first, then documents with warnings or a pending external
+ * change. Empty exactly when the snapshot no longer needs attention.
+ */
+export function policyAttentionCauses(
+  snapshot: Pick<PoliciesGetSnapshotResult, "features" | "documents">,
+): PolicyAttentionCause[] {
+  const causes: PolicyAttentionCause[] = [];
+  for (const feature of FEATURE_IDS) {
+    const state = snapshot.features[feature];
+    if (state === undefined || !state.requestedEnabled || state.effectiveEnabled) continue;
+    const reason = featureOffReasonText(state.offReason) ?? "the reason is unknown.";
+    causes.push({
+      kind: "feature",
+      feature,
+      text: `Feature ${feature} is not effective: ${reason}`,
+    });
+  }
+  for (const document of snapshot.documents) {
+    const label = POLICY_DOCUMENT_KEY_LABELS[document.key];
+    if (document.warnings.length > 0) {
+      const count = document.warnings.length;
+      causes.push({
+        kind: "document",
+        key: document.key,
+        text: `${label}: ${count} warning${count === 1 ? "" : "s"}`,
+      });
+    }
+    if (document.pending) {
+      causes.push({
+        kind: "document",
+        key: document.key,
+        text: `${label}: external change waits for review`,
+      });
+    }
+  }
+  return causes;
 }

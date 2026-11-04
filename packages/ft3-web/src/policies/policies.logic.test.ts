@@ -1,13 +1,17 @@
 import type {
+  PoliciesGetSnapshotResult,
   PolicyDocumentStatusSchema,
+  PolicyFeatureStateSchema,
   PolicyIssueSchema,
 } from "@t3tools/ft3-policies/rpc-contracts";
+import { FEATURE_IDS, type FeatureId } from "@t3tools/ft3-policies/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   featureOffReasonText,
   issueLines,
   lineStartOffset,
+  policyAttentionCauses,
   policyDocumentActionLabel,
   policyDocumentBadge,
   policyDocumentBadgeHint,
@@ -36,6 +40,24 @@ const issue = (overrides: Partial<PolicyIssueSchema> = {}): PolicyIssueSchema =>
   severity: "error",
   message: "Bad row",
   document: "routingPolicy",
+  ...overrides,
+});
+
+const featuresOf = (
+  overrides: Partial<Record<FeatureId, Partial<PolicyFeatureStateSchema>>> = {},
+): Record<FeatureId, PolicyFeatureStateSchema> =>
+  Object.fromEntries(
+    FEATURE_IDS.map((id) => [
+      id,
+      { id, requestedEnabled: false, effectiveEnabled: false, offReason: null, ...overrides[id] },
+    ]),
+  ) as Record<FeatureId, PolicyFeatureStateSchema>;
+
+const snapshotOf = (
+  overrides: Partial<Pick<PoliciesGetSnapshotResult, "features" | "documents">> = {},
+): Pick<PoliciesGetSnapshotResult, "features" | "documents"> => ({
+  features: featuresOf(),
+  documents: [],
   ...overrides,
 });
 
@@ -120,6 +142,74 @@ describe("policy document actions and explanations", () => {
     expect(
       featureOffReasonText({ code: "feature_document_off", requirement: "documentsStore" }),
     ).toBe("Off: a required document is not valid (documentsStore).");
+  });
+});
+
+describe("policyAttentionCauses", () => {
+  it("is empty when every feature is effective and every document is quiet", () => {
+    expect(
+      policyAttentionCauses(
+        snapshotOf({ documents: [documentStatus(), documentStatus({ key: "roles" })] }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("lists an enabled but ineffective feature with its off reason", () => {
+    const causes = policyAttentionCauses(
+      snapshotOf({
+        features: featuresOf({
+          board: {
+            id: "board",
+            requestedEnabled: true,
+            effectiveEnabled: false,
+            offReason: { code: "feature_document_off", requirement: "rolesManifest" },
+          },
+        }),
+      }),
+    );
+    expect(causes).toEqual([
+      {
+        kind: "feature",
+        feature: "board",
+        text: "Feature board is not effective: Off: its Roles document is not valid yet.",
+      },
+    ]);
+  });
+
+  it("lists document warnings with their count and pending changes with their label", () => {
+    const causes = policyAttentionCauses(
+      snapshotOf({
+        documents: [
+          documentStatus({ key: "roles", warnings: [issue({ document: "roles" })] }),
+          documentStatus({
+            key: "leadSkills",
+            pending: true,
+            warnings: [issue({ document: "leadSkills" }), issue({ document: "leadSkills" })],
+          }),
+        ],
+      }),
+    );
+    expect(causes).toEqual([
+      { kind: "document", key: "roles", text: "Roles: 1 warning" },
+      { kind: "document", key: "leadSkills", text: "Lead skills: 2 warnings" },
+      {
+        kind: "document",
+        key: "leadSkills",
+        text: "Lead skills: external change waits for review",
+      },
+    ]);
+  });
+
+  it("ignores off features the user did not enable", () => {
+    expect(
+      policyAttentionCauses(
+        snapshotOf({
+          features: featuresOf({
+            mail: { id: "mail", requestedEnabled: false, effectiveEnabled: false, offReason: null },
+          }),
+        }),
+      ),
+    ).toEqual([]);
   });
 });
 

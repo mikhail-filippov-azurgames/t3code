@@ -46,5 +46,14 @@ export function createPoliciesEnvironmentAtoms<R, E>(
       label: "environment-data:policies:set-feature",
       tag: WS_METHODS.policiesSetFeature,
     }),
+    listStoreDocuments: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:policies:list-store-documents",
+      tag: WS_METHODS.policiesListStoreDocuments,
+      staleTimeMs: 0,
+    }),
+    browseServerDirectory: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:policies:browse-server-directory",
+      tag: WS_METHODS.policiesBrowseServerDirectory,
+    }),
   };
 }

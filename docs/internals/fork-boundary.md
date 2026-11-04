@@ -949,11 +949,12 @@ immediately». Тумблер пишется через `policies.setApplyExtern
 `readPolicySettings(settings.ft3)`. Тумблеры функций показаны read-only из того
 же namespace.
 
-| Upstream-файл                                                                       | Правка                                                                                                               | Зачем                                                                 |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `apps/web/src/components/settings/settingsSearch.ts`                                | `SettingsPath` `"/settings/policies"`, лейбл «Policies», пункт nav-группы Agents между Providers и Threads           | nav и поиск настроек знают о вкладке без знания о ft3-компоненте      |
-| `apps/web/src/components/settings/SettingsSidebarNav.tsx`                           | иконка `ScrollTextIcon` для `/settings/policies` в `SETTINGS_SECTION_ICONS`                                          | у каждого пути настроек обязательна иконка                            |
-| `apps/web/src/routes/_chat.settings.policies.tsx` + `apps/web/src/routeTree.gen.ts` | тонкий route к `PoliciesSettingsPanel` из `@t3tools/ft3-web/policies`; routeTree перегенерирован штатным генератором | TanStack Router требует файловый route; вся логика остаётся в ft3-web |
+| Upstream-файл                                                                       | Правка                                                                                                               | Зачем                                                                   |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `apps/web/src/components/settings/settingsSearch.ts`                                | `SettingsPath` `"/settings/policies"`, лейбл «Policies», пункт nav-группы Agents между Providers и Threads           | nav и поиск настроек знают о вкладке без знания о ft3-компоненте        |
+| `apps/web/src/components/settings/SettingsSidebarNav.tsx`                           | иконка `ScrollTextIcon` для `/settings/policies` в `SETTINGS_SECTION_ICONS`                                          | у каждого пути настроек обязательна иконка                              |
+| `apps/web/src/routes/_chat.settings.policies.tsx` + `apps/web/src/routeTree.gen.ts` | тонкий route к `PoliciesSettingsPanel` из `@t3tools/ft3-web/policies`; routeTree перегенерирован штатным генератором | TanStack Router требует файловый route; вся логика остаётся в ft3-web   |
+| `packages/contracts/src/clientRpcPermissions.ts`                                    | fork-блок `FT3_CLIENT_GUARDED_RPC_SCOPES`: `policies.browseServerDirectory` → `AuthSettingsWriteScope`               | клиентский guard pickера серверных файлов, как у `policies.setDocument` |
 
 Fork-owned tests: `packages/ft3-web/src/policies/policies.logic.test.ts` and
 `packages/ft3-web/src/policies/PoliciesSettingsPanel.browser.test.tsx`.

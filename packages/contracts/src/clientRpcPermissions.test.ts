@@ -20,9 +20,14 @@ describe("clientRpcRequiredScopes", () => {
   it("keeps the ft3 policies methods out of the upstream server scope map", () => {
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.setDocument");
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.setFeature");
+    expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.browseServerDirectory");
+    expect(clientRpcRequiredScopes("policies.browseServerDirectory", undefined)).toEqual([
+      AuthSettingsWriteScope,
+    ]);
     expect(Object.keys(FT3_CLIENT_GUARDED_RPC_SCOPES)).toEqual([
       "policies.setDocument",
       "policies.setFeature",
+      "policies.browseServerDirectory",
     ]);
   });
 });

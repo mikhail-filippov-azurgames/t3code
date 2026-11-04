@@ -88,6 +88,8 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 export const FT3_CLIENT_GUARDED_RPC_SCOPES = {
   "policies.setDocument": AuthSettingsWriteScope,
   "policies.setFeature": AuthSettingsWriteScope,
+  // The server-file picker reads the server's filesystem to write a policy source.
+  "policies.browseServerDirectory": AuthSettingsWriteScope,
 } as const;
 export type Ft3ClientGuardedRpcTag = keyof typeof FT3_CLIENT_GUARDED_RPC_SCOPES;
 
