@@ -32,9 +32,12 @@ import type {
   MailLevel,
   MailMember,
   MailOutcome,
+  MailRound,
+  MailRoundKind,
   MailTask,
+  MailTimelineEntry,
 } from "./contracts.ts";
-import { applyClassification, MailKindClassifier } from "./classifier.ts";
+import { applyClassification, effectiveLetterKind, MailKindClassifier } from "./classifier.ts";
 import { MailSettingsService } from "./settings.ts";
 import {
   MailRepository,
@@ -235,6 +238,51 @@ export interface SetLetterKindResult {
   readonly effectiveKind: MailLetterKind;
 }
 
+export interface OpenMailRoundInput {
+  readonly callerThreadId: string;
+  readonly taskId: string;
+  readonly kind: MailRoundKind;
+}
+
+export interface CloseMailRoundInput {
+  readonly callerThreadId: string;
+  readonly roundId: string;
+  readonly outcome: MailOutcome;
+}
+
+export interface ReadMailLetterInput {
+  readonly callerThreadId: string;
+  readonly letterId: string;
+}
+
+export interface ReadMailLetterResult {
+  readonly letter: MailLetter;
+  readonly deliveries: ReadonlyArray<MailDelivery>;
+  /** The kind server transitions use for this letter right now. */
+  readonly effectiveKind: MailLetterKind;
+}
+
+export interface ReadMailTaskInput {
+  readonly callerThreadId: string;
+  readonly taskId: string;
+  readonly beforeLetterId?: string | null;
+  readonly limit?: number | null;
+}
+
+export interface ReadMailTaskResult {
+  readonly task: MailTask;
+  readonly members: ReadonlyArray<MailMember>;
+  readonly rounds: ReadonlyArray<MailRound>;
+  readonly entries: ReadonlyArray<MailTimelineEntry>;
+}
+
+export interface ListMailTimelineInput {
+  readonly callerThreadId: string;
+  readonly taskId: string;
+  readonly beforeSequence?: number | null;
+  readonly limit?: number | null;
+}
+
 export interface SettleMailMemberInput {
   readonly memberId: string;
   /** The terminal participant-thread status that settled the member. */
@@ -343,6 +391,24 @@ export class MailService extends Context.Service<
     readonly setLetterKind: (
       input: SetLetterKindInput,
     ) => Effect.Effect<SetLetterKindResult, MailServiceError | MailRepositoryError>;
+    /** Opens a discussion round inside a task; planning drives these per review pass. */
+    readonly openRound: (
+      input: OpenMailRoundInput,
+    ) => Effect.Effect<MailRound, MailServiceError | MailRepositoryError>;
+    readonly closeRound: (
+      input: CloseMailRoundInput,
+    ) => Effect.Effect<MailRound, MailServiceError | MailRepositoryError>;
+    /** A full letter; reading marks the caller's own delivered delivery read. */
+    readonly readLetter: (
+      input: ReadMailLetterInput,
+    ) => Effect.Effect<ReadMailLetterResult, MailServiceError | MailRepositoryError>;
+    /** The task, its members and rounds, and the newest-first letter timeline. */
+    readonly readTask: (
+      input: ReadMailTaskInput,
+    ) => Effect.Effect<ReadMailTaskResult, MailServiceError | MailRepositoryError>;
+    readonly listTimeline: (
+      input: ListMailTimelineInput,
+    ) => Effect.Effect<ReadonlyArray<MailTimelineEntry>, MailServiceError | MailRepositoryError>;
     readonly closeTask: (
       input: CloseMailTaskInput,
     ) => Effect.Effect<MailTask, MailServiceError | MailRepositoryError>;
@@ -970,6 +1036,154 @@ const make = Effect.gen(function* () {
     return { letter: decided, effectiveKind: input.kind } satisfies SetLetterKindResult;
   });
 
+  const requireTaskAccess = Effect.fn("MailService.requireTaskAccess")(function* (
+    task: MailTask,
+    callerThreadId: string,
+  ) {
+    if (task.createdByThreadId === callerThreadId) return;
+    const members = yield* repository.listMembers(task.taskId);
+    const member = members.find((candidate) => candidate.participantThreadId === callerThreadId);
+    if (member === undefined) {
+      return yield* refuse(
+        "capability_denied",
+        `Thread "${callerThreadId}" is not part of mail task "${task.taskId}".`,
+      );
+    }
+  });
+
+  const TIMELINE_DEFAULT_LIMIT = 50;
+  const TIMELINE_MAX_LIMIT = 100;
+
+  const requireTimelineLimit = Effect.fn("MailService.requireTimelineLimit")(function* (
+    limit: number | null | undefined,
+  ) {
+    const value = limit ?? TIMELINE_DEFAULT_LIMIT;
+    if (!Number.isInteger(value) || value < 1 || value > TIMELINE_MAX_LIMIT) {
+      return yield* refuse(
+        "invalid_request",
+        `A timeline limit must be 1..${TIMELINE_MAX_LIMIT} letters.`,
+      );
+    }
+    return value;
+  });
+
+  const openRound = Effect.fn("MailService.openRound")(function* (input: OpenMailRoundInput) {
+    yield* requireMail;
+    const task = yield* requireTask(input.taskId);
+    if (task.status === "closed") {
+      return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
+    }
+    if (task.createdByThreadId !== input.callerThreadId) {
+      return yield* refuse("capability_denied", "Only the lead can open a mail round.");
+    }
+    const rounds = yield* repository.listRounds(task.taskId);
+    const roundNumber = rounds.reduce((max, round) => Math.max(max, round.roundNumber), 0) + 1;
+    const opened = yield* repository.createRound({
+      roundId: yield* newId,
+      taskId: task.taskId,
+      roundNumber,
+      kind: input.kind,
+      openedAt: yield* nowIso,
+    });
+    return opened.round;
+  });
+
+  const closeRound = Effect.fn("MailService.closeRound")(function* (input: CloseMailRoundInput) {
+    yield* requireMail;
+    const round = yield* repository.getRound(input.roundId);
+    if (round === null) {
+      return yield* refuse("invalid_request", `Round "${input.roundId}" was not found.`);
+    }
+    const task = yield* requireTask(round.taskId);
+    if (task.status === "closed") {
+      return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
+    }
+    if (task.createdByThreadId !== input.callerThreadId) {
+      return yield* refuse("capability_denied", "Only the lead can close a mail round.");
+    }
+    const closed = yield* repository.closeRound({
+      roundId: round.roundId,
+      outcome: input.outcome,
+      closedAt: yield* nowIso,
+    });
+    if (closed === null) {
+      return yield* refuse("invalid_request", `Round "${round.roundId}" was not found.`);
+    }
+    return closed;
+  });
+
+  const readLetter = Effect.fn("MailService.readLetter")(function* (input: ReadMailLetterInput) {
+    yield* requireMail;
+    const letter = yield* repository.getLetter(input.letterId);
+    if (letter === null) {
+      return yield* refuse("letter_not_found", `Letter "${input.letterId}" was not found.`);
+    }
+    const task = yield* requireTask(letter.taskId);
+    yield* requireTaskAccess(task, input.callerThreadId);
+    if (task.status === "open") {
+      const pending = yield* repository.listLetterDeliveries(letter.letterId);
+      for (const delivery of pending) {
+        if (
+          delivery.state === "delivered" &&
+          delivery.participantThreadId === input.callerThreadId
+        ) {
+          yield* repository.markDeliveryRead({
+            deliveryId: delivery.deliveryId,
+            at: yield* nowIso,
+          });
+        }
+      }
+    }
+    const deliveries = yield* repository.listLetterDeliveries(letter.letterId);
+    return {
+      letter,
+      deliveries,
+      effectiveKind: effectiveLetterKind(letter),
+    } satisfies ReadMailLetterResult;
+  });
+
+  const readTask = Effect.fn("MailService.readTask")(function* (input: ReadMailTaskInput) {
+    yield* requireMail;
+    const task = yield* requireTask(input.taskId);
+    yield* requireTaskAccess(task, input.callerThreadId);
+    const limit = yield* requireTimelineLimit(input.limit);
+    let beforeSequence: number | undefined;
+    if (input.beforeLetterId !== null && input.beforeLetterId !== undefined) {
+      const before = yield* repository.getLetter(input.beforeLetterId);
+      if (before === null || before.taskId !== task.taskId) {
+        return yield* refuse(
+          "letter_not_found",
+          `Letter "${input.beforeLetterId}" was not found in this task.`,
+        );
+      }
+      beforeSequence = before.sequence;
+    }
+    const members = yield* repository.listMembers(task.taskId);
+    const rounds = yield* repository.listRounds(task.taskId);
+    const entries = yield* repository.listTimeline({
+      taskId: task.taskId,
+      ...(beforeSequence === undefined ? {} : { beforeSequence }),
+      limit,
+    });
+    return { task, members, rounds, entries } satisfies ReadMailTaskResult;
+  });
+
+  const listTimeline = Effect.fn("MailService.listTimeline")(function* (
+    input: ListMailTimelineInput,
+  ) {
+    yield* requireMail;
+    const task = yield* requireTask(input.taskId);
+    yield* requireTaskAccess(task, input.callerThreadId);
+    const limit = yield* requireTimelineLimit(input.limit);
+    return yield* repository.listTimeline({
+      taskId: task.taskId,
+      ...(input.beforeSequence === null || input.beforeSequence === undefined
+        ? {}
+        : { beforeSequence: input.beforeSequence }),
+      limit,
+    });
+  });
+
   const closeTask = Effect.fn("MailService.closeTask")(function* (input: CloseMailTaskInput) {
     yield* requireMail;
     const task = yield* requireTask(input.taskId);
@@ -1120,6 +1334,11 @@ const make = Effect.gen(function* () {
     setMemberModel,
     sendLetter,
     setLetterKind,
+    openRound,
+    closeRound,
+    readLetter,
+    readTask,
+    listTimeline,
     closeTask,
     settleMember,
   });

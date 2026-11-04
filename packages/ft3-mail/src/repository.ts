@@ -524,6 +524,7 @@ export class MailRepository extends Context.Service<
       input: AppendLetterInput,
     ) => Effect.Effect<AppendLetterResult, MailRepositoryError | MailIdempotencyConflict>;
     readonly getLetter: (letterId: string) => Effect.Effect<MailLetter | null, MailRepositoryError>;
+    readonly getRound: (roundId: string) => Effect.Effect<MailRound | null, MailRepositoryError>;
     readonly listLetterDeliveries: (
       letterId: string,
     ) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
@@ -879,6 +880,9 @@ const make = Effect.gen(function* () {
     ),
     getLetter: Effect.fn("MailRepository.getLetter")((letterId: string) =>
       mapError("getLetter")(findLetter(letterId)),
+    ),
+    getRound: Effect.fn("MailRepository.getRound")((roundId: string) =>
+      mapError("getRound")(findRound(roundId)),
     ),
     listLetterDeliveries: Effect.fn("MailRepository.listLetterDeliveries")((letterId: string) =>
       mapError("listLetterDeliveries")(
