@@ -490,6 +490,37 @@ describe("DocsService writes", () => {
     ),
   );
 
+  it.effect("refuses a create inside a protected prefix to a granted general child", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const error = yield* context.service
+            .write({
+              caller: { threadId: "thread:general", parentThreadId: "thread:root" },
+              relPath: "policies/roles/new.md",
+              content: "# New\n",
+              clientRequestId: "write:create-protected",
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.code, "document_protected");
+
+          const created = yield* context.service.write({
+            caller: { threadId: "thread:general", parentThreadId: "thread:root" },
+            relPath: "project/new.md",
+            content: "# New\n",
+            clientRequestId: "write:create-unprotected",
+          });
+          assert.equal(created.relPath, "project/new.md");
+        }),
+      seedFiles,
+      {
+        writeAccess: lineageWithFacts({ role: "general", planStableId: null, granted: true }),
+        isProtected: (document) => document.relPath.startsWith("policies/"),
+      },
+    ),
+  );
+
   it.effect("refuses the write when the protection check itself fails", () =>
     withDocs(
       (context) =>

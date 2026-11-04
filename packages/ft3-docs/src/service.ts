@@ -499,7 +499,13 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     }
 
     const existing = ref === undefined || ref === "" ? null : yield* locate(ref);
-    yield* requireWrite(input.caller, existing);
+    // A create names its destination up front: check the new path with a
+    // stable id no document can carry, so a store-wide right cannot land
+    // inside a protected tree. Document-scoped rights still deny through
+    // the stable-id mismatch, as they do for a null target.
+    const target =
+      existing ?? (relPath === undefined || relPath === "" ? null : { stableId: "", relPath });
+    yield* requireWrite(input.caller, target);
 
     if (existing === null) {
       const created = yield* store
