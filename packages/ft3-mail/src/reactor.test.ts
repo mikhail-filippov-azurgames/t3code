@@ -43,6 +43,7 @@ import {
   routingFake,
   settingsLayer,
 } from "./mail.testkit.ts";
+import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
 import { layer as mailServiceLayer } from "./service.ts";
 import { MailDeliveryReactor, layer as mailReactorLayer } from "./reactor.ts";
 
@@ -157,6 +158,7 @@ function fixture(enabled = true) {
         launcher.layer,
         classifierFake().layer,
         settingsLayer(),
+        normalServicePolicyLayer,
       ),
     ),
   );
@@ -434,6 +436,40 @@ it.effect("marks a dead wake handled without dispatching after the task closes",
     yield* (yield* MailDeliveryReactor).recover;
     assert.equal(harness.dispatched.length, 0);
     assert.isNull(yield* repository.getDelivery("delivery:late"));
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("dispatches the next wake on the overridden model after setMemberModel", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    yield* mail.setMemberModel({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      memberId: member.memberId,
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-other" },
+      humanInstruction: "The first model stalls.",
+      clientRequestId: "request:override",
+    });
+    yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start again.",
+      clientRequestId: "request:letter",
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 1);
+    assert.deepStrictEqual(harness.dispatched[0]!.modelSelection, {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-other",
+    });
   }).pipe(Effect.provide(harness.layer));
 });
 

@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   ThreadId,
+  type ModelSelection,
   type OrchestrationV2StoredEvent,
 } from "@t3tools/contracts";
 import { FeatureGate } from "@t3tools/ft3-policies/server";
@@ -19,6 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../../../apps/server/src/serverActivation.ts";
+import { decodeParticipantModelSelection } from "./participantLauncher.ts";
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
 import { MailService } from "./service.ts";
 
@@ -89,6 +91,8 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     readonly key: string;
     readonly text: string;
     readonly summary: string;
+    /** A lead override: the next dispatch on this thread runs on the new model. */
+    readonly modelSelection?: ModelSelection;
   }) {
     const records = yield* threads.getThreadRecords(input.threadId, ["runs"]);
     const delegatedTaskId = records.runs
@@ -102,6 +106,7 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         messageId: MessageId.make(`mail:wake:${input.key}`),
         text: input.text,
         attachments: [],
+        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
         dispatchMode: { type: "queue_after_active" },
         notification: {
           source: {
@@ -142,11 +147,19 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     }
     // A closed member never gets another dispatch: its pending deliveries were
     // failed when it settled, so a wake that still points at it is dead.
+    // A corrupt override never blocks the letter; the dispatch runs unoverridden.
+    let modelSelection: ModelSelection | undefined;
     if (delivery.memberId !== null) {
       const member = yield* repository.getMember(delivery.memberId);
       if (member === null || member.status !== "active") {
         yield* dead();
         return;
+      }
+      if (member.modelOverrideJson !== null) {
+        const decoded = yield* decodeParticipantModelSelection(member.modelOverrideJson).pipe(
+          Effect.option,
+        );
+        if (decoded._tag === "Some") modelSelection = decoded.value;
       }
     }
     if ((yield* aliveShell(input.participantThreadId)) === null) {
@@ -158,6 +171,7 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       key: input.key,
       text: `New ${letter.kind} letter in mail task "${task.title}":\n\n${letter.body}`,
       summary: `Mail ${letter.kind} letter in "${task.title}"`,
+      ...(modelSelection === undefined ? {} : { modelSelection }),
     });
     yield* repository.markWakeDelivered({ wakeId: input.wakeId, at });
     yield* repository.markDeliveryDelivered({ deliveryId: delivery.deliveryId, at });

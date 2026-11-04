@@ -46,11 +46,15 @@ const routingLayer = routingPolicyServiceLayer().pipe(
   Layer.provide(Layer.mergeAll(normalServicePolicyLayer, sqlPolicyUsageRecorderLayer)),
 );
 
+// The service validates explicit model overrides against the normal-service rule.
+const overrideLayer = normalServicePolicyLayer;
+
 export const layer = serviceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
       repositoryLayer,
       routingLayer,
+      overrideLayer,
       featureGateLayer,
       policyEvidenceLayer,
       layerNoopClassifier,

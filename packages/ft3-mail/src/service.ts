@@ -4,6 +4,8 @@
  * and wake belong to the next slice, so this service records state only.
  */
 import {
+  isAcceleratedModel,
+  NormalServicePolicy,
   RoutingPolicyService,
   type RoutingSkippedCandidate,
   routingCandidateModelSelection,
@@ -43,10 +45,12 @@ import {
 import { MailParticipantLauncher, type MailParticipantLaunchInput } from "./participantLauncher.ts";
 
 const encodeModelSelectionJson = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
+const decodeModelOverride = Schema.decodeEffect(ModelSelection);
 const DEFAULT_RESPONSE_BUDGET_SECONDS = 1800;
 const MIN_RESPONSE_BUDGET_SECONDS = 60;
 const MAX_RESPONSE_BUDGET_SECONDS = 86400;
 const ROUTING_UNAVAILABLE = "The routing policy is not applied, so no participant can be routed.";
+const MAX_HUMAN_INSTRUCTION_LENGTH = 4096;
 
 export const MailServiceErrorCode = Schema.Literals([
   "mail_disabled",
@@ -60,6 +64,8 @@ export const MailServiceErrorCode = Schema.Literals([
   "kind_not_disputed",
   "invalid_role",
   "capability_denied",
+  "human_instruction_required",
+  "model_unavailable",
   "idempotency_conflict",
   "invalid_request",
 ]);
@@ -120,12 +126,28 @@ export const mailKindAllowed = (
   }
 };
 
+export interface MailModelOverride {
+  readonly modelSelection: ModelSelection;
+  readonly humanInstruction: string;
+}
+
 export interface MailMemberRequest {
   readonly role: string;
   readonly specialization?: string | null;
   readonly level?: MailLevel | null;
   readonly responseBudgetSeconds?: number | null;
   readonly documentsWrite?: boolean;
+  /** Compose override: runs on this model with no routing fallback. */
+  readonly modelOverride?: MailModelOverride | null;
+}
+
+export interface SetMemberModelInput {
+  readonly callerThreadId: string;
+  readonly taskId: string;
+  readonly memberId: string;
+  readonly modelSelection: ModelSelection;
+  readonly humanInstruction: string;
+  readonly clientRequestId: string;
 }
 
 export interface CreateMailTaskInput {
@@ -247,6 +269,8 @@ interface NormalizedMember {
   readonly level: MailLevel | null;
   readonly responseBudgetSeconds: number;
   readonly documentsWrite: boolean;
+  readonly modelOverrideJson: string | null;
+  readonly humanInstruction: string | null;
 }
 
 type Recipient =
@@ -302,6 +326,13 @@ export class MailService extends Context.Service<
     readonly createTask: (
       input: CreateMailTaskInput,
     ) => Effect.Effect<MailTaskCreated, MailServiceError | MailRepositoryError>;
+    /**
+     * Lead-only mid-task override on the same thread: the member's next
+     * dispatch runs on the new model, the current run is not interrupted.
+     */
+    readonly setMemberModel: (
+      input: SetMemberModelInput,
+    ) => Effect.Effect<MailMember, MailServiceError | MailRepositoryError>;
     readonly sendLetter: (
       input: SendMailLetterInput,
     ) => Effect.Effect<SendMailLetterResult, MailServiceError | MailRepositoryError>;
@@ -338,6 +369,7 @@ const make = Effect.gen(function* () {
   const launcher = yield* MailParticipantLauncher;
   const classifier = yield* MailKindClassifier;
   const mailSettings = yield* MailSettingsService;
+  const normalService = yield* NormalServicePolicy;
 
   const requireMail = gate
     .require("mail")
@@ -408,6 +440,70 @@ const make = Effect.gen(function* () {
     return { route, noCandidate: null };
   });
 
+  /**
+   * Validates one explicit override: the human instruction is required, and the
+   * normal-service rule refuses accelerated models and tier options outright,
+   * including a human override (design §1). The tier-free selection is stored.
+   */
+  const normalizeOverride = Effect.fn("MailService.normalizeOverride")(function* (
+    override: MailModelOverride | null | undefined,
+  ) {
+    if (override === null || override === undefined) {
+      return { modelOverrideJson: null, humanInstruction: null } as const;
+    }
+    const decoded = yield* decodeModelOverride(override.modelSelection).pipe(
+      Effect.mapError(
+        () =>
+          new MailServiceError({
+            code: "invalid_request",
+            reason: "The model override is not a model selection.",
+          }),
+      ),
+    );
+    const humanInstruction = override.humanInstruction.trim();
+    if (humanInstruction === "") {
+      return yield* refuse(
+        "human_instruction_required",
+        "A model override needs a human instruction.",
+      );
+    }
+    if (humanInstruction.length > MAX_HUMAN_INSTRUCTION_LENGTH) {
+      return yield* refuse(
+        "invalid_request",
+        `A human instruction must be at most ${MAX_HUMAN_INSTRUCTION_LENGTH} characters.`,
+      );
+    }
+    if (isAcceleratedModel(decoded.model)) {
+      return yield* refuse(
+        "model_unavailable",
+        `Model "${decoded.model}" requests an accelerated service tier and cannot run.`,
+      );
+    }
+    const normalized = normalService.normalizeSelection({
+      // No driver forcing: an override runs on provider defaults, which are normal.
+      driverKind: "",
+      instanceId: decoded.instanceId,
+      model: decoded.model,
+      ...(decoded.options === undefined ? {} : { options: decoded.options }),
+    });
+    if (normalized.accelerated) {
+      return yield* refuse(
+        "model_unavailable",
+        "A model override must not request an accelerated service tier.",
+      );
+    }
+    // The instance and model are untouched by normalization, so the decoded
+    // brands carry over and only the tier-free options are stored.
+    const modelOverrideJson = yield* encodeModelSelectionJson({
+      instanceId: decoded.instanceId,
+      model: decoded.model,
+      ...(normalized.selection.options.length === 0
+        ? {}
+        : { options: [...normalized.selection.options] }),
+    }).pipe(Effect.orDie);
+    return { modelOverrideJson, humanInstruction };
+  });
+
   const normalizeMembers = Effect.fn("MailService.normalizeMembers")(function* (
     members: ReadonlyArray<MailMemberRequest>,
   ) {
@@ -435,6 +531,7 @@ const make = Effect.gen(function* () {
           `Response budget must be ${MIN_RESPONSE_BUDGET_SECONDS}..${MAX_RESPONSE_BUDGET_SECONDS} seconds.`,
         );
       }
+      const override = yield* normalizeOverride(member.modelOverride);
       const specialization = member.specialization?.trim() ?? "";
       normalized.push({
         roleId,
@@ -442,6 +539,8 @@ const make = Effect.gen(function* () {
         level: member.level ?? null,
         responseBudgetSeconds: budget,
         documentsWrite,
+        modelOverrideJson: override.modelOverrideJson,
+        humanInstruction: override.humanInstruction,
       });
     }
     return normalized;
@@ -485,6 +584,8 @@ const make = Effect.gen(function* () {
         member.level,
         member.responseBudgetSeconds,
         member.documentsWrite,
+        member.modelOverrideJson,
+        member.humanInstruction,
       ]),
     ]);
     const existing = yield* repository.getTaskByRequestKey({
@@ -501,9 +602,18 @@ const make = Effect.gen(function* () {
     const rows = yield* Effect.forEach(members, (member) =>
       newId.pipe(Effect.map((memberId) => ({ ...member, memberId }))),
     );
-    const routes = yield* Effect.forEach(rows, (row) =>
-      selectRoute(row.memberId, row.roleId, row.level ?? input.level),
-    );
+    // An overridden member runs on its model with no routing fallback, so no
+    // route is recorded for it; every other member is routed as before.
+    const routeMember = (
+      row: NormalizedMember & { readonly memberId: string },
+    ): Effect.Effect<
+      { readonly route: MailMemberRouteInput | null; readonly noCandidate: MailNoCandidate | null },
+      MailServiceError
+    > =>
+      row.modelOverrideJson !== null
+        ? Effect.succeed({ route: null, noCandidate: null })
+        : selectRoute(row.memberId, row.roleId, row.level ?? input.level);
+    const routes = yield* Effect.forEach(rows, routeMember);
     const now = yield* nowIso;
     const result = yield* repository
       .createTask({
@@ -542,8 +652,8 @@ const make = Effect.gen(function* () {
           level: row.level,
           responseBudgetSeconds: row.responseBudgetSeconds,
           documentsWrite: row.documentsWrite,
-          modelOverrideJson: null,
-          humanInstruction: null,
+          modelOverrideJson: row.modelOverrideJson,
+          humanInstruction: row.humanInstruction,
           participantThreadId: null,
           route: routes[index]?.route ?? null,
           createdAt: now,
@@ -703,27 +813,44 @@ const make = Effect.gen(function* () {
             ),
         }),
       );
-    // The lead's letter starts a threadless routed member; a repeat reuses the same thread.
+    // The lead's letter starts a threadless member; a repeat reuses the same thread.
+    // A member whose route is null gets one when the letter is resent after the
+    // policy is fixed; an overridden member launches on its override instead.
     const launched: MailMemberLaunched[] = [];
     const launchFailures: MailMemberLaunchFailed[] = [];
     const launchedThreads = new Map<string, string>();
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
-        // A member without a route never launches; rerouting it is a later slice (task 23).
-        if (
-          member === null ||
-          member.participantThreadId !== null ||
-          member.routeModelSelectionJson === null
-        ) {
+        if (member === null || member.participantThreadId !== null) {
+          continue;
+        }
+        let current = member;
+        if (current.modelOverrideJson === null && current.routeModelSelectionJson === null) {
+          const retry = yield* selectRoute(
+            current.memberId,
+            yield* requireRoutingRole(current.roleId),
+            current.level ?? task.level,
+          );
+          if (retry.route !== null) {
+            current =
+              (yield* repository.setMemberRoute({
+                memberId: current.memberId,
+                route: retry.route,
+                at: yield* nowIso,
+              })) ?? current;
+          }
+        }
+        const modelSelectionJson = current.modelOverrideJson ?? current.routeModelSelectionJson;
+        if (modelSelectionJson === null) {
           continue;
         }
         const launchInput: MailParticipantLaunchInput = {
           leadThreadId: task.createdByThreadId,
           taskTitle: task.title,
-          memberId: member.memberId,
-          roleId: member.roleId,
-          modelSelectionJson: member.routeModelSelectionJson,
+          memberId: current.memberId,
+          roleId: current.roleId,
+          modelSelectionJson,
           letterBody: input.body,
           isolation: task.isolation,
         };
@@ -735,16 +862,16 @@ const make = Effect.gen(function* () {
           }),
         );
         if (!outcome.launched) {
-          launchFailures.push({ memberId: member.memberId, reason: outcome.reason });
+          launchFailures.push({ memberId: current.memberId, reason: outcome.reason });
           continue;
         }
         yield* repository.setParticipantThread({
-          memberId: member.memberId,
+          memberId: current.memberId,
           participantThreadId: outcome.threadId,
           at: yield* nowIso,
         });
-        launched.push({ memberId: member.memberId, participantThreadId: outcome.threadId });
-        launchedThreads.set(member.memberId, outcome.threadId);
+        launched.push({ memberId: current.memberId, participantThreadId: outcome.threadId });
+        launchedThreads.set(current.memberId, outcome.threadId);
       }
     }
     // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.
@@ -779,9 +906,10 @@ const make = Effect.gen(function* () {
         }),
       { discard: true },
     );
+    // Overridden members run on their override and never need a route.
     const noCandidate: MailLetterNoCandidate[] = [];
     for (const target of targets) {
-      if (target.member === null) continue;
+      if (target.member === null || target.member.modelOverrideJson !== null) continue;
       const gap = yield* noCandidateFor(target.member.roleId, target.member.level ?? task.level);
       if (gap !== null) noCandidate.push({ memberId: target.member.memberId, ...gap });
     }
@@ -938,7 +1066,63 @@ const make = Effect.gen(function* () {
     return { member: closed, failed, letter: appended.letter } satisfies SettleMailMemberResult;
   });
 
-  return MailService.of({ createTask, sendLetter, setLetterKind, closeTask, settleMember });
+  const setMemberModel = Effect.fn("MailService.setMemberModel")(function* (
+    input: SetMemberModelInput,
+  ) {
+    yield* requireMail;
+    if (input.clientRequestId.trim() === "") {
+      return yield* refuse("invalid_request", "A model override needs a client request id.");
+    }
+    const task = yield* requireTask(input.taskId);
+    if (task.status === "closed") {
+      return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
+    }
+    if (task.createdByThreadId !== input.callerThreadId) {
+      return yield* refuse("capability_denied", "Only the lead can override a member model.");
+    }
+    const member = yield* repository.getMember(input.memberId);
+    if (member === null || member.taskId !== task.taskId) {
+      return yield* refuse(
+        "invalid_request",
+        `Member "${input.memberId}" is not part of mail task "${task.taskId}".`,
+      );
+    }
+    if (member.status !== "active") {
+      return yield* refuse(
+        "invalid_request",
+        `Member "${input.memberId}" is closed and cannot be overridden.`,
+      );
+    }
+    const override = yield* normalizeOverride({
+      modelSelection: input.modelSelection,
+      humanInstruction: input.humanInstruction,
+    });
+    if (override.modelOverrideJson === null || override.humanInstruction === null) {
+      return yield* Effect.die(new Error("the normalized model override is missing"));
+    }
+    const updated = yield* repository.setMemberOverride({
+      memberId: member.memberId,
+      modelOverrideJson: override.modelOverrideJson,
+      humanInstruction: override.humanInstruction,
+      at: yield* nowIso,
+    });
+    if (updated === null) {
+      return yield* refuse(
+        "invalid_request",
+        `Member "${input.memberId}" is not part of mail task "${task.taskId}".`,
+      );
+    }
+    return updated;
+  });
+
+  return MailService.of({
+    createTask,
+    setMemberModel,
+    sendLetter,
+    setLetterKind,
+    closeTask,
+    settleMember,
+  });
 });
 
 export const layer = Layer.effect(MailService, make);

@@ -570,6 +570,19 @@ export class MailRepository extends Context.Service<
       readonly participantThreadId: string;
       readonly at: string;
     }) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    /** Reroutes a member whose route was null when the policy had no candidate. */
+    readonly setMemberRoute: (input: {
+      readonly memberId: string;
+      readonly route: MailMemberRouteInput;
+      readonly at: string;
+    }) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    /** Stores a lead's mid-task model override on the member's own thread. */
+    readonly setMemberOverride: (input: {
+      readonly memberId: string;
+      readonly modelOverrideJson: string;
+      readonly humanInstruction: string;
+      readonly at: string;
+    }) => Effect.Effect<MailMember | null, MailRepositoryError>;
     /** Closes a member whose participant thread settled; the lead closes the rest. */
     readonly closeMember: (input: {
       readonly memberId: string;
@@ -933,6 +946,34 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* sql`UPDATE ft3_mail_members SET
               participant_thread_id = ${input.participantThreadId}, updated_at = ${input.at}
+            WHERE member_id = ${input.memberId}`;
+          const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+            FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
+          return rows[0] === undefined ? null : toMember(rows[0]);
+        }),
+      ),
+    ),
+    setMemberRoute: Effect.fn("MailRepository.setMemberRoute")((input) =>
+      mapError("setMemberRoute")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_members SET
+              route_alias = ${input.route.alias}, route_level = ${input.route.level},
+              route_model_selection_json = ${input.route.modelSelectionJson},
+              route_policy_revision = ${input.route.policyRevision},
+              route_policy_sha256 = ${input.route.policySha256}, updated_at = ${input.at}
+            WHERE member_id = ${input.memberId}`;
+          const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+            FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
+          return rows[0] === undefined ? null : toMember(rows[0]);
+        }),
+      ),
+    ),
+    setMemberOverride: Effect.fn("MailRepository.setMemberOverride")((input) =>
+      mapError("setMemberOverride")(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_mail_members SET
+              model_override_json = ${input.modelOverrideJson},
+              human_instruction = ${input.humanInstruction}, updated_at = ${input.at}
             WHERE member_id = ${input.memberId}`;
           const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
             FROM ft3_mail_members WHERE member_id = ${input.memberId}`;

@@ -1,5 +1,6 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
+  normalServicePolicyLayer,
   type RoutingResolution,
   type RoutingResolvedCandidate,
   type RoutingResolveInput,
@@ -193,6 +194,7 @@ export const mailHarness = (
         evidence.layer,
         launcher.layer,
         classifier.layer,
+        normalServicePolicyLayer,
         options.classifierThreshold === undefined
           ? settingsLayer()
           : settingsLayer({ classifierThreshold: options.classifierThreshold }),
