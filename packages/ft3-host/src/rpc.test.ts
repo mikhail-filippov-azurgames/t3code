@@ -188,7 +188,7 @@ const stubs = {
   [FT3_WS_METHODS.policiesSetFeature]: () => Effect.succeed({ snapshot: noSnapshot }),
   [FT3_WS_METHODS.policiesListStoreDocuments]: () => Effect.succeed({ documents: [] }),
   [FT3_WS_METHODS.policiesBrowseServerDirectory]: () =>
-    Effect.succeed({ parent: null, directories: [], files: [] }),
+    Effect.succeed({ parent: null, directories: [], files: [], truncated: false }),
   [FT3_WS_METHODS.mailTimeline]: () => Effect.succeed({ task: mailTask, entries: [] }),
 };
 
@@ -338,7 +338,7 @@ describe("FT3 RPC authorization", () => {
       });
       expect(
         yield* client[FT3_WS_METHODS.policiesBrowseServerDirectory]({ directory: "/srv/ft3" }),
-      ).toEqual({ parent: null, directories: [], files: [] });
+      ).toEqual({ parent: null, directories: [], files: [], truncated: false });
       expect(yield* client[FT3_WS_METHODS.mailTimeline]({ taskId: "task:timeline" })).toEqual({
         task: mailTask,
         entries: [],
