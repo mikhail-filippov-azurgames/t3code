@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 import { PlanLineageRow } from "./PlanLineageRow.tsx";
 import { pinnedPlanLineage } from "./planLineage.logic.ts";
-import { usePlanThreadSource } from "./planThreadSource.ts";
+import { usePlanThreadSource } from "./usePlanThreadSource.ts";
 
 export interface PinnedLineageRows {
   readonly rows: ReadonlyArray<ReactNode>;
@@ -13,7 +13,7 @@ export interface PinnedLineageRows {
 export function useFt3PinnedLineageRows(
   environmentId: EnvironmentId,
 ): (threadId: ThreadId) => PinnedLineageRows {
-  const source = usePlanThreadSource();
+  const source = usePlanThreadSource(environmentId);
   return (threadId) => {
     const pinned = pinnedPlanLineage(source.forOrchestratorThread(threadId));
     return {

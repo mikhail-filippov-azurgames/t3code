@@ -1,5 +1,5 @@
 import type { ThreadId } from "@t3tools/contracts";
-import type { BoardCardId } from "@t3tools/ft3-board/contracts";
+import type { BoardCardId, BoardCardPlanSummary } from "@t3tools/ft3-board/contracts";
 
 export type PlanState =
   | "required"
@@ -24,12 +24,47 @@ export interface PlanThreadSource {
   readonly forOrchestratorThread: (threadId: ThreadId) => ReadonlyArray<PlanThread>;
 }
 
-const noPlanThreads: PlanThreadSource = {
+/** The board list slice the plan summaries are read from. */
+export interface PlanThreadBoardList {
+  readonly cards: ReadonlyArray<{
+    readonly cardId: BoardCardId;
+    readonly orchestratorThreadId: ThreadId;
+  }>;
+  readonly plans: ReadonlyArray<BoardCardPlanSummary>;
+}
+
+/**
+ * Joins the plan summaries of the board card list response with their cards.
+ * Plans without a planner thread or without a card stay out: the row and the
+ * card button both open the planner thread, so there is nothing to show yet.
+ */
+export function planThreadsFromBoardList(
+  result: PlanThreadBoardList | null,
+): ReadonlyArray<PlanThread> {
+  if (result === null) return [];
+  const orchestratorByCard = new Map(
+    result.cards.map((card) => [String(card.cardId), card.orchestratorThreadId]),
+  );
+  const threads: PlanThread[] = [];
+  for (const plan of result.plans) {
+    if (plan.plannerThreadId === null) continue;
+    const orchestratorThreadId = orchestratorByCard.get(String(plan.cardId));
+    if (orchestratorThreadId === undefined) continue;
+    threads.push({
+      cardId: plan.cardId,
+      title: plan.title,
+      orchestratorThreadId,
+      plannerThreadId: plan.plannerThreadId,
+      state: plan.status,
+      // Unpinning an accepted plan waits for its first implement letter; the
+      // mail side does not report it yet, so the row stays accepted.
+      implementStarted: false,
+    });
+  }
+  return threads;
+}
+
+export const noPlanThreads: PlanThreadSource = {
   forCard: () => null,
   forOrchestratorThread: () => [],
 };
-
-// Stub until the planning RPC supplies plans; the lineage row and the card button read only this.
-export function usePlanThreadSource(): PlanThreadSource {
-  return noPlanThreads;
-}

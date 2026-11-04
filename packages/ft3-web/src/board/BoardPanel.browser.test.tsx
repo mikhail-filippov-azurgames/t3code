@@ -37,7 +37,7 @@ vi.mock("./state.ts", () => ({
 vi.mock("~/state/entities", () => ({ useThreadShells: () => [] }));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("./BoardCardDialog.tsx", () => ({ BoardCardDialog: () => null }));
-vi.mock("../lineage/planThreadSource.ts", () => ({
+vi.mock("../lineage/usePlanThreadSource.ts", () => ({
   usePlanThreadSource: () => ({ forCard: mocks.planForCard, forOrchestratorThread: () => [] }),
 }));
 

@@ -296,6 +296,7 @@ describe("board status counters", () => {
     const omitted = {
       cards: [],
       events: [],
+      plans: [],
       archivedCounts: [
         { orchestratorThreadId: ORCHESTRATOR, status: "done" as const, count: 4 },
         { orchestratorThreadId: ORCHESTRATOR, status: "todo" as const, count: 1 },
@@ -307,7 +308,7 @@ describe("board status counters", () => {
     assert.strictEqual(sumBoardStatusCounts(countOmittedArchivedByStatus(omitted, other)), 2);
     assert.strictEqual(sumBoardStatusCounts(countOmittedArchivedByStatus(null, null)), 0);
     const rows = [makeCard({ id: "a", status: "done", archived: true })];
-    const full = { cards: rows, events: [] };
+    const full = { cards: rows, events: [], plans: [] };
     const total = addBoardStatusCounts(
       countArchivedBoardCardsByStatus(rows),
       countOmittedArchivedByStatus(full, null),

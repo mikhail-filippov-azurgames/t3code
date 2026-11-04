@@ -60,7 +60,7 @@ const makeHarness = Effect.fn("Ft3BoardTest.makeHarness")(function* (
   };
   const client = {
     "board.list": (input: BoardListInput) =>
-      record("board.list", input, () => ({ cards: [...cards], events: [] })),
+      record("board.list", input, () => ({ cards: [...cards], events: [], plans: [] })),
     "board.orchestrators.list": (input: unknown) =>
       record("board.orchestrators.list", input, () => ({ orchestrators: [...coordinators] })),
     "board.create": (input: unknown) =>

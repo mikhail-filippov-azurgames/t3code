@@ -3,7 +3,7 @@ import type { BoardCardId } from "@t3tools/ft3-board/contracts";
 import { useNavigate } from "@tanstack/react-router";
 
 import { Button } from "~/components/ui/button";
-import { usePlanThreadSource } from "../lineage/planThreadSource.ts";
+import { usePlanThreadSource } from "../lineage/usePlanThreadSource.ts";
 
 export function BoardCardPlanButton({
   environmentId,
@@ -15,7 +15,7 @@ export function BoardCardPlanButton({
   readonly size?: "xs" | "sm";
 }) {
   const navigate = useNavigate();
-  const plan = usePlanThreadSource().forCard(cardId);
+  const plan = usePlanThreadSource(environmentId).forCard(cardId);
   if (plan === null) return null;
   const plannerThreadId = plan.plannerThreadId;
   return (
