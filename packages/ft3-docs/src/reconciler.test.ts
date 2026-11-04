@@ -331,6 +331,74 @@ describe("DocsReconciler", () => {
     ),
   );
 
+  it.effect("removes a deleted nested directory without breaking the pass", () =>
+    withReconciler(({ reconciler, root, store, sql }) =>
+      Effect.gen(function* () {
+        yield* writeDoc(root, "a/b/one.md", `---\nstable_id: ${NIL_ID}\n---\n# One\n`);
+        yield* writeDoc(root, "a/two.md", "# Two\n");
+        const first = yield* reconciler.reconcile();
+        assert.equal(first.added.length, 2);
+        const ids = first.added.map((record) => record.stableId).sort();
+
+        yield* Effect.promise(() =>
+          NodeFSP.rm(NodePath.join(root, "contexts", "a"), { recursive: true }),
+        );
+        const report = yield* reconciler.reconcile();
+
+        assert.deepEqual(
+          (yield* store.listAllFolders()).map((folder) => folder.relPath),
+          [""],
+        );
+        assert.isNull(yield* store.getByPath("a/b/one.md"));
+        assert.isNull(yield* store.getByPath("a/two.md"));
+        // The cascade drops the rows; the index must drop them too.
+        assert.deepEqual([...report.toRemove].sort(), ids);
+        assert.deepEqual(report.removed.map((entry) => entry.relPath).sort(), [
+          "a/b/one.md",
+          "a/two.md",
+        ]);
+        assert.deepEqual(report.warnings, []);
+        const states = yield* sql<{ readonly stableId: string }>`
+          SELECT stable_id AS "stableId" FROM ft3_docs_file_state
+        `;
+        assert.deepEqual(states, []);
+
+        const third = yield* reconciler.reconcile();
+        assert.deepEqual(third.changed, []);
+        assert.deepEqual(third.removed, []);
+        assert.deepEqual(third.missing, []);
+        assert.deepEqual(third.toRemove, []);
+      }),
+    ),
+  );
+
+  it.effect("does not drop a file that moved out of a deleted directory", () =>
+    withReconciler(({ reconciler, root, store }) =>
+      Effect.gen(function* () {
+        yield* writeDoc(root, "a/one.md", `---\nstable_id: ${NIL_ID}\n---\n# One\n`);
+        const first = yield* reconciler.reconcile();
+        const [registered = yield* Effect.die(new Error("expected one added doc"))] = first.added;
+
+        yield* moveDoc(root, "a/one.md", "b/one.md");
+        yield* Effect.promise(() =>
+          NodeFSP.rm(NodePath.join(root, "contexts", "a"), { recursive: true }),
+        );
+        const report = yield* reconciler.reconcile();
+
+        assert.deepEqual(report.moved, [
+          { stableId: registered.stableId, fromRelPath: "a/one.md", toRelPath: "b/one.md" },
+        ]);
+        assert.deepEqual(report.toRemove, []);
+        assert.deepEqual(report.removed, []);
+        assert.equal((yield* store.getByPath("b/one.md"))?.stableId, registered.stableId);
+
+        const again = yield* reconciler.reconcile();
+        assert.deepEqual(again.changed, []);
+        assert.deepEqual(again.toIndex, []);
+      }),
+    ),
+  );
+
   it.effect("never deletes user files", () =>
     withReconciler(({ reconciler, root }) =>
       Effect.gen(function* () {

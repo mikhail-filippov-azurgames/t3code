@@ -293,6 +293,11 @@ const make = Effect.fn("DocsReconciler.make")(function* (options: DocsReconciler
     const toIndex: Array<DocsIndexable> = [];
     const toRemove: Array<string> = [];
     const matchedRelPaths = new Set<string>();
+    // Old paths consumed by a move (the row now lives at the scan path) and
+    // rows already dropped by this pass, so the vanished-folder sweep below
+    // never reports the same document twice.
+    const relocatedFrom = new Set<string>();
+    const removedStableIds = new Set<string>();
 
     const indexable = (scan: ScannedFile, stableId: string, sha256: string) => {
       if (!scan.indexable) {
@@ -407,6 +412,7 @@ const make = Effect.fn("DocsReconciler.make")(function* (options: DocsReconciler
             stableId: rowById.stableId,
             relPath: scan.relPath,
           });
+          relocatedFrom.add(rowById.relPath);
           moved.push({
             stableId: record.stableId,
             fromRelPath: rowById.relPath,
@@ -506,6 +512,7 @@ const make = Effect.fn("DocsReconciler.make")(function* (options: DocsReconciler
         yield* store.deleteDocRow(row.relPath);
         yield* deleteFileState(row.stableId);
         removed.push({ kind: "removed", stableId: row.stableId, relPath: row.relPath });
+        removedStableIds.add(row.stableId);
         toRemove.push(row.stableId);
       } else {
         yield* upsertFileState({
@@ -521,16 +528,43 @@ const make = Effect.fn("DocsReconciler.make")(function* (options: DocsReconciler
       }
     }
 
-    // Folder rows follow the directories on disk; rows of vanished directories go (design §3.3).
+    // Folder rows follow the directories on disk; rows of vanished directories
+    // go (design §3.3). Deepest first, so removing a parent never cascades a
+    // child the sweep still has to handle; a folder that is already gone is
+    // skipped instead of breaking the pass.
     const onDisk = new Set(state.directories);
-    const folderRows = yield* store.listAllFolders();
-    for (const folder of folderRows) {
-      if (folder.relPath === "" || onDisk.has(folder.relPath)) continue;
+    const liveRelPaths = new Set(state.scans.map((scan) => scan.relPath));
+    const vanished = (yield* store.listAllFolders())
+      .filter((folder) => folder.relPath !== "" && !onDisk.has(folder.relPath))
+      .sort((a, b) => b.relPath.length - a.relPath.length);
+    for (const folder of vanished) {
       const prefix = `${folder.relPath}/`;
       for (const row of manifest) {
-        if (row.relPath.startsWith(prefix)) yield* deleteFileState(row.stableId);
+        if (
+          !row.relPath.startsWith(prefix) ||
+          liveRelPaths.has(row.relPath) ||
+          relocatedFrom.has(row.relPath) ||
+          removedStableIds.has(row.stableId)
+        ) {
+          continue;
+        }
+        yield* deleteFileState(row.stableId);
+        removedStableIds.add(row.stableId);
+        removed.push({ kind: "removed", stableId: row.stableId, relPath: row.relPath });
+        toRemove.push(row.stableId);
       }
-      yield* store.removeFolderRow(folder.relPath);
+      yield* store.removeFolderRow(folder.relPath).pipe(
+        Effect.catchTags({
+          DocsStoreError: (error) =>
+            error.code === "folder_not_found"
+              ? Effect.sync(() => {
+                  warnings.push(
+                    `Folder "${folder.relPath}" was already removed; the sweep skipped it.`,
+                  );
+                })
+              : Effect.fail(error),
+        }),
+      );
     }
     for (const directory of state.directories) {
       yield* store.ensureFolderRow(directory);
