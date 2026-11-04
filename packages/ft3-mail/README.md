@@ -23,6 +23,17 @@
   роль запускается как участник (`mail_required`);
 - `./documentsWrite` — `documentsWriteFactsLayer`: факты права записи документов участника;
 - `./server` — серверные слои почты (маршрут, usage, evidence карточки); собирает ft3-host.
+- `./classifier`, `./settings` — порт `MailKindClassifier` (no-op по умолчанию) и порог
+  `ft3.mail.classifierThreshold`; классификация только писем участнику→лиду, спорный kind
+  решает lead через `setLetterKind` с записью feedback.
+- `./tools`, `./mcp`, `./toolContracts` — семь thread-scoped MCP-инструментов
+  (`mail_task_create`, `mail_send`, `mail_read`, `mail_task_read`, `mail_member_set_model`,
+  `mail_letter_set_kind`, `mail_task_close`); при выключенном `mail` — код `mail_disabled_notice`.
+- `./rpc`, `./rpc-contracts` — серверный `mail.timeline` (таск глазами лида, скоуп
+  `orchestration:read`); wire-up в `packages/ft3-host/src/rpc.ts`.
+- `./timeoutReactor` — `MailTimeoutReactor`: минутный тик гасит просроченные доставки
+  (участники остаются активными, лиду одно системное письмо на задачу); wire-up в
+  `packages/ft3-host/src/server.ts`.
 
 Идемпотентность: создание задачи — `(created_by_thread_id, client_request_id)`,
 раунд — `(task_id, round_number)`, письмо — `(task_id, sender_thread_id, client_request_id)`

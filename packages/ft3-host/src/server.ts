@@ -335,4 +335,11 @@ export const mcpToolkits = [
     ),
   ),
   layerDocsToolkit,
+  // Mail tools act as the calling thread and refuse with mail_disabled_notice
+  // while the mail feature is off.
+  Layer.unwrap(
+    Effect.promise(() => import("@t3tools/ft3-mail/mcp")).pipe(
+      Effect.map((module) => module.mailMcpLayer),
+    ),
+  ),
 ] as const;

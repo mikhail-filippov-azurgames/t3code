@@ -47,6 +47,26 @@
       "types": "./src/timeoutReactor.ts",
       "import": "./src/timeoutReactor.ts"
     },
+    "./toolContracts": {
+      "types": "./src/toolContracts.ts",
+      "import": "./src/toolContracts.ts"
+    },
+    "./tools": {
+      "types": "./src/tools.ts",
+      "import": "./src/tools.ts"
+    },
+    "./mcp": {
+      "types": "./src/mcp.ts",
+      "import": "./src/mcp.ts"
+    },
+    "./rpc-contracts": {
+      "types": "./src/rpc-contracts.ts",
+      "import": "./src/rpc-contracts.ts"
+    },
+    "./rpc": {
+      "types": "./src/rpc.ts",
+      "import": "./src/rpc.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"

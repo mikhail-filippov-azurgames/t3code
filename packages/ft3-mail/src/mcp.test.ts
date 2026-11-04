@@ -1,0 +1,216 @@
+import { assert, describe, it } from "@effect/vitest";
+import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Crypto from "effect/Crypto";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { McpSchema, McpServer } from "effect/ai";
+
+import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
+import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
+import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
+
+import { databaseLayer, gateLayer, mailHarness, migrateMail } from "./mail.testkit.ts";
+import { mailMcpLayerFrom } from "./mcp.ts";
+
+const leadId = ThreadId.make("thread:mail-lead");
+
+const scope: McpInvocationContext.McpInvocationScope = {
+  environmentId: EnvironmentId.make("environment:mail-test"),
+  capabilities: new Set(["orchestration"]),
+  issuedAt: 0,
+  requestNamespace: "session:mail-test",
+  thread: {
+    threadId: leadId,
+    providerSessionId: "session:mail-test",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+  },
+  client: undefined,
+};
+
+const client = McpSchema.McpServerClient.of({
+  clientId: 1,
+  protocolVersion: "2025-06-18",
+  clientCapabilities: {},
+  clientInfo: { name: "mail-test", version: "1" },
+  initializePayload: {
+    protocolVersion: "2025-06-18",
+    capabilities: {},
+    clientInfo: { name: "mail-test", version: "1" },
+  },
+  getClient: Effect.die("unused"),
+});
+
+const cryptoLayer = Layer.succeed(
+  Crypto.Crypto,
+  Crypto.make({
+    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
+    digest: (_algorithm, data) =>
+      Effect.promise(async () => {
+        const bytes = new Uint8Array(data);
+        return new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes));
+      }),
+  }),
+);
+
+const fixture = (enabled: boolean) => {
+  const harness = mailHarness({ enabled });
+  const shells = new Map([[leadId, liveThreadShell(leadId)]]);
+  const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
+  });
+  return mailMcpLayerFrom(harness.layer, gateLayer(enabled)).pipe(
+    Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provide(SqlitePersistence.layerMemory),
+    Layer.provide(threads),
+    Layer.provide(cryptoLayer),
+    // Exposes the same in-memory database the harness stack writes to.
+    Layer.provideMerge(databaseLayer),
+  );
+};
+
+const call = (
+  name: string,
+  args: Record<string, unknown>,
+  invocationScope: McpInvocationContext.McpInvocationScope = scope,
+) =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    return yield* server
+      .callTool({ name, arguments: args })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocationScope),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+  });
+
+const decodeFailure = (result: McpSchema.CallToolResult) => {
+  assert.isTrue(result.isError);
+  const content = result.content[0];
+  assert.equal(content?.type, "text");
+  if (content?.type !== "text") throw new Error("Expected a text failure");
+  return JSON.parse(content.text) as { readonly code: string; readonly message: string };
+};
+
+const structured = (result: McpSchema.CallToolResult) => {
+  assert.isFalse(result.isError);
+  return result.structuredContent as Record<string, unknown>;
+};
+
+const taskOf = (result: Record<string, unknown>) =>
+  result.task as { readonly taskId: string; readonly title: string };
+const letterOf = (result: Record<string, unknown>) =>
+  result.letter as { readonly letterId: string; readonly body: string };
+const memberOf = (result: Record<string, unknown>) =>
+  (result.members as ReadonlyArray<{ readonly member: { readonly memberId: string } }>)[0]!.member;
+
+describe("mail MCP tools", () => {
+  it.effect("creates, sends, reads and overrides through the tools", () =>
+    Effect.gen(function* () {
+      yield* migrateMail;
+      const created = structured(
+        yield* call("mail_task_create", {
+          title: "Refactor",
+          brief: "Split the module.",
+          level: "medium",
+          members: [{ role: "implementation" }],
+          clientRequestId: "request:team",
+        }),
+      );
+      assert.isTrue(created.created);
+      const task = taskOf(created);
+      assert.equal(task.title, "Refactor");
+      const member = memberOf(created);
+
+      const sent = structured(
+        yield* call("mail_send", {
+          taskId: task.taskId,
+          to: "role:implementation",
+          kind: "request",
+          body: "Start.",
+          clientRequestId: "request:letter",
+        }),
+      );
+      const letter = letterOf(sent);
+      assert.equal(letter.body, "Start.");
+      assert.equal((sent.launched as ReadonlyArray<unknown>).length, 1);
+
+      const read = structured(yield* call("mail_task_read", { taskId: task.taskId }));
+      assert.equal((read.entries as ReadonlyArray<unknown>).length, 1);
+      assert.equal(taskOf(read).taskId, task.taskId);
+
+      const full = structured(yield* call("mail_read", { letterId: letter.letterId }));
+      assert.equal(letterOf(full).body, "Start.");
+      assert.equal(full.effectiveKind, "request");
+
+      const overridden = structured(
+        yield* call("mail_member_set_model", {
+          taskId: task.taskId,
+          memberId: member.memberId,
+          modelSelection: { instanceId: "codex", model: "gpt-other" },
+          humanInstruction: "Use the other box.",
+          clientRequestId: "request:override",
+        }),
+      ) as unknown as { readonly modelOverrideJson: string | null };
+      assert.isNotNull(overridden.modelOverrideJson);
+
+      // The no-op classifier never disputes a kind, so the decision is refused.
+      assert.equal(
+        decodeFailure(
+          yield* call("mail_letter_set_kind", {
+            letterId: letter.letterId,
+            kind: "blocked",
+            clientRequestId: "request:decide",
+          }),
+        ).code,
+        "kind_not_disputed",
+      );
+
+      // Closing with an active member stays refused.
+      assert.equal(
+        decodeFailure(
+          yield* call("mail_task_close", {
+            taskId: task.taskId,
+            outcome: "succeeded",
+            summary: "Done.",
+          }),
+        ).code,
+        "members_active",
+      );
+    }).pipe(Effect.provide(fixture(true))),
+  );
+
+  it.effect("refuses every tool with the mail notice while mail is off", () =>
+    Effect.gen(function* () {
+      yield* migrateMail;
+      assert.equal(
+        decodeFailure(
+          yield* call("mail_task_create", {
+            title: "Refactor",
+            brief: "Split the module.",
+            level: "medium",
+            members: [{ role: "implementation" }],
+            clientRequestId: "request:team",
+          }),
+        ).code,
+        "mail_disabled_notice",
+      );
+    }).pipe(Effect.provide(fixture(false))),
+  );
+
+  it.effect("refuses callers without a calling thread", () =>
+    Effect.gen(function* () {
+      yield* migrateMail;
+      assert.equal(
+        decodeFailure(
+          yield* call(
+            "mail_task_read",
+            { taskId: "task:missing" },
+            { ...scope, thread: undefined },
+          ),
+        ).code,
+        "thread_credential_required",
+      );
+    }).pipe(Effect.provide(fixture(true))),
+  );
+});

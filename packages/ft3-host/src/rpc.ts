@@ -25,6 +25,13 @@ import {
   docsRpcs,
 } from "@t3tools/ft3-docs/rpc";
 import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
+import {
+  FT3_MAIL_WS_METHODS,
+  mailRpcHandlers,
+  mailRpcScopes,
+  mailRpcServiceLayer,
+  mailRpcs,
+} from "@t3tools/ft3-mail/rpc";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import {
@@ -66,6 +73,7 @@ export const FT3_WS_METHODS = {
   ...FT3_VCS_WS_METHODS,
   ...FT3_DOCS_WS_METHODS,
   ...FT3_POLICIES_WS_METHODS,
+  ...FT3_MAIL_WS_METHODS,
 } as const;
 
 const ft3RpcScopes = {
@@ -75,6 +83,7 @@ const ft3RpcScopes = {
   ...ft3VcsRpcScopes,
   ...docsRpcScopes,
   ...policiesRpcScopes,
+  ...mailRpcScopes,
 } as const;
 
 export class Ft3RpcScopeAuthorization extends RpcMiddleware.Service<Ft3RpcScopeAuthorization>()(
@@ -110,6 +119,7 @@ export const group = RpcGroup.make(
   ...ft3VcsRpcs,
   ...docsRpcs,
   ...policiesRpcs,
+  ...mailRpcs,
 ).middleware(Ft3RpcScopeAuthorization);
 
 export const handlers = {
@@ -119,6 +129,7 @@ export const handlers = {
   ...ft3VcsRpcHandlers,
   ...docsRpcHandlers,
   ...policiesRpcHandlers,
+  ...mailRpcHandlers,
 };
 
 // The store root is a setting (`ft3.docs.root`), so it can point at the store
@@ -143,4 +154,5 @@ export const serviceLayer = Layer.mergeAll(
   piRpcServiceLayer,
   ft3VcsRpcServiceLayer,
   docsServiceLayer,
+  mailRpcServiceLayer,
 );
