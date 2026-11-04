@@ -51,6 +51,11 @@ jobs:
       - name: Install
         run: vp install
 
+      - name: Fork boundary
+        run: |
+          node scripts/check-fork-boundary.ts
+          vp test run scripts/check-fork-boundary.test.ts
+
       # Parallel tsc-rs runs share a daemon and return another project's diagnostics.
       - name: Typecheck ft3 packages
         shell: pwsh
