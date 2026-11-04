@@ -65,7 +65,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(PreviewAutomationBroker)({}),
   Layer.mock(PreviewBrowser)({}),
   Layer.mock(PreviewManager)({}),
-  Layer.mock(PolicyChangeTracker)({}),
+  Layer.mock(PolicyChangeTracker)({
+    snapshot: () =>
+      Effect.succeed({ configVersion: 0, documents: [], requirements: {}, warnings: [] }),
+  }),
   Layer.mock(ProjectCloneTracker)({}),
   Layer.mock(ProjectService)({}),
   Layer.mock(ProjectSetupScriptRunner)({}),
