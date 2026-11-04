@@ -24,6 +24,7 @@ function list(
         status: "discussion" as const,
         stepCount: 2,
         plannerThreadId: planner,
+        implementStarted: false,
         ...plan,
       },
     ],
@@ -54,5 +55,14 @@ describe("planThreadsFromBoardList", () => {
 
   it("skips plans whose card is not in the list", () => {
     expect(planThreadsFromBoardList(list({ cards: [] }))).toEqual([]);
+  });
+
+  it("passes the server implement flag through to the pin logic", () => {
+    const [thread] = planThreadsFromBoardList(
+      list({
+        plan: { status: "accepted" as const, implementStarted: true },
+      }),
+    );
+    expect(thread).toMatchObject({ state: "accepted", implementStarted: true });
   });
 });

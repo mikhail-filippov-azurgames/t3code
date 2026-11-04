@@ -15,10 +15,12 @@ import * as DocsServer from "@t3tools/ft3-docs/server";
 import { migrations as docsMigrations } from "@t3tools/ft3-docs/migrations";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
+import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
@@ -46,12 +48,18 @@ export interface PlanTestOptions {
   readonly plansFolder?: string;
 }
 
+/** Counts `DocsService.read` calls, so summary tests can prove the step cache. */
+export class PlanDocsReads extends Context.Service<PlanDocsReads, Ref.Ref<number>>()(
+  "@t3tools/ft3-board/planning.testkit/PlanDocsReads",
+) {}
+
 export type PlanTestServices =
   | PlanService.PlanService
   | PlanGate.PlanGate
   | DocsServer.DocsService
   | DocsServer.DocumentsWriteFactsPort
-  | SqlClient.SqlClient;
+  | SqlClient.SqlClient
+  | PlanDocsReads;
 
 const cryptoLayer = Layer.succeed(
   Crypto.Crypto,
@@ -144,15 +152,28 @@ const testLayer = (root: string, options: PlanTestOptions) => {
     featureGateLayer(options.planning ?? true),
     settingsLayer(options),
   );
-  const docs = DocsServer.docsServiceLayer({ root }).pipe(
+  const docsInner = DocsServer.docsServiceLayer({ root }).pipe(
     Layer.provide(DocsServer.lineageDocumentsWrite),
     Layer.provide(DocsServer.noProtectedDocuments),
     Layer.provide(base),
   );
+  const docsReads = Layer.effect(PlanDocsReads, Ref.make(0));
+  const docs = Layer.effect(
+    DocsServer.DocsService,
+    Effect.gen(function* () {
+      const reads = yield* PlanDocsReads;
+      const inner = yield* DocsServer.DocsService;
+      return DocsServer.DocsService.of({
+        ...inner,
+        read: (input) =>
+          Ref.update(reads, (count) => count + 1).pipe(Effect.andThen(inner.read(input))),
+      });
+    }),
+  ).pipe(Layer.provide(Layer.mergeAll(docsReads, docsInner)));
   const plans = PlanService.planServiceLayer.pipe(Layer.provide(Layer.mergeAll(base, docs)));
   const gate = PlanGate.planGateLayer.pipe(Layer.provide(Layer.mergeAll(plans, docs)));
   const facts = PlanService.planningDocumentsWriteFacts.pipe(Layer.provide(plans));
-  return Layer.mergeAll(sql, docs, plans, gate, facts);
+  return Layer.mergeAll(sql, docs, plans, gate, facts, docsReads);
 };
 
 /** Runs `use` against a fresh schema, document store and planning services. */
@@ -169,12 +190,12 @@ export const withPlanning = <A, E>(
   });
 
 /** Inserts the lead thread, its board orchestrator and one card; the card is the plan's card. */
-export const seedCard = (title = "Storage plan") =>
+export const seedCard = (title = "Storage plan", id = CARD_ID) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_threads (thread_id) VALUES (${LEAD_THREAD_ID})`;
     yield* sql`INSERT OR IGNORE INTO ft3_board_orchestrators (thread_id, created_by, created_at) VALUES (${LEAD_THREAD_ID}, 'human', '2026-10-26T00:00:00.000Z')`;
-    yield* sql`INSERT INTO ft3_board_cards (card_id, orchestrator_thread_id, title, body, status, created_by, executor_role, failure_streak, order_index, archived, created_at, updated_at) VALUES (${CARD_ID}, ${LEAD_THREAD_ID}, ${title}, 'Body', 'todo', 'human', 'implementation', 0, 0, 0, '2026-10-26T00:00:00.000Z', '2026-10-26T00:00:00.000Z')`;
+    yield* sql`INSERT INTO ft3_board_cards (card_id, orchestrator_thread_id, title, body, status, created_by, executor_role, failure_streak, order_index, archived, created_at, updated_at) VALUES (${id}, ${LEAD_THREAD_ID}, ${title}, 'Body', 'todo', 'human', 'implementation', 0, 0, 0, '2026-10-26T00:00:00.000Z', '2026-10-26T00:00:00.000Z')`;
   });
 
 /** A plan the strict check accepts; the stable id line keeps the store from rewriting the file. */

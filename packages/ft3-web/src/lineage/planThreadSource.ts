@@ -56,9 +56,9 @@ export function planThreadsFromBoardList(
       orchestratorThreadId,
       plannerThreadId: plan.plannerThreadId,
       state: plan.status,
-      // Unpinning an accepted plan waits for its first implement letter; the
-      // mail side does not report it yet, so the row stays accepted.
-      implementStarted: false,
+      // Set by the server once a plan.phase=implement letter exists; the pin
+      // logic drops the accepted row and shows the planner thread normally.
+      implementStarted: plan.implementStarted,
     });
   }
   return threads;

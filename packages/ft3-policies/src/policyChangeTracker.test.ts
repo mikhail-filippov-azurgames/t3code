@@ -94,6 +94,7 @@ const fakeDocs = (files: ReadonlyMap<string, string>) =>
     locateServerPath: () => Effect.succeed(null),
     setDescription: () => Effect.die("unused in the policy loader tests"),
     docRef: () => Effect.die("unused in the policy loader tests"),
+    docStat: () => Effect.die("unused in the policy loader tests"),
   });
 
 /** The loader layer over the fake store, through the same port the RPC layer uses. */

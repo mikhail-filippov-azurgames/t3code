@@ -107,15 +107,17 @@ export const boardRpcHandlers = {
     const service = yield* BoardService.BoardService;
     const plans = yield* PlanService;
     const result = yield* service.listBoard(input);
-    const summaries = yield* plans.listSummaries().pipe(
-      Effect.mapError(
-        (failure): Contracts.BoardMcpFailure =>
-          new Contracts.BoardMcpFailure({
-            code: planFailureCode(failure),
-            message: failure.message,
-          }),
-      ),
-    );
+    const summaries = yield* plans
+      .listSummaries({ cardIds: result.cards.map((card) => card.cardId) })
+      .pipe(
+        Effect.mapError(
+          (failure): Contracts.BoardMcpFailure =>
+            new Contracts.BoardMcpFailure({
+              code: planFailureCode(failure),
+              message: failure.message,
+            }),
+        ),
+      );
     return { ...result, plans: summaries };
   }),
   [FT3_BOARD_WS_METHODS.boardCreate]: Effect.fn("BoardRpc.create")(function* (

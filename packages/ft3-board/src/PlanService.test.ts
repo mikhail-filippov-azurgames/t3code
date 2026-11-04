@@ -4,8 +4,10 @@ import * as DocsServer from "@t3tools/ft3-docs/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as Contracts from "./contracts.ts";
 import * as PlanService from "./PlanService.ts";
 import * as Testkit from "./planning.testkit.ts";
 
@@ -74,7 +76,8 @@ describe("PlanService", () => {
       Effect.gen(function* () {
         yield* Testkit.seedCard("Storage plan");
         const service = yield* plans;
-        assert.deepStrictEqual(yield* service.listSummaries(), []);
+        assert.deepStrictEqual(yield* service.listSummaries({ cardIds: [] }), []);
+        assert.deepStrictEqual(yield* service.listSummaries({ cardIds: [cardId] }), []);
         const record = yield* service.require({ cardId, requiredBy: "lead" });
         yield* service.bindPlannerThread({ cardId, threadId: Testkit.PLANNER_THREAD_ID });
         const twoSteps = Testkit.validPlan(record.planDocId).replace(
@@ -82,7 +85,7 @@ describe("PlanService", () => {
           "| P1 | add the table | ft3-board | migration test |\n| P2 | wire the gate | ft3-board | gate test |",
         );
         yield* Testkit.editPlan(record.planDocId, twoSteps);
-        assert.deepStrictEqual(yield* service.listSummaries(), [
+        assert.deepStrictEqual(yield* service.listSummaries({ cardIds: [cardId] }), [
           {
             cardId,
             planDocId: record.planDocId,
@@ -90,12 +93,86 @@ describe("PlanService", () => {
             status: "required",
             stepCount: 2,
             plannerThreadId: Testkit.PLANNER_THREAD_ID,
+            implementStarted: false,
           },
         ]);
         yield* Testkit.editPlan(record.planDocId, "# Plan: Storage plan\n");
         assert.deepStrictEqual(
-          (yield* service.listSummaries()).map((summary) => summary.stepCount),
+          (yield* service.listSummaries({ cardIds: [cardId] })).map((summary) => summary.stepCount),
           [0],
+        );
+      }),
+    ),
+  );
+
+  it.effect("reads only the requested cards and skips unchanged docs on repeat", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        const secondCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000002");
+        yield* Testkit.seedCard("Storage plan");
+        yield* Testkit.seedCard("Second plan", secondCardId);
+        const service = yield* plans;
+        const reads = yield* Testkit.PlanDocsReads;
+        const first = yield* service.require({ cardId, requiredBy: "lead" });
+        const second = yield* service.require({ cardId: secondCardId, requiredBy: "lead" });
+        yield* Testkit.editPlan(first.planDocId, Testkit.validPlan(first.planDocId));
+        yield* Testkit.editPlan(
+          second.planDocId,
+          Testkit.validPlan(second.planDocId, "Second plan"),
+        );
+        const before = yield* Ref.get(reads);
+        const filtered = yield* service.listSummaries({ cardIds: [cardId] });
+        assert.deepStrictEqual(
+          filtered.map((summary) => summary.cardId),
+          [cardId],
+        );
+        assert.strictEqual(yield* Ref.get(reads), before + 1);
+        const repeat = yield* service.listSummaries({ cardIds: [cardId, secondCardId] });
+        assert.deepStrictEqual(
+          repeat.map((summary) => summary.cardId),
+          [cardId, secondCardId],
+        );
+        assert.strictEqual(yield* Ref.get(reads), before + 2);
+        yield* service.listSummaries({ cardIds: [cardId, secondCardId] });
+        assert.strictEqual(yield* Ref.get(reads), before + 2);
+      }),
+    ),
+  );
+
+  it.effect("marks the summary implemented once an implement letter exists", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        const secondCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000003");
+        yield* Testkit.seedCard("Storage plan");
+        yield* Testkit.seedCard("Second plan", secondCardId);
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        const other = yield* service.require({ cardId: secondCardId, requiredBy: "lead" });
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* Testkit.editPlan(other.planDocId, Testkit.validPlan(other.planDocId, "Second plan"));
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId, secondCardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [false, false],
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_tasks (task_id TEXT NOT NULL PRIMARY KEY, card_id TEXT)`;
+        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_letters (letter_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, plan_phase TEXT)`;
+        yield* sql`INSERT INTO ft3_mail_tasks (task_id, card_id) VALUES ('task:implement', ${cardId})`;
+        yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, plan_phase) VALUES ('letter:discussion-1', 'task:implement', 'discussion')`;
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId, secondCardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [false, false],
+        );
+        yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, plan_phase) VALUES ('letter:implement-1', 'task:implement', 'implement')`;
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId, secondCardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [true, false],
         );
       }),
     ),

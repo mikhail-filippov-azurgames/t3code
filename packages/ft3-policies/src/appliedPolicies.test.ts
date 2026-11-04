@@ -69,6 +69,7 @@ const docsFake = DocsService.of({
   locateServerPath: () => Effect.succeed(null),
   setDescription: () => Effect.die("unused"),
   docRef: () => Effect.die("unused"),
+  docStat: () => Effect.die("unused"),
 });
 
 const services = Layer.mergeAll(

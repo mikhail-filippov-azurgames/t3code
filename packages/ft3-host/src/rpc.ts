@@ -139,20 +139,21 @@ export const handlers = {
 
 // The store root is a setting (`ft3.docs.root`), so it can point at the store
 // the machine already has instead of the empty state-directory one.
+const docsRoot = Effect.gen(function* () {
+  const config = yield* ServerConfig.ServerConfig;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const current = yield* settings.getSettings.pipe(Effect.orDie);
+  return resolveDocsRoot({
+    stateDir: config.stateDir,
+    configuredRoot: readDocsSettings(current.ft3).root,
+  });
+});
+
 const docsServiceLayer = Layer.unwrap(
-  Effect.gen(function* () {
-    const config = yield* ServerConfig.ServerConfig;
-    const settings = yield* ServerSettings.ServerSettingsService;
-    const current = yield* settings.getSettings.pipe(Effect.orDie);
-    return docsRpcServiceLayer({
-      root: resolveDocsRoot({
-        stateDir: config.stateDir,
-        configuredRoot: readDocsSettings(current.ft3).root,
-      }),
-    });
-  }),
+  Effect.map(docsRoot, (root) => docsRpcServiceLayer({ root })),
 );
 
+// The plan summaries read document metadata through the store directly.
 export const serviceLayer = Layer.mergeAll(
   boardRpcServiceLayer,
   architectRpcServiceLayer,

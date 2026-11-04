@@ -156,6 +156,21 @@ const seedFiles = (root: string) =>
 const prime = (service: Service.DocsService["Service"]) =>
   service.read({ ref: `oc://doc/${NIL_ID}` });
 
+/**
+ * Symlink creation needs privileges on Windows; a test that plants links
+ * skips there when the platform refuses, and fails anywhere else.
+ */
+const trySymlink = (target: string, path: string, type: "file" | "dir") =>
+  Effect.tryPromise(() => NodeFSP.symlink(target, path, type)).pipe(
+    Effect.as(true),
+    // Without link privileges the OS refuses with EPERM; the test cannot run
+    // there, so it skips instead of failing.
+    Effect.catchIf(
+      (cause) => cause instanceof Error && (cause as NodeJS.ErrnoException).code === "EPERM",
+      () => Effect.succeed(false),
+    ),
+  );
+
 describe("DocsService reads", () => {
   it.effect("lists one folder level with metadata and no absolute path", () =>
     withDocs(
@@ -270,6 +285,159 @@ describe("DocsService reads", () => {
             );
           }),
       ),
+  );
+
+  it.effect("refuses store paths that escape the docs root through the fallback", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          // A drive-qualified segment parses as a store path but must not touch disk.
+          const drive = yield* context.service
+            .read({ ref: "safe/D:/secret.json" })
+            .pipe(Effect.flip);
+          assert.equal(drive.code, "document_not_found");
+          // `..` never parses as a store path at all.
+          const dotDot = yield* context.service
+            .read({ ref: "policies/../outside.json" })
+            .pipe(Effect.flip);
+          assert.equal(dotDot.code, "document_outside_store");
+          // A junction/symlink to a directory outside the root resolves outside.
+          const link = yield* context.service
+            .read({ ref: "linkedDir/secret.json" })
+            .pipe(Effect.flip);
+          assert.equal(link.code, "document_not_found");
+
+          const tampered = yield* Effect.promise(() =>
+            NodeFSP.readFile(NodePath.join(context.root, "outside-dir", "secret.json"), "utf8"),
+          );
+          assert.equal(tampered, "secret");
+        }),
+      (root) =>
+        Effect.gen(function* () {
+          yield* writeDoc(root, "project/plan.md", `---\nstable_id: ${NIL_ID}\n---\n# Plan\n`);
+          const outsideDir = NodePath.join(root, "outside-dir");
+          yield* Effect.promise(() =>
+            NodeFSP.mkdir(outsideDir, { recursive: true }).then(() =>
+              NodeFSP.writeFile(NodePath.join(outsideDir, "secret.json"), "secret", "utf8"),
+            ),
+          );
+          yield* Effect.promise(() =>
+            NodeFSP.symlink(outsideDir, NodePath.join(root, "contexts", "linkedDir"), "dir"),
+          );
+        }),
+    ),
+  );
+
+  it.effect(
+    "refuses a registered document whose file or parent dir became a link outside the root",
+    () =>
+      withDocs(
+        (context) =>
+          Effect.gen(function* () {
+            yield* prime(context.service);
+            const outside = NodePath.join(context.root, "outside");
+            yield* Effect.promise(() =>
+              NodeFSP.mkdir(outside, { recursive: true }).then(() =>
+                NodeFSP.writeFile(NodePath.join(outside, "secret.md"), "secret\n", "utf8"),
+              ),
+            );
+
+            // The registered file swapped for a link to the outside copy.
+            const filePath = NodePath.join(context.root, "contexts", "project", "plan.md");
+            yield* Effect.promise(() => NodeFSP.rm(filePath, { force: true }));
+            if (!(yield* trySymlink(NodePath.join(outside, "secret.md"), filePath, "file"))) return;
+            const fileLink = yield* context.service
+              .read({ ref: `oc://doc/${NIL_ID}` })
+              .pipe(Effect.flip);
+            assert.equal(fileLink.code, "document_outside_store");
+
+            // The whole parent dir swapped for a link to an outside copy.
+            yield* Effect.promise(() =>
+              NodeFSP.rm(NodePath.join(context.root, "contexts", "project"), {
+                recursive: true,
+                force: true,
+              }),
+            );
+            const outsideTree = NodePath.join(outside, "tree");
+            yield* Effect.promise(() =>
+              NodeFSP.mkdir(outsideTree, { recursive: true }).then(() =>
+                NodeFSP.writeFile(NodePath.join(outsideTree, "plan.md"), "secret\n", "utf8"),
+              ),
+            );
+            if (
+              !(yield* trySymlink(
+                outsideTree,
+                NodePath.join(context.root, "contexts", "project"),
+                "dir",
+              ))
+            )
+              return;
+            const dirLink = yield* context.service
+              .read({ ref: `oc://doc/${NIL_ID}` })
+              .pipe(Effect.flip);
+            assert.equal(dirLink.code, "document_outside_store");
+          }),
+        (root) => seedFiles(root),
+      ),
+  );
+
+  it.effect("reports the filesystem stat of a document without reading it", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const stamped = yield* context.service.docStat(`oc://doc/${NIL_ID}`);
+          assert.isNotNull(stamped);
+          yield* context.service.writeAsHuman({
+            ref: `oc://doc/${NIL_ID}`,
+            content: "# Plan\n\nStorage again, with more bytes than before.\n",
+          });
+          const after = yield* context.service.docStat(`oc://doc/${NIL_ID}`);
+          assert.isNotNull(after);
+          assert.isTrue(
+            after !== null &&
+              stamped !== null &&
+              (after.mtimeMs !== stamped.mtimeMs || after.size !== stamped.size),
+          );
+          assert.isNull(
+            yield* context.service.docStat("oc://doc/00000000-0000-0000-0000-000000000001"),
+          );
+        }),
+      (root) => seedFiles(root),
+    ),
+  );
+
+  it.effect("never writes through the fallback to a path outside the docs root", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          for (const ref of ["safe/D:/secret.json", "linkedDir/secret.json"]) {
+            const error = yield* context.service
+              .writeAsHuman({ ref, content: "overwritten", baseSha256: "a".repeat(64) })
+              .pipe(Effect.flip);
+            assert.equal(error.code, "document_not_found");
+          }
+          const tampered = yield* Effect.promise(() =>
+            NodeFSP.readFile(NodePath.join(context.root, "outside-dir", "secret.json"), "utf8"),
+          );
+          assert.equal(tampered, "secret");
+        }),
+      (root) =>
+        Effect.gen(function* () {
+          yield* writeDoc(root, "project/plan.md", `---\nstable_id: ${NIL_ID}\n---\n# Plan\n`);
+          const outsideDir = NodePath.join(root, "outside-dir");
+          yield* Effect.promise(() =>
+            NodeFSP.mkdir(outsideDir, { recursive: true }).then(() =>
+              NodeFSP.writeFile(NodePath.join(outsideDir, "secret.json"), "secret", "utf8"),
+            ),
+          );
+          yield* Effect.promise(() =>
+            NodeFSP.symlink(outsideDir, NodePath.join(root, "contexts", "linkedDir"), "dir"),
+          );
+        }),
+    ),
   );
 });
 

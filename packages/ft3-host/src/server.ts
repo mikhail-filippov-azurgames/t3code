@@ -160,6 +160,7 @@ const layerAppliedPolicies = Layer.unwrap(
       ),
       setDescription: storeOff,
       docRef: storeOff,
+      docStat: storeOff,
     });
     const docsService = docs
       .docsRpcServiceLayer({ root })

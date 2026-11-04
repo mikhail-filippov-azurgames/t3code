@@ -139,6 +139,7 @@ const docsOver = (files: Map<string, string>) =>
     locateServerPath: () => Effect.succeed(null),
     setDescription: () => Effect.die("unused in the policy apply tests"),
     docRef: () => Effect.die("unused in the policy apply tests"),
+    docStat: () => Effect.die("unused in the policy apply tests"),
   });
 
 const policySettings = (

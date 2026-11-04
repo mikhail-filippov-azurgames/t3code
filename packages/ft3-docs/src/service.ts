@@ -275,6 +275,12 @@ const mapStoreError = (cause: DocsStore.DocsStoreError): DocsServiceError => {
   switch (cause.code) {
     case "store_unavailable":
       return new DocsServiceError({ code: "store_unavailable", cause });
+    case "document_outside_store":
+      return new DocsServiceError({
+        code: "document_outside_store",
+        ...(cause.path === undefined ? {} : { ref: cause.path }),
+        cause,
+      });
     case "document_not_found":
     case "file_missing":
       return new DocsServiceError({
@@ -728,6 +734,23 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     };
   });
 
+  /**
+   * Filesystem stat of a registered document, without content: null when the
+   * row or file is gone (callers fail open to a live read). `(mtimeMs, size)`
+   * is the plan step-count cache key; every write path refreshes it.
+   */
+  const docStat = Effect.fn("DocsService.docStat")(function* (ref: string) {
+    const located = yield* Effect.result(locate(ref));
+    if (located._tag === "Failure") return null;
+    const real = yield* realPathUnderRoot(located.success.relPath);
+    if (real === null) return null;
+    const stat = yield* Effect.result(
+      Effect.sync(() => NodeFS.statSync(real, { throwIfNoEntry: true })),
+    );
+    if (stat._tag === "Failure") return null;
+    return { mtimeMs: stat.success.mtimeMs, size: stat.success.size };
+  });
+
   /** The design's `DocRef` for an address, used by other packages. */
   const docRef = Effect.fn("DocsService.docRef")(function* (ref: string) {
     const { document } = yield* resolve({ ref });
@@ -750,6 +773,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     locateServerPath,
     setDescription,
     docRef,
+    docStat,
   });
 });
 
@@ -794,6 +818,17 @@ export class DocsService extends Context.Service<
     >;
     /** Metadata of a resolved document, without content and without a host path. */
     readonly docRef: (ref: string) => Effect.Effect<DocRef, DocsServiceError>;
+    /**
+     * Filesystem stat of a registered document, without content: the plan
+     * summaries use `(mtimeMs, size)` as the cheap change fingerprint of a
+     * plan document. Null when the row or its file is gone.
+     */
+    readonly docStat: (
+      ref: string,
+    ) => Effect.Effect<
+      { readonly mtimeMs: number; readonly size: number } | null,
+      DocsServiceError
+    >;
   }
 >()("@t3tools/ft3-docs/service/DocsService") {}
 

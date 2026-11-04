@@ -12,6 +12,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -160,11 +161,14 @@ export class PlanService extends Context.Service<
     readonly planStableIdOfPlannerThread: (
       threadId: string,
     ) => Effect.Effect<string | null, PlanError>;
-    /** One small summary per planned card, for the board card list response. */
-    readonly listSummaries: () => Effect.Effect<
-      ReadonlyArray<Contracts.BoardCardPlanSummary>,
-      PlanError
-    >;
+    /**
+     * One small summary per planned card of the given cards, for the board
+     * card list response. Step counts are cached by document digest, so an
+     * unchanged plan is neither re-read nor re-parsed.
+     */
+    readonly listSummaries: (input: {
+      readonly cardIds: ReadonlyArray<Contracts.BoardCardId>;
+    }) => Effect.Effect<ReadonlyArray<Contracts.BoardCardPlanSummary>, PlanError>;
   }
 >()("@t3tools/ft3-board/PlanService") {}
 
@@ -470,41 +474,121 @@ const make = Effect.fn("PlanService.make")(function* () {
     },
   );
 
-  const listSummaries = Effect.fn("PlanService.listSummaries")(function* () {
-    const rows = yield* sql<{
-      readonly card_id: string;
-      readonly state: PlanningContracts.PlanState;
-      readonly plan_doc_id: string;
-      readonly planner_thread_id: string | null;
-      readonly title: string;
-    }>`
+  /** Step counts by plan document, keyed by the digest the count was parsed from. */
+  const stepCounts = yield* Ref.make(
+    new Map<string, { fingerprint: string; sha256: string; stepCount: number }>(),
+  );
+
+  /**
+   * Cards with at least one plan.phase=implement letter on their mail task.
+   * The mail tables live in the same database; one batched read, no package
+   * dependency.
+   */
+  const queryImplementedCardIds = Effect.fn("PlanService.implementedCardIds")(function* (
+    cardIds: ReadonlyArray<string>,
+  ) {
+    if (cardIds.length === 0) return new Set<string>();
+    // Board-only compositions (tests, MCP) never migrate the mail tables;
+    // without them no implement letter can exist.
+    const tables = yield* sql<{ readonly name: string }>`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name IN ('ft3_mail_tasks', 'ft3_mail_letters')
+    `;
+    if (tables.length < 2) return new Set<string>();
+    const rows = yield* sql<{ readonly card_id: string }>`
+      SELECT DISTINCT t.card_id
+      FROM ft3_mail_tasks AS t
+      JOIN ft3_mail_letters AS l ON l.task_id = t.task_id
+      WHERE t.card_id IN ${sql.in(cardIds)} AND l.plan_phase = 'implement'
+    `;
+    return new Set(rows.map((row) => row.card_id));
+  });
+  const implementedCardIds = (cardIds: ReadonlyArray<string>) =>
+    queryImplementedCardIds(cardIds).pipe(Effect.mapError(storeFailure("")));
+
+  /**
+   * Cheap change fingerprint of a plan document from its filesystem stat,
+   * without opening the file: sub-millisecond mtime plus byte size. Every
+   * write path refreshes the stat, so service saves and external edits alike
+   * invalidate the cached step count.
+   */
+  const fingerprintOf = Effect.fn("PlanService.planFingerprint")(function* (planDocId: string) {
+    const stat = yield* docs.docStat(docLinkOf(planDocId)).pipe(Effect.orElseSucceed(() => null));
+    return stat === null ? "missing" : `${stat.mtimeMs}:${stat.size}`;
+  });
+
+  interface SummaryRow {
+    readonly card_id: string;
+    readonly state: PlanningContracts.PlanState;
+    readonly plan_doc_id: string;
+    readonly planner_thread_id: string | null;
+    readonly title: string;
+  }
+
+  const summaryOf = Effect.fn("PlanService.planSummary")(function* (
+    row: SummaryRow,
+    implementStarted: boolean,
+  ) {
+    const summarize = (stepCount: number): Contracts.BoardCardPlanSummary => ({
+      cardId: Contracts.BoardCardId.make(row.card_id),
+      planDocId: row.plan_doc_id,
+      title: row.title,
+      status: row.state,
+      stepCount,
+      plannerThreadId: row.planner_thread_id === null ? null : ThreadId.make(row.planner_thread_id),
+      implementStarted,
+    });
+    // A fingerprint is best-effort metadata; when it fails, re-read below.
+    const stamp = yield* fingerprintOf(row.plan_doc_id).pipe(
+      Effect.orElseSucceed(() => "unavailable"),
+    );
+    const cached = (yield* Ref.get(stepCounts)).get(row.plan_doc_id);
+    if (cached !== undefined && cached.fingerprint === stamp) return summarize(cached.stepCount);
+    // A missing plan document still reports its state; the step count stays
+    // zero so one broken plan cannot fail the whole card list.
+    const document = yield* docs.read({ ref: docLinkOf(row.plan_doc_id) }).pipe(
+      Effect.map((read) => ({ content: read.content, sha256: read.sha256 })),
+      Effect.orElseSucceed(() => null),
+    );
+    if (document === null) {
+      yield* Ref.update(stepCounts, (cache) => {
+        const next = new Map(cache);
+        next.delete(row.plan_doc_id);
+        return next;
+      });
+      return summarize(0);
+    }
+    const stepCount =
+      cached !== undefined && cached.sha256 === document.sha256
+        ? cached.stepCount
+        : countPlanSteps(document.content);
+    yield* Ref.update(stepCounts, (cache) =>
+      new Map(cache).set(row.plan_doc_id, {
+        fingerprint: stamp,
+        sha256: document.sha256,
+        stepCount,
+      }),
+    );
+    return summarize(stepCount);
+  });
+
+  const listSummaries = Effect.fn("PlanService.listSummaries")(function* (input: {
+    readonly cardIds: ReadonlyArray<Contracts.BoardCardId>;
+  }) {
+    if (input.cardIds.length === 0) return [];
+    const rows = yield* sql<SummaryRow>`
       SELECT p.card_id, p.state, p.plan_doc_id, p.planner_thread_id, c.title
       FROM ft3_board_card_plans AS p
       JOIN ft3_board_cards AS c ON c.card_id = p.card_id
+      WHERE p.card_id IN ${sql.in(input.cardIds)}
       ORDER BY p.card_id
     `.pipe(Effect.mapError(storeFailure("")));
-    return yield* Effect.forEach(
-      rows,
-      (row) =>
-        Effect.gen(function* () {
-          // A missing plan document still reports its state; the step count
-          // stays zero so one broken plan cannot fail the whole card list.
-          const content = yield* docs.read({ ref: docLinkOf(row.plan_doc_id) }).pipe(
-            Effect.map((document) => document.content),
-            Effect.orElseSucceed(() => null),
-          );
-          return {
-            cardId: Contracts.BoardCardId.make(row.card_id),
-            planDocId: row.plan_doc_id,
-            title: row.title,
-            status: row.state,
-            stepCount: content === null ? 0 : countPlanSteps(content),
-            plannerThreadId:
-              row.planner_thread_id === null ? null : ThreadId.make(row.planner_thread_id),
-          } satisfies Contracts.BoardCardPlanSummary;
-        }),
-      { concurrency: 8 },
-    );
+    if (rows.length === 0) return [];
+    const cardIds = rows.map((row) => row.card_id);
+    const implemented = yield* implementedCardIds(cardIds);
+    return yield* Effect.forEach(rows, (row) => summaryOf(row, implemented.has(row.card_id)), {
+      concurrency: 8,
+    });
   });
 
   return PlanService.of({
