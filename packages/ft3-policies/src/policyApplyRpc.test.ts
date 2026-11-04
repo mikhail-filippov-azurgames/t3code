@@ -214,16 +214,27 @@ const getPending = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesGetPendin
 const applyPending = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesApplyPending];
 const setApplyExternalEdits =
   policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesSetApplyExternalEdits];
+const setDocument = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesSetDocument];
+const setFeature = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesSetFeature];
 
 const revisionOf = (snapshot: {
   readonly documents: ReadonlyArray<{
     readonly key: string;
+    readonly source: { readonly kind: string };
     readonly applied: { readonly revision: number } | null;
     readonly pending: boolean;
     readonly kept: boolean;
     readonly errors: ReadonlyArray<{ readonly code: string }>;
   }>;
 }) => snapshot.documents.find((document) => document.key === "routingPolicy") ?? null;
+
+const rolesOf = (snapshot: {
+  readonly documents: ReadonlyArray<{
+    readonly key: string;
+    readonly source: { readonly kind: string };
+    readonly applied: { readonly revision: number } | null;
+  }>;
+}) => snapshot.documents.find((document) => document.key === "roles") ?? null;
 
 describe("policy write and apply RPC", () => {
   it.effect("saves a valid document from the Policies tab and applies it at once", () => {
@@ -447,5 +458,77 @@ describe("policy write and apply RPC", () => {
       assert.equal(declared.status, "saved");
       assert.equal(files.get(`${ROLES_DIR}lead.md`), leadRole(2));
     }).pipe(Effect.provide(services(files, false, policyAppliedStoreLayer, rolesDocuments())));
+  });
+
+  it.effect("reports effective features and attention in the snapshot", () => {
+    const files = new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]);
+    return Effect.gen(function* () {
+      const on = yield* setFeature({ feature: "mail", enabled: true });
+      assert.isTrue(on.snapshot.features.mail.requestedEnabled);
+      assert.isFalse(on.snapshot.features.mail.effectiveEnabled);
+      assert.deepStrictEqual(on.snapshot.features.mail.offReason, {
+        code: "feature_dependency_off",
+        dependency: "board",
+      });
+      assert.isTrue(on.snapshot.needsAttention);
+
+      const off = yield* setFeature({ feature: "mail", enabled: false });
+      assert.isFalse(off.snapshot.features.mail.requestedEnabled);
+      assert.isFalse(off.snapshot.features.mail.effectiveEnabled);
+      // Unconfigured built-in roles and skills keep warning-level attention up.
+      assert.isTrue(off.snapshot.needsAttention);
+    }).pipe(Effect.provide(services(files, false)));
+  });
+
+  it.effect("changes the environment-wide document source and restores it", () => {
+    const files = new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]);
+    return Effect.gen(function* () {
+      const initial = yield* getSnapshot({});
+      assert.equal(revisionOf(initial)?.source.kind, "doc");
+      assert.equal(revisionOf(initial)?.applied?.revision, 1);
+
+      const toBuiltin = yield* setDocument({ key: "routingPolicy", source: { kind: "builtin" } });
+      assert.equal(revisionOf(toBuiltin.snapshot)?.source.kind, "builtin");
+      assert.equal(revisionOf(toBuiltin.snapshot)?.applied?.revision, 1);
+      assert.isTrue(revisionOf(toBuiltin.snapshot)?.kept);
+
+      const back = yield* setDocument({
+        key: "routingPolicy",
+        source: { kind: "doc", address: { kind: "path", relPath: ROUTING_POLICY_PATH } },
+      });
+      assert.equal(revisionOf(back.snapshot)?.source.kind, "doc");
+      assert.equal(revisionOf(back.snapshot)?.applied?.revision, 1);
+      assert.isFalse(revisionOf(back.snapshot)?.kept);
+    }).pipe(Effect.provide(services(files, false)));
+  });
+
+  it.effect("stores a project override that changes only that project's documents", () => {
+    const files = new Map([
+      [ROLES_PATH, rolesManifest(1)],
+      [`${ROLES_DIR}lead.md`, leadRole(1)],
+    ]);
+    return Effect.gen(function* () {
+      const envInitial = yield* getSnapshot({});
+      assert.equal(rolesOf(envInitial)?.source.kind, "builtin");
+
+      const set = yield* setDocument({
+        projectId: "proj-1",
+        key: "roles",
+        source: { kind: "doc", address: { kind: "path", relPath: ROLES_PATH } },
+      });
+      assert.equal(rolesOf(set.snapshot)?.source.kind, "doc");
+      assert.equal(rolesOf(set.snapshot)?.applied?.revision, 1);
+
+      const env = yield* getSnapshot({});
+      assert.equal(rolesOf(env)?.source.kind, "builtin");
+
+      const project = yield* getSnapshot({ projectId: "proj-1" });
+      assert.equal(rolesOf(project)?.source.kind, "doc");
+      assert.equal(rolesOf(project)?.applied?.revision, 1);
+
+      yield* setDocument({ projectId: "proj-1", key: "roles", source: null });
+      const after = yield* getSnapshot({ projectId: "proj-1" });
+      assert.equal(rolesOf(after)?.source.kind, "builtin");
+    }).pipe(Effect.provide(services(files, false)));
   });
 });

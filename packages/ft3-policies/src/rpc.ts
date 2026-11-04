@@ -22,6 +22,7 @@ import { layer as policyAppliedStoreLayer } from "./policyAppliedStore.ts";
 import {
   readPolicySettings,
   resolvePolicyDocumentSources,
+  decodeProjectPolicyDocumentOverrideValue,
   withPolicySettings,
 } from "./settings.ts";
 import {
@@ -38,11 +39,18 @@ import {
   type PoliciesSaveDocumentResult,
   type PoliciesSetApplyExternalEditsInput,
   type PoliciesSetApplyExternalEditsResult,
+  type PoliciesSetDocumentInput,
+  type PoliciesSetDocumentResult,
+  type PoliciesSetFeatureInput,
+  type PoliciesSetFeatureResult,
 } from "./rpc-contracts.ts";
 import {
+  type FeatureId,
   POLICY_REQUIREMENT_IDS,
   type PolicyDocumentKey,
+  type PolicyDocumentSource,
   type PolicyRequirementId,
+  resolveFeatureStates,
 } from "./contracts.ts";
 
 export { FT3_POLICIES_WS_METHODS, policiesRpcs, policiesRpcScopes } from "./rpc-contracts.ts";
@@ -66,18 +74,44 @@ export const policiesRpcServiceLayer: Layer.Layer<
   ),
 );
 
-const resultOf = (snapshot: TrackerSnapshot, warnings: PoliciesGetSnapshotResult["warnings"]) =>
-  ({
+const resultOf = (
+  snapshot: TrackerSnapshot,
+  warnings: PoliciesGetSnapshotResult["warnings"],
+  requested: Readonly<Partial<Record<FeatureId, boolean>>>,
+) => {
+  const features = resolveFeatureStates({ requested, requirements: snapshot.requirements });
+  return {
     configVersion: snapshot.configVersion,
     documents: snapshot.documents,
     requirements: Object.fromEntries(
       POLICY_REQUIREMENT_IDS.map((id) => [id, snapshot.requirements[id] === true]),
     ) as Record<PolicyRequirementId, boolean>,
+    features,
+    needsAttention:
+      Object.values(features).some((state) => state.requestedEnabled && !state.effectiveEnabled) ||
+      snapshot.documents.some((document) => document.pending || document.warnings.length > 0),
     warnings,
-  }) satisfies PoliciesGetSnapshotResult;
+  } satisfies PoliciesGetSnapshotResult;
+};
 
 const statusOf = (snapshot: TrackerSnapshot, key: PolicyDocumentKey) =>
   snapshot.documents.find((document) => document.key === key) ?? null;
+
+/** The project's `ft3PolicyDocuments` override, when it decodes; null otherwise. */
+const projectOverrideOf = (
+  settings: {
+    readonly projectSettingsOverrides: Readonly<
+      Record<string, { readonly ft3PolicyDocuments?: unknown } | undefined>
+    >;
+  },
+  projectId: string | undefined,
+): { key: PolicyDocumentKey; source: PolicyDocumentSource } | null => {
+  if (projectId === undefined) return null;
+  const raw = settings.projectSettingsOverrides[projectId]?.ft3PolicyDocuments;
+  if (raw === undefined) return null;
+  const decoded = decodeProjectPolicyDocumentOverrideValue(raw);
+  return decoded._tag === "Some" ? decoded.value : null;
+};
 
 /** Settings, the ticked documents and the one-time env migration, in one place. */
 const prepared = Effect.gen(function* () {
@@ -125,6 +159,7 @@ export const refreshAppliedPolicies: Effect.Effect<
 const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
   policies: ReturnType<typeof readPolicySettings>,
   warnings: PoliciesGetSnapshotResult["warnings"],
+  override: { key: PolicyDocumentKey; source: PolicyDocumentSource } | null,
   extra: {
     readonly forceApplyKeys?: readonly PolicyDocumentKey[];
     readonly appliedBy?: "human_tab" | "human_apply" | "auto";
@@ -132,7 +167,7 @@ const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
 ) {
   const tracker = yield* PolicyChangeTracker;
   const snapshot = yield* tracker.refresh({
-    sources: resolvePolicyDocumentSources(policies, null),
+    sources: resolvePolicyDocumentSources(policies, override),
     features: {
       board: policies.features.board,
       planning: policies.features.planning,
@@ -140,21 +175,21 @@ const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
     applyExternalEdits: policies.applyExternalEdits,
     ...extra,
   });
-  return resultOf(snapshot, warnings);
+  return resultOf(snapshot, warnings, policies.features);
 });
 
 const getSnapshot = Effect.fn("PoliciesRpc.getSnapshot")(function* (
-  _input: PoliciesGetSnapshotInput,
+  input: PoliciesGetSnapshotInput,
 ) {
-  const { policies, warnings } = yield* prepared;
-  return yield* refreshWith(policies, warnings);
+  const { settings, policies, warnings } = yield* prepared;
+  return yield* refreshWith(policies, warnings, projectOverrideOf(settings, input.projectId));
 });
 
 const readDocument = Effect.fn("PoliciesRpc.readDocument")(function* (
   input: PoliciesReadDocumentInput,
 ) {
-  const { policies, warnings } = yield* prepared;
-  yield* refreshWith(policies, warnings);
+  const { settings, policies, warnings } = yield* prepared;
+  yield* refreshWith(policies, warnings, projectOverrideOf(settings, input.projectId));
   const tracker = yield* PolicyChangeTracker;
   const live = yield* tracker.live(input.key);
   if (live === null || live.files.length === 0) {
@@ -188,8 +223,9 @@ const writeUnmanaged = (path: string, content: string) =>
 const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
   input: PoliciesSaveDocumentInput,
 ) {
-  const { policies, warnings } = yield* prepared;
-  const before = yield* refreshWith(policies, warnings);
+  const { settings, policies, warnings } = yield* prepared;
+  const override = projectOverrideOf(settings, input.projectId);
+  const before = yield* refreshWith(policies, warnings, override);
   const tracker = yield* PolicyChangeTracker;
   const docs = yield* DocsService;
   const live = yield* tracker.live(input.key);
@@ -227,7 +263,7 @@ const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
     } satisfies PoliciesSaveDocumentResult;
   }
 
-  const snapshot = yield* refreshWith(policies, warnings, {
+  const snapshot = yield* refreshWith(policies, warnings, override, {
     forceApplyKeys: [input.key],
     appliedBy: "human_tab",
   });
@@ -249,8 +285,8 @@ const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
 const getPendingChange = Effect.fn("PoliciesRpc.getPendingChange")(function* (
   input: PoliciesGetPendingChangeInput,
 ) {
-  const { policies, warnings } = yield* prepared;
-  yield* refreshWith(policies, warnings);
+  const { settings, policies, warnings } = yield* prepared;
+  yield* refreshWith(policies, warnings, projectOverrideOf(settings, input.projectId));
   const tracker = yield* PolicyChangeTracker;
   const change = yield* tracker.pendingChange(input.key);
   return {
@@ -271,8 +307,9 @@ const getPendingChange = Effect.fn("PoliciesRpc.getPendingChange")(function* (
 const applyPending = Effect.fn("PoliciesRpc.applyPending")(function* (
   input: PoliciesApplyPendingInput,
 ) {
-  const { policies, warnings } = yield* prepared;
-  const before = yield* refreshWith(policies, warnings);
+  const { settings, policies, warnings } = yield* prepared;
+  const override = projectOverrideOf(settings, input.projectId);
+  const before = yield* refreshWith(policies, warnings, override);
   const tracker = yield* PolicyChangeTracker;
   const pending = yield* tracker.pendingChange(input.key);
   const beforeStatus = statusOf(
@@ -293,7 +330,7 @@ const applyPending = Effect.fn("PoliciesRpc.applyPending")(function* (
     } satisfies PoliciesApplyPendingResult;
   }
 
-  const snapshot = yield* refreshWith(policies, warnings, {
+  const snapshot = yield* refreshWith(policies, warnings, override, {
     forceApplyKeys: [input.key],
     appliedBy: "human_apply",
   });
@@ -323,11 +360,82 @@ const setApplyExternalEdits = Effect.fn("PoliciesRpc.setApplyExternalEdits")(fun
       })
       .pipe(Effect.orDie)).ft3,
   );
-  const snapshot = yield* refreshWith(updated, []);
+  const snapshot = yield* refreshWith(updated, [], null);
   return {
     enabled: updated.applyExternalEdits,
     snapshot,
   } satisfies PoliciesSetApplyExternalEditsResult;
+});
+
+/**
+ * Changes where a policy document comes from (design §6.1): environment-wide
+ * through `ft3.policies.documents`, or per project through the generic
+ * `ft3PolicyDocuments` override, which `null` removes.
+ */
+const setDocument = Effect.fn("PoliciesRpc.setDocument")(function* (
+  input: PoliciesSetDocumentInput,
+) {
+  const serverSettings = yield* ServerSettingsService;
+  const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+  const projectId = input.projectId ?? null;
+  let policies;
+  let override: { key: PolicyDocumentKey; source: PolicyDocumentSource } | null = null;
+
+  if (projectId === null) {
+    const current = readPolicySettings(settings.ft3);
+    policies = readPolicySettings(
+      (yield* serverSettings
+        .updateSettings({
+          ft3: withPolicySettings(settings.ft3, {
+            ...current,
+            documents: {
+              ...current.documents,
+              [input.key]: input.source ?? { kind: "builtin" },
+            },
+          }),
+        })
+        .pipe(Effect.orDie)).ft3,
+    );
+  } else {
+    const overrides = settings.projectSettingsOverrides as Readonly<
+      Record<string, { readonly ft3PolicyDocuments?: unknown } | undefined>
+    >;
+    const entry: Record<string, unknown> = { ...overrides[projectId] };
+    if (input.source === null) {
+      delete entry.ft3PolicyDocuments;
+    } else {
+      entry.ft3PolicyDocuments = { key: input.key, source: input.source };
+      override = { key: input.key, source: input.source };
+    }
+    const updated = yield* serverSettings
+      .updateSettings({ projectSettingsOverrides: { [projectId]: entry } })
+      .pipe(Effect.orDie);
+    policies = readPolicySettings(updated.ft3);
+  }
+
+  const snapshot = yield* refreshWith(policies, [], override, {
+    forceApplyKeys: [input.key],
+    appliedBy: "human_apply",
+  });
+  return { snapshot } satisfies PoliciesSetDocumentResult;
+});
+
+const setFeature = Effect.fn("PoliciesRpc.setFeature")(function* (input: PoliciesSetFeatureInput) {
+  const serverSettings = yield* ServerSettingsService;
+  const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+  const current = readPolicySettings(settings.ft3);
+  const updated = readPolicySettings(
+    (yield* serverSettings
+      .updateSettings({
+        ft3: withPolicySettings(settings.ft3, {
+          ...current,
+          features: { ...current.features, [input.feature]: input.enabled },
+        }),
+      })
+      .pipe(Effect.orDie)).ft3,
+  );
+  const snapshot = yield* refreshWith(updated, [], null);
+  return { snapshot } satisfies PoliciesSetFeatureResult;
 });
 
 export const policiesRpcHandlers = {
@@ -337,4 +445,6 @@ export const policiesRpcHandlers = {
   [FT3_POLICIES_WS_METHODS.policiesGetPendingChange]: getPendingChange,
   [FT3_POLICIES_WS_METHODS.policiesApplyPending]: applyPending,
   [FT3_POLICIES_WS_METHODS.policiesSetApplyExternalEdits]: setApplyExternalEdits,
+  [FT3_POLICIES_WS_METHODS.policiesSetDocument]: setDocument,
+  [FT3_POLICIES_WS_METHODS.policiesSetFeature]: setFeature,
 };

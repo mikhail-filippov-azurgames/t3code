@@ -13,7 +13,12 @@ import {
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { PolicyDocumentKey, PolicyDocumentSource, PolicyRequirementId } from "./contracts.ts";
+import {
+  FeatureId,
+  PolicyDocumentKey,
+  PolicyDocumentSource,
+  PolicyRequirementId,
+} from "./contracts.ts";
 import { POLICY_ISSUE_CODES } from "./diagnostics.ts";
 
 export const FT3_POLICIES_WS_METHODS = {
@@ -23,6 +28,8 @@ export const FT3_POLICIES_WS_METHODS = {
   policiesGetPendingChange: "policies.getPendingChange",
   policiesApplyPending: "policies.applyPending",
   policiesSetApplyExternalEdits: "policies.setApplyExternalEdits",
+  policiesSetDocument: "policies.setDocument",
+  policiesSetFeature: "policies.setFeature",
 } as const;
 
 /** One diagnostic with its source line, as the Policies tab lists it. */
@@ -71,11 +78,31 @@ export const PoliciesGetSnapshotInput = Schema.Struct({
 });
 export type PoliciesGetSnapshotInput = typeof PoliciesGetSnapshotInput.Type;
 
+/** Why an enabled feature is not effective, as the snapshot reports it (design §7). */
+export const PolicyFeatureOffReasonSchema = Schema.Union([
+  Schema.Struct({ code: Schema.Literal("feature_dependency_off"), dependency: FeatureId }),
+  Schema.Struct({ code: Schema.Literal("feature_document_off"), requirement: PolicyRequirementId }),
+]);
+export type PolicyFeatureOffReasonSchema = typeof PolicyFeatureOffReasonSchema.Type;
+
+/** The effective state of one feature, computed by the server from the applied documents. */
+export const PolicyFeatureStateSchema = Schema.Struct({
+  id: FeatureId,
+  requestedEnabled: Schema.Boolean,
+  effectiveEnabled: Schema.Boolean,
+  offReason: Schema.NullOr(PolicyFeatureOffReasonSchema),
+});
+export type PolicyFeatureStateSchema = typeof PolicyFeatureStateSchema.Type;
+
 export const PoliciesGetSnapshotResult = Schema.Struct({
   configVersion: Schema.Int,
   documents: Schema.Array(PolicyDocumentStatusSchema),
   /** Requirement validity of the applied documents, every id present; the feature registry reads it. */
   requirements: Schema.Record(PolicyRequirementId, Schema.Boolean),
+  /** Effective state of every feature, computed from the toggles and this snapshot's requirements. */
+  features: Schema.Record(FeatureId, PolicyFeatureStateSchema),
+  /** An enabled-but-ineffective feature, an active-policy warning or a pending change needs a look. */
+  needsAttention: Schema.Boolean,
   /** Migration warnings, such as an unresolvable legacy policy reference. */
   warnings: Schema.Array(PolicyIssueSchema),
 });
@@ -203,6 +230,35 @@ export const PoliciesSetApplyExternalEditsResult = Schema.Struct({
 });
 export type PoliciesSetApplyExternalEditsResult = typeof PoliciesSetApplyExternalEditsResult.Type;
 
+/**
+ * Where a policy document comes from, or null to restore the built-in template.
+ * With a `projectId`, the value is stored as that project's `ft3PolicyDocuments`
+ * override (null removes the override); without one it replaces the
+ * environment-wide source of the document.
+ */
+export const PoliciesSetDocumentInput = Schema.Struct({
+  projectId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  key: PolicyDocumentKey,
+  source: Schema.NullOr(PolicyDocumentSource),
+});
+export type PoliciesSetDocumentInput = typeof PoliciesSetDocumentInput.Type;
+
+export const PoliciesSetDocumentResult = Schema.Struct({
+  snapshot: PoliciesGetSnapshotResult,
+});
+export type PoliciesSetDocumentResult = typeof PoliciesSetDocumentResult.Type;
+
+export const PoliciesSetFeatureInput = Schema.Struct({
+  feature: FeatureId,
+  enabled: Schema.Boolean,
+});
+export type PoliciesSetFeatureInput = typeof PoliciesSetFeatureInput.Type;
+
+export const PoliciesSetFeatureResult = Schema.Struct({
+  snapshot: PoliciesGetSnapshotResult,
+});
+export type PoliciesSetFeatureResult = typeof PoliciesSetFeatureResult.Type;
+
 export const policiesRpcs = [
   Rpc.make(FT3_POLICIES_WS_METHODS.policiesGetSnapshot, {
     payload: PoliciesGetSnapshotInput,
@@ -234,6 +290,16 @@ export const policiesRpcs = [
     success: PoliciesSetApplyExternalEditsResult,
     error: EnvironmentAuthorizationError,
   }),
+  Rpc.make(FT3_POLICIES_WS_METHODS.policiesSetDocument, {
+    payload: PoliciesSetDocumentInput,
+    success: PoliciesSetDocumentResult,
+    error: EnvironmentAuthorizationError,
+  }),
+  Rpc.make(FT3_POLICIES_WS_METHODS.policiesSetFeature, {
+    payload: PoliciesSetFeatureInput,
+    success: PoliciesSetFeatureResult,
+    error: EnvironmentAuthorizationError,
+  }),
 ] as const;
 
 export const policiesRpcScopes = {
@@ -243,4 +309,6 @@ export const policiesRpcScopes = {
   [FT3_POLICIES_WS_METHODS.policiesSaveDocument]: AuthSettingsWriteScope,
   [FT3_POLICIES_WS_METHODS.policiesApplyPending]: AuthSettingsWriteScope,
   [FT3_POLICIES_WS_METHODS.policiesSetApplyExternalEdits]: AuthSettingsWriteScope,
+  [FT3_POLICIES_WS_METHODS.policiesSetDocument]: AuthSettingsWriteScope,
+  [FT3_POLICIES_WS_METHODS.policiesSetFeature]: AuthSettingsWriteScope,
 } as const;
