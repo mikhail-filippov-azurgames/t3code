@@ -1,6 +1,12 @@
 import * as Effect from "effect/Effect";
 
-import { DocsResolveInput, DocsResolveResult, FT3_DOCS_WS_METHODS } from "./rpc-contracts.ts";
+import {
+  DocsReadInput,
+  DocsReadResult,
+  DocsResolveInput,
+  DocsResolveResult,
+  FT3_DOCS_WS_METHODS,
+} from "./rpc-contracts.ts";
 import * as Service from "./service.ts";
 
 export { FT3_DOCS_WS_METHODS, docsRpcs, docsRpcScopes } from "./rpc-contracts.ts";
@@ -37,6 +43,26 @@ const docsResolve = Effect.fn("DocsRpc.docsResolve")(function* (input: DocsResol
   );
 });
 
+const docsRead = Effect.fn("DocsRpc.read")(function* (input: DocsReadInput) {
+  const service = yield* Service.DocsService;
+  return yield* service.read({ ref: input.ref }).pipe(
+    Effect.map((document): DocsReadResult => ({
+      status: "found",
+      stableId: document.stableId,
+      relPath: document.relPath,
+      name: document.name,
+      sha256: document.sha256,
+      content: document.content,
+    })),
+    Effect.catch((error): Effect.Effect<DocsReadResult> =>
+      Effect.succeed({
+        status: error.code === "document_not_found" ? "not_found" : "unavailable",
+      }),
+    ),
+  );
+});
+
 export const docsRpcHandlers = {
   [FT3_DOCS_WS_METHODS.docsResolve]: docsResolve,
+  [FT3_DOCS_WS_METHODS.docsRead]: docsRead,
 };

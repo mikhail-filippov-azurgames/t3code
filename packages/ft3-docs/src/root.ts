@@ -23,8 +23,45 @@ export const DocsRootSetting = Schema.NullOr(
   Schema.String.check(isNonBlankPath, Schema.isMaxLength(DOCS_ROOT_MAX_LENGTH)),
 );
 
+export const DOCS_PLANS_FOLDER_MAX_LENGTH = 1024;
+
+/** Folder new plan documents are created in, relative to `contexts/` (design §6.1). */
+export const DEFAULT_PLANS_FOLDER = "corvis/plans";
+
+/**
+ * Canonicalizes a store-relative folder: `/` separators, no absolute roots,
+ * no `.` or `..` segments, no empty segments. Returns null for anything else.
+ */
+export function normalizePlansFolder(value: string): string | null {
+  const candidate = value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (candidate.length === 0) return null;
+  if (candidate.startsWith("/") || candidate.startsWith("~")) return null;
+  if (/^[A-Za-z]:/.test(candidate)) return null;
+  if (candidate.includes("://")) return null;
+  const segments = candidate.split("/");
+  if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+    return null;
+  }
+  return segments.join("/");
+}
+
+/**
+ * A store-relative folder path in canonical form; blank, absolute, escaping
+ * and non-canonical values (trailing slashes, backslashes, padding) fall back
+ * to the default folder with the rest of the docs settings.
+ */
+export const DocsPlansFolderSetting = Schema.String.check(
+  Schema.makeFilter((value: string) => normalizePlansFolder(value) === value, {
+    expected: "a store-relative folder path",
+  }),
+  Schema.isMaxLength(DOCS_PLANS_FOLDER_MAX_LENGTH),
+);
+
 export const DocsSettings = Schema.Struct({
   root: DocsRootSetting.pipe(Schema.withDecodingDefault(Effect.succeed(null))),
+  plansFolder: DocsPlansFolderSetting.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PLANS_FOLDER)),
+  ),
 });
 export type DocsSettings = typeof DocsSettings.Type;
 

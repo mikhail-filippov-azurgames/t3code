@@ -5,8 +5,10 @@ import * as NodePath from "node:path";
 
 import {
   DEFAULT_DOCS_SETTINGS,
+  DEFAULT_PLANS_FOLDER,
   DOCS_ROOT_ENV,
   decodeDocsSettingsValue,
+  normalizePlansFolder,
   readDocsSettings,
   resolveDocsRoot,
 } from "./root.ts";
@@ -34,6 +36,37 @@ describe("docs root setting", () => {
       DEFAULT_DOCS_SETTINGS,
     );
     expect(readDocsSettings(undefined)).toEqual(DEFAULT_DOCS_SETTINGS);
+  });
+
+  it("defaults the plans folder and reads a configured one", () => {
+    expect(DEFAULT_DOCS_SETTINGS.plansFolder).toBe(DEFAULT_PLANS_FOLDER);
+    expect(readDocsSettings({ docs: { plansFolder: "teams/plans" } }).plansFolder).toBe(
+      "teams/plans",
+    );
+    expect(readDocsSettings(undefined).plansFolder).toBe(DEFAULT_PLANS_FOLDER);
+  });
+
+  it("canonicalizes a folder for the strict setting check", () => {
+    expect(normalizePlansFolder("teams/plans/")).toBe("teams/plans");
+    expect(normalizePlansFolder("teams\\plans")).toBe("teams/plans");
+    expect(normalizePlansFolder("  teams/plans  ")).toBe("teams/plans");
+  });
+
+  it("rejects an escaping, blank or non-canonical plans folder and falls back to the default", () => {
+    for (const plansFolder of [
+      "",
+      " ",
+      "/plans",
+      "../plans",
+      "a/../../b",
+      "C:/plans",
+      "~/plans",
+      "teams/plans/",
+      "teams\\plans",
+      "  teams/plans  ",
+    ]) {
+      expect(readDocsSettings({ docs: { plansFolder } })).toEqual(DEFAULT_DOCS_SETTINGS);
+    }
   });
 
   it("rejects a blank or oversized root and falls back to the default", () => {
