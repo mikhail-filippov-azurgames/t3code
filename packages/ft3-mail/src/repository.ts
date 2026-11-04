@@ -1284,18 +1284,17 @@ const make = Effect.gen(function* () {
             const task = yield* findTask(member.taskId);
             if (task === null || task.status !== "open") return { member, failed, letter: null };
             const stranded = [...new Set(failed.map((delivery) => delivery.letterId))].toSorted();
-            const key = {
-              taskId: task.taskId,
-              senderThreadId: "system",
-              clientRequestId: input.clientRequestId,
-            };
+            // One notice per failure batch: a later settle that fails newer deliveries gets
+            // its own letter, delivery and wake instead of reusing the first notice.
+            const clientRequestId = `${input.clientRequestId}:${failed[0]?.deliveryId ?? ""}`;
+            const key = { taskId: task.taskId, senderThreadId: "system", clientRequestId };
             const existing = yield* findLetterByKey(key);
             let letter: MailLetter;
             if (existing !== null) {
               if (existing.requestFingerprint !== input.requestFingerprint) {
                 return yield* new MailIdempotencyConflict({
                   operation: "applySettleNotice",
-                  key: `${task.taskId}:system:${input.clientRequestId}`,
+                  key: `${task.taskId}:system:${clientRequestId}`,
                 });
               }
               letter = existing;
@@ -1314,7 +1313,7 @@ const make = Effect.gen(function* () {
                   ${input.letterId}, ${task.taskId}, ${sequence}, 'system', 'lead', 'info',
                   ${`Participant ${input.roleId} ${input.settledAs} with ${failed.length} undelivered letter${failed.length === 1 ? "" : "s"} (${stranded.join(", ")}). The deliveries were marked failed; resend anything the next participant still needs.`},
                   NULL, ${failed[0]?.letterId ?? null}, NULL, NULL, NULL, NULL, NULL, NULL, 0,
-                  NULL, ${input.clientRequestId}, ${input.requestFingerprint}, ${input.at}
+                  NULL, ${clientRequestId}, ${input.requestFingerprint}, ${input.at}
                 )`;
               const inserted = yield* findLetterByKey(key);
               if (inserted === null) {
@@ -1329,11 +1328,15 @@ const make = Effect.gen(function* () {
                 ${input.deliveryId}, ${task.taskId}, ${letter.letterId}, NULL, 'lead',
                 ${task.createdByThreadId}, 'pending', ${input.at}, ${input.at}
               ) ON CONFLICT(letter_id, recipient) DO NOTHING`;
+            const leadDeliveries = yield* sql<{ readonly deliveryId: string }>`SELECT
+                delivery_id AS "deliveryId" FROM ft3_mail_deliveries
+              WHERE letter_id = ${letter.letterId} AND recipient = 'lead'`;
+            const leadDeliveryId = leadDeliveries[0]?.deliveryId ?? input.deliveryId;
             yield* sql`INSERT INTO ft3_mail_wakes (
                 wake_id, task_id, target_thread_id, reason, idempotency_key, created_at
               ) VALUES (
-                ${input.wakeId}, ${task.taskId}, ${task.createdByThreadId}, 'member-settled',
-                ${`mail:wake:${input.deliveryId}`}, ${input.at}
+                ${`mail:wake:${leadDeliveryId}`}, ${task.taskId}, ${task.createdByThreadId},
+                'member-settled', ${`mail:wake:${leadDeliveryId}`}, ${input.at}
               ) ON CONFLICT(idempotency_key) DO NOTHING`;
             return { member, failed, letter };
           }),

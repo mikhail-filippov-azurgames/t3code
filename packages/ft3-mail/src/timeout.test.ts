@@ -320,3 +320,42 @@ it.effect("settles a member from every write boundary without partial state", ()
     }
   });
 });
+
+it.effect("gives a later settle batch its own notice, delivery and wake", () => {
+  const fault: FaultFlag = { predicate: null };
+  const harness = faultHarness(fault);
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamWithBudget(60);
+    const taskId = created.task.taskId;
+    yield* sendRequest(taskId, "request:first");
+    const mail = yield* MailService;
+    const repository = yield* MailRepository;
+    const sql = yield* SqlClient.SqlClient;
+    const memberId = (yield* repository.listMembers(taskId))[0]!.memberId;
+    yield* mail.settleMember({ memberId, settledAs: "completed", at: afterSeconds(61) });
+
+    // A member that comes back and strands a newer letter settles into a second notice.
+    yield* sql`UPDATE ft3_mail_members SET status = 'active' WHERE member_id = ${memberId}`;
+    const second = yield* sendRequest(taskId, "request:second");
+    const settled = yield* mail.settleMember({
+      memberId,
+      settledAs: "completed",
+      at: afterSeconds(62),
+    });
+    assert.deepStrictEqual(
+      settled?.failed.map((delivery) => delivery.deliveryId),
+      [second.deliveries[0]!.deliveryId],
+    );
+    const notices = yield* systemEntries(taskId);
+    assert.equal(notices.length, 2);
+    const leadDeliveryIds = notices.flatMap((entry) =>
+      entry.deliveries.filter((d) => d.recipient === "lead").map((d) => d.deliveryId),
+    );
+    const wakes = yield* settleWakes();
+    assert.deepStrictEqual(
+      wakes.map((wake) => wake.idempotencyKey).toSorted(),
+      leadDeliveryIds.map((id) => `mail:wake:${id}`).toSorted(),
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
