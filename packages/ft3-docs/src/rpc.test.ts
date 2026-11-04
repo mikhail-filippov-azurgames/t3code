@@ -38,7 +38,7 @@ const writeDoc = (root: string, relPath: string, content: string) =>
   });
 
 const withReadDocs = <A, E>(
-  use: Effect.Effect<A, E, Service.DocsService>,
+  use: (root: string) => Effect.Effect<A, E, Service.DocsService>,
   setup?: (root: string) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
@@ -51,7 +51,7 @@ const withReadDocs = <A, E>(
     );
     return yield* Effect.gen(function* () {
       if (setup !== undefined) yield* Effect.orDie(setup(root));
-      return yield* use;
+      return yield* use(root);
     }).pipe(Effect.provide(services), Effect.ensuring(removeRoot(root)));
   });
 
@@ -61,40 +61,79 @@ const seedPlan = (root: string) =>
 describe("docs.read", () => {
   it.effect("reads document text through the thin handler", () =>
     withReadDocs(
-      Effect.gen(function* () {
-        const service = yield* Service.DocsService;
-        // The first read runs the reconcile pass that registers the seeded file.
-        yield* service.read({ ref: `oc://doc/${NIL_ID}` });
-        const result = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
-          ref: `oc://doc/${NIL_ID}`,
-        });
-        assert.equal(result.status, "found");
-        if (result.status !== "found") return;
-        assert.equal(result.stableId, NIL_ID);
-        assert.equal(result.relPath, "project/plan.md");
-        assert.equal(result.name, "plan.md");
-        assert.match(result.sha256, /^[0-9a-f]{64}$/);
-        assert.include(result.content, "# Plan");
-        assert.notInclude(JSON.stringify(result), "contexts");
-      }),
+      () =>
+        Effect.gen(function* () {
+          const service = yield* Service.DocsService;
+          // The first read runs the reconcile pass that registers the seeded file.
+          yield* service.read({ ref: `oc://doc/${NIL_ID}` });
+          const result = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
+            ref: `oc://doc/${NIL_ID}`,
+          });
+          assert.equal(result.status, "found");
+          if (result.status !== "found") return;
+          assert.equal(result.stableId, NIL_ID);
+          assert.equal(result.relPath, "project/plan.md");
+          assert.equal(result.name, "plan.md");
+          assert.match(result.sha256, /^[0-9a-f]{64}$/);
+          assert.include(result.content, "# Plan");
+          assert.notInclude(JSON.stringify(result), "contexts");
+        }),
+      seedPlan,
+    ),
+  );
+
+  it.effect("refuses a registered document swapped for a link outside the root", () =>
+    withReadDocs(
+      (root) =>
+        Effect.gen(function* () {
+          const service = yield* Service.DocsService;
+          // The first read runs the reconcile pass that registers the seeded file.
+          yield* service.read({ ref: `oc://doc/${NIL_ID}` });
+          const outside = NodePath.join(root, "outside");
+          yield* Effect.promise(() =>
+            NodeFSP.mkdir(outside, { recursive: true }).then(() =>
+              NodeFSP.writeFile(NodePath.join(outside, "secret.md"), "secret\n", "utf8"),
+            ),
+          );
+          const filePath = NodePath.join(root, "contexts", "project", "plan.md");
+          yield* Effect.promise(() => NodeFSP.rm(filePath, { force: true }));
+          const linked = yield* Effect.tryPromise(() =>
+            NodeFSP.symlink(NodePath.join(outside, "secret.md"), filePath, "file"),
+          ).pipe(
+            Effect.as(true),
+            // Without link privileges the OS refuses with EPERM; the test
+            // cannot run there, so it skips instead of failing.
+            Effect.catchIf(
+              (cause) =>
+                cause instanceof Error && (cause as NodeJS.ErrnoException).code === "EPERM",
+              () => Effect.succeed(false),
+            ),
+          );
+          if (!linked) return;
+          const refused = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
+            ref: `oc://doc/${NIL_ID}`,
+          });
+          assert.deepStrictEqual(refused, { status: "unavailable" });
+        }),
       seedPlan,
     ),
   );
 
   it.effect("reads a plan by its store path and reports a missing document", () =>
     withReadDocs(
-      Effect.gen(function* () {
-        const service = yield* Service.DocsService;
-        yield* service.read({ ref: `oc://doc/${NIL_ID}` });
-        const byPath = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
-          ref: "project/plan.md",
-        });
-        assert.equal(byPath.status, "found");
-        const missing = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
-          ref: "oc://doc/00000000-0000-0000-0000-000000000001",
-        });
-        assert.deepStrictEqual(missing, { status: "not_found" });
-      }),
+      () =>
+        Effect.gen(function* () {
+          const service = yield* Service.DocsService;
+          yield* service.read({ ref: `oc://doc/${NIL_ID}` });
+          const byPath = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
+            ref: "project/plan.md",
+          });
+          assert.equal(byPath.status, "found");
+          const missing = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
+            ref: "oc://doc/00000000-0000-0000-0000-000000000001",
+          });
+          assert.deepStrictEqual(missing, { status: "not_found" });
+        }),
       seedPlan,
     ),
   );

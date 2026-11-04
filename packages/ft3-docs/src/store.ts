@@ -73,6 +73,7 @@ export const DocsStoreErrorCode = Schema.Literals([
   "document_exists",
   "document_not_found",
   "document_changed",
+  "document_outside_store",
   "file_missing",
   "duplicate_stable_id",
   "store_unavailable",
@@ -103,6 +104,8 @@ export class DocsStoreError extends Schema.TaggedError<DocsStoreError>()("DocsSt
         return `Document "${this.path ?? ""}" was not found.`;
       case "document_changed":
         return `Document "${this.path ?? ""}" changed since it was read.`;
+      case "document_outside_store":
+        return `The file of document "${this.path ?? ""}" resolves outside the document store.`;
       case "file_missing":
         return `The file of document "${this.path ?? ""}" is missing.`;
       case "duplicate_stable_id":
@@ -319,6 +322,34 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
   const absoluteFor = (relPath: string): string =>
     relPath === "" ? contextsRoot : NodePath.resolve(contextsRoot, ...relPath.split("/"));
 
+  /**
+   * Fail-closed symlink guard: the resolved real path must stay under the
+   * real contexts root, else `document_outside_store`. A missing file still
+   * reports `file_missing`, so the repair pass keeps working.
+   */
+  const realPathUnderRoot = Effect.fn("DocsStore.realPathUnderRoot")(function* (
+    absolutePath: string,
+  ) {
+    const real = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(absolutePath),
+      catch: (cause) => storeError("file_missing", absolutePath, cause),
+    });
+    const realRoot = yield* Effect.tryPromise({
+      try: () => NodeFSP.realpath(contextsRoot),
+      catch: (cause) => storeError("store_unavailable", contextsRoot, cause),
+    });
+    const relative = NodePath.relative(realRoot, real);
+    if (
+      relative === "" ||
+      relative === ".." ||
+      relative.startsWith(`..${NodePath.sep}`) ||
+      NodePath.isAbsolute(relative)
+    ) {
+      return yield* storeError("document_outside_store", absolutePath);
+    }
+    return real;
+  });
+
   const pathExists = Effect.fn("DocsStore.pathExists")(function* (absolutePath: string) {
     return yield* Effect.promise(() =>
       NodeFSP.access(absolutePath).then(
@@ -358,8 +389,11 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
   const readDocumentFile = Effect.fn("DocsStore.readDocumentFile")(function* (
     absolutePath: string,
   ) {
+    const real = yield* realPathUnderRoot(absolutePath);
     return yield* Effect.tryPromise({
-      try: () => NodeFSP.readFile(absolutePath, "utf8"),
+      // A racing swap between the check and this read can still escape; the
+      // check closes the steady-state hole, matching the service fallback.
+      try: () => NodeFSP.readFile(real, "utf8"),
       catch: (cause) => storeError("file_missing", absolutePath, cause),
     });
   });
