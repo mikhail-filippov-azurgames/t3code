@@ -10,9 +10,9 @@ describe("chatCopyAnchorMarkdown", () => {
   });
 
   it("collapses internal schemes and fragments to their label", () => {
-    expect(
-      chatCopyAnchorMarkdown("ced policy", "oc://doc/11111111-1111-1111-1111-111111111111"),
-    ).toBe("ced policy");
+    expect(chatCopyAnchorMarkdown("ced policy", `oc://doc/${crypto.randomUUID()}`)).toBe(
+      "ced policy",
+    );
     expect(chatCopyAnchorMarkdown("abcdef1", "#t3-commit-abcdef1")).toBe("abcdef1");
     expect(chatCopyAnchorMarkdown("run", "javascript:alert(1)")).toBe("run");
   });

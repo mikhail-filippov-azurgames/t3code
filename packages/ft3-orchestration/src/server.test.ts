@@ -54,8 +54,9 @@ const isSearchInput = Schema.is(Contracts.TaskSearchInput);
 const isReadInput = Schema.is(Contracts.TaskReadInput);
 
 const epoch = DateTime.makeUnsafe("2026-10-25T00:00:00.000Z");
+const contractDocUrl = `oc://doc/${globalThis.crypto.randomUUID()}`;
 const handoff: Contracts.TaskHandoff = {
-  contractRef: "oc://doc/319134b5-b44b-457c-a812-1dffd337f26c",
+  contractRef: contractDocUrl,
   requiredRevision: 1,
   implementsRevision: 1,
   stage: "implementation",
@@ -64,7 +65,7 @@ const handoff: Contracts.TaskHandoff = {
   forbidden: ["apps/server/src/mcp/OrchestratorMcpService.ts"],
   acceptance: ["task_read returns the attached handoff"],
   outputs: ["handoff row"],
-  evidence: ["oc://doc/319134b5-b44b-457c-a812-1dffd337f26c"],
+  evidence: [contractDocUrl],
   predecessorRefs: [],
 };
 const crypto = Layer.succeed(

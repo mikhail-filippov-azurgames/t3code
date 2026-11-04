@@ -8,20 +8,14 @@ import {
   parseOpenContextDocHref,
 } from "./openContextDocLink";
 
+const STABLE_ID = crypto.randomUUID();
+
 describe("open context document links", () => {
   it.each([
-    ["oc://doc/fe000000-0000-4000-8000-000000000004", "oc", "fe000000-0000-4000-8000-000000000004"],
-    [
-      "oc://doc/fe000000-0000-4000-8000-000000000004/",
-      "oc",
-      "fe000000-0000-4000-8000-000000000004",
-    ],
+    [`oc://doc/${STABLE_ID}`, "oc", STABLE_ID],
+    [`oc://doc/${STABLE_ID}/`, "oc", STABLE_ID],
     ["OC://DOC/plain-token", "oc", "plain-token"],
-    [
-      "ocl://doc/fe000000-0000-4000-8000-000000000004",
-      "ocl",
-      "fe000000-0000-4000-8000-000000000004",
-    ],
+    [`ocl://doc/${STABLE_ID}`, "ocl", STABLE_ID],
   ])("parses %s to its stable id", (href, scheme, stableId) => {
     expect(parseOpenContextDocHref(href)).toEqual({
       href: `${scheme}://doc/${stableId}`,
@@ -31,10 +25,10 @@ describe("open context document links", () => {
   });
 
   it("resolves a versioned document link by stable id while preserving its revision for copying", () => {
-    expect(parseOpenContextDocHref("oc://doc/fe000000-0000-4000-8000-000000000004@5")).toEqual({
-      href: "oc://doc/fe000000-0000-4000-8000-000000000004@5",
+    expect(parseOpenContextDocHref(`oc://doc/${STABLE_ID}@5`)).toEqual({
+      href: `oc://doc/${STABLE_ID}@5`,
       scheme: "oc",
-      stableId: "fe000000-0000-4000-8000-000000000004",
+      stableId: STABLE_ID,
     });
   });
 
