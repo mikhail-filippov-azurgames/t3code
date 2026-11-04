@@ -40,6 +40,12 @@ export interface PolicySyncInput {
   readonly forceApplyKeys?: readonly PolicyDocumentKey[];
   /** Audit label of versions applied by this refresh. */
   readonly appliedBy?: PolicyAppliedBy;
+  /**
+   * Applied state is keyed by scope (design §10.4): "environment" or a
+   * projectId. A project scope gets its own entries, applied copies and
+   * configVersion, so a project override never replaces the environment's.
+   */
+  readonly scope?: string;
 }
 
 /** The version that serves routing and delegation right now. */
@@ -127,13 +133,25 @@ interface EntryState {
   readonly live: PolicyLiveDocument | null;
 }
 
-interface TrackerState {
+interface ScopeState {
   readonly entries: Readonly<Record<PolicyDocumentKey, EntryState | null>>;
   readonly sources: PolicySyncInput["sources"] | null;
   readonly configVersion: number;
-  /** Applied copies were read from the database once. */
+  /** Applied copies of this scope were read from the database once. */
   readonly restored: boolean;
 }
+
+interface TrackerState {
+  /** One isolated state per scope: the environment and each project override. */
+  readonly scopes: Readonly<Record<string, ScopeState>>;
+}
+
+const emptyScope: ScopeState = {
+  entries: { routingPolicy: null, roles: null, leadSkills: null },
+  sources: null,
+  configVersion: 0,
+  restored: false,
+};
 
 const emptyEntry: EntryState = {
   applied: null,
@@ -144,12 +162,12 @@ const emptyEntry: EntryState = {
   live: null,
 };
 
-const emptyState: TrackerState = {
-  entries: { routingPolicy: null, roles: null, leadSkills: null },
-  sources: null,
-  configVersion: 0,
-  restored: false,
-};
+const emptyState: TrackerState = { scopes: {} };
+
+const scopeKey = (scope: string | undefined): string => scope ?? POLICY_ENVIRONMENT_SCOPE;
+
+const scopeOf = (state: TrackerState, scope: string): ScopeState =>
+  state.scopes[scope] ?? emptyScope;
 
 const BUILTIN_SOURCES: Readonly<Record<PolicyDocumentKey, PolicyDocumentSource>> = {
   routingPolicy: { kind: "builtin" },
@@ -242,7 +260,7 @@ const make = Effect.gen(function* () {
     };
   };
 
-  const snapshotOf = (current: TrackerState): PolicySnapshot => {
+  const snapshotOf = (current: ScopeState): PolicySnapshot => {
     const requirements = emptyRequirements();
     const sources = current.sources ?? BUILTIN_SOURCES;
     const documents = POLICY_DOCUMENT_KEYS.map((key) => {
@@ -256,17 +274,18 @@ const make = Effect.gen(function* () {
     return { configVersion: current.configVersion, documents, requirements };
   };
 
-  /** Reads persisted applied copies once, so a restart keeps the applied version. */
+  /** Reads persisted applied copies of one scope once, so a restart keeps the applied version. */
   const restore = Effect.fn("PolicyChangeTracker.restore")(function* (input: PolicySyncInput) {
+    const scope = scopeKey(input.scope);
     const current = yield* Ref.get(state);
-    if (current.restored) return;
+    if (scopeOf(current, scope).restored) return;
     const entries: Record<PolicyDocumentKey, EntryState | null> = {
       routingPolicy: null,
       roles: null,
       leadSkills: null,
     };
     for (const key of POLICY_DOCUMENT_KEYS) {
-      const records = yield* appliedStore.load({ scope: POLICY_ENVIRONMENT_SCOPE, key });
+      const records = yield* appliedStore.load({ scope, key });
       const main = records.find((record) => record.file === "");
       if (main === undefined) {
         entries[key] = null;
@@ -304,21 +323,23 @@ const make = Effect.gen(function* () {
               live: null,
             };
     }
-    yield* Ref.update(state, (value) => ({
-      ...value,
-      entries,
-      restored: true,
-    }));
+    yield* Ref.update(state, (value) => {
+      const scoped = scopeOf(value, scope);
+      return {
+        scopes: { ...value.scopes, [scope]: { ...scoped, entries, restored: true } },
+      };
+    });
   });
 
   const persist = Effect.fn("PolicyChangeTracker.persist")(function* (
+    scope: string,
     key: PolicyDocumentKey,
     files: readonly LoadedPolicyFile[],
     timestamp: string,
     appliedBy: PolicyAppliedBy,
   ) {
     yield* appliedStore.save({
-      scope: POLICY_ENVIRONMENT_SCOPE,
+      scope,
       key,
       files: files.map((file) => ({
         file: file.file,
@@ -341,7 +362,7 @@ const make = Effect.gen(function* () {
       source: input.sources[key],
       ...(input.features === undefined ? {} : { features: input.features }),
     });
-    const previous = yield* Ref.get(state);
+    const previous = scopeOf(yield* Ref.get(state), scopeKey(input.scope));
     const applied = previous.entries[key]?.applied ?? null;
     const revision = loaded.revision;
     const sha256 = loaded.sha256;
@@ -371,7 +392,7 @@ const make = Effect.gen(function* () {
               document: loaded,
               files: liveFiles,
             };
-      if (!unchanged) yield* persist(key, liveFiles, timestamp, appliedBy);
+      if (!unchanged) yield* persist(scopeKey(input.scope), key, liveFiles, timestamp, appliedBy);
       return {
         changed: !unchanged,
         entry: {
@@ -416,6 +437,7 @@ const make = Effect.gen(function* () {
 
   const refresh = Effect.fn("PolicyChangeTracker.refresh")(function* (input: PolicySyncInput) {
     yield* restore(input);
+    const scope = scopeKey(input.scope);
     const timestamp = yield* now;
     const entries: Partial<Record<PolicyDocumentKey, EntryState>> = {};
     let changed = false;
@@ -424,8 +446,8 @@ const make = Effect.gen(function* () {
       entries[key] = result.entry;
       changed = changed || result.changed;
     }
-    const previous = yield* Ref.get(state);
-    const next: TrackerState = {
+    const previous = scopeOf(yield* Ref.get(state), scope);
+    const next: ScopeState = {
       entries: {
         routingPolicy: entries.routingPolicy ?? null,
         roles: entries.roles ?? null,
@@ -438,30 +460,37 @@ const make = Effect.gen(function* () {
           : previous.configVersion,
       restored: previous.restored,
     };
-    yield* Ref.set(state, next);
+    yield* Ref.update(state, (value) => ({ scopes: { ...value.scopes, [scope]: next } }));
     return snapshotOf(next);
   });
 
-  const snapshot = Effect.fn("PolicyChangeTracker.snapshot")(function* () {
+  const snapshot = Effect.fn("PolicyChangeTracker.snapshot")(function* (scope?: string) {
     const current = yield* Ref.get(state);
-    return snapshotOf(current);
+    return snapshotOf(scopeOf(current, scopeKey(scope)));
   });
 
-  const applied = Effect.fn("PolicyChangeTracker.applied")(function* (key: PolicyDocumentKey) {
+  const applied = Effect.fn("PolicyChangeTracker.applied")(function* (
+    key: PolicyDocumentKey,
+    scope?: string,
+  ) {
     const current = yield* Ref.get(state);
-    return current.entries[key]?.applied?.document ?? null;
+    return scopeOf(current, scopeKey(scope)).entries[key]?.applied?.document ?? null;
   });
 
   const pendingChange = Effect.fn("PolicyChangeTracker.pendingChange")(function* (
     key: PolicyDocumentKey,
+    scope?: string,
   ) {
     const current = yield* Ref.get(state);
-    return current.entries[key]?.pending ?? null;
+    return scopeOf(current, scopeKey(scope)).entries[key]?.pending ?? null;
   });
 
-  const live = Effect.fn("PolicyChangeTracker.live")(function* (key: PolicyDocumentKey) {
+  const live = Effect.fn("PolicyChangeTracker.live")(function* (
+    key: PolicyDocumentKey,
+    scope?: string,
+  ) {
     const current = yield* Ref.get(state);
-    return current.entries[key]?.live ?? null;
+    return scopeOf(current, scopeKey(scope)).entries[key]?.live ?? null;
   });
 
   return PolicyChangeTracker.of({ refresh, snapshot, applied, pendingChange, live });
@@ -470,22 +499,27 @@ const make = Effect.gen(function* () {
 /**
  * Keeps one applied version per policy document and publishes it atomically:
  * the snapshot a caller sees never mixes a half-applied document set.
+ * Applied state is isolated per scope: the environment and each project
+ * override hold their own entries, applied copies and configVersion.
  */
 export class PolicyChangeTracker extends Context.Service<
   PolicyChangeTracker,
   {
     readonly refresh: (input: PolicySyncInput) => Effect.Effect<PolicySnapshot, never, never>;
-    readonly snapshot: () => Effect.Effect<PolicySnapshot, never, never>;
+    readonly snapshot: (scope?: string) => Effect.Effect<PolicySnapshot, never, never>;
     readonly applied: (
       key: PolicyDocumentKey,
+      scope?: string,
     ) => Effect.Effect<LoadedPolicyDocument | null, never, never>;
-    /** The pending external change of one document, or null. */
+    /** The pending external change of one document in a scope, or null. */
     readonly pendingChange: (
       key: PolicyDocumentKey,
+      scope?: string,
     ) => Effect.Effect<PolicyPendingChange | null, never, never>;
-    /** The live files read by the last refresh. */
+    /** The live files read by the last refresh of a scope. */
     readonly live: (
       key: PolicyDocumentKey,
+      scope?: string,
     ) => Effect.Effect<PolicyLiveDocument | null, never, never>;
   }
 >()("@t3tools/ft3-policies/policyChangeTracker") {}

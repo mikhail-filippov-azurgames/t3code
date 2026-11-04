@@ -156,10 +156,17 @@ export const refreshAppliedPolicies: Effect.Effect<
   yield* Effect.forEach(warnings, (issue) => Effect.logWarning(issue.message), { discard: true });
 }).pipe(Effect.withSpan("PoliciesRpc.refreshAppliedPolicies"));
 
+/** The tracker scope a refresh runs in: a project override is per-project state. */
+const scopeFor = (
+  override: { key: PolicyDocumentKey; source: PolicyDocumentSource } | null,
+  projectId: string | null | undefined,
+): string | undefined => (override !== null && projectId != null ? projectId : undefined);
+
 const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
   policies: ReturnType<typeof readPolicySettings>,
   warnings: PoliciesGetSnapshotResult["warnings"],
   override: { key: PolicyDocumentKey; source: PolicyDocumentSource } | null,
+  scope: string | undefined,
   extra: {
     readonly forceApplyKeys?: readonly PolicyDocumentKey[];
     readonly appliedBy?: "human_tab" | "human_apply" | "auto";
@@ -173,6 +180,7 @@ const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
       planning: policies.features.planning,
     },
     applyExternalEdits: policies.applyExternalEdits,
+    ...(scope === undefined ? {} : { scope }),
     ...extra,
   });
   return resultOf(snapshot, warnings, policies.features);
@@ -182,16 +190,18 @@ const getSnapshot = Effect.fn("PoliciesRpc.getSnapshot")(function* (
   input: PoliciesGetSnapshotInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  return yield* refreshWith(policies, warnings, projectOverrideOf(settings, input.projectId));
+  const override = projectOverrideOf(settings, input.projectId);
+  return yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId));
 });
 
 const readDocument = Effect.fn("PoliciesRpc.readDocument")(function* (
   input: PoliciesReadDocumentInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  yield* refreshWith(policies, warnings, projectOverrideOf(settings, input.projectId));
+  const override = projectOverrideOf(settings, input.projectId);
+  yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId));
   const tracker = yield* PolicyChangeTracker;
-  const live = yield* tracker.live(input.key);
+  const live = yield* tracker.live(input.key, scopeFor(override, input.projectId));
   if (live === null || live.files.length === 0) {
     return {
       status: "unavailable",
@@ -225,10 +235,15 @@ const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
 ) {
   const { settings, policies, warnings } = yield* prepared;
   const override = projectOverrideOf(settings, input.projectId);
-  const before = yield* refreshWith(policies, warnings, override);
+  const before = yield* refreshWith(
+    policies,
+    warnings,
+    override,
+    scopeFor(override, input.projectId),
+  );
   const tracker = yield* PolicyChangeTracker;
   const docs = yield* DocsService;
-  const live = yield* tracker.live(input.key);
+  const live = yield* tracker.live(input.key, scopeFor(override, input.projectId));
   const file = live?.files.find((entry) => entry.file === (input.file ?? ""));
   if (
     live === null ||
@@ -263,10 +278,16 @@ const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
     } satisfies PoliciesSaveDocumentResult;
   }
 
-  const snapshot = yield* refreshWith(policies, warnings, override, {
-    forceApplyKeys: [input.key],
-    appliedBy: "human_tab",
-  });
+  const snapshot = yield* refreshWith(
+    policies,
+    warnings,
+    override,
+    scopeFor(override, input.projectId),
+    {
+      forceApplyKeys: [input.key],
+      appliedBy: "human_tab",
+    },
+  );
   const status = statusOf(
     {
       configVersion: snapshot.configVersion,
@@ -286,9 +307,10 @@ const getPendingChange = Effect.fn("PoliciesRpc.getPendingChange")(function* (
   input: PoliciesGetPendingChangeInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  yield* refreshWith(policies, warnings, projectOverrideOf(settings, input.projectId));
+  const override = projectOverrideOf(settings, input.projectId);
+  yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId));
   const tracker = yield* PolicyChangeTracker;
-  const change = yield* tracker.pendingChange(input.key);
+  const change = yield* tracker.pendingChange(input.key, scopeFor(override, input.projectId));
   return {
     key: input.key,
     pending: change !== null,
@@ -309,9 +331,14 @@ const applyPending = Effect.fn("PoliciesRpc.applyPending")(function* (
 ) {
   const { settings, policies, warnings } = yield* prepared;
   const override = projectOverrideOf(settings, input.projectId);
-  const before = yield* refreshWith(policies, warnings, override);
+  const before = yield* refreshWith(
+    policies,
+    warnings,
+    override,
+    scopeFor(override, input.projectId),
+  );
   const tracker = yield* PolicyChangeTracker;
-  const pending = yield* tracker.pendingChange(input.key);
+  const pending = yield* tracker.pendingChange(input.key, scopeFor(override, input.projectId));
   const beforeStatus = statusOf(
     { configVersion: before.configVersion, documents: before.documents, requirements: {} },
     input.key,
@@ -330,10 +357,16 @@ const applyPending = Effect.fn("PoliciesRpc.applyPending")(function* (
     } satisfies PoliciesApplyPendingResult;
   }
 
-  const snapshot = yield* refreshWith(policies, warnings, override, {
-    forceApplyKeys: [input.key],
-    appliedBy: "human_apply",
-  });
+  const snapshot = yield* refreshWith(
+    policies,
+    warnings,
+    override,
+    scopeFor(override, input.projectId),
+    {
+      forceApplyKeys: [input.key],
+      appliedBy: "human_apply",
+    },
+  );
   const status = statusOf(
     { configVersion: snapshot.configVersion, documents: snapshot.documents, requirements: {} },
     input.key,
@@ -360,7 +393,7 @@ const setApplyExternalEdits = Effect.fn("PoliciesRpc.setApplyExternalEdits")(fun
       })
       .pipe(Effect.orDie)).ft3,
   );
-  const snapshot = yield* refreshWith(updated, [], null);
+  const snapshot = yield* refreshWith(updated, [], null, undefined);
   return {
     enabled: updated.applyExternalEdits,
     snapshot,
@@ -413,7 +446,7 @@ const setDocument = Effect.fn("PoliciesRpc.setDocument")(function* (
     policies = readPolicySettings(updated.ft3);
   }
 
-  const snapshot = yield* refreshWith(policies, [], override, {
+  const snapshot = yield* refreshWith(policies, [], override, scopeFor(override, input.projectId), {
     forceApplyKeys: [input.key],
     appliedBy: "human_apply",
   });
@@ -434,7 +467,7 @@ const setFeature = Effect.fn("PoliciesRpc.setFeature")(function* (input: Policie
       })
       .pipe(Effect.orDie)).ft3,
   );
-  const snapshot = yield* refreshWith(updated, [], null);
+  const snapshot = yield* refreshWith(updated, [], null, undefined);
   return { snapshot } satisfies PoliciesSetFeatureResult;
 });
 

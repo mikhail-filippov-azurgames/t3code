@@ -502,33 +502,92 @@ describe("policy write and apply RPC", () => {
     }).pipe(Effect.provide(services(files, false)));
   });
 
-  it.effect("stores a project override that changes only that project's documents", () => {
+  it.effect("keeps applied state isolated per project and survives a restart", () => {
     const files = new Map([
       [ROLES_PATH, rolesManifest(1)],
       [`${ROLES_DIR}lead.md`, leadRole(1)],
     ]);
+    const docSource = {
+      kind: "doc",
+      address: { kind: "path", relPath: ROLES_PATH },
+    } as const;
     return Effect.gen(function* () {
-      const envInitial = yield* getSnapshot({});
-      assert.equal(rolesOf(envInitial)?.source.kind, "builtin");
+      // One applied store and one settings file, as the database is across restarts.
+      const applied = yield* Ref.make(new Map<string, readonly PolicyAppliedRecord[]>());
+      const sharedApplied = Layer.succeed(
+        PolicyAppliedStore,
+        PolicyAppliedStore.of({
+          load: ({ scope, key }) =>
+            Effect.map(Ref.get(applied), (all) => all.get(`${scope}:${key}`) ?? []),
+          save: ({ scope, key, files: appliedFiles, appliedAt, appliedBy }) =>
+            Ref.update(applied, (all) => {
+              const next = new Map(all);
+              next.set(
+                `${scope}:${key}`,
+                appliedFiles.map((file) => ({ ...file, appliedAt, appliedBy })),
+              );
+              return next;
+            }),
+        }),
+      );
+      const settingsService = yield* Effect.service(ServerSettings.ServerSettingsService).pipe(
+        Effect.provide(ServerSettings.layerTest({ ft3: { policies: policySettings(false) } })),
+      );
+      const servicesFor = () => {
+        const docs = docsOver(files);
+        return Layer.mergeAll(
+          policyChangeTrackerLayer.pipe(
+            Layer.provide(policyDocumentLoaderLayer(docsPolicyDocumentReadPort(docs))),
+            Layer.provide(sharedApplied),
+          ),
+          Layer.succeed(DocsService, docs),
+          Layer.succeed(ServerSettings.ServerSettingsService, settingsService),
+        );
+      };
 
-      const set = yield* setDocument({
-        projectId: "proj-1",
-        key: "roles",
-        source: { kind: "doc", address: { kind: "path", relPath: ROLES_PATH } },
-      });
+      const envInitial = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
+      assert.equal(rolesOf(envInitial)?.source.kind, "builtin");
+      assert.equal(rolesOf(envInitial)?.applied?.revision, 0);
+
+      const set = yield* setDocument({ projectId: "proj-1", key: "roles", source: docSource }).pipe(
+        Effect.provide(servicesFor()),
+      );
       assert.equal(rolesOf(set.snapshot)?.source.kind, "doc");
       assert.equal(rolesOf(set.snapshot)?.applied?.revision, 1);
 
-      const env = yield* getSnapshot({});
+      const env = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
       assert.equal(rolesOf(env)?.source.kind, "builtin");
+      assert.equal(rolesOf(env)?.applied?.revision, 0);
 
-      const project = yield* getSnapshot({ projectId: "proj-1" });
+      const project = yield* getSnapshot({ projectId: "proj-1" }).pipe(
+        Effect.provide(servicesFor()),
+      );
       assert.equal(rolesOf(project)?.source.kind, "doc");
       assert.equal(rolesOf(project)?.applied?.revision, 1);
 
-      yield* setDocument({ projectId: "proj-1", key: "roles", source: null });
-      const after = yield* getSnapshot({ projectId: "proj-1" });
-      assert.equal(rolesOf(after)?.source.kind, "builtin");
-    }).pipe(Effect.provide(services(files, false)));
+      // A -> B: a second project's override gets its own applied state.
+      files.set(ROLES_PATH, rolesManifest(2));
+      yield* setDocument({ projectId: "proj-2", key: "roles", source: docSource }).pipe(
+        Effect.provide(servicesFor()),
+      );
+      const projectB = yield* getSnapshot({ projectId: "proj-2" }).pipe(
+        Effect.provide(servicesFor()),
+      );
+      assert.equal(rolesOf(projectB)?.applied?.revision, 2);
+      const projectAgain = yield* getSnapshot({ projectId: "proj-1" }).pipe(
+        Effect.provide(servicesFor()),
+      );
+      assert.equal(rolesOf(projectAgain)?.applied?.revision, 1);
+      const envAgain = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
+      assert.equal(rolesOf(envAgain)?.applied?.revision, 0);
+
+      // Restart: a fresh tracker over the shared store restores each scope.
+      const restarted = yield* getSnapshot({ projectId: "proj-1" }).pipe(
+        Effect.provide(servicesFor()),
+      );
+      assert.equal(rolesOf(restarted)?.applied?.revision, 1);
+      const restartedEnv = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
+      assert.equal(rolesOf(restartedEnv)?.applied?.revision, 0);
+    });
   });
 });
