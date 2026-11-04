@@ -80,6 +80,17 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 
+/**
+ * Client guards for fork-owned RPC methods, kept out of CLIENT_GUARDED_RPC_SCOPES
+ * because that map is spread into the upstream server scope map one-for-one.
+ * Changing a policy document source or feature writes server settings (design §6.3).
+ */
+export const FT3_CLIENT_GUARDED_RPC_SCOPES = {
+  "policies.setDocument": AuthSettingsWriteScope,
+  "policies.setFeature": AuthSettingsWriteScope,
+} as const;
+export type Ft3ClientGuardedRpcTag = keyof typeof FT3_CLIENT_GUARDED_RPC_SCOPES;
+
 const decodePrepareThread = Schema.decodeUnknownSync(GitPreparePullRequestThreadInput);
 const decodeStackedAction = Schema.decodeUnknownSync(GitRunStackedActionInput);
 
@@ -99,6 +110,9 @@ export function clientRpcRequiredScopes(
       (payload.action === "create_pr" || payload.action === "commit_push_pr")
     )
       return [AuthSourceControlWriteScope, AuthOrchestrationReadScope];
+  }
+  if (Object.hasOwn(FT3_CLIENT_GUARDED_RPC_SCOPES, method)) {
+    return [FT3_CLIENT_GUARDED_RPC_SCOPES[method as Ft3ClientGuardedRpcTag]];
   }
   return Object.hasOwn(CLIENT_GUARDED_RPC_SCOPES, method)
     ? [CLIENT_GUARDED_RPC_SCOPES[method as ClientGuardedRpcTag]]
