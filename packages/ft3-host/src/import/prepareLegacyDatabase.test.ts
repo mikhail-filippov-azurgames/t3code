@@ -160,7 +160,7 @@ describe("prepareLegacyDatabase", () => {
   it.effect("flags only the live database path as live", () =>
     Effect.sync(() => {
       assert.isTrue(isLiveDatabasePath(LIVE_DATABASE_PATH));
-      assert.isFalse(isLiveDatabasePath("C:\\Users\\User\\AppData\\Local\\Temp\\copy.sqlite"));
+      assert.isFalse(isLiveDatabasePath("C:\\Users\\test\\AppData\\Local\\Temp\\copy.sqlite"));
       assert.isFalse(isLiveDatabasePath("C:\\tmp\\copy\\state.sqlite"));
     }),
   );

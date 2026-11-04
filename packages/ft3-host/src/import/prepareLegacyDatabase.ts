@@ -1,8 +1,17 @@
+// @effect-diagnostics nodeBuiltinImport:off - Resolves the live database path of the current user.
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-export const LIVE_DATABASE_PATH = "C:\\Users\\User\\.t3-orchestration-fork\\userdata\\state.sqlite";
+export const LIVE_DATABASE_PATH = NodePath.join(
+  NodeOS.homedir(),
+  ".t3-orchestration-fork",
+  "userdata",
+  "state.sqlite",
+);
 
 export const STAGING_TABLE = "ft3_delegation_lineage_staging";
 export const DELEGATION_CREATED_KIND = "delegation.created";
