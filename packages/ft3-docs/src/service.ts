@@ -7,11 +7,26 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import { type DocRef, parseDocRef } from "./contracts.ts";
+import { DocsChangeBus } from "./events.ts";
 import * as DocsIndex from "./index.ts";
 import * as DocsReconciler from "./reconciler.ts";
+import type { DocsChanged } from "./reconciler.ts";
 import * as DocsStore from "./store.ts";
+
+/** Shared change bus service-side writes publish to; provided by the composition. */
+export { DocsChangeBus };
+
+/** A change bus that drops every event; the default when no bus is provided. */
+export const noChangeEvents = Layer.succeed(
+  DocsChangeBus,
+  DocsChangeBus.of({
+    publish: Effect.fn("DocsChangeBus.publish")(() => Effect.void),
+    changes: Stream.empty,
+  }),
+);
 
 /** Every way `DocsService` refuses or fails a call (design §5). */
 export const DocsServiceErrorCode = Schema.Literals([
@@ -143,9 +158,10 @@ export const denyAllDocumentsWrite: Layer.Layer<DocumentsWriteAccess> = Layer.su
 );
 
 /**
- * Port of the protected-document rule: policy documents and the plans of other
- * cards are never writable through MCP (design §3.5). Until a rule is provided,
- * nothing is protected; the deny-by-default write port above still refuses.
+ * Port of the protected-document rule (design §3.5): policy documents and
+ * other cards' plans are never writable through a store-wide MCP right; a
+ * planner's document-scoped right bypasses this check. A failed check
+ * refuses the write instead of treating unknown as unprotected.
  */
 export class DocsProtection extends Context.Service<
   DocsProtection,
@@ -153,7 +169,7 @@ export class DocsProtection extends Context.Service<
     readonly isProtected: (document: {
       readonly stableId: string;
       readonly relPath: string;
-    }) => Effect.Effect<boolean, never, never>;
+    }) => Effect.Effect<boolean, DocsServiceError, never>;
   }
 >()("@t3tools/ft3-docs/service/DocsProtection") {}
 
@@ -266,6 +282,12 @@ const mapStoreError = (cause: DocsStore.DocsStoreError): DocsServiceError => {
         ...(cause.path === undefined ? {} : { ref: cause.path }),
         cause,
       });
+    case "document_changed":
+      return new DocsServiceError({
+        code: "document_changed",
+        ...(cause.path === undefined ? {} : { ref: cause.path }),
+        cause,
+      });
     case "invalid_path":
     case "invalid_name":
     case "invalid_limit":
@@ -284,7 +306,14 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   const index = yield* DocsIndex.DocsIndex;
   const writeAccess = yield* DocumentsWriteAccess;
   const protection = yield* DocsProtection;
+  const changeBus = yield* Effect.serviceOption(DocsChangeBus);
   const contextsRoot = NodePath.resolve(options.root, DocsStore.DOCS_STORE_CONTEXTS_DIRECTORY);
+
+  // Service-side writes surface on the shared change bus next to watch
+  // reports, so a subscriber that never touches the filesystem still sees
+  // them. Without a bus there are no subscribers, so nothing is emitted.
+  const emit = (change: DocsChanged) =>
+    changeBus._tag === "Some" ? changeBus.value.publish(change) : Effect.void;
 
   const absolutePathOf = (relPath: string): string =>
     NodePath.resolve(contextsRoot, ...relPath.split("/"));
@@ -356,6 +385,34 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     return { document: repaired, content: second.content, sha256: second.sha256 };
   });
 
+  const WINDOWS_DRIVE_SEGMENT = /^[a-zA-Z]:/;
+
+  /**
+   * The store validates its own paths; the unregistered-file fallback bypasses
+   * the store, so it re-validates (design §3.2): no drive-qualified or absolute
+   * segments, and the real path — symlinks and junctions resolved — must stay
+   * under the contexts root. Null when the path escapes or does not exist.
+   */
+  const realPathUnderRoot = Effect.fn("DocsService.realPathUnderRoot")(function* (relPath: string) {
+    const segments = relPath.split("/");
+    if (segments.some((segment) => WINDOWS_DRIVE_SEGMENT.test(segment) || segment.includes("\\"))) {
+      return null;
+    }
+    const absolute = absolutePathOf(relPath);
+    return yield* Effect.sync(() => {
+      try {
+        const realRoot = NodeFS.realpathSync(contextsRoot);
+        const real = NodeFS.realpathSync(absolute);
+        const relative = NodePath.relative(realRoot, real);
+        return relative === "" || relative.startsWith("..") || NodePath.isAbsolute(relative)
+          ? null
+          : real;
+      } catch {
+        return null;
+      }
+    });
+  });
+
   /**
    * The store registers Markdown documents only, so a store-path file like a
    * `roles.json` manifest has no row; policy sources still address it by path
@@ -364,10 +421,11 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   const readUnregisteredStoreFile = Effect.fn("DocsService.readUnregisteredStoreFile")(function* (
     relPath: string,
   ) {
-    const absolute = absolutePathOf(relPath);
+    const real = yield* realPathUnderRoot(relPath);
+    if (real === null) return null;
     const content = yield* Effect.sync(() => {
       try {
-        return NodeFS.readFileSync(absolute, "utf8");
+        return NodeFS.readFileSync(real, "utf8");
       } catch {
         return null;
       }
@@ -485,7 +543,10 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         ...(target === null ? {} : { ref: target.relPath }),
       });
     }
-    if (target !== null && (yield* protection.isProtected(target))) {
+    // Protection guards store-wide rights only: a document-scoped right names
+    // its one document (the planner's own plan), which is never another
+    // card's plan, so it is not re-checked here.
+    if (target !== null && decision.scope === "store" && (yield* protection.isProtected(target))) {
       return yield* new DocsServiceError({ code: "document_protected", ref: target.relPath });
     }
   });
@@ -505,7 +566,15 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
 
   const write = Effect.fn("DocsService.write")(function* (input: DocsWriteInput) {
     const ref = input.ref?.trim();
-    const relPath = input.relPath?.trim();
+    const rawRelPath = input.relPath?.trim();
+    // Protection and the store must see the same path, so canonicalize before either.
+    const relPath =
+      rawRelPath === undefined || rawRelPath === ""
+        ? rawRelPath
+        : (DocsStore.canonicalRelPath(rawRelPath, false) ?? undefined);
+    if (rawRelPath !== undefined && rawRelPath !== "" && relPath === undefined) {
+      return yield* new DocsServiceError({ code: "invalid_input" });
+    }
     if ((ref === undefined || ref === "") === (relPath === undefined || relPath === "")) {
       return yield* new DocsServiceError({
         code: "invalid_input",
@@ -514,7 +583,13 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     }
 
     const existing = ref === undefined || ref === "" ? null : yield* locate(ref);
-    yield* requireWrite(input.caller, existing);
+    // A create names its destination up front: check the new path with a
+    // stable id no document can carry, so a store-wide right cannot land
+    // inside a protected tree. Document-scoped rights still deny through
+    // the stable-id mismatch, as they do for a null target.
+    const target =
+      existing ?? (relPath === undefined || relPath === "" ? null : { stableId: "", relPath });
+    yield* requireWrite(input.caller, target);
 
     if (existing === null) {
       const created = yield* store
@@ -525,6 +600,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         })
         .pipe(Effect.mapError(mapStoreError));
       yield* indexDocument(created);
+      yield* emit({ kind: "added", stableId: created.stableId, relPath: created.relPath });
       const { sha256 } = yield* readContent(created);
       return {
         stableId: created.stableId,
@@ -535,12 +611,12 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
       } satisfies DocsWriteResult;
     }
 
-    const live = yield* readContent(existing);
-    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
-      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
-    }
     const saved = yield* store
-      .saveDocContent({ relPath: existing.relPath, content: input.content })
+      .saveDocContent({
+        relPath: existing.relPath,
+        content: input.content,
+        ...(input.baseSha256 === undefined ? {} : { expectedSha256: input.baseSha256 }),
+      })
       .pipe(Effect.mapError(mapStoreError));
     if (input.description !== undefined) {
       yield* store
@@ -548,6 +624,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         .pipe(Effect.mapError(mapStoreError));
     }
     yield* indexDocument(saved);
+    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     const { sha256 } = yield* readContent(saved);
     return {
       stableId: saved.stableId,
@@ -575,12 +652,20 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
       if (input.baseSha256 !== undefined && input.baseSha256 !== fallback.sha256) {
         return yield* new DocsServiceError({ code: "document_changed", ref: input.ref });
       }
+      const real = yield* realPathUnderRoot(address.relPath);
+      if (real === null) return yield* located.failure;
       yield* Effect.sync(() => {
-        const absolute = absolutePathOf(address.relPath);
-        const temporary = `${absolute}.corvis-tmp`;
-        NodeFS.writeFileSync(temporary, input.content, "utf8");
-        NodeFS.renameSync(temporary, absolute);
+        // Exclusive create: a pre-planted temp name (e.g. a hardlink outside the root) must not be followed.
+        const temporary = `${real}.${NodeCrypto.randomUUID()}.corvis-tmp`;
+        try {
+          NodeFS.writeFileSync(temporary, input.content, { encoding: "utf8", flag: "wx" });
+          NodeFS.renameSync(temporary, real);
+        } catch (error) {
+          NodeFS.rmSync(temporary, { force: true });
+          throw error;
+        }
       });
+      yield* emit({ kind: "changed", stableId: "", relPath: address.relPath });
       const sha256 = sha256Hex(input.content);
       return {
         stableId: "",
@@ -591,14 +676,15 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
       } satisfies DocsWriteResult;
     }
     const existing = located.success;
-    const live = yield* readContent(existing);
-    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
-      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
-    }
     const saved = yield* store
-      .saveDocContent({ relPath: existing.relPath, content: input.content })
+      .saveDocContent({
+        relPath: existing.relPath,
+        content: input.content,
+        ...(input.baseSha256 === undefined ? {} : { expectedSha256: input.baseSha256 }),
+      })
       .pipe(Effect.mapError(mapStoreError));
     yield* indexDocument(saved);
+    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     const { sha256 } = yield* readContent(saved);
     return {
       stableId: saved.stableId,
@@ -633,6 +719,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     const saved = yield* store
       .setDescription({ relPath: document.relPath, description: input.description })
       .pipe(Effect.mapError(mapStoreError));
+    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     return {
       stableId: saved.stableId,
       relPath: saved.relPath,
