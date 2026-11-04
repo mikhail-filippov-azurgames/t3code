@@ -194,6 +194,18 @@ export interface TimeoutNoticeLetter {
   readonly createdAt: string;
 }
 
+export interface SettleMemberNotice {
+  readonly memberId: string;
+  readonly roleId: string;
+  readonly settledAs: string;
+  readonly at: string;
+  readonly letterId: string;
+  readonly clientRequestId: string;
+  readonly requestFingerprint: string;
+  readonly deliveryId: string;
+  readonly wakeId: string;
+}
+
 export interface RecordKindFeedbackInput {
   readonly letterId: string;
   readonly senderKind: MailLetterKind;
@@ -658,6 +670,20 @@ export class MailRepository extends Context.Service<
         readonly failed: ReadonlyArray<MailDelivery>;
         readonly letters: ReadonlyArray<MailLetter>;
       },
+      MailRepositoryError | MailIdempotencyConflict
+    >;
+    /**
+     * Closes a settled member, fails its pending deliveries and writes the lead
+     * notice in a single transaction: a crash anywhere retries from scratch
+     * with no partial rows. The notice reuses its request key, so a retried
+     * settle never duplicates it.
+     */
+    readonly applySettleNotice: (input: SettleMemberNotice) => Effect.Effect<
+      {
+        readonly member: MailMember;
+        readonly failed: ReadonlyArray<MailDelivery>;
+        readonly letter: MailLetter | null;
+      } | null,
       MailRepositoryError | MailIdempotencyConflict
     >;
     readonly getDelivery: (
@@ -1226,6 +1252,90 @@ const make = Effect.gen(function* () {
               letters.push(letter);
             }
             return { failed, letters };
+          }),
+        ),
+      ),
+    ),
+    applySettleNotice: Effect.fn("MailRepository.applySettleNotice")((input) =>
+      mapIdempotentError("applySettleNotice")(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`UPDATE ft3_mail_members SET status = 'closed', updated_at = ${input.at}
+              WHERE member_id = ${input.memberId} AND status = 'active'`;
+            const members = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+              FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
+            if (members[0] === undefined) return null;
+            const member = toMember(members[0]);
+            const reason = `The ${input.roleId} participant ${input.settledAs} before its letters were delivered.`;
+            const moved = yield* sql<DeliveryRow>`UPDATE ft3_mail_deliveries
+              SET state = 'failed', failure_reason = ${reason}, updated_at = ${input.at}
+              WHERE member_id = ${input.memberId} AND state = 'pending'
+              RETURNING ${sql.literal(DELIVERY_COLUMNS)}`;
+            const failed = moved
+              .map((row) => toDelivery(row))
+              .toSorted((left, right) =>
+                left.createdAt < right.createdAt ? -1 : left.createdAt > right.createdAt ? 1 : 0,
+              );
+            for (const delivery of failed) {
+              yield* sql`UPDATE ft3_mail_wakes SET delivered_at = COALESCE(delivered_at, ${input.at})
+                WHERE wake_id = ${`mail:wake:${delivery.deliveryId}`}`;
+            }
+            if (failed.length === 0) return { member, failed, letter: null };
+            const task = yield* findTask(member.taskId);
+            if (task === null || task.status !== "open") return { member, failed, letter: null };
+            const stranded = [...new Set(failed.map((delivery) => delivery.letterId))].toSorted();
+            const key = {
+              taskId: task.taskId,
+              senderThreadId: "system",
+              clientRequestId: input.clientRequestId,
+            };
+            const existing = yield* findLetterByKey(key);
+            let letter: MailLetter;
+            if (existing !== null) {
+              if (existing.requestFingerprint !== input.requestFingerprint) {
+                return yield* new MailIdempotencyConflict({
+                  operation: "applySettleNotice",
+                  key: `${task.taskId}:system:${input.clientRequestId}`,
+                });
+              }
+              letter = existing;
+            } else {
+              const last = yield* sql<{
+                readonly sequence: number;
+              }>`SELECT COALESCE(MAX(sequence), 0) AS sequence
+                FROM ft3_mail_letters WHERE task_id = ${task.taskId}`;
+              const sequence = (last[0]?.sequence ?? 0) + 1;
+              yield* sql`INSERT INTO ft3_mail_letters (
+                  letter_id, task_id, sequence, sender_thread_id, recipient, kind, body,
+                  reply_to_letter_id, source_letter_id, plan_phase, plan_step, plan_sha256,
+                  plan_doc_id, classifier_kind, classifier_confidence, kind_disputed, lead_kind,
+                  client_request_id, request_fingerprint, created_at
+                ) VALUES (
+                  ${input.letterId}, ${task.taskId}, ${sequence}, 'system', 'lead', 'info',
+                  ${`Participant ${input.roleId} ${input.settledAs} with ${failed.length} undelivered letter${failed.length === 1 ? "" : "s"} (${stranded.join(", ")}). The deliveries were marked failed; resend anything the next participant still needs.`},
+                  NULL, ${failed[0]?.letterId ?? null}, NULL, NULL, NULL, NULL, NULL, NULL, 0,
+                  NULL, ${input.clientRequestId}, ${input.requestFingerprint}, ${input.at}
+                )`;
+              const inserted = yield* findLetterByKey(key);
+              if (inserted === null) {
+                return yield* Effect.die(new Error("the inserted settle notice letter is missing"));
+              }
+              letter = inserted;
+            }
+            yield* sql`INSERT INTO ft3_mail_deliveries (
+                delivery_id, task_id, letter_id, member_id, recipient, participant_thread_id,
+                state, created_at, updated_at
+              ) VALUES (
+                ${input.deliveryId}, ${task.taskId}, ${letter.letterId}, NULL, 'lead',
+                ${task.createdByThreadId}, 'pending', ${input.at}, ${input.at}
+              ) ON CONFLICT(letter_id, recipient) DO NOTHING`;
+            yield* sql`INSERT INTO ft3_mail_wakes (
+                wake_id, task_id, target_thread_id, reason, idempotency_key, created_at
+              ) VALUES (
+                ${input.wakeId}, ${task.taskId}, ${task.createdByThreadId}, 'member-settled',
+                ${`mail:wake:${input.deliveryId}`}, ${input.at}
+              ) ON CONFLICT(idempotency_key) DO NOTHING`;
+            return { member, failed, letter };
           }),
         ),
       ),

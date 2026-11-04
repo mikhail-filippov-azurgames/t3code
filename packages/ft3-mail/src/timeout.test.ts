@@ -237,3 +237,86 @@ it.effect("restarts the timeout scan from every write boundary", () => {
     }
   });
 });
+
+const systemEntries = (taskId: string) =>
+  Effect.gen(function* () {
+    const repository = yield* MailRepository;
+    return (yield* repository.listTimeline({ taskId, limit: 10 })).filter(
+      (entry) => entry.letter.senderThreadId === "system",
+    );
+  });
+
+const settleWakes = () =>
+  Effect.gen(function* () {
+    const repository = yield* MailRepository;
+    return (yield* repository.listUndeliveredWakes({ limit: 10 })).filter(
+      (wake) => wake.reason === "member-settled",
+    );
+  });
+
+it.effect("settles a member from every write boundary without partial state", () => {
+  const boundaries: ReadonlyArray<{ name: string; match: (text: string) => boolean }> = [
+    { name: "close member", match: (text) => text.includes("UPDATE ft3_mail_members") },
+    { name: "fail delivery", match: (text) => text.includes("UPDATE ft3_mail_deliveries") },
+    { name: "mark wake", match: (text) => text.includes("UPDATE ft3_mail_wakes") },
+    { name: "append notice", match: (text) => text.includes("INSERT INTO ft3_mail_letters") },
+    { name: "record delivery", match: (text) => text.includes("INSERT INTO ft3_mail_deliveries") },
+    { name: "record wake", match: (text) => text.includes("INSERT INTO ft3_mail_wakes") },
+  ];
+  return Effect.gen(function* () {
+    for (const boundary of boundaries) {
+      const fault: FaultFlag = { predicate: null };
+      const harness = faultHarness(fault);
+      yield* Effect.gen(function* () {
+        yield* migrateMail;
+        const created = yield* teamWithBudget(60);
+        const taskId = created.task.taskId;
+        const sent = yield* sendRequest(taskId, "request:letter");
+        const mail = yield* MailService;
+        const repository = yield* MailRepository;
+        const memberId = (yield* repository.listMembers(taskId))[0]!.memberId;
+        const settle = { memberId, settledAs: "completed", at: afterSeconds(61) };
+
+        fault.predicate = boundary.match;
+        const exit = yield* Effect.exit(mail.settleMember(settle));
+        assert.equal(exit._tag, "Failure", boundary.name);
+        fault.predicate = null;
+
+        // The crash left the member open and its letters untouched.
+        assert.equal((yield* repository.getMember(memberId))?.status, "active", boundary.name);
+        assert.equal(
+          (yield* repository.getDelivery(sent.deliveries[0]!.deliveryId))?.state,
+          "pending",
+          boundary.name,
+        );
+        assert.deepStrictEqual(yield* systemEntries(taskId), [], boundary.name);
+        assert.deepStrictEqual(yield* settleWakes(), [], boundary.name);
+
+        // A retry heals everything, exactly once.
+        const healed = yield* mail.settleMember(settle);
+        assert.equal(healed?.member.status, "closed", boundary.name);
+        assert.deepStrictEqual(
+          healed?.failed.map((delivery) => delivery.deliveryId),
+          [sent.deliveries[0]!.deliveryId],
+          boundary.name,
+        );
+        assert.equal(healed?.letter?.senderThreadId, "system", boundary.name);
+        const notices = yield* systemEntries(taskId);
+        assert.equal(notices.length, 1, boundary.name);
+        assert.deepStrictEqual(
+          notices[0]!.deliveries.map((delivery) => [delivery.recipient, delivery.state]),
+          [["lead", "pending"]],
+          boundary.name,
+        );
+        assert.equal((yield* settleWakes()).length, 1, boundary.name);
+
+        // A further pass is a no-op.
+        const again = yield* mail.settleMember(settle);
+        assert.deepStrictEqual(again?.failed, [], boundary.name);
+        assert.equal(again?.letter, null, boundary.name);
+        assert.equal((yield* systemEntries(taskId)).length, 1, boundary.name);
+        assert.equal((yield* settleWakes()).length, 1, boundary.name);
+      }).pipe(Effect.provide(harness.layer));
+    }
+  });
+});

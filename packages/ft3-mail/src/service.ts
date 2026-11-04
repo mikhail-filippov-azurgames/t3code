@@ -1331,70 +1331,19 @@ const make = Effect.gen(function* () {
   ) {
     const member = yield* repository.getMember(input.memberId);
     if (member === null) return null;
-    const closed =
-      (yield* repository.closeMember({ memberId: member.memberId, at: input.at })) ?? member;
-    const task = yield* repository.getTask(member.taskId);
-    const reason = `The ${member.roleId} participant ${input.settledAs} before its letters were delivered.`;
-    const failed = yield* repository.failMemberDeliveries({
-      memberId: member.memberId,
-      at: input.at,
-      reason,
-    });
-    // Their wakes are dead too: without this they would linger undelivered forever.
-    yield* Effect.forEach(
-      failed,
-      (delivery) =>
-        repository.markWakeDelivered({ wakeId: `mail:wake:${delivery.deliveryId}`, at: input.at }),
-      { discard: true },
-    );
-    if (failed.length === 0 || task === null || task.status !== "open") {
-      return { member: closed, failed, letter: null } satisfies SettleMailMemberResult;
-    }
-    const stranded = [...new Set(failed.map((delivery) => delivery.letterId))].toSorted();
-    const body =
-      `Participant ${member.roleId} ${input.settledAs} with ${failed.length} undelivered ` +
-      `letter${failed.length === 1 ? "" : "s"} (${stranded.join(", ")}). ` +
-      `The deliveries were marked failed; resend anything the next participant still needs.`;
-    const appended = yield* repository.appendLetter({
-      letterId: yield* newId,
-      taskId: task.taskId,
-      senderThreadId: "system",
-      recipient: "lead",
-      kind: "info",
-      body,
-      replyToLetterId: null,
-      sourceLetterId: failed[0]?.letterId ?? null,
-      planPhase: null,
-      planStep: null,
-      planSha256: null,
-      planDocId: null,
-      classifierKind: null,
-      classifierConfidence: null,
-      kindDisputed: false,
-      leadKind: null,
-      clientRequestId: `mail:member-settle:${member.memberId}`,
-      requestFingerprint: yield* fingerprintOf(["member-settle", task.taskId, member.memberId]),
-      createdAt: input.at,
-    });
+    // One repository transaction: a crash anywhere leaves no partial settle state.
     const deliveryId = yield* newId;
-    yield* repository.recordDelivery({
+    return yield* repository.applySettleNotice({
+      memberId: member.memberId,
+      roleId: member.roleId,
+      settledAs: input.settledAs,
+      at: input.at,
+      letterId: yield* newId,
+      clientRequestId: `mail:member-settle:${member.memberId}`,
+      requestFingerprint: yield* fingerprintOf(["member-settle", member.taskId, member.memberId]),
       deliveryId,
-      taskId: task.taskId,
-      letterId: appended.letter.letterId,
-      memberId: null,
-      recipient: "lead",
-      participantThreadId: task.createdByThreadId,
-      createdAt: input.at,
-    });
-    yield* repository.recordWake({
       wakeId: `mail:wake:${deliveryId}`,
-      taskId: task.taskId,
-      targetThreadId: task.createdByThreadId,
-      reason: "member-settled",
-      idempotencyKey: `mail:wake:${deliveryId}`,
-      createdAt: input.at,
     });
-    return { member: closed, failed, letter: appended.letter } satisfies SettleMailMemberResult;
   });
 
   const setMemberModel = Effect.fn("MailService.setMemberModel")(function* (
