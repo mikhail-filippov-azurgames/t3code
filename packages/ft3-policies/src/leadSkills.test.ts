@@ -260,4 +260,22 @@ describe("SKILL.md frontmatter", () => {
       description: "Coordinates complex multi-stage work.",
     });
   });
+
+  it("accepts the current schema and rejects an unknown one", () => {
+    const current = parseLeadSkillFile(
+      skillMarkdown("t3-orchestrator", { schema: "corvis-lead-skill-v1" }),
+      "t3-orchestrator/SKILL.md",
+    );
+    expect(current.issues).toEqual([]);
+    expect(current.file?.name).toBe("t3-orchestrator");
+
+    const unknown = parseLeadSkillFile(
+      skillMarkdown("t3-orchestrator", { schema: "foo-v1" }),
+      "t3-orchestrator/SKILL.md",
+    );
+    expect(unknown.file).toBeNull();
+    expect(unknown.issues.map((issue) => issue.message)).toContain(
+      'Document "leadSkills" line 4: expected schema: corvis-lead-skill-v1 or ced-v1 (or no schema field), got "foo-v1".',
+    );
+  });
 });

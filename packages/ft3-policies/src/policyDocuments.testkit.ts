@@ -22,10 +22,4 @@ export const memoryPolicyDocumentPort = (
     }
     return Effect.succeed({ content, sha256: sha256(content), relPath: ref });
   },
-  manifest: ({ folder }) =>
-    Effect.succeed(
-      [...files.keys()]
-        .filter((relPath) => folder === "" || relPath.startsWith(`${folder}/`))
-        .map((relPath) => ({ relPath })),
-    ),
 });

@@ -20,8 +20,11 @@ import {
 } from "./policyDocumentLoader.ts";
 import { policiesRpcHandlers } from "./rpc.ts";
 import { FT3_POLICIES_WS_METHODS } from "./rpc-contracts.ts";
+import type { PoliciesSettings } from "./settings.ts";
 
 const ROUTING_POLICY_PATH = "policies/routing-policy.md";
+const ROLES_DIR = "policies/roles/";
+const ROLES_PATH = `${ROLES_DIR}roles.json`;
 
 // A live editor does not run inside a shell with the legacy settings.
 delete process.env.T3CODE_FT3_ROLES_DIR;
@@ -138,23 +141,60 @@ const docsOver = (files: Map<string, string>) =>
     docRef: () => Effect.die("unused in the policy apply tests"),
   });
 
-const policySettings = (applyExternalEdits: boolean) => ({
-  documents: {
+const policySettings = (
+  applyExternalEdits: boolean,
+  documents?: PoliciesSettings["documents"],
+) => ({
+  documents: documents ?? routingPolicyDocuments(),
+  applyExternalEdits,
+  features: { documents: true, board: false, planning: false },
+});
+
+function routingPolicyDocuments(): PoliciesSettings["documents"] {
+  return {
     routingPolicy: {
       kind: "doc",
       address: { kind: "path", relPath: ROUTING_POLICY_PATH },
     },
     roles: { kind: "builtin" },
     leadSkills: { kind: "builtin" },
-  },
-  applyExternalEdits,
-  features: { documents: true, board: false, planning: false },
-});
+  };
+}
+
+function rolesDocuments(): PoliciesSettings["documents"] {
+  return {
+    routingPolicy: { kind: "builtin" },
+    roles: { kind: "doc", address: { kind: "path", relPath: ROLES_PATH } },
+    leadSkills: { kind: "builtin" },
+  };
+}
+
+const rolesManifest = (revision: number): string =>
+  JSON.stringify({
+    schema: "corvis-role-map-v1",
+    revision,
+    configured: true,
+    roles: [{ id: "lead", roleId: "lead", file: "lead.md" }],
+  });
+
+const leadRole = (revision: number): string =>
+  [
+    "---",
+    "schema: corvis-role-v1",
+    "roleId: lead",
+    `revision: ${revision}`,
+    "configured: true",
+    "---",
+    "",
+    "# Lead",
+    "",
+  ].join("\n");
 
 const services = (
   files: Map<string, string>,
   applyExternalEdits: boolean,
   applied: Layer.Layer<PolicyAppliedStore> = policyAppliedStoreLayer,
+  documents?: PoliciesSettings["documents"],
 ) => {
   const docs = docsOver(files);
   return Layer.mergeAll(
@@ -163,11 +203,12 @@ const services = (
       Layer.provide(applied),
     ),
     Layer.succeed(DocsService, docs),
-    ServerSettings.layerTest({ ft3: { policies: policySettings(applyExternalEdits) } }),
+    ServerSettings.layerTest({ ft3: { policies: policySettings(applyExternalEdits, documents) } }),
   );
 };
 
 const getSnapshot = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesGetSnapshot];
+const readDocument = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesReadDocument];
 const saveDocument = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesSaveDocument];
 const getPending = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesGetPendingChange];
 const applyPending = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesApplyPending];
@@ -371,4 +412,40 @@ describe("policy write and apply RPC", () => {
       });
     },
   );
+
+  it.effect("neither returns nor writes store files roles.json does not declare", () => {
+    const files = new Map([
+      [ROLES_PATH, rolesManifest(1)],
+      [`${ROLES_DIR}lead.md`, leadRole(1)],
+      [`${ROLES_DIR}notes.md`, "# Notes\n"],
+    ]);
+    return Effect.gen(function* () {
+      yield* getSnapshot({});
+      const read = yield* readDocument({ key: "roles" });
+      assert.equal(read.status, "ok");
+      if (read.status !== "ok") return;
+      assert.deepStrictEqual(
+        read.files.map((file) => file.file),
+        ["", "lead.md"],
+      );
+
+      const undeclared = yield* saveDocument({
+        key: "roles",
+        file: "notes.md",
+        baseSha256: sha256("# Notes\n"),
+        content: "# Overwritten\n",
+      });
+      assert.equal(undeclared.status, "not_writable");
+      assert.equal(files.get(`${ROLES_DIR}notes.md`), "# Notes\n");
+
+      const declared = yield* saveDocument({
+        key: "roles",
+        file: "lead.md",
+        baseSha256: sha256(leadRole(1)),
+        content: leadRole(2),
+      });
+      assert.equal(declared.status, "saved");
+      assert.equal(files.get(`${ROLES_DIR}lead.md`), leadRole(2));
+    }).pipe(Effect.provide(services(files, false, policyAppliedStoreLayer, rolesDocuments())));
+  });
 });

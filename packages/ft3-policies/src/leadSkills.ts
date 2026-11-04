@@ -11,6 +11,7 @@ import {
   leadSkillMissingIssue,
   type PolicyIssue,
 } from "./diagnostics.ts";
+import { ROLE_FILE_STORE_SCHEMA } from "./roleDocuments.ts";
 import {
   documentLines,
   type DocumentFrontmatter,
@@ -28,6 +29,13 @@ import {
 
 export const LEAD_SKILLS_DOCUMENT_KEY = "leadSkills" satisfies PolicyDocumentKey;
 export const LEAD_SKILLS_MANIFEST_SCHEMA = "corvis-lead-skills-v1";
+/**
+ * Optional `schema` of one `SKILL.md`. The shipped templates predate the
+ * field, so a missing schema stays valid; a store-frontmatter `ced-v1` file
+ * is read like the role parser reads it; anything else is unknown.
+ */
+export const LEAD_SKILL_FILE_SCHEMA = "corvis-lead-skill-v1";
+const LEAD_SKILL_FILE_SCHEMAS: readonly string[] = [LEAD_SKILL_FILE_SCHEMA, ROLE_FILE_STORE_SCHEMA];
 
 /** Lead skills the board and planning use; `create-orchestrator-architect` is retired. */
 export const LEAD_SKILL_IDS = [
@@ -427,11 +435,36 @@ export function parseLeadSkillFile(content: string, file: string): ParsedLeadSki
     );
   }
 
+  const schemaFields = frontmatterFields(frontmatter, "schema");
+  const schema = schemaFields[0];
+  if (schema !== undefined && !LEAD_SKILL_FILE_SCHEMAS.includes(schema.value)) {
+    issues.push(
+      skillFileIssue(
+        lines,
+        schema.line,
+        `schema: ${LEAD_SKILL_FILE_SCHEMAS.join(" or ")} (or no schema field)`,
+        schema.value,
+        file,
+      ),
+    );
+    return { file: null, issues };
+  }
+
   const name = singleField(frontmatter, "name", lines, file, issues);
   const description = singleField(frontmatter, "description", lines, file, issues);
 
   if (name === null || description === null) return { file: null, issues };
   return { file: { name, description, body: frontmatter.body }, issues };
+}
+
+/**
+ * The manifest-relative SKILL.md files a `lead-skills.json` declares, for
+ * loaders that read only declared files. Invalid JSON or invalid entries
+ * declare nothing; the full parse reports those problems.
+ */
+export function leadSkillsManifestFiles(manifest: string): readonly string[] {
+  const issues: PolicyIssue[] = [];
+  return parseManifest(manifest, issues).entries.map((entry) => entry.file);
 }
 
 /**

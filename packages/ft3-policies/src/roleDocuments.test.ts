@@ -428,6 +428,26 @@ describe("role document set", () => {
     expect(parsed.valid).toBe(true);
   });
 
+  it("rejects ced-v1 files that inherit an unusable manifest revision", () => {
+    const files = new Map(
+      baseEntries.map((entry) => [entry.file, storeRoleMarkdown({ revision: "" })]),
+    );
+    const parsed = parseRolesDocumentSet({
+      manifest: rolesManifest(baseEntries, { revision: 0 }),
+      files,
+    });
+
+    expect(parsed.valid).toBe(false);
+    const inherited = parsed.issues.filter((issue) =>
+      issue.message.includes("the file has none and roles.json carries none"),
+    );
+    expect(inherited).toHaveLength(4);
+    expect(inherited[0]?.message).toContain(
+      'expected revision: an integer >= 1 (the file has none and roles.json carries none), got "0".',
+    );
+    expect(parsed.files.size).toBe(0);
+  });
+
   it("still reports a manifest entry without a roleId and skips its file", () => {
     const manifest = rolesManifest([{ id: "lead", file: "lead.md" } as RoleEntryInput]);
     const parsed = parseRolesDocumentSet({
@@ -514,6 +534,32 @@ describe("role file frontmatter", () => {
     expect(parsed.file).toBeNull();
     expect(parsed.issues.map((issue) => issue.message)).toContain(
       'Document "roles" line 6: expected a roles.json entry for this ced-v1 file, got "no roles.json entry".',
+    );
+  });
+
+  it("reports a ced-v1 file that inherits revision 0 from roles.json", () => {
+    const parsed = parseRoleFile(storeRoleMarkdown({ revision: "" }), "lead.md", {
+      roleId: "lead",
+      configured: true,
+      revision: 0,
+    });
+
+    expect(parsed.file).toBeNull();
+    expect(parsed.issues.map((issue) => issue.message)).toContain(
+      'Document "roles" line 1: expected revision: an integer >= 1 (the file has none and roles.json carries none), got "0".',
+    );
+  });
+
+  it("reports a ced-v1 file when roles.json has no usable revision", () => {
+    const parsed = parseRoleFile(storeRoleMarkdown({ revision: "" }), "lead.md", {
+      roleId: "lead",
+      configured: true,
+      revision: null,
+    });
+
+    expect(parsed.file).toBeNull();
+    expect(parsed.issues.map((issue) => issue.message)).toContain(
+      'Document "roles" line 1: expected revision: an integer >= 1 (the file has none and roles.json carries none), got "no roles.json revision".',
     );
   });
 });

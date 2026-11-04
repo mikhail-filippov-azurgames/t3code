@@ -1,5 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off - the fake store hashes document content.
+// @effect-diagnostics nodeBuiltinImport:off - the fake store hashes document content and the path-source test builds a fixture directory.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import { DocsService, DocsServiceError } from "@t3tools/ft3-docs/server";
 import { assert, describe, it } from "@effect/vitest";
@@ -333,6 +336,58 @@ describe("PolicyDocumentLoader store trees", () => {
         ["document_missing"],
       );
       assert.equal(loaded.issues[0]?.message.includes(ROUTING_POLICY_PATH), true);
+    }).pipe(Effect.provide(loaderLayer(new Map())));
+  });
+
+  it.effect("reads only the files roles.json declares from the store", () => {
+    const store = new Map([
+      [`${ROLES_DIR}roles.json`, ROLES_MANIFEST],
+      [`${ROLES_DIR}lead.md`, roleFile("lead")],
+      [`${ROLES_DIR}implementation.md`, roleFile("implementation")],
+      [`${ROLES_DIR}notes.md`, "# Notes\n"],
+    ]);
+    return Effect.gen(function* () {
+      const loader = yield* PolicyDocumentLoader;
+      const loaded = yield* loader.load({
+        key: "roles",
+        source: docSource(`${ROLES_DIR}roles.json`),
+      });
+
+      if (loaded.key !== "roles") throw new Error("expected the roles document");
+      assert.deepStrictEqual(
+        loaded.files.map((file) => file.file),
+        ["", "lead.md", "implementation.md"],
+      );
+    }).pipe(Effect.provide(loaderLayer(store)));
+  });
+
+  it.effect("reads only declared files of a path-source tree", () => {
+    const directory = Effect.acquireRelease(
+      Effect.sync(() => {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ft3-roles-"));
+        NodeFS.writeFileSync(NodePath.join(dir, "roles.json"), ROLES_MANIFEST);
+        NodeFS.writeFileSync(NodePath.join(dir, "lead.md"), roleFile("lead"));
+        NodeFS.writeFileSync(NodePath.join(dir, "implementation.md"), roleFile("implementation"));
+        NodeFS.writeFileSync(NodePath.join(dir, "notes.md"), "# Notes\n");
+        return dir;
+      }),
+      (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+    );
+    return Effect.gen(function* () {
+      const dir = yield* directory;
+      const loader = yield* PolicyDocumentLoader;
+      const loaded = yield* loader.load({
+        key: "roles",
+        source: { kind: "path", path: NodePath.join(dir, "roles.json") },
+      });
+
+      if (loaded.key !== "roles") throw new Error("expected the roles document");
+      assert.deepStrictEqual(loaded.issues, []);
+      assert.equal(loaded.valid, true);
+      assert.deepStrictEqual(
+        loaded.files.map((file) => file.file),
+        ["", "lead.md", "implementation.md"],
+      );
     }).pipe(Effect.provide(loaderLayer(new Map())));
   });
 });

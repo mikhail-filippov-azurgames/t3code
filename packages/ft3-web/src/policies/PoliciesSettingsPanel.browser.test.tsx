@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   pendingError: null as string | null,
   policySettings: null as unknown,
   calls: [] as Array<{ label: string; input: unknown }>,
+  refreshes: [] as string[],
   commandResult: null as unknown,
 }));
 
@@ -33,15 +34,21 @@ vi.mock("~/state/query", () => ({
       error: null as string | null,
       isPending: false,
       dataUpdatedAt: 0,
-      refresh: () => {},
     };
-    if (atom === null) return { ...view, data: null };
+    if (atom === null) return { ...view, data: null, refresh: () => {} };
     const query = (atom as { __query: string }).__query;
     const data =
       query === "snapshot" ? mocks.snapshot : query === "read" ? mocks.read : mocks.pending;
     const error =
       query === "read" ? mocks.readError : query === "pending" ? mocks.pendingError : null;
-    return { ...view, data, error };
+    return {
+      ...view,
+      data,
+      error,
+      refresh: () => {
+        mocks.refreshes.push(query);
+      },
+    };
   },
 }));
 
@@ -55,6 +62,10 @@ vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: (command: { label: string }) => {
     return async (target: { input: unknown }) => {
       mocks.calls.push({ label: command.label, input: target.input });
+      if (command.label === "server.updateSettings") {
+        const input = target.input as { patch: { ft3: { policies: unknown } } };
+        mocks.policySettings = input.patch.ft3.policies;
+      }
       return mocks.commandResult;
     };
   },
@@ -151,11 +162,11 @@ const snapshotFixture = {
 
 const readFixture = {
   status: "ok",
-  key: "routingPolicy",
-  source: { kind: "builtin" },
+  key: "leadSkills",
+  source: { kind: "doc", address: { kind: "path", relPath: "lead-skills/lead-skills.json" } },
   configured: true,
-  files: [{ file: "routing-policy.md", content: "line1\nline2", sha256: "d".repeat(64) }],
-  mainFile: "routing-policy.md",
+  files: [{ file: "", content: "line1\nline2", sha256: "d".repeat(64) }],
+  mainFile: "",
 };
 
 function setup() {
@@ -179,6 +190,7 @@ function setup() {
     },
   };
   mocks.calls = [];
+  mocks.refreshes = [];
   mocks.commandResult = null;
   mocks.readError = null;
   mocks.pendingError = null;
@@ -284,7 +296,7 @@ describe("policies settings panel", () => {
     };
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
     await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
-    await userEvent.type(screen.getByLabelText("Edit routing-policy.md"), "!");
+    await userEvent.type(screen.getByLabelText("Edit lead-skills.json"), "!");
     await userEvent.click(screen.getByText("Save and apply"));
     expect(mocks.calls).toHaveLength(1);
     expect(mocks.calls[0]!.label).toBe("policies.saveDocument");
@@ -295,7 +307,7 @@ describe("policies settings panel", () => {
       content: string;
     };
     expect(input.key).toBe("leadSkills");
-    expect(input.file).toBe("routing-policy.md");
+    expect(input.file).toBe("");
     expect(input.baseSha256).toBe("d".repeat(64));
     expect(input.content).toContain("!");
     expect(screen.container.textContent).toContain(
@@ -365,6 +377,62 @@ describe("policies settings panel", () => {
       patch: { ft3: { policies: { features: Record<string, boolean> } } };
     };
     expect(input.patch.ft3.policies.features.board).toBe(!DEFAULT_POLICY_SETTINGS.features.board);
+
+    await vi.waitFor(() => {
+      expect(mocks.refreshes).toContain("snapshot");
+    });
+    await expect
+      .element(toggle!)
+      .toHaveAttribute("aria-checked", String(!DEFAULT_POLICY_SETTINGS.features.board));
+
+    toggle!.click();
+    await vi.waitFor(() => {
+      expect(mocks.calls.filter((entry) => entry.label === "server.updateSettings")).toHaveLength(
+        2,
+      );
+    });
+    await expect
+      .element(toggle!)
+      .toHaveAttribute("aria-checked", String(DEFAULT_POLICY_SETTINGS.features.board));
+  });
+
+  it("saves a child SKILL.md with its manifest-relative file", async () => {
+    setup();
+    mocks.read = {
+      status: "ok",
+      key: "leadSkills",
+      source: { kind: "doc", address: { kind: "path", relPath: "lead-skills/lead-skills.json" } },
+      configured: true,
+      files: [
+        { file: "", content: "main file", sha256: "d".repeat(64) },
+        { file: "board-orchestrator/SKILL.md", content: "skill body", sha256: "e".repeat(64) },
+      ],
+      mainFile: "",
+    };
+    mocks.commandResult = { value: { status: "saved", snapshot: snapshotFixture } };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+
+    const tabs = screen.container.querySelectorAll('[role="tab"]');
+    expect(tabs).toHaveLength(2);
+    const panel = screen.container.querySelector('[role="tabpanel"]');
+    expect(panel).not.toBeNull();
+    for (const tab of Array.from(tabs)) {
+      expect(tab.getAttribute("aria-controls")).toBe(panel!.id);
+    }
+
+    (tabs[0] as HTMLElement).focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect((tabs[1] as HTMLElement).getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement?.textContent).toBe("board-orchestrator/SKILL.md");
+
+    await userEvent.type(screen.getByLabelText("Edit board-orchestrator/SKILL.md"), "!");
+    await userEvent.click(screen.getByText("Save and apply"));
+    expect(mocks.calls).toHaveLength(1);
+    expect(mocks.calls[0]!.label).toBe("policies.saveDocument");
+    const input = mocks.calls[0]!.input as { file: string; content: string };
+    expect(input.file).toBe("board-orchestrator/SKILL.md");
+    expect(input.content).toContain("!");
   });
 
   it("explains which document keeps a requested feature off", async () => {

@@ -48,6 +48,10 @@ import {
 } from "./policies.logic.ts";
 import { policiesEnvironment } from "./state.ts";
 
+/** One editor is mounted at a time, so a constant panel id is enough. */
+const POLICY_FILE_PANEL_ID = "policy-document-file-panel";
+const policyFileTabId = (file: string) => `policy-document-file-tab:${file}`;
+
 export function PoliciesSettingsPanel() {
   const scope = useOptionalSettingsScope();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -114,7 +118,10 @@ export function PoliciesSettingsPanel() {
       setFeatureOverrides((current) => ({ ...current, [feature]: previous }));
       const cause = squashAtomCommandFailure(result);
       setFeatureError(cause instanceof Error ? cause.message : "Could not save the feature.");
+      return;
     }
+    setFeatureOverrides({});
+    snapshotQuery.refresh();
   };
 
   const onSnapshot = (fresh: PoliciesGetSnapshotResult) => {
@@ -485,6 +492,26 @@ function PolicyDocumentEditor({
           className="flex flex-wrap gap-1 px-3 pt-2 sm:px-4"
           role="tablist"
           aria-label="Document files"
+          onKeyDown={(event) => {
+            const count = files.length;
+            if (count < 2) return;
+            const current = files.findIndex((file) => file.file === currentFileName);
+            const target =
+              event.key === "Home"
+                ? 0
+                : event.key === "End"
+                  ? count - 1
+                  : event.key === "ArrowRight"
+                    ? current + 1
+                    : event.key === "ArrowLeft"
+                      ? current - 1
+                      : current;
+            if (target === current || target < 0 || target >= count) return;
+            event.preventDefault();
+            setActiveFile(files[target]!.file);
+            const tabs = event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]');
+            tabs[target]?.focus();
+          }}
         >
           {files.map((file) => {
             const selected = file.file === currentFileName;
@@ -494,7 +521,10 @@ function PolicyDocumentEditor({
                 size="xs"
                 variant={selected ? "default" : "outline"}
                 role="tab"
+                id={policyFileTabId(file.file)}
                 aria-selected={selected}
+                aria-controls={POLICY_FILE_PANEL_ID}
+                tabIndex={selected ? 0 : -1}
                 onClick={() => setActiveFile(file.file)}
               >
                 {policyFileLabel(document.key, file.file)}
@@ -504,7 +534,12 @@ function PolicyDocumentEditor({
         </div>
       ) : null}
       {currentFile !== null ? (
-        <div ref={editorContainerRef}>
+        <div
+          ref={editorContainerRef}
+          role="tabpanel"
+          id={POLICY_FILE_PANEL_ID}
+          aria-labelledby={files.length > 1 ? policyFileTabId(currentFile.file) : undefined}
+        >
           <PolicyFileEditor
             key={`${currentFile.file}:${currentFile.sha256}`}
             documentKey={document.key}

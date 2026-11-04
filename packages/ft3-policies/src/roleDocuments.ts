@@ -536,6 +536,26 @@ function revisionField(
   return value;
 }
 
+/** The revision a ced-v1 file inherits from roles.json must itself be usable. */
+function inheritedRevision(
+  revision: number | null,
+  lines: readonly string[],
+  file: string,
+  issues: PolicyIssue[],
+): number | null {
+  if (revision !== null && Number.isSafeInteger(revision) && revision >= 1) return revision;
+  issues.push(
+    roleFileIssue(
+      lines,
+      1,
+      "revision: an integer >= 1 (the file has none and roles.json carries none)",
+      revision === null ? "no roles.json revision" : String(revision),
+      file,
+    ),
+  );
+  return null;
+}
+
 /**
  * A `ced-v1` file keeps the store's frontmatter untouched: roleId and configured
  * come from its roles.json entry, and its own `revision` wins over the manifest's.
@@ -563,7 +583,7 @@ function parseStoreRoleFile(
   const revision =
     frontmatterFields(frontmatter, "revision").length > 0
       ? revisionField(frontmatter, lines, file, issues)
-      : declared.revision;
+      : inheritedRevision(declared.revision, lines, file, issues);
   if (revision === null) return { file: null, issues };
   return {
     file: {
@@ -679,6 +699,16 @@ export function parseRoleFile(
 
 const missingRoleHint = (roleId: string): string =>
   `Add an entry such as { "id": "${roleId}", "roleId": "${roleId}", "file": "${roleId}.md" } to roles.json and create that Markdown file.`;
+
+/**
+ * The manifest-relative role files a `roles.json` declares, for loaders that
+ * read only declared files. Invalid JSON or invalid entries declare nothing;
+ * the full parse reports those problems.
+ */
+export function rolesManifestFiles(manifest: string): readonly string[] {
+  const issues: PolicyIssue[] = [];
+  return parseManifest(manifest, issues).entries.map((entry) => entry.file);
+}
 
 /**
  * Parses the whole roles document set and checks the role requirements of the

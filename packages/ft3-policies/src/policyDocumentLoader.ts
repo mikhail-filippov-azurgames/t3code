@@ -17,8 +17,16 @@ import {
 } from "./contracts.ts";
 import { BUILTIN_ASSET_CONTENTS } from "./builtinAssets.ts";
 import { documentMissingIssue, storeUnavailableIssue, type PolicyIssue } from "./diagnostics.ts";
-import { parseLeadSkillsDocumentSet, type ParsedLeadSkillsDocument } from "./leadSkills.ts";
-import { parseRolesDocumentSet, type ParsedRolesDocument } from "./roleDocuments.ts";
+import {
+  parseLeadSkillsDocumentSet,
+  leadSkillsManifestFiles,
+  type ParsedLeadSkillsDocument,
+} from "./leadSkills.ts";
+import {
+  parseRolesDocumentSet,
+  rolesManifestFiles,
+  type ParsedRolesDocument,
+} from "./roleDocuments.ts";
 import { parseRoutingPolicy, type RoutingPolicy, type RoutingRoleId } from "./routingPolicy.ts";
 
 /** One document read, as the loader needs it from the store. */
@@ -29,17 +37,11 @@ export interface PolicyDocumentRead {
   readonly stableId: string;
 }
 
-/** The two `DocsService` calls the loader makes; a port keeps `ft3-docs` out of this module's graph. */
+/** The one `DocsService` call the loader makes; a port keeps `ft3-docs` out of this module's graph. */
 export interface PolicyDocumentReadPort {
   readonly read: (input: {
     readonly ref: string;
   }) => Effect.Effect<PolicyDocumentRead, { readonly code: string; readonly message: string }>;
-  readonly manifest: (input: {
-    readonly folder: string;
-  }) => Effect.Effect<
-    ReadonlyArray<{ readonly relPath: string }>,
-    { readonly code: string; readonly message: string }
-  >;
 }
 
 /** Adapts the live `DocsService` to the loader port. */
@@ -55,7 +57,6 @@ export const docsPolicyDocumentReadPort = (
         stableId: read.stableId,
       })),
     ),
-  manifest: (input) => docs.manifest(input),
 });
 
 /** Features whose required roles, skills and documents the loaders check. */
@@ -175,20 +176,24 @@ const storeReadIssues = (
     : [storeUnavailableIssue(key, sourceLabel(key, source), reason)];
 
 /** Files of a tree document below `directory`, keyed by `/`-separated relative path. */
-const readDirectoryFiles = (directory: string): ReadonlyMap<string, string> => {
-  const files = new Map<string, string>();
-  const walk = (absolute: string, prefix: string): void => {
-    for (const entry of NodeFS.readdirSync(absolute, { withFileTypes: true })) {
-      const child = NodePath.join(absolute, entry.name);
-      const relative = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
-      if (entry.isDirectory()) walk(child, relative);
-      else if (entry.isFile() && entry.name.endsWith(".md")) {
-        files.set(relative, NodeFS.readFileSync(child, "utf8"));
-      }
-    }
-  };
-  walk(directory, "");
-  return files;
+const declaredFilesOf = (key: PolicyDocumentKey, manifestContent: string): readonly string[] => {
+  switch (key) {
+    case "routingPolicy":
+      return [];
+    case "roles":
+      return rolesManifestFiles(manifestContent);
+    case "leadSkills":
+      return leadSkillsManifestFiles(manifestContent);
+  }
+};
+
+/** Reads one declared child file next to a `path` source; missing files stay missing. */
+const readDeclaredPathFile = (directory: string, file: string): string | undefined => {
+  try {
+    return NodeFS.readFileSync(NodePath.join(directory, ...file.split("/")), "utf8");
+  } catch {
+    return undefined;
+  }
 };
 
 const liveFilesOf = (
@@ -247,10 +252,14 @@ const readBuiltin = (key: PolicyDocumentKey): ContentRead => {
 const readServerPath = (key: PolicyDocumentKey, path: string): ContentRead => {
   try {
     const content = NodeFS.readFileSync(path, "utf8");
-    const files: Map<string, string> = isTreeKey(key)
-      ? new Map(readDirectoryFiles(NodePath.dirname(path)))
-      : new Map();
-    files.delete(NodePath.basename(path));
+    const files = new Map<string, string>();
+    if (isTreeKey(key)) {
+      const directory = NodePath.dirname(path);
+      for (const file of declaredFilesOf(key, content)) {
+        const child = readDeclaredPathFile(directory, file);
+        if (child !== undefined) files.set(file, child);
+      }
+    }
     const sha256 = sha256Hex(content);
     return {
       ok: true,
@@ -300,23 +309,18 @@ const readStore = Effect.fn("PolicyDocumentLoader.readStore")(function* (
     const slash = relPath.lastIndexOf("/");
     const folder = slash === -1 ? "" : relPath.slice(0, slash);
     const prefix = folder.length === 0 ? "" : `${folder}/`;
-    const manifest = yield* Effect.result(port.manifest({ folder }));
-    if (Result.isSuccess(manifest)) {
-      for (const entry of manifest.success) {
-        if (entry.relPath === relPath) continue;
-        const child = yield* Effect.result(port.read({ ref: entry.relPath }));
-        if (Result.isFailure(child)) continue;
-        const file = entry.relPath.slice(prefix.length);
-        files.set(file, child.success.content);
-        liveFiles.push({
-          file,
-          content: child.success.content,
-          sha256: child.success.sha256,
-          relPath: child.success.relPath,
-          absolutePath: null,
-          stableId: child.success.stableId,
-        });
-      }
+    for (const declared of declaredFilesOf(key, read.success.content)) {
+      const child = yield* Effect.result(port.read({ ref: `${prefix}${declared}` }));
+      if (Result.isFailure(child)) continue;
+      files.set(declared, child.success.content);
+      liveFiles.push({
+        file: declared,
+        content: child.success.content,
+        sha256: child.success.sha256,
+        relPath: child.success.relPath,
+        absolutePath: null,
+        stableId: child.success.stableId,
+      });
     }
   }
   return {
@@ -479,8 +483,11 @@ const make = Effect.fn("PolicyDocumentLoader.make")(function* (port: PolicyDocum
         documentMissingIssue(input.key, sourceLabel(input.key, input.source)),
       ]);
     }
+    const declared = new Set(declaredFilesOf(input.key, main.content));
     const files = new Map(
-      input.files.filter((file) => file.file !== "").map((file) => [file.file, file.content]),
+      input.files
+        .filter((file) => file.file !== "" && declared.has(file.file))
+        .map((file) => [file.file, file.content]),
     );
     return parseContent(input, {
       content: main.content,
