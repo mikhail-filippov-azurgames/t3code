@@ -14,7 +14,6 @@
 
 - `src/Migrations.ts` + `src/Migrations/` — журнал `ft3_migrations` и host-миграции.
 - `src/import/` — одноразовый импорт старого форка: база, настройки, вложения, Pi agent-dir.
-- `src/openContextDocs.ts` — резолвер документов OpenContext для чат-чипов.
 - `src/rpc.test.ts` — карта scope и сквозной harness для всех ft3-методов.
 
 ## Швы

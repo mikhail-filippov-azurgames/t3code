@@ -976,3 +976,23 @@ Fork-owned tests: `packages/ft3-web/src/lineage/planLineage.logic.test.ts`,
 `packages/ft3-web/src/lineage/PlanLineageRow.browser.test.tsx` и случаи `Plan` в
 `packages/ft3-web/src/board/BoardPanel.browser.test.tsx`. Случаи закреплённых строк в
 `apps/web/src/components/chat/ThreadRelationshipsControl.browser.test.tsx` входят в гейт.
+
+## Документы, mobile и швы почты и планирования
+
+Правило документов из архитектурного контракта политик, почты и планирования:
+
+> Only `packages/ft3-docs` knows the document storage format: the `folders`/`docs` tables, the `oc://` scheme, the folder layout and the frontmatter fields it manages. Other packages call `ft3-docs`.
+>
+> The repository never contains personal paths or `oc://` ids.
+
+`scripts/check-fork-boundary.ts` (шаг «Fork boundary» в `ft3-gate.yml`) проверяет второе правило в `packages/ft3-*/src`, `apps/web/src`, `apps/server/src`, `apps/desktop/src` и `packages/*/assets`: падает на пользовательские абсолютные пути (`C:\Users\<name>\`, `/Users/<name>/`, `/home/<name>/`) и на `oc://doc/<uuid>`. Исключения: имена из `ALLOWED_USER_NAMES` (заглушки и имена из upstream-фикстур, регистр важен) и nil UUID в `*.test.*`.
+
+Mobile вне scope документов, политик, почты и планирования: mobile-клиент показывает upstream-поведение и не получает ft3-поверхностей и швов этих задач. Ранее записанные mobile-правки (Kimi usage) остаются.
+
+Аддитивные швы этих задач. Default не меняется, upstream-ветки без нового значения работают как раньше.
+
+| Upstream-файл                                                                           | Правка                                                                                                                                                | Зачем                                                                                                       |
+| --------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `packages/contracts/src/orchestrationV2.ts`                                             | литерал `"none"` в `Schema.Literals` поля `completionWake`                                                                                            | задача, которая не будит родителя (участники почты)                                                         |
+| `apps/server/src/orchestration-v2/Orchestrator.ts`                                      | две проверки `completionWake === "none"`: `recordSubagentFollowup` выходит до создания follow-up; completion offer такой задачи становится `disposed` | сообщения человека и wake почты не будят lead; тест — строки `none` в `DelegatedCompletionDelivery.test.ts` |
+| `apps/web/src/components/chat/ThreadRelationshipsControl.tsx`, `ThreadDetailsPanel.tsx` | проп `pinnedLineageRows`, подробности — [«Закреплённые строки Lineage: план (срез 25a)»](#закреплённые-строки-lineage-план-срез-25a)                  | строка плана в Lineage треда lead                                                                           |

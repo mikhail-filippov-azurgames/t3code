@@ -13,7 +13,9 @@
   FTS и сервис документов добавляются следующими задачами.
 - `./migrations` - DDL производного состояния Corvis в `statev2.sqlite`;
 - `./migrate-store` - одноразовый мигратор существующего store (функции
-  `inspectStore`/`migrateStore` и типы отчёта).
+  `inspectStore`/`migrateStore` и типы отчёта);
+- `./rpc`, `./rpc-contracts` - RPC `docs.resolve` для чат-чипов `oc://`: `src/rpc.ts`
+  вызывает резолвер `DocsService.resolve` из `src/service.ts`.
 
 ## Формат хранилища
 
