@@ -1,31 +1,17 @@
 // @effect-diagnostics nodeBuiltinImport:off - the service hashes the document bytes it reads.
 import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Stream from "effect/Stream";
 
 import { type DocRef, parseDocRef } from "./contracts.ts";
-import { DocsChangeBus } from "./events.ts";
 import * as DocsIndex from "./index.ts";
 import * as DocsReconciler from "./reconciler.ts";
-import type { DocsChanged } from "./reconciler.ts";
 import * as DocsStore from "./store.ts";
-
-/** Shared change bus service-side writes publish to; provided by the composition. */
-export { DocsChangeBus };
-
-/** A change bus that drops every event; the default when no bus is provided. */
-export const noChangeEvents = Layer.succeed(
-  DocsChangeBus,
-  DocsChangeBus.of({
-    publish: Effect.fn("DocsChangeBus.publish")(() => Effect.void),
-    changes: Stream.empty,
-  }),
-);
 
 /** Every way `DocsService` refuses or fails a call (design §5). */
 export const DocsServiceErrorCode = Schema.Literals([
@@ -157,10 +143,9 @@ export const denyAllDocumentsWrite: Layer.Layer<DocumentsWriteAccess> = Layer.su
 );
 
 /**
- * Port of the protected-document rule (design §3.5): policy documents and
- * other cards' plans are never writable through a store-wide MCP right; a
- * planner's document-scoped right bypasses this check. A failed check
- * refuses the write instead of treating unknown as unprotected.
+ * Port of the protected-document rule: policy documents and the plans of other
+ * cards are never writable through MCP (design §3.5). Until a rule is provided,
+ * nothing is protected; the deny-by-default write port above still refuses.
  */
 export class DocsProtection extends Context.Service<
   DocsProtection,
@@ -168,7 +153,7 @@ export class DocsProtection extends Context.Service<
     readonly isProtected: (document: {
       readonly stableId: string;
       readonly relPath: string;
-    }) => Effect.Effect<boolean, DocsServiceError, never>;
+    }) => Effect.Effect<boolean, never, never>;
   }
 >()("@t3tools/ft3-docs/service/DocsProtection") {}
 
@@ -281,12 +266,6 @@ const mapStoreError = (cause: DocsStore.DocsStoreError): DocsServiceError => {
         ...(cause.path === undefined ? {} : { ref: cause.path }),
         cause,
       });
-    case "document_changed":
-      return new DocsServiceError({
-        code: "document_changed",
-        ...(cause.path === undefined ? {} : { ref: cause.path }),
-        cause,
-      });
     case "invalid_path":
     case "invalid_name":
     case "invalid_limit":
@@ -305,14 +284,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   const index = yield* DocsIndex.DocsIndex;
   const writeAccess = yield* DocumentsWriteAccess;
   const protection = yield* DocsProtection;
-  const changeBus = yield* Effect.serviceOption(DocsChangeBus);
   const contextsRoot = NodePath.resolve(options.root, DocsStore.DOCS_STORE_CONTEXTS_DIRECTORY);
-
-  // Service-side writes surface on the shared change bus next to watch
-  // reports, so a subscriber that never touches the filesystem still sees
-  // them. Without a bus there are no subscribers, so nothing is emitted.
-  const emit = (change: DocsChanged) =>
-    changeBus._tag === "Some" ? changeBus.value.publish(change) : Effect.void;
 
   const absolutePathOf = (relPath: string): string =>
     NodePath.resolve(contextsRoot, ...relPath.split("/"));
@@ -384,6 +356,36 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     return { document: repaired, content: second.content, sha256: second.sha256 };
   });
 
+  /**
+   * The store registers Markdown documents only, so a store-path file like a
+   * `roles.json` manifest has no row; policy sources still address it by path
+   * (design §12.1). Reads it straight from `contexts/`; null when absent.
+   */
+  const readUnregisteredStoreFile = Effect.fn("DocsService.readUnregisteredStoreFile")(function* (
+    relPath: string,
+  ) {
+    const absolute = absolutePathOf(relPath);
+    const content = yield* Effect.sync(() => {
+      try {
+        return NodeFS.readFileSync(absolute, "utf8");
+      } catch {
+        return null;
+      }
+    });
+    return content === null ? null : { content, sha256: sha256Hex(content) };
+  });
+
+  /** True when the ref is a store path whose file exists but the store registered no document. */
+  const unregisteredStoreFile = Effect.fn("DocsService.unregisteredStoreFile")(function* (
+    ref: string,
+    error: DocsServiceError,
+  ) {
+    if (error.code !== "document_not_found") return null;
+    const address = parseDocRef(ref);
+    if (address === null || address.kind !== "path") return null;
+    return yield* readUnregisteredStoreFile(address.relPath);
+  });
+
   const list = Effect.fn("DocsService.list")(function* (input: { readonly folder?: string }) {
     const folder = input.folder?.trim().replace(/\/+$/, "") ?? "";
     const folders = yield* store.listFolders(folder);
@@ -420,8 +422,24 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   });
 
   const read = Effect.fn("DocsService.read")(function* (input: { readonly ref: string }) {
-    const { document, content, sha256 } = yield* readWithRepair(input.ref);
-    return { ...metaOf(document, sha256), content } satisfies DocsReadResult;
+    const attempted = yield* Effect.result(readWithRepair(input.ref));
+    if (attempted._tag === "Success") {
+      const { document, content, sha256 } = attempted.success;
+      return { ...metaOf(document, sha256), content } satisfies DocsReadResult;
+    }
+    const fallback = yield* unregisteredStoreFile(input.ref, attempted.failure);
+    if (fallback === null) return yield* attempted.failure;
+    const address = parseDocRef(input.ref);
+    const relPath = address?.kind === "path" ? address.relPath : input.ref;
+    return {
+      stableId: "",
+      relPath,
+      name: relPath.split("/").at(-1) ?? relPath,
+      description: "",
+      sha256: fallback.sha256,
+      ocLink: "",
+      content: fallback.content,
+    } satisfies DocsReadResult;
   });
 
   const resolve = Effect.fn("DocsService.resolve")(function* (input: { readonly ref: string }) {
@@ -467,10 +485,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         ...(target === null ? {} : { ref: target.relPath }),
       });
     }
-    // Protection guards store-wide rights only: a document-scoped right names
-    // its one document (the planner's own plan), which is never another
-    // card's plan, so it is not re-checked here.
-    if (target !== null && decision.scope === "store" && (yield* protection.isProtected(target))) {
+    if (target !== null && (yield* protection.isProtected(target))) {
       return yield* new DocsServiceError({ code: "document_protected", ref: target.relPath });
     }
   });
@@ -490,15 +505,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
 
   const write = Effect.fn("DocsService.write")(function* (input: DocsWriteInput) {
     const ref = input.ref?.trim();
-    const rawRelPath = input.relPath?.trim();
-    // Protection and the store must see the same path, so canonicalize before either.
-    const relPath =
-      rawRelPath === undefined || rawRelPath === ""
-        ? rawRelPath
-        : (DocsStore.canonicalRelPath(rawRelPath, false) ?? undefined);
-    if (rawRelPath !== undefined && rawRelPath !== "" && relPath === undefined) {
-      return yield* new DocsServiceError({ code: "invalid_input" });
-    }
+    const relPath = input.relPath?.trim();
     if ((ref === undefined || ref === "") === (relPath === undefined || relPath === "")) {
       return yield* new DocsServiceError({
         code: "invalid_input",
@@ -507,13 +514,7 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     }
 
     const existing = ref === undefined || ref === "" ? null : yield* locate(ref);
-    // A create names its destination up front: check the new path with a
-    // stable id no document can carry, so a store-wide right cannot land
-    // inside a protected tree. Document-scoped rights still deny through
-    // the stable-id mismatch, as they do for a null target.
-    const target =
-      existing ?? (relPath === undefined || relPath === "" ? null : { stableId: "", relPath });
-    yield* requireWrite(input.caller, target);
+    yield* requireWrite(input.caller, existing);
 
     if (existing === null) {
       const created = yield* store
@@ -524,7 +525,6 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         })
         .pipe(Effect.mapError(mapStoreError));
       yield* indexDocument(created);
-      yield* emit({ kind: "added", stableId: created.stableId, relPath: created.relPath });
       const { sha256 } = yield* readContent(created);
       return {
         stableId: created.stableId,
@@ -535,12 +535,12 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
       } satisfies DocsWriteResult;
     }
 
+    const live = yield* readContent(existing);
+    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
+      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
+    }
     const saved = yield* store
-      .saveDocContent({
-        relPath: existing.relPath,
-        content: input.content,
-        ...(input.baseSha256 === undefined ? {} : { expectedSha256: input.baseSha256 }),
-      })
+      .saveDocContent({ relPath: existing.relPath, content: input.content })
       .pipe(Effect.mapError(mapStoreError));
     if (input.description !== undefined) {
       yield* store
@@ -548,7 +548,6 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         .pipe(Effect.mapError(mapStoreError));
     }
     yield* indexDocument(saved);
-    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     const { sha256 } = yield* readContent(saved);
     return {
       stableId: saved.stableId,
@@ -560,23 +559,46 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
   });
 
   /**
-   * A human save of an existing document. Unlike `write`, the policy write rule
-   * is not consulted: the caller reaches this service through a
-   * `settings:write` RPC, and policy documents are not writable through MCP.
+   * A human save of an existing document; the policy write rule is not
+   * consulted because the caller holds a `settings:write` RPC scope. A store
+   * path with no registered row (a `.json` manifest) is written atomically
+   * under `contexts/` instead.
    */
   const writeAsHuman = Effect.fn("DocsService.writeAsHuman")(function* (
     input: DocsHumanWriteInput,
   ) {
-    const existing = yield* locate(input.ref);
+    const located = yield* Effect.result(locate(input.ref));
+    if (located._tag === "Failure") {
+      const fallback = yield* unregisteredStoreFile(input.ref, located.failure);
+      const address = parseDocRef(input.ref);
+      if (fallback === null || address?.kind !== "path") return yield* located.failure;
+      if (input.baseSha256 !== undefined && input.baseSha256 !== fallback.sha256) {
+        return yield* new DocsServiceError({ code: "document_changed", ref: input.ref });
+      }
+      yield* Effect.sync(() => {
+        const absolute = absolutePathOf(address.relPath);
+        const temporary = `${absolute}.corvis-tmp`;
+        NodeFS.writeFileSync(temporary, input.content, "utf8");
+        NodeFS.renameSync(temporary, absolute);
+      });
+      const sha256 = sha256Hex(input.content);
+      return {
+        stableId: "",
+        relPath: address.relPath,
+        name: address.relPath.split("/").at(-1) ?? address.relPath,
+        sha256,
+        ocLink: "",
+      } satisfies DocsWriteResult;
+    }
+    const existing = located.success;
+    const live = yield* readContent(existing);
+    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
+      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
+    }
     const saved = yield* store
-      .saveDocContent({
-        relPath: existing.relPath,
-        content: input.content,
-        ...(input.baseSha256 === undefined ? {} : { expectedSha256: input.baseSha256 }),
-      })
+      .saveDocContent({ relPath: existing.relPath, content: input.content })
       .pipe(Effect.mapError(mapStoreError));
     yield* indexDocument(saved);
-    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     const { sha256 } = yield* readContent(saved);
     return {
       stableId: saved.stableId,
@@ -611,7 +633,6 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     const saved = yield* store
       .setDescription({ relPath: document.relPath, description: input.description })
       .pipe(Effect.mapError(mapStoreError));
-    yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });
     return {
       stableId: saved.stableId,
       relPath: saved.relPath,

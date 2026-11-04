@@ -241,6 +241,36 @@ describe("DocsService reads", () => {
       }),
     ),
   );
+
+  it.effect(
+    "reads a store-path file the store registered no document for, like a json manifest",
+    () =>
+      withDocs(
+        (context) =>
+          Effect.gen(function* () {
+            yield* prime(context.service);
+            const read = yield* context.service.read({ ref: "policies/roles.json" });
+            assert.include(read.content, "corvis-role-map-v1");
+            assert.equal(read.stableId, "");
+            assert.equal(read.ocLink, "");
+            assert.equal(read.relPath, "policies/roles.json");
+
+            const missing = yield* context.service
+              .read({ ref: "policies/absent.json" })
+              .pipe(Effect.flip);
+            assert.equal(missing.code, "document_not_found");
+          }),
+        (root) =>
+          Effect.gen(function* () {
+            yield* writeDoc(root, "project/plan.md", `---\nstable_id: ${NIL_ID}\n---\n# Plan\n`);
+            yield* writeDoc(
+              root,
+              "policies/roles.json",
+              '{ "schema": "corvis-role-map-v1", "revision": 1 }\n',
+            );
+          }),
+      ),
+  );
 });
 
 describe("DocsService writes", () => {
@@ -417,6 +447,42 @@ describe("DocsService writes", () => {
           assert.equal(stale.code, "document_changed");
         }),
       seedFiles,
+    ),
+  );
+
+  it.effect("lets the human save a store-path file that has no registered document", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const live = yield* context.service.read({ ref: "policies/roles.json" });
+          const saved = yield* context.service.writeAsHuman({
+            ref: "policies/roles.json",
+            content: '{ "schema": "corvis-role-map-v1", "revision": 2 }\n',
+            baseSha256: live.sha256,
+          });
+          assert.notEqual(saved.sha256, live.sha256);
+          const reread = yield* context.service.read({ ref: "policies/roles.json" });
+          assert.include(reread.content, '"revision": 2');
+
+          const stale = yield* context.service
+            .writeAsHuman({
+              ref: "policies/roles.json",
+              content: "# Stale\n",
+              baseSha256: live.sha256,
+            })
+            .pipe(Effect.flip);
+          assert.equal(stale.code, "document_changed");
+        }),
+      (root) =>
+        Effect.gen(function* () {
+          yield* writeDoc(root, "project/plan.md", `---\nstable_id: ${NIL_ID}\n---\n# Plan\n`);
+          yield* writeDoc(
+            root,
+            "policies/roles.json",
+            '{ "schema": "corvis-role-map-v1", "revision": 1 }\n',
+          );
+        }),
     ),
   );
 
