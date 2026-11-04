@@ -34,12 +34,14 @@ import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/Thr
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
 import { MailService } from "./service.ts";
 import {
+  classifierFake,
   cryptoLayer,
   gateLayer,
   launcherFake,
   migrateMail,
   policyEvidenceFake,
   routingFake,
+  settingsLayer,
 } from "./mail.testkit.ts";
 import { layer as mailServiceLayer } from "./service.ts";
 import { MailDeliveryReactor, layer as mailReactorLayer } from "./reactor.ts";
@@ -147,7 +149,16 @@ function fixture(enabled = true) {
     }),
   );
   const serviceLayer = mailServiceLayer.pipe(
-    Layer.provide(Layer.mergeAll(routing.layer, cryptoLayer, evidence.layer, launcher.layer)),
+    Layer.provide(
+      Layer.mergeAll(
+        routing.layer,
+        cryptoLayer,
+        evidence.layer,
+        launcher.layer,
+        classifierFake().layer,
+        settingsLayer(),
+      ),
+    ),
   );
   const layer = mailReactorLayer.pipe(
     Layer.provideMerge(managedThreads),

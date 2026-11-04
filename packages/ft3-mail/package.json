@@ -35,6 +35,14 @@
       "types": "./src/documentsWrite.ts",
       "import": "./src/documentsWrite.ts"
     },
+    "./classifier": {
+      "types": "./src/classifier.ts",
+      "import": "./src/classifier.ts"
+    },
+    "./settings": {
+      "types": "./src/settings.ts",
+      "import": "./src/settings.ts"
+    },
     "./server": {
       "types": "./src/server.ts",
       "import": "./src/server.ts"

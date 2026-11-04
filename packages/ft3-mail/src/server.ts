@@ -13,9 +13,11 @@ import { layer as featureGateLayer, PolicyChangeTracker } from "@t3tools/ft3-pol
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { layerNoopClassifier } from "./classifier.ts";
 import { documentsWriteFactsLayer } from "./documentsWrite.ts";
 import { layer as repositoryLayer } from "./repository.ts";
 import { layer as serviceLayer, MailPolicyEvidence } from "./service.ts";
+import { mailSettingsLayer } from "./settings.ts";
 
 const policyEvidenceLayer = Layer.effect(
   MailPolicyEvidence,
@@ -46,7 +48,14 @@ const routingLayer = routingPolicyServiceLayer().pipe(
 
 export const layer = serviceLayer.pipe(
   Layer.provide(
-    Layer.mergeAll(repositoryLayer, routingLayer, featureGateLayer, policyEvidenceLayer),
+    Layer.mergeAll(
+      repositoryLayer,
+      routingLayer,
+      featureGateLayer,
+      policyEvidenceLayer,
+      layerNoopClassifier,
+      mailSettingsLayer,
+    ),
   ),
 );
 

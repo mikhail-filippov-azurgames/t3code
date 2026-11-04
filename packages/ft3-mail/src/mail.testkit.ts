@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
 
+import { MailKindClassifier, type MailClassification } from "./classifier.ts";
 import { migrations } from "./migrations.ts";
 import {
   MailLaunchError,
@@ -22,6 +23,7 @@ import {
 } from "./participantLauncher.ts";
 import { layer as mailRepositoryLayer } from "./repository.ts";
 import { layer as mailServiceLayer, MailPolicyEvidence } from "./service.ts";
+import { DEFAULT_MAIL_SETTINGS, MailSettingsService } from "./settings.ts";
 
 export const ALL_ROUTING_ROLES: ReadonlyArray<RoutingRoleId> = [
   "architect",
@@ -148,6 +150,25 @@ export const launcherFake = (fail: ReadonlySet<string> = new Set()) => {
   return { layer, launches };
 };
 
+/** A classifier fake; the default is the no-op (design §9.4: sender kind stays authoritative). */
+export const classifierFake = (classify?: (body: string) => MailClassification | null) => {
+  const calls: Array<string> = [];
+  const layer = Layer.succeed(
+    MailKindClassifier,
+    MailKindClassifier.of({
+      classify: (input) =>
+        Effect.sync(() => {
+          calls.push(input.body);
+          return classify === undefined ? null : classify(input.body);
+        }),
+    }),
+  );
+  return { layer, calls };
+};
+
+export const settingsLayer = (overrides: Partial<{ readonly classifierThreshold: number }> = {}) =>
+  Layer.succeed(MailSettingsService, { ...DEFAULT_MAIL_SETTINGS, ...overrides });
+
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
 export const mailHarness = (
   options: {
@@ -155,11 +176,14 @@ export const mailHarness = (
     readonly routable?: ReadonlyArray<RoutingRoleId>;
     readonly applied?: boolean;
     readonly launchFail?: ReadonlySet<string>;
+    readonly classify?: (body: string) => MailClassification | null;
+    readonly classifierThreshold?: number;
   } = {},
 ) => {
   const routing = routingFake(options);
   const evidence = policyEvidenceFake();
   const launcher = launcherFake(options.launchFail);
+  const classifier = classifierFake(options.classify);
   const layer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -168,6 +192,10 @@ export const mailHarness = (
         cryptoLayer,
         evidence.layer,
         launcher.layer,
+        classifier.layer,
+        options.classifierThreshold === undefined
+          ? settingsLayer()
+          : settingsLayer({ classifierThreshold: options.classifierThreshold }),
       ),
     ),
     Layer.provideMerge(databaseLayer),
@@ -177,5 +205,6 @@ export const mailHarness = (
     selects: routing.selects,
     cardSnapshots: evidence.cardSnapshots,
     launches: launcher.launches,
+    classified: classifier.calls,
   };
 };

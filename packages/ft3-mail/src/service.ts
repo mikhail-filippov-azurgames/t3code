@@ -32,6 +32,8 @@ import type {
   MailOutcome,
   MailTask,
 } from "./contracts.ts";
+import { applyClassification, MailKindClassifier } from "./classifier.ts";
+import { MailSettingsService } from "./settings.ts";
 import {
   MailRepository,
   type MailIdempotencyConflict,
@@ -55,6 +57,7 @@ export const MailServiceErrorCode = Schema.Literals([
   "letter_not_found",
   "address_denied",
   "kind_denied",
+  "kind_not_disputed",
   "invalid_role",
   "capability_denied",
   "idempotency_conflict",
@@ -197,6 +200,19 @@ export interface CloseMailTaskInput {
   readonly summary: string;
 }
 
+export interface SetLetterKindInput {
+  readonly callerThreadId: string;
+  readonly letterId: string;
+  readonly kind: MailLetterKind;
+  readonly clientRequestId: string;
+}
+
+export interface SetLetterKindResult {
+  readonly letter: MailLetter;
+  /** The kind server transitions use after the decision. */
+  readonly effectiveKind: MailLetterKind;
+}
+
 export interface SettleMailMemberInput {
   readonly memberId: string;
   /** The terminal participant-thread status that settled the member. */
@@ -289,6 +305,13 @@ export class MailService extends Context.Service<
     readonly sendLetter: (
       input: SendMailLetterInput,
     ) => Effect.Effect<SendMailLetterResult, MailServiceError | MailRepositoryError>;
+    /**
+     * The lead decision on a disputed kind (design §9.4): transitions are
+     * recalculated from the decision and one training feedback row is written.
+     */
+    readonly setLetterKind: (
+      input: SetLetterKindInput,
+    ) => Effect.Effect<SetLetterKindResult, MailServiceError | MailRepositoryError>;
     readonly closeTask: (
       input: CloseMailTaskInput,
     ) => Effect.Effect<MailTask, MailServiceError | MailRepositoryError>;
@@ -313,6 +336,8 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const evidence = yield* MailPolicyEvidence;
   const launcher = yield* MailParticipantLauncher;
+  const classifier = yield* MailKindClassifier;
+  const mailSettings = yield* MailSettingsService;
 
   const requireMail = gate
     .require("mail")
@@ -628,6 +653,22 @@ const make = Effect.gen(function* () {
       }
     }
     const to = canonicalRecipient(recipient);
+    // Only participant letters to the lead are classified; the sender kind is
+    // always kept on the letter, and a no-op classifier keeps it authoritative.
+    const classification =
+      sender.kind === "participant" && recipient.kind === "lead"
+        ? yield* classifier.classify({
+            taskId: task.taskId,
+            kind: input.kind,
+            body: input.body,
+            senderRoleId: sender.roleId,
+          })
+        : null;
+    const classified = applyClassification(
+      input.kind,
+      classification,
+      mailSettings.classifierThreshold,
+    );
     const requestFingerprint = yield* fingerprintOf([to, input.kind, input.body, replyToLetterId]);
     const letterId = yield* newId;
     const now = yield* nowIso;
@@ -645,9 +686,9 @@ const make = Effect.gen(function* () {
         planStep: null,
         planSha256: null,
         planDocId: null,
-        classifierKind: null,
-        classifierConfidence: null,
-        kindDisputed: false,
+        classifierKind: classified.classifierKind,
+        classifierConfidence: classified.classifierConfidence,
+        kindDisputed: classified.kindDisputed,
         leadKind: null,
         clientRequestId: input.clientRequestId,
         requestFingerprint,
@@ -754,6 +795,53 @@ const make = Effect.gen(function* () {
     };
   });
 
+  const setLetterKind = Effect.fn("MailService.setLetterKind")(function* (
+    input: SetLetterKindInput,
+  ) {
+    yield* requireMail;
+    if (input.clientRequestId.trim() === "") {
+      return yield* refuse("invalid_request", "A letter kind decision needs a client request id.");
+    }
+    const letter = yield* repository.getLetter(input.letterId);
+    if (letter === null) {
+      return yield* refuse("letter_not_found", `Letter "${input.letterId}" was not found.`);
+    }
+    const task = yield* requireTask(letter.taskId);
+    if (task.status === "closed") {
+      return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
+    }
+    if (task.createdByThreadId !== input.callerThreadId) {
+      return yield* refuse("capability_denied", "Only the lead can decide a disputed letter kind.");
+    }
+    if (!letter.kindDisputed) {
+      return yield* refuse(
+        "kind_not_disputed",
+        `Letter "${letter.letterId}" has no disputed kind to decide.`,
+      );
+    }
+    const now = yield* nowIso;
+    const decided = yield* repository.setLetterClassifier({
+      letterId: letter.letterId,
+      classifierKind: letter.classifierKind,
+      classifierConfidence: letter.classifierConfidence,
+      kindDisputed: false,
+      leadKind: input.kind,
+    });
+    if (decided === null) {
+      return yield* refuse("letter_not_found", `Letter "${letter.letterId}" was not found.`);
+    }
+    yield* repository.recordKindFeedback({
+      letterId: letter.letterId,
+      senderKind: letter.kind,
+      classifierKind: letter.classifierKind,
+      confidence: letter.classifierConfidence,
+      leadKind: input.kind,
+      classifierVersion: null,
+      createdAt: now,
+    });
+    return { letter: decided, effectiveKind: input.kind } satisfies SetLetterKindResult;
+  });
+
   const closeTask = Effect.fn("MailService.closeTask")(function* (input: CloseMailTaskInput) {
     yield* requireMail;
     const task = yield* requireTask(input.taskId);
@@ -850,7 +938,7 @@ const make = Effect.gen(function* () {
     return { member: closed, failed, letter: appended.letter } satisfies SettleMailMemberResult;
   });
 
-  return MailService.of({ createTask, sendLetter, closeTask, settleMember });
+  return MailService.of({ createTask, sendLetter, setLetterKind, closeTask, settleMember });
 });
 
 export const layer = Layer.effect(MailService, make);
