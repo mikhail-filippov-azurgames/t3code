@@ -336,10 +336,12 @@ export const mcpToolkits = [
   ),
   layerDocsToolkit,
   // Mail tools act as the calling thread and refuse with mail_disabled_notice
-  // while the mail feature is off.
+  // while the mail feature is off. Built on the host mail stack, which carries
+  // the board and policy pieces the raw package layer leaves open.
   Layer.unwrap(
-    Effect.promise(() => import("@t3tools/ft3-mail/mcp")).pipe(
-      Effect.map((module) => module.mailMcpLayer),
-    ),
+    Effect.gen(function* () {
+      const mail = yield* Effect.promise(() => import("@t3tools/ft3-mail/mcp"));
+      return mail.mailMcpLayerFrom(layer, FeatureGate.layer);
+    }),
   ),
 ] as const;

@@ -29,9 +29,10 @@ import {
   FT3_MAIL_WS_METHODS,
   mailRpcHandlers,
   mailRpcScopes,
-  mailRpcServiceLayer,
   mailRpcs,
 } from "@t3tools/ft3-mail/rpc";
+import { layer as mailRepositoryLayer } from "@t3tools/ft3-mail/repository";
+import { layer as mailServiceLayer } from "./server.ts";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import {
@@ -64,6 +65,8 @@ export { BoardService } from "@t3tools/ft3-board/service";
 export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
 export { BoardSummaryHistoryService } from "@t3tools/ft3-board/rpc";
 export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
+export { MailService } from "@t3tools/ft3-mail/service";
+export { MailRepository } from "@t3tools/ft3-mail/repository";
 export { PolicyChangeTracker } from "@t3tools/ft3-policies/rpc";
 
 export const FT3_WS_METHODS = {
@@ -154,5 +157,8 @@ export const serviceLayer = Layer.mergeAll(
   piRpcServiceLayer,
   ft3VcsRpcServiceLayer,
   docsServiceLayer,
-  mailRpcServiceLayer,
+  // The mail handlers take MailService from the host mail stack and read the
+  // task row through MailRepository.
+  mailServiceLayer,
+  mailRepositoryLayer,
 );

@@ -2,8 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { MailRepository, type MailIdempotencyConflict, MailRepositoryError } from "./repository.ts";
-import { FT3_MAIL_WS_METHODS } from "./rpc-contracts.ts";
-import { layer as mailServiceLayer } from "./server.ts";
+import { FT3_MAIL_WS_METHODS, type MailTimelineRpcInput } from "./rpc-contracts.ts";
 import { MailService, MailServiceError } from "./service.ts";
 import { MailMcpFailure } from "./toolContracts.ts";
 
@@ -27,15 +26,14 @@ const toMcpFailure = (
   return new MailMcpFailure({ code: "internal", message: error.message });
 };
 
-/** The host mail stack backing the RPC handlers. */
-export const mailRpcServiceLayer = mailServiceLayer;
-
+/**
+ * The RPC handlers take MailService and MailRepository from scope; the host
+ * provides its enriched mail stack, which carries both.
+ */
 export const mailRpcHandlers = {
-  [FT3_MAIL_WS_METHODS.mailTimeline]: Effect.fn("MailRpc.mailTimeline")(function* (input: {
-    readonly taskId: string;
-    readonly beforeSequence?: number;
-    readonly limit?: number;
-  }) {
+  [FT3_MAIL_WS_METHODS.mailTimeline]: Effect.fn("MailRpc.mailTimeline")(function* (
+    input: MailTimelineRpcInput,
+  ) {
     // The human client reads through the lead's eyes; orchestration:read
     // already established the operator may see orchestration state.
     const repository = yield* MailRepository;

@@ -1212,6 +1212,10 @@ const layerMakeServer = Layer.unwrap(
     );
 
     return layerServerApplication.pipe(
+      // The mail stack (WS timeline handlers, the MCP toolkit, the reactors) launches
+      // participants when the lead sends a letter. This must stay the first provision
+      // in this pipe: later non-merging provisions hide the services it builds on.
+      Layer.provide(MailParticipantLauncherLive.layer),
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
       Layer.provideMerge(

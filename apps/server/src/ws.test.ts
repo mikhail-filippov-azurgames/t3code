@@ -31,6 +31,8 @@ import {
   BoardService as Ft3BoardService,
   BoardSummaryHistoryService as Ft3BoardSummaryHistoryService,
   CommitHistoryService as Ft3CommitHistoryService,
+  MailService as Ft3MailService,
+  MailRepository as Ft3MailRepository,
   PolicyChangeTracker as Ft3PolicyChangeTracker,
 } from "@t3tools/ft3-host/rpc";
 import * as Deferred from "effect/Deferred";
@@ -799,6 +801,8 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(HostResources.HostResources)({}),
   Layer.mock(McpAppRequests.McpAppRequests)({}),
+  Layer.mock(Ft3MailService)({}),
+  Layer.mock(Ft3MailRepository)({}),
   Layer.mock(ModelManifest.ModelManifest)({}),
   Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),

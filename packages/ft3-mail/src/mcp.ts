@@ -8,7 +8,6 @@ import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocatio
 import * as McpToolAccess from "../../../apps/server/src/mcp/McpToolAccess.ts";
 import type { MailIdempotencyConflict } from "./repository.ts";
 import { MailRepositoryError } from "./repository.ts";
-import { layer } from "./server.ts";
 import { MailService, MailServiceError, type MailMemberRequest } from "./service.ts";
 import { MailMcpFailure, type MailMemberRequestInput } from "./toolContracts.ts";
 import { toolkit } from "./tools.ts";
@@ -190,6 +189,3 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
       return toolkitRegistration(toolkit, handlers).pipe(Layer.provide(serviceLayer));
     }),
   ).pipe(Layer.provide(gate));
-
-/** The mail toolkit over the host mail stack; the host appends it to mcpToolkits. */
-export const mailMcpLayer = mailMcpLayerFrom(layer, FeatureGate.layer);
