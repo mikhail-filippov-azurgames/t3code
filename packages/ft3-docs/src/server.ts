@@ -74,6 +74,7 @@ export {
   DOCS_STORE_DATABASE_FILENAME,
   DocsStore,
   DocsStoreError,
+  layer as docsStoreLayer,
   type DocFolderRecord,
   type DocManifestEntry,
   type DocRecord,

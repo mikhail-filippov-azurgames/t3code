@@ -1,3 +1,4 @@
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -189,17 +190,68 @@ const layerDocsToolkit = Layer.unwrap(
     const config = yield* ServerConfig.ServerConfig;
     const settings = yield* ServerSettings.ServerSettingsService;
     const current = yield* settings.getSettings.pipe(Effect.orDie);
+    const root = resolveDocsRoot({
+      stateDir: config.stateDir,
+      configuredRoot: readDocsSettings(current.ft3).root,
+    });
     const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
     const mail = yield* Effect.promise(() => import("@t3tools/ft3-mail/server"));
     const sql = yield* SqlClient.SqlClient;
-    return docs.docsMcpLayer({
-      root: resolveDocsRoot({
-        stateDir: config.stateDir,
-        configuredRoot: readDocsSettings(current.ft3).root,
+    const writeFacts = mail.documentsWriteFacts.pipe(
+      Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+    );
+    // Agents never change policy documents or plans of other cards through
+    // MCP: the policies tab and Apply stay the human path (design §3.4).
+    // The set resolves per call, so a changed source or a new card applies
+    // without a restart; a failed lookup reads as no identity for that part.
+    const protection = Layer.effect(
+      docs.DocsProtection,
+      Effect.gen(function* () {
+        const store = yield* docs.DocsStore;
+        const state = yield* SqlClient.SqlClient;
+        const serverSettings = yield* ServerSettings.ServerSettingsService;
+        return docs.DocsProtection.of({
+          isProtected: Effect.fn("DocsProtection.isProtected")(function* (document: {
+            readonly stableId: string;
+            readonly relPath: string;
+          }) {
+            const live = yield* serverSettings.getSettings.pipe(Effect.orDie);
+            const sources = FeatureGate.resolvePolicyDocumentSources(
+              FeatureGate.readPolicySettings(live.ft3),
+            );
+            const identities = yield* FeatureGate.resolveProtectedIdentities(sources, root, {
+              manifestRelPathOf: (stableId) =>
+                store.getByStableId(stableId).pipe(
+                  Effect.map((manifest) => manifest?.relPath ?? null),
+                  Effect.orElseSucceed(() => null),
+                ),
+              planStableIds: state<{ readonly plan_doc_id: string }>`
+                SELECT plan_doc_id FROM ft3_board_card_plans
+              `.pipe(
+                Effect.map((rows) => rows.map((row) => row.plan_doc_id)),
+                Effect.catchCause((cause: Cause.Cause<unknown>) =>
+                  Effect.logWarning(
+                    `Plan documents are not protected: the board table is unavailable: ${cause}`,
+                  ).pipe(Effect.as([] as Array<string>)),
+                ),
+              ),
+            });
+            return FeatureGate.isProtectedDocument(identities, document);
+          }),
+        });
       }),
-      writeFacts: mail.documentsWriteFacts.pipe(
-        Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
-      ),
+    ).pipe(
+      Layer.provide(docs.docsStoreLayer({ root })),
+      Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+      Layer.provide(Layer.succeed(ServerSettings.ServerSettingsService, settings)),
+      // A store that cannot open fails the service below the same way, so the
+      // toolkit stays down either way; the failure shows up as a defect here.
+      Layer.orDie,
+    );
+    return docs.docsMcpLayer({
+      root,
+      writeFacts,
+      protection,
       requireEnabled: gate
         .require("documents")
         .pipe(

@@ -422,9 +422,83 @@ describe("DocsService writes", () => {
             })
             .pipe(Effect.flip);
           assert.equal(error.code, "document_protected");
+
+          const described = yield* context.service
+            .setDescription({
+              caller: { threadId: "thread:root", parentThreadId: null },
+              ref: "project/plan.md",
+              description: "Protected.",
+            })
+            .pipe(Effect.flip);
+          assert.equal(described.code, "document_protected");
         }),
       seedFiles,
       { writable: true, isProtected: true },
+    ),
+  );
+
+  it.effect("refuses a protected document to a granted general child", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const error = yield* context.service
+            .write({
+              caller: { threadId: "thread:general", parentThreadId: "thread:root" },
+              ref: "project/plan.md",
+              content: "# Rewritten\n",
+              clientRequestId: "write:protected",
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.code, "document_protected");
+        }),
+      seedFiles,
+      {
+        writeAccess: lineageWithFacts({ role: "general", planStableId: null, granted: true }),
+        isProtected: true,
+      },
+    ),
+  );
+
+  it.effect("lets a planner write its own plan past the protection port", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const planner = { threadId: "thread:planner", parentThreadId: "thread:root" };
+          const plan = yield* context.service.read({ ref: `oc://doc/${NIL_ID}` });
+          const saved = yield* context.service.write({
+            caller: planner,
+            ref: plan.ocLink,
+            content: `---\nstable_id: ${NIL_ID}\n---\n# Plan\n\nOwned.\n`,
+            baseSha256: plan.sha256,
+            clientRequestId: "write:plan",
+          });
+          assert.equal(saved.stableId, NIL_ID);
+        }),
+      seedFiles,
+      {
+        writeAccess: lineageWithFacts({ role: "planner", planStableId: NIL_ID, granted: false }),
+        isProtected: true,
+      },
+    ),
+  );
+
+  it.effect("lets the human save a protected document", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const live = yield* context.service.read({ ref: "project/plan.md" });
+          const saved = yield* context.service.writeAsHuman({
+            ref: "project/plan.md",
+            content: `---\nstable_id: ${NIL_ID}\n---\n# Plan\n\nHuman edit.\n`,
+            baseSha256: live.sha256,
+          });
+          assert.equal(saved.stableId, NIL_ID);
+        }),
+      seedFiles,
+      { isProtected: true },
     ),
   );
 });

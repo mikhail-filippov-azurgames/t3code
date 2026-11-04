@@ -3,6 +3,7 @@
  * whole store without an absolute path; writes need the MCP write access and
  * the `documents:write` rule the `DocsService` port resolves per call.
  */
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -212,8 +213,12 @@ export interface DocsToolkitOptions {
   readonly writeAccess?: Layer.Layer<Service.DocumentsWriteAccess>;
   /** Role, plan identity and grant read by the lineage rule; the default is none of them. */
   readonly writeFacts?: Layer.Layer<WriteRule.DocumentsWriteFactsPort>;
-  /** Protected-document rule override; nothing is protected by default. */
-  readonly protection?: Layer.Layer<Service.DocsProtection>;
+  /**
+   * Protected-document rule override; nothing is protected by default. The
+   * rule must be total (per-call lookups already degrade to no identity);
+   * the store it resolves through needs randomness, so `Crypto` propagates.
+   */
+  readonly protection?: Layer.Layer<Service.DocsProtection, never, Crypto.Crypto>;
 }
 
 /** The toolkit and its service; the guard is the host's feature gate. */

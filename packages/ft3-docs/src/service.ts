@@ -143,8 +143,9 @@ export const denyAllDocumentsWrite: Layer.Layer<DocumentsWriteAccess> = Layer.su
 
 /**
  * Port of the protected-document rule: policy documents and the plans of other
- * cards are never writable through MCP (design §3.5). Until a rule is provided,
- * nothing is protected; the deny-by-default write port above still refuses.
+ * cards are never writable through a store-wide MCP right (design §3.5). A
+ * planner's document-scoped right names its own plan and bypasses this check
+ * in `requireWrite`; until a rule is provided, nothing is protected.
  */
 export class DocsProtection extends Context.Service<
   DocsProtection,
@@ -438,7 +439,10 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
         ...(target === null ? {} : { ref: target.relPath }),
       });
     }
-    if (target !== null && (yield* protection.isProtected(target))) {
+    // Protection guards store-wide rights only: a document-scoped right names
+    // its one document (the planner's own plan), which is never another
+    // card's plan, so it is not re-checked here.
+    if (target !== null && decision.scope === "store" && (yield* protection.isProtected(target))) {
       return yield* new DocsServiceError({ code: "document_protected", ref: target.relPath });
     }
   });

@@ -6,6 +6,7 @@ export * from "./policyAppliedStore.ts";
 export * from "./policyChangeTracker.ts";
 export * from "./policyDiff.ts";
 export * from "./policyDocumentLoader.ts";
+export * from "./policyProtection.ts";
 export * from "./roleDocuments.ts";
 export {
   DEFAULT_DELEGATED_ROLE,
