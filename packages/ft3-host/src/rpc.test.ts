@@ -7,7 +7,11 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as BoardContracts from "@t3tools/ft3-board/contracts";
-import type { PolicyDocumentKey } from "@t3tools/ft3-policies/contracts";
+import {
+  FEATURE_IDS,
+  type PolicyDocumentKey,
+  type FeatureResolution,
+} from "@t3tools/ft3-policies/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -81,6 +85,22 @@ const noRequirements = {
   planOrchestratorSkill: false,
 };
 
+const noFeatures: Record<(typeof FEATURE_IDS)[number], FeatureResolution> = Object.fromEntries(
+  FEATURE_IDS.map((id) => [
+    id,
+    { id, requestedEnabled: false, effectiveEnabled: false, offReason: null },
+  ]),
+) as Record<(typeof FEATURE_IDS)[number], FeatureResolution>;
+
+const noSnapshot = {
+  configVersion: 1,
+  documents: [],
+  requirements: noRequirements,
+  features: noFeatures,
+  needsAttention: false,
+  warnings: [],
+};
+
 const stubs = {
   [FT3_WS_METHODS.boardOrchestratorsList]: () => Effect.succeed({ orchestrators: [] }),
   [FT3_WS_METHODS.boardOrchestratorAdd]: () =>
@@ -121,27 +141,28 @@ const stubs = {
   [FT3_WS_METHODS.piBonsaiPresetDetect]: () => Effect.succeed(null),
   [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
   [FT3_WS_METHODS.docsResolve]: () => Effect.succeed({ status: "not_found" as const }),
-  [FT3_WS_METHODS.policiesGetSnapshot]: () =>
-    Effect.succeed({ configVersion: 1, documents: [], requirements: noRequirements, warnings: [] }),
+  [FT3_WS_METHODS.policiesGetSnapshot]: () => Effect.succeed(noSnapshot),
   [FT3_WS_METHODS.policiesReadDocument]: () =>
     Effect.succeed({ status: "unavailable" as const, key: "routingPolicy" as const, issues: [] }),
   [FT3_WS_METHODS.policiesSaveDocument]: () =>
     Effect.succeed({
       status: "not_writable" as const,
-      snapshot: { configVersion: 1, documents: [], requirements: noRequirements, warnings: [] },
+      snapshot: noSnapshot,
     }),
   [FT3_WS_METHODS.policiesGetPendingChange]: ({ key }: { key: PolicyDocumentKey }) =>
     Effect.succeed({ key, pending: false, change: null }),
   [FT3_WS_METHODS.policiesApplyPending]: () =>
     Effect.succeed({
       status: "nothing_pending" as const,
-      snapshot: { configVersion: 1, documents: [], requirements: noRequirements, warnings: [] },
+      snapshot: noSnapshot,
     }),
   [FT3_WS_METHODS.policiesSetApplyExternalEdits]: ({ enabled }: { enabled: boolean }) =>
     Effect.succeed({
       enabled,
-      snapshot: { configVersion: 1, documents: [], requirements: noRequirements, warnings: [] },
+      snapshot: noSnapshot,
     }),
+  [FT3_WS_METHODS.policiesSetDocument]: () => Effect.succeed({ snapshot: noSnapshot }),
+  [FT3_WS_METHODS.policiesSetFeature]: () => Effect.succeed({ snapshot: noSnapshot }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -245,6 +266,8 @@ describe("FT3 RPC authorization", () => {
         configVersion: 1,
         documents: [],
         requirements: noRequirements,
+        features: noFeatures,
+        needsAttention: false,
         warnings: [],
       });
       expect(
@@ -271,6 +294,15 @@ describe("FT3 RPC authorization", () => {
       expect(
         yield* client[FT3_WS_METHODS.policiesSetApplyExternalEdits]({ enabled: true }),
       ).toMatchObject({ enabled: true });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSetDocument]({
+          key: "routingPolicy",
+          source: { kind: "builtin" },
+        }),
+      ).toMatchObject({ snapshot: { configVersion: 1 } });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSetFeature]({ feature: "mail", enabled: true }),
+      ).toMatchObject({ snapshot: { configVersion: 1 } });
     }).pipe(Effect.scoped),
   );
 
@@ -412,6 +444,17 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
       expect(
         yield* client[FT3_WS_METHODS.policiesSetApplyExternalEdits]({ enabled: true }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSetDocument]({
+          key: "routingPolicy",
+          source: { kind: "builtin" },
+        }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
+      expect(
+        yield* client[FT3_WS_METHODS.policiesSetFeature]({ feature: "mail", enabled: true }).pipe(
           Effect.flip,
         ),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
