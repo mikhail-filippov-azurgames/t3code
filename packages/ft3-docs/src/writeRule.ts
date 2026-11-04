@@ -9,6 +9,45 @@ import * as Layer from "effect/Layer";
 
 import * as Service from "./service.ts";
 
+/**
+ * Merges two facts ports: first plan identity and role win, either grant
+ * suffices. The host composes the plan record with the mail task, so a
+ * planner that is also a mail participant stays confined to its own plan.
+ */
+export const combineDocumentsWriteFacts = <R1, E1, R2, E2>(
+  first: Layer.Layer<DocumentsWriteFactsPort, E1, R1>,
+  second: Layer.Layer<DocumentsWriteFactsPort, E2, R2>,
+): Layer.Layer<DocumentsWriteFactsPort, E1 | E2, R1 | R2> =>
+  Layer.effect(
+    DocumentsWriteFactsPort,
+    Effect.gen(function* () {
+      const scope = yield* Effect.scope;
+      const firstPort = Context.get(
+        yield* Layer.buildWithScope(first, scope),
+        DocumentsWriteFactsPort,
+      );
+      const secondPort = Context.get(
+        yield* Layer.buildWithScope(second, scope),
+        DocumentsWriteFactsPort,
+      );
+      return DocumentsWriteFactsPort.of({
+        factsOf: Effect.fn("DocumentsWriteFactsPort.combined")(function* (
+          caller: Service.DocsCaller,
+        ) {
+          const [a, b] = yield* Effect.all(
+            [firstPort.factsOf(caller), secondPort.factsOf(caller)],
+            { concurrency: 2 },
+          );
+          return {
+            role: a.role ?? b.role,
+            planStableId: a.planStableId ?? b.planStableId,
+            granted: a.granted || b.granted,
+          } satisfies DocumentsWriteFacts;
+        }),
+      });
+    }),
+  );
+
 /** What the rule needs beside lineage, supplied by the plan record and the mail task. */
 export interface DocumentsWriteFacts {
   /** Role the thread runs as; null while no role is assigned. */

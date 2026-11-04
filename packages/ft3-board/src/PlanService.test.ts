@@ -1,7 +1,9 @@
 import { assert, describe, it } from "@effect/vitest";
 import { docLinkOf } from "@t3tools/ft3-docs/contracts";
 import * as DocsServer from "@t3tools/ft3-docs/server";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as PlanService from "./PlanService.ts";
@@ -265,6 +267,41 @@ describe("PlanService", () => {
         const lead = { threadId: Testkit.LEAD_THREAD_ID, parentThreadId: null };
         assert.isNull((yield* facts.factsOf(lead)).planStableId);
       }),
+    ),
+  );
+
+  it.effect("reads the planner's plan identity from the plan table alone", () =>
+    Testkit.withPlanning(
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* Testkit.seedCard();
+          const service = yield* plans;
+          const record = yield* service.require({ cardId, requiredBy: "lead" });
+          yield* service.bindPlannerThread({ cardId, threadId: Testkit.PLANNER_THREAD_ID });
+          const sql = yield* SqlClient.SqlClient;
+          const context = yield* Layer.build(
+            PlanService.planningDocumentsWriteFactsSql.pipe(
+              Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+            ),
+          );
+          const facts = Context.get(context, DocsServer.DocumentsWriteFactsPort);
+          const planner = {
+            threadId: Testkit.PLANNER_THREAD_ID,
+            parentThreadId: Testkit.LEAD_THREAD_ID,
+          };
+          assert.deepStrictEqual(yield* facts.factsOf(planner), {
+            role: null,
+            planStableId: record.planDocId,
+            granted: false,
+          });
+          const stranger = { threadId: "thread:stranger", parentThreadId: "thread:lead" };
+          assert.deepStrictEqual(yield* facts.factsOf(stranger), {
+            role: null,
+            planStableId: null,
+            granted: false,
+          });
+        }),
+      ),
     ),
   );
 

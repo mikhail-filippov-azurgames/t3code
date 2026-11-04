@@ -196,9 +196,16 @@ const layerDocsToolkit = Layer.unwrap(
     });
     const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
     const mail = yield* Effect.promise(() => import("@t3tools/ft3-mail/server"));
+    const planning = yield* Effect.promise(() => import("@t3tools/ft3-board/planning"));
     const sql = yield* SqlClient.SqlClient;
-    const writeFacts = mail.documentsWriteFacts.pipe(
-      Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+    // The planner's plan identity comes from the plan record table, the role
+    // and grant from the mail task; the combined port keeps a planner that is
+    // also a mail participant confined to its own plan document (design §3.5).
+    const writeFacts = docs.combineDocumentsWriteFacts(
+      planning.planningDocumentsWriteFactsSql.pipe(
+        Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+      ),
+      mail.documentsWriteFacts.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
     );
     // Agents never change policy documents or plans of other cards through
     // MCP: the policies tab and Apply stay the human path (design §3.4).

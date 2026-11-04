@@ -138,3 +138,68 @@ describe("lineage write rule layer", () => {
     }),
   );
 });
+
+describe("combined write facts", () => {
+  const plannerFacts = (planStableId: string | null) =>
+    factsLayer({ role: null, planStableId, granted: false });
+  const mailFacts = (value: WriteRule.DocumentsWriteFacts) => factsLayer(value);
+
+  const combinedFacts = (
+    first: Layer.Layer<WriteRule.DocumentsWriteFactsPort>,
+    second: Layer.Layer<WriteRule.DocumentsWriteFactsPort>,
+  ) =>
+    Effect.gen(function* () {
+      const port = yield* WriteRule.DocumentsWriteFactsPort;
+      return yield* port.factsOf(child);
+    }).pipe(Effect.provide(WriteRule.combineDocumentsWriteFacts(first, second)));
+
+  it.effect("merges a plan identity with a mail role and grant", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* combinedFacts(
+          plannerFacts("plan-1"),
+          mailFacts({ role: "general", planStableId: null, granted: true }),
+        ),
+        { role: "general", planStableId: "plan-1", granted: true },
+      );
+    }),
+  );
+
+  it.effect("keeps a planner confined to its plan when mail also grants it", () =>
+    Effect.gen(function* () {
+      const port = WriteRule.documentsWriteAccessLayer.pipe(
+        Layer.provide(
+          WriteRule.combineDocumentsWriteFacts(
+            plannerFacts("plan-1"),
+            mailFacts({ role: "planner", planStableId: null, granted: true }),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(yield* decideWith(port, child), {
+        _tag: "Allow",
+        scope: "document",
+        stableId: "plan-1",
+        reason: "planner_plan",
+      });
+    }),
+  );
+
+  it.effect("prefers the first plan identity and role, and ors the grants", () =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* combinedFacts(
+          mailFacts({ role: "general", planStableId: "plan-first", granted: false }),
+          mailFacts({ role: "implementation", planStableId: "plan-second", granted: true }),
+        ),
+        { role: "general", planStableId: "plan-first", granted: true },
+      );
+      assert.deepStrictEqual(
+        yield* combinedFacts(
+          mailFacts({ role: null, planStableId: null, granted: false }),
+          mailFacts({ role: "general", planStableId: "plan-9", granted: false }),
+        ),
+        { role: "general", planStableId: "plan-9", granted: false },
+      );
+    }),
+  );
+});

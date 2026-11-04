@@ -4,6 +4,7 @@ export {
   PlanErrorCode,
   PlanService,
   planningDocumentsWriteFacts,
+  planningDocumentsWriteFactsSql,
   planServiceLayer,
 } from "./PlanService.ts";
 export {

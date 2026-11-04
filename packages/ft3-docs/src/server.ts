@@ -42,6 +42,7 @@ export {
   type DocumentsWriteDecision,
 } from "./service.ts";
 export {
+  combineDocumentsWriteFacts,
   documentsWriteAccessLayer,
   DocumentsWriteFactsPort,
   lineageDocumentsWrite,

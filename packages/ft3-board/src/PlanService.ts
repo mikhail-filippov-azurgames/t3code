@@ -497,3 +497,31 @@ export const planningDocumentsWriteFacts = Layer.effect(
     });
   }),
 );
+
+/**
+ * The same plan identity without the plan service: one indexed lookup on the
+ * plan record table, so compositions that cannot build `PlanService` (its
+ * docs service would close the protection/facts cycle) can still wire the
+ * planner's right. A missing table or row reads as no plan, never as a right.
+ */
+export const planningDocumentsWriteFactsSql = Layer.effect(
+  DocsServer.DocumentsWriteFactsPort,
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    return DocsServer.DocumentsWriteFactsPort.of({
+      factsOf: Effect.fn("PlanService.documentsWriteFactsFromPlanTable")(function* (caller) {
+        if (caller.threadId === null) {
+          return { role: null, planStableId: null, granted: false };
+        }
+        const planStableId = yield* sql<{ readonly plan_doc_id: string }>`
+          SELECT plan_doc_id FROM ft3_board_card_plans
+          WHERE planner_thread_id = ${caller.threadId}
+        `.pipe(
+          Effect.map((rows) => rows[0]?.plan_doc_id ?? null),
+          Effect.orElseSucceed(() => null),
+        );
+        return { role: null, planStableId, granted: false };
+      }),
+    });
+  }),
+);
