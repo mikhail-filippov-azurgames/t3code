@@ -1,4 +1,5 @@
 import { DEFAULT_POLICY_SETTINGS } from "@t3tools/ft3-policies/settings";
+import { FEATURE_IDS } from "@t3tools/ft3-policies/contracts";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
@@ -25,6 +26,8 @@ vi.mock("./state.ts", () => ({
     saveDocument: { label: "policies.saveDocument" },
     applyPending: { label: "policies.applyPending" },
     setApplyExternalEdits: { label: "policies.setApplyExternalEdits" },
+    setDocument: { label: "policies.setDocument" },
+    setFeature: { label: "policies.setFeature" },
   },
 }));
 
@@ -52,20 +55,10 @@ vi.mock("~/state/query", () => ({
   },
 }));
 
-vi.mock("~/state/server", () => ({
-  serverEnvironment: {
-    updateSettings: { label: "server.updateSettings" },
-  },
-}));
-
 vi.mock("~/state/use-atom-command", () => ({
   useAtomCommand: (command: { label: string }) => {
     return async (target: { input: unknown }) => {
       mocks.calls.push({ label: command.label, input: target.input });
-      if (command.label === "server.updateSettings") {
-        const input = target.input as { patch: { ft3: { policies: unknown } } };
-        mocks.policySettings = input.patch.ft3.policies;
-      }
       return mocks.commandResult;
     };
   },
@@ -112,9 +105,26 @@ vi.mock("~/components/settings/settingsLayout", () => ({
 
 import { PoliciesSettingsPanel } from "./PoliciesSettingsPanel.tsx";
 
+const featureStatesOf = (overrides: Record<string, unknown> = {}): Record<string, unknown> =>
+  Object.fromEntries(
+    FEATURE_IDS.map((id) => [
+      id,
+      {
+        id,
+        requestedEnabled: false,
+        effectiveEnabled: false,
+        offReason: null,
+        ...(overrides[id] as object | undefined),
+      },
+    ]),
+  );
+
 const snapshotFixture = {
   configVersion: 1,
   warnings: [],
+  needsAttention: false,
+  features: featureStatesOf(),
+  requirements: {},
   documents: [
     {
       key: "routingPolicy",
@@ -362,38 +372,31 @@ describe("policies settings panel", () => {
     );
   });
 
-  it("saves a feature toggle through the server settings", async () => {
+  it("saves a feature toggle through the policies API", async () => {
     setup();
-    mocks.commandResult = { value: {} };
+    mocks.commandResult = { value: { snapshot: snapshotFixture } };
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
     const toggle = screen.container.querySelector<HTMLElement>(
       '[role="switch"][aria-label="Enable board"]',
     );
     expect(toggle).not.toBeNull();
     toggle!.click();
-    const call = mocks.calls.find((entry) => entry.label === "server.updateSettings");
-    expect(call).toBeDefined();
-    const input = call!.input as {
-      patch: { ft3: { policies: { features: Record<string, boolean> } } };
-    };
-    expect(input.patch.ft3.policies.features.board).toBe(!DEFAULT_POLICY_SETTINGS.features.board);
-
     await vi.waitFor(() => {
-      expect(mocks.refreshes).toContain("snapshot");
+      expect(mocks.calls.filter((entry) => entry.label === "policies.setFeature")).toHaveLength(1);
     });
-    await expect
-      .element(toggle!)
-      .toHaveAttribute("aria-checked", String(!DEFAULT_POLICY_SETTINGS.features.board));
-
-    toggle!.click();
-    await vi.waitFor(() => {
-      expect(mocks.calls.filter((entry) => entry.label === "server.updateSettings")).toHaveLength(
-        2,
-      );
+    expect(mocks.calls.find((entry) => entry.label === "policies.setFeature")).toEqual({
+      label: "policies.setFeature",
+      input: { feature: "board", enabled: !DEFAULT_POLICY_SETTINGS.features.board },
     });
+    // The mocked settings do not change, so the switch returns to its stored state.
     await expect
       .element(toggle!)
       .toHaveAttribute("aria-checked", String(DEFAULT_POLICY_SETTINGS.features.board));
+
+    toggle!.click();
+    await vi.waitFor(() => {
+      expect(mocks.calls.filter((entry) => entry.label === "policies.setFeature")).toHaveLength(2);
+    });
   });
 
   it("saves a child SKILL.md with its manifest-relative file", async () => {
@@ -437,15 +440,61 @@ describe("policies settings panel", () => {
 
   it("explains which document keeps a requested feature off", async () => {
     setup();
-    mocks.policySettings = {
-      ...DEFAULT_POLICY_SETTINGS,
-      features: { ...DEFAULT_POLICY_SETTINGS.features, roles: true, board: true },
-    };
     mocks.snapshot = {
       ...snapshotFixture,
-      requirements: { rolesManifest: true, leadSkills: true, leadRole: false },
+      features: featureStatesOf({
+        board: {
+          id: "board",
+          requestedEnabled: true,
+          effectiveEnabled: false,
+          offReason: { code: "feature_document_off", requirement: "rolesManifest" },
+        },
+      }),
     };
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });
     expect(screen.container.textContent).toContain("Off: its Roles document is not valid yet.");
+  });
+
+  it("shows attention when the snapshot asks for it", async () => {
+    setup();
+    mocks.snapshot = { ...snapshotFixture, needsAttention: true };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    expect(screen.container.textContent).toContain("Attention:");
+  });
+
+  it("changes a document source through the policies API", async () => {
+    setup();
+    mocks.commandResult = { value: { snapshot: snapshotFixture } };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "doc");
+    const input = screen.getByLabelText("Source store path or oc:// link");
+    await userEvent.clear(input);
+    await userEvent.type(input, "lead-skills/lead-skills.json");
+    await userEvent.click(screen.getByText("Change source"));
+    expect(mocks.calls).toEqual([
+      {
+        label: "policies.setDocument",
+        input: {
+          key: "leadSkills",
+          source: {
+            kind: "doc",
+            address: { kind: "path", relPath: "lead-skills/lead-skills.json" },
+          },
+        },
+      },
+    ]);
+    expect(screen.container.textContent).toContain("Source updated.");
+  });
+
+  it("refuses a store source that is neither a path nor a document link", async () => {
+    setup();
+    mocks.commandResult = { value: { snapshot: snapshotFixture } };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("button", { name: "Edit Lead skills" }));
+    await userEvent.selectOptions(screen.getByLabelText("Source"), "doc");
+    await userEvent.click(screen.getByText("Change source"));
+    expect(mocks.calls).toEqual([]);
+    expect(screen.container.textContent).toContain("is not a store path or an oc://doc/<id> link.");
   });
 });

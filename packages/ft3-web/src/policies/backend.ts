@@ -38,5 +38,13 @@ export function createPoliciesEnvironmentAtoms<R, E>(
       label: "environment-data:policies:set-apply-external-edits",
       tag: WS_METHODS.policiesSetApplyExternalEdits,
     }),
+    setDocument: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:policies:set-document",
+      tag: WS_METHODS.policiesSetDocument,
+    }),
+    setFeature: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:policies:set-feature",
+      tag: WS_METHODS.policiesSetFeature,
+    }),
   };
 }

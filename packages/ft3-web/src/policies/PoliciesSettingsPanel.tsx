@@ -1,5 +1,11 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { FEATURE_IDS, resolveFeatureStates, type FeatureId } from "@t3tools/ft3-policies/contracts";
+import { parseDocRef } from "@t3tools/ft3-docs/contracts";
+import {
+  FEATURE_IDS,
+  resolveFeatureStates,
+  type FeatureId,
+  type PolicyDocumentSource,
+} from "@t3tools/ft3-policies/contracts";
 import type { PolicyDocumentKey } from "@t3tools/ft3-policies/contracts";
 import type {
   PoliciesGetSnapshotResult,
@@ -8,17 +14,14 @@ import type {
   PolicyDocumentStatusSchema,
   PolicyIssueSchema,
 } from "@t3tools/ft3-policies/rpc-contracts";
-import {
-  readPolicySettings,
-  withPolicySettings,
-  type PoliciesSettings,
-} from "@t3tools/ft3-policies/settings";
+import { readPolicySettings, type PoliciesSettings } from "@t3tools/ft3-policies/settings";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Input } from "~/components/ui/input";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
 import { useOptionalSettingsScope } from "~/components/settings/SettingsScopeContext";
@@ -31,7 +34,6 @@ import {
 import { useScopedSettings } from "~/components/settings/useScopedSettings";
 import { usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
-import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import {
   POLICY_DOCUMENT_BADGE_LABELS,
@@ -65,55 +67,47 @@ export function PoliciesSettingsPanel() {
   const setApplyExternalEdits = useAtomCommand(policiesEnvironment.setApplyExternalEdits, {
     reportFailure: false,
   });
+  const setDocument = useAtomCommand(policiesEnvironment.setDocument, { reportFailure: false });
+  const setFeature = useAtomCommand(policiesEnvironment.setFeature, { reportFailure: false });
 
   const [selectedKey, setSelectedKey] = useState<PolicyDocumentKey | null>(null);
   // Command results carry the freshest snapshot; a newer query result wins once its refresh lands.
-  const [commandResult, setCommandResult] = useState<{
-    snapshot: PoliciesGetSnapshotResult;
-    at: number;
-  } | null>(null);
+  const [commandResult, setCommandResult] = useState<PoliciesGetSnapshotResult | null>(null);
   const [applyEditsEnabled, setApplyEditsEnabled] = useState(policySettings.applyExternalEdits);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [togglePending, setTogglePending] = useState(false);
-  const updateServerSettings = useAtomCommand(serverEnvironment.updateSettings, {
-    reportFailure: false,
-  });
   const [featureOverrides, setFeatureOverrides] = useState<Partial<Record<FeatureId, boolean>>>({});
   const [featureError, setFeatureError] = useState<string | null>(null);
 
+  // The snapshot configVersion is monotonic, so it orders a command result against a query refresh.
   const snapshot =
-    commandResult !== null && commandResult.at >= snapshotQuery.dataUpdatedAt
-      ? commandResult.snapshot
+    commandResult !== null &&
+    (snapshotQuery.data === null || commandResult.configVersion >= snapshotQuery.data.configVersion)
+      ? commandResult
       : snapshotQuery.data;
   const selected = snapshot?.documents.find((document) => document.key === selectedKey) ?? null;
   const requestedFeatures: PoliciesSettings["features"] = {
     ...policySettings.features,
     ...featureOverrides,
   };
+  // The server computes effective features from the applied documents; only an
+  // in-flight toggle re-resolves locally so the switch flips before the answer.
   const featureStates =
     snapshot === null
       ? null
-      : resolveFeatureStates({
-          requested: requestedFeatures,
-          requirements: snapshot.requirements,
-        });
+      : Object.keys(featureOverrides).length === 0
+        ? snapshot.features
+        : resolveFeatureStates({
+            requested: requestedFeatures,
+            requirements: snapshot.requirements,
+          });
 
-  const setFeature = async (feature: FeatureId, enabled: boolean) => {
+  const changeFeature = async (feature: FeatureId, enabled: boolean) => {
     if (environmentId === null) return;
     const previous = requestedFeatures[feature];
     setFeatureOverrides((current) => ({ ...current, [feature]: enabled }));
     setFeatureError(null);
-    const result = await updateServerSettings({
-      environmentId,
-      input: {
-        patch: {
-          ft3: withPolicySettings(settings.ft3, {
-            ...policySettings,
-            features: { ...requestedFeatures, [feature]: enabled },
-          }),
-        },
-      },
-    });
+    const result = await setFeature({ environmentId, input: { feature, enabled } });
     if (AsyncResult.isFailure(result)) {
       setFeatureOverrides((current) => ({ ...current, [feature]: previous }));
       const cause = squashAtomCommandFailure(result);
@@ -121,11 +115,25 @@ export function PoliciesSettingsPanel() {
       return;
     }
     setFeatureOverrides({});
-    snapshotQuery.refresh();
+    onSnapshot(result.value.snapshot);
+  };
+
+  const changeDocumentSource = async (
+    key: PolicyDocumentKey,
+    source: PolicyDocumentSource,
+  ): Promise<string | null> => {
+    if (environmentId === null) return "Connect to an environment first.";
+    const result = await setDocument({ environmentId, input: { key, source } });
+    if (AsyncResult.isFailure(result)) {
+      const cause = squashAtomCommandFailure(result);
+      return cause instanceof Error ? cause.message : "Could not change the document source.";
+    }
+    onSnapshot(result.value.snapshot);
+    return null;
   };
 
   const onSnapshot = (fresh: PoliciesGetSnapshotResult) => {
-    setCommandResult({ snapshot: fresh, at: Date.now() });
+    setCommandResult(fresh);
     snapshotQuery.refresh();
   };
 
@@ -165,6 +173,12 @@ export function PoliciesSettingsPanel() {
               Could not load policies: {snapshotQuery.error}
             </p>
           ) : null}
+          {snapshot?.needsAttention ? (
+            <p className="px-3 py-2 text-sm text-warning sm:px-4">
+              Attention: an enabled feature is not effective, a policy document has warnings, or an
+              external change waits for a review below.
+            </p>
+          ) : null}
           {snapshot?.documents.map((document) => (
             <PolicyDocumentRow
               key={document.key}
@@ -182,6 +196,7 @@ export function PoliciesSettingsPanel() {
           environmentId={environmentId}
           document={selected}
           onSnapshot={onSnapshot}
+          onChangeSource={changeDocumentSource}
         />
       ) : null}
 
@@ -224,7 +239,7 @@ export function PoliciesSettingsPanel() {
                   <Switch
                     aria-label={`Enable ${feature}`}
                     checked={requestedFeatures[feature]}
-                    onCheckedChange={(checked) => void setFeature(feature, Boolean(checked))}
+                    onCheckedChange={(checked) => void changeFeature(feature, Boolean(checked))}
                   />
                 }
               />
@@ -317,10 +332,12 @@ function PolicyDocumentEditor({
   environmentId,
   document,
   onSnapshot,
+  onChangeSource,
 }: {
   environmentId: EnvironmentId;
   document: PolicyDocumentStatusSchema;
   onSnapshot: (snapshot: PoliciesGetSnapshotResult) => void;
+  onChangeSource: (key: PolicyDocumentKey, source: PolicyDocumentSource) => Promise<string | null>;
 }) {
   const readQuery = useEnvironmentQuery(
     policiesEnvironment.readDocument({ environmentId, input: { key: document.key } }),
@@ -487,6 +504,15 @@ function PolicyDocumentEditor({
       {unappliedHint !== null ? (
         <p className="px-3 pt-1 text-xs text-muted-foreground sm:px-4">{unappliedHint}</p>
       ) : null}
+      <PolicyDocumentSourceControl
+        key={JSON.stringify(document.source)}
+        document={document}
+        onChange={async (key, source) => {
+          const failure = await onChangeSource(key, source);
+          if (failure === null) readQuery.refresh();
+          return failure;
+        }}
+      />
       {files.length > 1 ? (
         <div
           className="flex flex-wrap gap-1 px-3 pt-2 sm:px-4"
@@ -612,6 +638,117 @@ function PolicyDocumentEditor({
         </div>
       ) : null}
     </SettingsSection>
+  );
+}
+
+function PolicyDocumentSourceControl({
+  document,
+  onChange,
+}: {
+  document: PolicyDocumentStatusSchema;
+  onChange: (key: PolicyDocumentKey, source: PolicyDocumentSource) => Promise<string | null>;
+}) {
+  const initialAddress =
+    document.source.kind === "doc"
+      ? document.source.address.kind === "id"
+        ? `oc://doc/${document.source.address.stableId}`
+        : document.source.address.relPath
+      : document.source.kind === "path"
+        ? document.source.path
+        : "";
+  const [kind, setKind] = useState<PolicyDocumentSource["kind"]>(document.source.kind);
+  const [address, setAddress] = useState(initialAddress);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const sourceOf = (): PolicyDocumentSource | string => {
+    if (kind === "builtin") return { kind: "builtin" };
+    const value = address.trim();
+    if (kind === "path") {
+      return value === ""
+        ? "Enter the absolute path of a server file."
+        : { kind: "path", path: value };
+    }
+    if (value === "") return "Enter a store path or an oc://doc/<id> link.";
+    const parsed = parseDocRef(value);
+    return parsed === null
+      ? `"${value}" is not a store path or an oc://doc/<id> link.`
+      : { kind: "doc", address: parsed };
+  };
+
+  const submit = async () => {
+    const source = sourceOf();
+    if (typeof source === "string") {
+      setError(source);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    const failure = await onChange(document.key, source);
+    setBusy(false);
+    if (failure !== null) {
+      setError(failure);
+      return;
+    }
+    setNotice("Source updated.");
+  };
+
+  const desired = sourceOf();
+  const unchanged =
+    typeof desired !== "string" && JSON.stringify(desired) === JSON.stringify(document.source);
+
+  return (
+    <div className="space-y-2 px-3 py-2 sm:px-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <label
+          className="text-xs text-muted-foreground"
+          htmlFor={`policy-source-kind:${document.key}`}
+        >
+          Source
+        </label>
+        <select
+          id={`policy-source-kind:${document.key}`}
+          className="rounded-md border border-border bg-background px-2 py-1 text-xs"
+          value={kind}
+          onChange={(event) => {
+            setKind(event.target.value as PolicyDocumentSource["kind"]);
+            setError(null);
+            setNotice(null);
+          }}
+        >
+          <option value="builtin">Built-in template</option>
+          <option value="doc">Store document</option>
+          <option value="path">Server file</option>
+        </select>
+        {kind === "builtin" ? null : (
+          <Input
+            aria-label={`Source ${kind === "doc" ? "store path or oc:// link" : "server path"}`}
+            className="h-7 w-72 text-xs"
+            placeholder={
+              kind === "doc" ? "roles/roles.json or oc://doc/<id>" : "/srv/ft3/roles.json"
+            }
+            value={address}
+            onChange={(event) => {
+              setAddress(event.target.value);
+              setError(null);
+              setNotice(null);
+            }}
+          />
+        )}
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy || unchanged}
+          onClick={() => void submit()}
+        >
+          Change source
+        </Button>
+      </div>
+      {error !== null ? <p className="text-xs text-destructive">{error}</p> : null}
+      {notice !== null ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+    </div>
   );
 }
 
