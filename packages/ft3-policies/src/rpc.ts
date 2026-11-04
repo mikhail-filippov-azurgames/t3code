@@ -553,6 +553,7 @@ const listStoreDocuments = Effect.fn("PoliciesRpc.listStoreDocuments")(function*
   } satisfies PoliciesListStoreDocumentsResult;
 });
 
+export const SERVER_DIRECTORY_LISTING_CAP = 1000;
 const POLICY_FILE_EXTENSIONS = new Set([".json", ".md"]);
 
 /**
@@ -587,8 +588,29 @@ const browseServerDirectory = Effect.fn("PoliciesRpc.browseServerDirectory")(fun
       message: `"${directory}" is not a server directory.`,
     });
   }
-  const dirents = yield* Effect.tryPromise({
-    try: () => NodeFSP.readdir(directory, { withFileTypes: true }),
+  const directories: Array<{ name: string; path: string }> = [];
+  const files: Array<{ name: string; path: string }> = [];
+  const truncated = yield* Effect.tryPromise({
+    try: async () => {
+      const handle = await NodeFSP.opendir(directory);
+      try {
+        for await (const dirent of handle) {
+          if (directories.length + files.length >= SERVER_DIRECTORY_LISTING_CAP) return true;
+          const fullPath = NodePath.join(directory, dirent.name);
+          if (dirent.isDirectory()) {
+            directories.push({ name: dirent.name, path: fullPath });
+          } else if (
+            dirent.isFile() &&
+            POLICY_FILE_EXTENSIONS.has(NodePath.extname(dirent.name).toLowerCase())
+          ) {
+            files.push({ name: dirent.name, path: fullPath });
+          }
+        }
+        return false;
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
+    },
     catch: () =>
       new PoliciesDirectoryBrowseError({
         directory,
@@ -596,19 +618,6 @@ const browseServerDirectory = Effect.fn("PoliciesRpc.browseServerDirectory")(fun
         message: `Could not read the server directory "${directory}".`,
       }),
   });
-  const directories: Array<{ name: string; path: string }> = [];
-  const files: Array<{ name: string; path: string }> = [];
-  for (const dirent of dirents) {
-    const fullPath = NodePath.join(directory, dirent.name);
-    if (dirent.isDirectory()) {
-      directories.push({ name: dirent.name, path: fullPath });
-    } else if (
-      dirent.isFile() &&
-      POLICY_FILE_EXTENSIONS.has(NodePath.extname(dirent.name).toLowerCase())
-    ) {
-      files.push({ name: dirent.name, path: fullPath });
-    }
-  }
   const byName = (left: { name: string }, right: { name: string }) =>
     left.name.localeCompare(right.name);
   const parent = NodePath.dirname(directory);
@@ -616,6 +625,7 @@ const browseServerDirectory = Effect.fn("PoliciesRpc.browseServerDirectory")(fun
     parent: parent === directory ? null : parent,
     directories: directories.toSorted(byName),
     files: files.toSorted(byName),
+    truncated,
   } satisfies PoliciesBrowseServerDirectoryResult;
 });
 

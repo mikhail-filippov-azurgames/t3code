@@ -301,6 +301,8 @@ export const PoliciesBrowseServerDirectoryResult = Schema.Struct({
   directories: Schema.Array(PoliciesServerDirectoryEntrySchema),
   /** Policy-relevant files only (.json/.md), so a folder of noise stays out of the picker. */
   files: Schema.Array(PoliciesServerDirectoryEntrySchema),
+  /** True when the directory held more entries than the listing cap. */
+  truncated: Schema.Boolean,
 });
 export type PoliciesBrowseServerDirectoryResult = typeof PoliciesBrowseServerDirectoryResult.Type;
 

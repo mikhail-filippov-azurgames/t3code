@@ -8,7 +8,7 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { policiesRpcHandlers } from "./rpc.ts";
+import { policiesRpcHandlers, SERVER_DIRECTORY_LISTING_CAP } from "./rpc.ts";
 import {
   FT3_POLICIES_WS_METHODS,
   type PoliciesBrowseServerDirectoryResult,
@@ -217,7 +217,24 @@ describe("policies.browseServerDirectory", () => {
         );
         assert.equal(result.files[0]?.path, NodePath.join(directory, "roles.json"));
         assert.equal(result.parent, NodePath.dirname(directory));
+        assert.isFalse(result.truncated);
       }),
+    ),
+  );
+
+  it.effect("caps a huge directory and reports the listing as truncated", () =>
+    withTempDir(
+      (directory) => {
+        for (let index = 0; index < SERVER_DIRECTORY_LISTING_CAP + 5; index += 1) {
+          NodeFS.writeFileSync(NodePath.join(directory, `doc-${index}.md`), "");
+        }
+      },
+      (directory) =>
+        Effect.gen(function* () {
+          const result = yield* browseServerDirectory({ directory });
+          assert.isTrue(result.truncated);
+          assert.equal(result.files.length, SERVER_DIRECTORY_LISTING_CAP);
+        }),
     ),
   );
 

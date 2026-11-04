@@ -875,7 +875,10 @@ function serverDirectoryOf(path: string): string {
   const trimmed = path.trim().replace(/[\\/]+$/, "");
   const index = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   if (index < 0) return "";
-  return trimmed.slice(index + 1).includes(".") ? trimmed.slice(0, index) : trimmed;
+  if (!trimmed.slice(index + 1).includes(".")) return trimmed;
+  const parent = trimmed.slice(0, index);
+  // Keep the root separator so a file at a drive or filesystem root lists that root.
+  return parent === "" || /^[A-Za-z]:$/.test(parent) ? trimmed.slice(0, index + 1) : parent;
 }
 
 function StoreDocumentPickerDialog({
@@ -985,16 +988,18 @@ function ServerFilePickerDialog({
         </DialogHeader>
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <Input
-              aria-label="Server directory"
-              className="h-7 flex-1 text-xs"
-              placeholder="/srv/ft3"
-              value={directory}
-              onChange={(event) => onDirectoryChange(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") onNavigate(directory.trim());
-              }}
-            />
+            <div className="flex-1">
+              <Input
+                aria-label="Server directory"
+                size="compact"
+                placeholder="/srv/ft3"
+                value={directory}
+                onChange={(event) => onDirectoryChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onNavigate(directory.trim());
+                }}
+              />
+            </div>
             <Button
               size="xs"
               variant="outline"
@@ -1006,6 +1011,11 @@ function ServerFilePickerDialog({
           </div>
           {pending ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
           {error !== null ? <p className="text-sm text-destructive">{error}</p> : null}
+          {listing?.truncated ? (
+            <p className="text-sm text-muted-foreground">
+              This folder has more entries than can be listed; type a more specific path.
+            </p>
+          ) : null}
           {listing !== null && !pending ? (
             <ul className="max-h-72 space-y-1 overflow-auto">
               {listing.parent !== null ? (
