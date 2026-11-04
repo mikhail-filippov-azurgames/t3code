@@ -17,6 +17,7 @@ it.effect("11_Mail creates the mail tables and reruns empty", () =>
       [11, "Mail"],
       [14, "MailRoute"],
       [15, "MailReactor"],
+      [16, "MailDeliveryFailure"],
     ]);
     assert.deepStrictEqual(yield* run({ loader, table: "ft3_migrations" }), []);
 
@@ -111,6 +112,7 @@ it.effect("11_Mail creates the mail tables and reruns empty", () =>
         "answered_at",
         "created_at",
         "updated_at",
+        "failure_reason",
       ],
     );
 

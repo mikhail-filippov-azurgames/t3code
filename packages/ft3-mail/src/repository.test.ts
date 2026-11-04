@@ -512,3 +512,134 @@ it.effect("purges only closed tasks older than the retention cutoff", () =>
     );
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect("fails a closed member's pending deliveries without touching settled ones", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.addMember(memberInput());
+    const first = yield* repository.appendLetter(letterInput());
+    const second = yield* repository.appendLetter(
+      letterInput({
+        letterId: "letter:two",
+        body: "Again.",
+        clientRequestId: "request:letter-two",
+        requestFingerprint: "fingerprint:letter-two",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+    yield* repository.recordDelivery({
+      deliveryId: "delivery:pending",
+      taskId: "task:one",
+      letterId: first.letter.letterId,
+      memberId: "member:one",
+      recipient: "role:implementation",
+      participantThreadId: "thread:worker",
+      createdAt: "2026-01-01T00:00:04.000Z",
+    });
+    yield* repository.recordDelivery({
+      deliveryId: "delivery:settled",
+      taskId: "task:one",
+      letterId: second.letter.letterId,
+      memberId: "member:one",
+      recipient: "role:implementation",
+      participantThreadId: "thread:worker",
+      createdAt: "2026-01-01T00:00:05.000Z",
+    });
+    yield* repository.markDeliveryDelivered({
+      deliveryId: "delivery:settled",
+      at: "2026-01-01T00:00:06.000Z",
+    });
+
+    const failed = yield* repository.failMemberDeliveries({
+      memberId: "member:one",
+      at: "2026-01-01T00:00:07.000Z",
+      reason: "The implementation participant completed before its letters were delivered.",
+    });
+    assert.deepStrictEqual(
+      failed.map((delivery) => [delivery.deliveryId, delivery.state]),
+      [["delivery:pending", "failed"]],
+    );
+    assert.equal(
+      failed[0]?.failureReason,
+      "The implementation participant completed before its letters were delivered.",
+    );
+    assert.equal((yield* repository.getDelivery("delivery:settled"))?.state, "delivered");
+
+    // A late mark cannot resurrect a failed delivery.
+    const late = yield* repository.markDeliveryDelivered({
+      deliveryId: "delivery:pending",
+      at: "2026-01-01T00:00:08.000Z",
+    });
+    assert.equal(late?.state, "failed");
+    assert.isNull(late?.deliveredAt);
+
+    // Failed deliveries never surface for redispatch.
+    assert.equal((yield* repository.listUndeliveredDeliveries({ limit: 10 })).length, 0);
+
+    // A repeat finds nothing left to fail.
+    assert.deepStrictEqual(
+      yield* repository.failMemberDeliveries({
+        memberId: "member:one",
+        at: "2026-01-01T00:00:09.000Z",
+        reason: "again",
+      }),
+      [],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("lists only wakes for open tasks with an active member", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.addMember(memberInput());
+    const letter = yield* repository.appendLetter(letterInput());
+    yield* repository.recordDelivery({
+      deliveryId: "delivery:one",
+      taskId: "task:one",
+      letterId: letter.letter.letterId,
+      memberId: "member:one",
+      recipient: "role:implementation",
+      participantThreadId: "thread:worker",
+      createdAt: "2026-01-01T00:00:04.000Z",
+    });
+    yield* repository.recordWake({
+      wakeId: "mail:wake:delivery:one",
+      taskId: "task:one",
+      targetThreadId: "thread:worker",
+      reason: "mail-letter",
+      idempotencyKey: "mail:wake:delivery:one",
+      createdAt: "2026-01-01T00:00:05.000Z",
+    });
+    // A wake no consumer parses still surfaces; the reactor marks it handled.
+    yield* repository.recordWake({
+      wakeId: "wake:odd",
+      taskId: "task:one",
+      targetThreadId: "thread:worker",
+      reason: "round-opened",
+      idempotencyKey: "wake-key:odd",
+      createdAt: "2026-01-01T00:00:06.000Z",
+    });
+    assert.deepStrictEqual(
+      (yield* repository.listUndeliveredWakes({ limit: 10 })).map((wake) => wake.wakeId),
+      ["mail:wake:delivery:one", "wake:odd"],
+    );
+
+    yield* repository.closeMember({ memberId: "member:one", at: "2026-01-01T00:00:07.000Z" });
+    assert.deepStrictEqual(
+      (yield* repository.listUndeliveredWakes({ limit: 10 })).map((wake) => wake.wakeId),
+      ["wake:odd"],
+    );
+
+    yield* repository.closeTask({
+      taskId: "task:one",
+      outcome: "succeeded",
+      summary: "Done.",
+      closedAt: "2026-01-01T00:00:08.000Z",
+    });
+    assert.deepStrictEqual(yield* repository.listUndeliveredWakes({ limit: 10 }), []);
+  }).pipe(Effect.provide(testLayer)),
+);

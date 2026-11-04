@@ -34,6 +34,7 @@ import type {
 } from "./contracts.ts";
 import {
   MailRepository,
+  type MailIdempotencyConflict,
   type MailMemberRouteInput,
   type MailRepositoryError,
 } from "./repository.ts";
@@ -196,6 +197,21 @@ export interface CloseMailTaskInput {
   readonly summary: string;
 }
 
+export interface SettleMailMemberInput {
+  readonly memberId: string;
+  /** The terminal participant-thread status that settled the member. */
+  readonly settledAs: string;
+  readonly at: string;
+}
+
+export interface SettleMailMemberResult {
+  readonly member: MailMember;
+  /** The pending deliveries this settle failed, oldest first. */
+  readonly failed: ReadonlyArray<MailDelivery>;
+  /** The system letter to the lead; null when nothing was stranded. */
+  readonly letter: MailLetter | null;
+}
+
 /** The applied policy snapshot as JSON, and the board card that keeps it for a task that belongs to one. */
 export class MailPolicyEvidence extends Context.Service<
   MailPolicyEvidence,
@@ -276,6 +292,17 @@ export class MailService extends Context.Service<
     readonly closeTask: (
       input: CloseMailTaskInput,
     ) => Effect.Effect<MailTask, MailServiceError | MailRepositoryError>;
+    /**
+     * Closes a settled member, fails its pending deliveries with the reason and
+     * tells the lead with one system letter. Every step is idempotent, so a
+     * retried settle heals instead of duplicating.
+     */
+    readonly settleMember: (
+      input: SettleMailMemberInput,
+    ) => Effect.Effect<
+      SettleMailMemberResult | null,
+      MailRepositoryError | MailIdempotencyConflict
+    >;
   }
 >()("@t3tools/ft3-mail/service/MailService") {}
 
@@ -642,6 +669,7 @@ const make = Effect.gen(function* () {
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
+        // A member without a route never launches; rerouting it is a later slice (task 23).
         if (
           member === null ||
           member.participantThreadId !== null ||
@@ -751,7 +779,78 @@ const make = Effect.gen(function* () {
     return closed;
   });
 
-  return MailService.of({ createTask, sendLetter, closeTask });
+  const settleMember = Effect.fn("MailService.settleMember")(function* (
+    input: SettleMailMemberInput,
+  ) {
+    const member = yield* repository.getMember(input.memberId);
+    if (member === null) return null;
+    const closed =
+      (yield* repository.closeMember({ memberId: member.memberId, at: input.at })) ?? member;
+    const task = yield* repository.getTask(member.taskId);
+    const reason = `The ${member.roleId} participant ${input.settledAs} before its letters were delivered.`;
+    const failed = yield* repository.failMemberDeliveries({
+      memberId: member.memberId,
+      at: input.at,
+      reason,
+    });
+    // Their wakes are dead too: without this they would linger undelivered forever.
+    yield* Effect.forEach(
+      failed,
+      (delivery) =>
+        repository.markWakeDelivered({ wakeId: `mail:wake:${delivery.deliveryId}`, at: input.at }),
+      { discard: true },
+    );
+    if (failed.length === 0 || task === null || task.status !== "open") {
+      return { member: closed, failed, letter: null } satisfies SettleMailMemberResult;
+    }
+    const stranded = [...new Set(failed.map((delivery) => delivery.letterId))].toSorted();
+    const body =
+      `Participant ${member.roleId} ${input.settledAs} with ${failed.length} undelivered ` +
+      `letter${failed.length === 1 ? "" : "s"} (${stranded.join(", ")}). ` +
+      `The deliveries were marked failed; resend anything the next participant still needs.`;
+    const appended = yield* repository.appendLetter({
+      letterId: yield* newId,
+      taskId: task.taskId,
+      senderThreadId: "system",
+      recipient: "lead",
+      kind: "info",
+      body,
+      replyToLetterId: null,
+      sourceLetterId: failed[0]?.letterId ?? null,
+      planPhase: null,
+      planStep: null,
+      planSha256: null,
+      planDocId: null,
+      classifierKind: null,
+      classifierConfidence: null,
+      kindDisputed: false,
+      leadKind: null,
+      clientRequestId: `mail:member-settle:${member.memberId}`,
+      requestFingerprint: yield* fingerprintOf(["member-settle", task.taskId, member.memberId]),
+      createdAt: input.at,
+    });
+    const deliveryId = yield* newId;
+    yield* repository.recordDelivery({
+      deliveryId,
+      taskId: task.taskId,
+      letterId: appended.letter.letterId,
+      memberId: null,
+      recipient: "lead",
+      participantThreadId: task.createdByThreadId,
+      createdAt: input.at,
+    });
+    yield* repository.recordWake({
+      wakeId: `mail:wake:${deliveryId}`,
+      taskId: task.taskId,
+      targetThreadId: task.createdByThreadId,
+      reason: "member-settled",
+      idempotencyKey: `mail:wake:${deliveryId}`,
+      createdAt: input.at,
+    });
+    return { member: closed, failed, letter: appended.letter } satisfies SettleMailMemberResult;
+  });
+
+  return MailService.of({ createTask, sendLetter, closeTask, settleMember });
 });
 
 export const layer = Layer.effect(MailService, make);

@@ -165,8 +165,15 @@ const mailReactor = Effect.gen(function* () {
   yield* sql`INSERT INTO ft3_mail_reactor_cursor VALUES (1, 0)`;
 });
 
+/** Records why a delivery reached `failed` when its member settled first. */
+const mailDeliveryFailure = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE ft3_mail_deliveries ADD COLUMN failure_reason TEXT`;
+});
+
 export const migrations = {
   "11_Mail": mail,
   "14_MailRoute": mailRoute,
   "15_MailReactor": mailReactor,
+  "16_MailDeliveryFailure": mailDeliveryFailure,
 };

@@ -1,6 +1,7 @@
 /**
- * Mail participant launch port: starts a task with `completionWake: "none"`.
- * The live dispatch lives in `apps/server` to avoid a cycle via `OrchestratorMcpService`.
+ * Mail participant launch port: the interface and pure launch helpers live here.
+ * The live dispatch lives in `apps/server` because `ft3-mail` must not import
+ * `ThreadManagementService` (it would cycle back through the orchestrator).
  */
 import {
   CommandId,

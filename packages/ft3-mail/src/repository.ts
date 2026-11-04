@@ -269,6 +269,7 @@ interface DeliveryRow {
   readonly deliveredAt: string | null;
   readonly readAt: string | null;
   readonly answeredAt: string | null;
+  readonly failureReason: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -342,7 +343,8 @@ const DELIVERY_COLUMNS = `
   delivery_id AS "deliveryId", task_id AS "taskId", letter_id AS "letterId",
   member_id AS "memberId", recipient, participant_thread_id AS "participantThreadId",
   state, delivered_at AS "deliveredAt", read_at AS "readAt",
-  answered_at AS "answeredAt", created_at AS "createdAt", updated_at AS "updatedAt"
+  answered_at AS "answeredAt", failure_reason AS "failureReason",
+  created_at AS "createdAt", updated_at AS "updatedAt"
 `;
 
 const ROUND_COLUMNS = `
@@ -438,6 +440,7 @@ const toDelivery = (row: DeliveryRow): MailDelivery => ({
   deliveredAt: row.deliveredAt,
   readAt: row.readAt,
   answeredAt: row.answeredAt,
+  failureReason: row.failureReason,
   createdAt: row.createdAt,
   updatedAt: row.updatedAt,
 });
@@ -572,6 +575,16 @@ export class MailRepository extends Context.Service<
       readonly memberId: string;
       readonly at: string;
     }) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    readonly getMember: (memberId: string) => Effect.Effect<MailMember | null, MailRepositoryError>;
+    /**
+     * Marks a member's pending deliveries failed with the reason; delivered, read
+     * and answered rows keep their state. Returns the rows it failed, oldest first.
+     */
+    readonly failMemberDeliveries: (input: {
+      readonly memberId: string;
+      readonly at: string;
+      readonly reason: string;
+    }) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
     readonly getDelivery: (
       deliveryId: string,
     ) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
@@ -707,6 +720,9 @@ const make = Effect.gen(function* () {
     at: string,
     assignment: "delivered" | "read" | "answered",
   ) {
+    // A failed delivery is terminal: a late mark must not resurrect it.
+    const existing = yield* findDelivery(deliveryId);
+    if (existing?.state === "failed") return existing;
     const delivered = assignment === "delivered" ? 1 : 0;
     const read = assignment === "read" || assignment === "answered" ? 1 : 0;
     const answered = assignment === "answered" ? 1 : 0;
@@ -935,6 +951,35 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
+    getMember: Effect.fn("MailRepository.getMember")((memberId: string) =>
+      mapError("getMember")(
+        sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+          FROM ft3_mail_members WHERE member_id = ${memberId}`.pipe(
+          Effect.map((rows) => (rows[0] === undefined ? null : toMember(rows[0]))),
+        ),
+      ),
+    ),
+    failMemberDeliveries: Effect.fn("MailRepository.failMemberDeliveries")((input) =>
+      mapError("failMemberDeliveries")(
+        sql<DeliveryRow>`UPDATE ft3_mail_deliveries
+          SET state = 'failed', failure_reason = ${input.reason}, updated_at = ${input.at}
+          WHERE member_id = ${input.memberId} AND state = 'pending'
+          RETURNING ${sql.literal(DELIVERY_COLUMNS)}`.pipe(
+          Effect.map((rows) =>
+            rows.toSorted((left, right) =>
+              left.createdAt < right.createdAt
+                ? -1
+                : left.createdAt > right.createdAt
+                  ? 1
+                  : left.deliveryId < right.deliveryId
+                    ? -1
+                    : 1,
+            ),
+          ),
+          Effect.map((rows) => rows.map(toDelivery)),
+        ),
+      ),
+    ),
     getDelivery: Effect.fn("MailRepository.getDelivery")((deliveryId) =>
       mapError("getDelivery")(findDelivery(deliveryId)),
     ),
@@ -949,8 +994,18 @@ const make = Effect.gen(function* () {
     ),
     listUndeliveredWakes: Effect.fn("MailRepository.listUndeliveredWakes")((input) =>
       mapError("listUndeliveredWakes")(
-        sql<WakeRow>`SELECT ${sql.literal(WAKE_COLUMNS)} FROM ft3_mail_wakes
-          WHERE delivered_at IS NULL ORDER BY created_at ASC, wake_id ASC LIMIT ${input.limit}`,
+        sql<WakeRow>`SELECT
+            w.wake_id AS "wakeId", w.task_id AS "taskId",
+            w.target_thread_id AS "targetThreadId", w.reason,
+            w.idempotency_key AS "idempotencyKey", w.created_at AS "createdAt",
+            w.delivered_at AS "deliveredAt"
+          FROM ft3_mail_wakes w
+          JOIN ft3_mail_tasks t ON t.task_id = w.task_id
+          LEFT JOIN ft3_mail_deliveries d ON w.idempotency_key = 'mail:wake:' || d.delivery_id
+          LEFT JOIN ft3_mail_members m ON m.member_id = d.member_id
+          WHERE w.delivered_at IS NULL AND t.status = 'open'
+            AND (m.member_id IS NULL OR m.status = 'active')
+          ORDER BY w.created_at ASC, w.wake_id ASC LIMIT ${input.limit}`,
       ).pipe(Effect.map((rows) => rows.map(toWake))),
     ),
     createRound: Effect.fn("MailRepository.createRound")((input: CreateRoundInput) =>

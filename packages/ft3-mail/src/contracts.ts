@@ -55,7 +55,13 @@ export type MailLetterKind = typeof MailLetterKind.Type;
 export const MailPlanPhase = Schema.Literals(["draft", "review", "prototype", "implement"]);
 export type MailPlanPhase = typeof MailPlanPhase.Type;
 
-export const MailDeliveryState = Schema.Literals(["pending", "delivered", "read", "answered"]);
+export const MailDeliveryState = Schema.Literals([
+  "pending",
+  "delivered",
+  "read",
+  "answered",
+  "failed",
+]);
 export type MailDeliveryState = typeof MailDeliveryState.Type;
 
 export const MailMemberStatus = Schema.Literals(["active", "closed"]);
@@ -140,6 +146,8 @@ export const MailDelivery = Schema.Struct({
   deliveredAt: Schema.NullOr(Schema.String),
   readAt: Schema.NullOr(Schema.String),
   answeredAt: Schema.NullOr(Schema.String),
+  /** Why a delivery reached `failed`; null unless the delivery failed. */
+  failureReason: Schema.NullOr(Schema.String),
   createdAt: Schema.String,
   updatedAt: Schema.String,
 });

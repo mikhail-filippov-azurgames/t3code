@@ -122,21 +122,44 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     readonly deliveryId: string;
     readonly participantThreadId: string;
     readonly key: string;
+    /** The wake row this delivery drains; marked handled on every dead end. */
+    readonly wakeId: string;
   }) {
+    const at = DateTime.formatIso(yield* DateTime.now);
+    const dead = Effect.fn("MailDeliveryReactor.dead")(function* () {
+      yield* repository.markWakeDelivered({ wakeId: input.wakeId, at });
+    });
     const delivery = yield* repository.getDelivery(input.deliveryId);
-    if (delivery === null) return;
+    if (delivery === null) {
+      yield* dead();
+      return;
+    }
     const letter = yield* repository.getLetter(delivery.letterId);
     const task = yield* repository.getTask(delivery.taskId);
-    if (letter === null || task === null || task.status !== "open") return;
-    if ((yield* aliveShell(input.participantThreadId)) === null) return;
-    const at = DateTime.formatIso(yield* DateTime.now);
+    if (letter === null || task === null || task.status !== "open") {
+      yield* dead();
+      return;
+    }
+    // A closed member never gets another dispatch: its pending deliveries were
+    // failed when it settled, so a wake that still points at it is dead.
+    if (delivery.memberId !== null) {
+      const member = yield* repository.getMember(delivery.memberId);
+      if (member === null || member.status !== "active") {
+        yield* dead();
+        return;
+      }
+    }
+    if ((yield* aliveShell(input.participantThreadId)) === null) {
+      yield* dead();
+      return;
+    }
     yield* wake({
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
       text: `New ${letter.kind} letter in mail task "${task.title}":\n\n${letter.body}`,
       summary: `Mail ${letter.kind} letter in "${task.title}"`,
     });
-    yield* repository.markWakeDelivered({ wakeId: `mail:wake:${delivery.deliveryId}`, at });
+    yield* repository.markWakeDelivered({ wakeId: input.wakeId, at });
     yield* repository.markDeliveryDelivered({ deliveryId: delivery.deliveryId, at });
   });
 
@@ -144,11 +167,20 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     const wakes = yield* repository.listUndeliveredWakes({ limit: 100 });
     for (const queued of wakes) {
       const deliveryId = parseWakeDeliveryId(queued.idempotencyKey);
-      if (deliveryId === null) continue;
+      if (deliveryId === null) {
+        // No consumer parses this key, so the wake could never be delivered.
+        yield* repository.markWakeDelivered({
+          wakeId: queued.wakeId,
+          at: DateTime.formatIso(yield* DateTime.now),
+        });
+        continue;
+      }
+      // One stable key per delivery: a retried dispatch reuses the same command id.
       yield* deliver({
         deliveryId,
         participantThreadId: queued.targetThreadId,
-        key: `wake:${queued.wakeId}`,
+        key: `delivery:${deliveryId}`,
+        wakeId: queued.wakeId,
       });
     }
     const pending = yield* repository.listUndeliveredDeliveries({ limit: 100 });
@@ -157,6 +189,7 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         deliveryId: delivery.deliveryId,
         participantThreadId,
         key: `delivery:${delivery.deliveryId}`,
+        wakeId: `mail:wake:${delivery.deliveryId}`,
       });
     }
   });
@@ -173,7 +206,11 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       if (found === null || found.member.status !== "active" || found.taskStatus !== "open") {
         return;
       }
-      yield* repository.closeMember({ memberId: found.member.memberId, at });
+      yield* mail.settleMember({
+        memberId: found.member.memberId,
+        settledAs: task.status,
+        at,
+      });
       return;
     }
     if (event.type !== "runtime-request.updated") return;
