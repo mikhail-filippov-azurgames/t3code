@@ -37,6 +37,7 @@ const catalog = {
       "step-5-preview-free": { cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } },
       "no-cost-model": {},
       "dual-listed-model": { cost: { input: 1.74, output: 3.48, cache_read: 0.145 } },
+      "muse-spark-1.3": { cost: { input: 1.25, output: 4.25, cache_read: 0.15 } },
     },
   },
   "opencode-go": {
@@ -106,8 +107,8 @@ describe("parseOpenCodeCatalog", () => {
   it("registers provider-prefixed keys, per-1M rates, and bare zen aliases only", () => {
     const table = parseOpenCodeCatalog(catalog);
 
-    // Four priced opencode models (bare alias each) plus six priced opencode-go models.
-    expect(table.size).toBe(14);
+    // Five priced opencode models (bare alias each) plus six priced opencode-go models.
+    expect(table.size).toBe(16);
     const flash = table.get("opencode/deepseek-v4.1-flash");
     expect(flash).toMatchObject({
       inputCostPerToken: perMillion(0.3),
@@ -215,6 +216,16 @@ describe("OpenCode pricing", () => {
         table,
       ).costUsd,
     ).toBeCloseTo(0.66, 10);
+    // Providers that only fall back to the catalog (Muse) price there when LiteLLM has no entry.
+    expect(
+      priceUsage(
+        empty,
+        record("muse-spark-1.3", { uncachedInputTokens: 1_000_000 }),
+        undefined,
+        undefined,
+        table,
+      ).costUsd,
+    ).toBeCloseTo(1.25, 10);
     // A model only its own provider carries still prices from that provider's entry.
     expect(
       priceUsage(

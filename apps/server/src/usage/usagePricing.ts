@@ -307,6 +307,7 @@ export function priceUsage(
   record: PricedRecord,
   overrides?: RateTable,
   openCodeRates?: RateTable,
+  catalogFallbackRates?: RateTable,
 ): PricedUsage {
   const { model, totals, reportedCostUsd } = record;
   const override = overrides?.get(model.trim());
@@ -325,7 +326,10 @@ export function priceUsage(
     override ??
     (openCodeRates === undefined
       ? lookupRate(table, lookupKey)
-      : lookupOpenCodeRate(openCodeRates, lookupKey));
+      : lookupOpenCodeRate(openCodeRates, lookupKey)) ??
+    (catalogFallbackRates === undefined
+      ? null
+      : lookupOpenCodeRate(catalogFallbackRates, lookupKey));
   if (rate === null) {
     return reported === null ? unsplit(0, "unpriced") : unsplit(reported, "providerReported");
   }
@@ -354,13 +358,17 @@ export function cacheSavingsUsd(
   record: PricedRecord,
   overrides?: RateTable,
   openCodeRates?: RateTable,
+  catalogFallbackRates?: RateTable,
 ): number {
   const lookupKey = record.rateModel ?? record.model;
   const rate =
     overrides?.get(record.model.trim()) ??
     (openCodeRates === undefined
       ? lookupRate(table, lookupKey)
-      : lookupOpenCodeRate(openCodeRates, lookupKey));
+      : lookupOpenCodeRate(openCodeRates, lookupKey)) ??
+    (catalogFallbackRates === undefined
+      ? null
+      : lookupOpenCodeRate(catalogFallbackRates, lookupKey));
   if (rate === null) return 0;
   const rates = ratesAt(rate, record.speed, inputContextTokens(record.totals));
   return record.totals.cachedInputTokens * (rates.inputCostPerToken - rates.cacheReadCostPerToken);

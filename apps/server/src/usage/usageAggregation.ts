@@ -45,6 +45,8 @@ function makeDayFormatter(timeZone: string): (timestampMs: number) => string {
   };
 }
 
+// Muse reports no cost and LiteLLM lacks its newer models; models.dev fills the gap.
+const CATALOG_FALLBACK_PROVIDERS: ReadonlySet<string> = new Set(["muse"]);
 const QUARTER_HOUR_MS = 15 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -200,11 +202,15 @@ export class UsageAggregator {
     const bucket = this.#bucketFor(day, hourIndex, record.provider, record.model, sourcePath ?? "");
 
     const openCodeRates = record.provider === "opencode" ? this.#options.openCodeRates : undefined;
+    const catalogFallbackRates = CATALOG_FALLBACK_PROVIDERS.has(record.provider)
+      ? this.#options.openCodeRates
+      : undefined;
     const priced = priceUsage(
       this.#options.rates,
       record,
       this.#options.priceOverrides,
       openCodeRates,
+      catalogFallbackRates,
     );
 
     const totals = bucket.totals;
@@ -235,6 +241,7 @@ export class UsageAggregator {
       record,
       this.#options.priceOverrides,
       openCodeRates,
+      catalogFallbackRates,
     );
     bucket.records += 1;
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;
