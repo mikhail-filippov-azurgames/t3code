@@ -83,16 +83,11 @@ describe("DocsIndex", () => {
         yield* index.indexDocuments([entry]);
         yield* index.indexDocuments([{ ...entry, relPath: "b/two.md" }]);
 
-        const sql = yield* SqlClient.SqlClient;
-        const rows = yield* sql<{ readonly relPath: string }>`
-          SELECT rel_path AS "relPath" FROM ft3_docs_fts WHERE stable_id = ${NIL_ID}
-        `;
+        const scoped = yield* index.search({ query: "same", folder: "b" });
         assert.deepEqual(
-          rows.map((row) => row.relPath),
+          scoped.map((result) => result.relPath),
           ["b/two.md"],
         );
-        const scoped = yield* index.search({ query: "same", folder: "b" });
-        assert.equal(scoped.length, 1);
         const stale = yield* index.search({ query: "same", folder: "a" });
         assert.equal(stale.length, 0);
       }),
