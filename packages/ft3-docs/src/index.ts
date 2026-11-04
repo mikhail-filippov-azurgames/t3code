@@ -86,7 +86,19 @@ const make = Effect.gen(function* () {
       SELECT indexed_sha256 AS "indexedSha256" FROM ft3_docs_file_state
       WHERE stable_id = ${entry.stableId}
     `;
-    if (indexed[0]?.indexedSha256 === entry.sha256) return;
+    if (indexed[0]?.indexedSha256 === entry.sha256) {
+      // A move or rename keeps the bytes, so the full text is still
+      // indexed; only the stored paths may lag behind it.
+      yield* sql`
+        UPDATE ft3_docs_file_state SET rel_path = ${entry.relPath}
+        WHERE stable_id = ${entry.stableId} AND rel_path != ${entry.relPath}
+      `;
+      yield* sql`
+        UPDATE ft3_docs_fts SET rel_path = ${entry.relPath}
+        WHERE stable_id = ${entry.stableId} AND rel_path != ${entry.relPath}
+      `;
+      return;
+    }
     const at = yield* timestamp;
     yield* sql.withTransaction(
       Effect.gen(function* () {

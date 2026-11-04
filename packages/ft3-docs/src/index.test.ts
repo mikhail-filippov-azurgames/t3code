@@ -70,6 +70,35 @@ describe("DocsIndex", () => {
     ),
   );
 
+  it.effect("updates the stored path when a document moves without changing bytes", () =>
+    withIndex((index) =>
+      Effect.gen(function* () {
+        const entry = {
+          stableId: NIL_ID,
+          relPath: "a/one.md",
+          title: "One",
+          body: "same body",
+          sha256: "e".repeat(64),
+        };
+        yield* index.indexDocuments([entry]);
+        yield* index.indexDocuments([{ ...entry, relPath: "b/two.md" }]);
+
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly relPath: string }>`
+          SELECT rel_path AS "relPath" FROM ft3_docs_fts WHERE stable_id = ${NIL_ID}
+        `;
+        assert.deepEqual(
+          rows.map((row) => row.relPath),
+          ["b/two.md"],
+        );
+        const scoped = yield* index.search({ query: "same", folder: "b" });
+        assert.equal(scoped.length, 1);
+        const stale = yield* index.search({ query: "same", folder: "a" });
+        assert.equal(stale.length, 0);
+      }),
+    ),
+  );
+
   it.effect("prefix queries find documents (no morphology, design §3.7)", () =>
     withIndex((index) =>
       Effect.gen(function* () {
