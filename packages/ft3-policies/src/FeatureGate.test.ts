@@ -4,10 +4,25 @@ import * as Layer from "effect/Layer";
 
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as FeatureGate from "./FeatureGate.ts";
+import { type PolicySnapshot, PolicyChangeTracker } from "./policyChangeTracker.ts";
 
 const gateLayer = (features: Readonly<Record<string, boolean>>) =>
   FeatureGate.layer.pipe(
     Layer.provideMerge(ServerSettings.layerTest({ ft3: { policies: { features } } })),
+  );
+
+const trackerWithRequirements = (
+  requirements: PolicySnapshot["requirements"],
+): Layer.Layer<PolicyChangeTracker> =>
+  Layer.succeed(
+    PolicyChangeTracker,
+    PolicyChangeTracker.of({
+      refresh: () => Effect.die("unused in the gate tests"),
+      snapshot: () => Effect.succeed({ configVersion: 1, documents: [], requirements }),
+      applied: () => Effect.succeed(null),
+      pendingChange: () => Effect.succeed(null),
+      live: () => Effect.succeed(null),
+    }),
   );
 
 describe("FeatureGate", () => {
@@ -72,5 +87,63 @@ describe("FeatureGate", () => {
         .pipe(Effect.orDie);
       assert.isFalse(yield* gate.isEffective("board"));
     }).pipe(Effect.provide(gateLayer({}))),
+  );
+
+  it.effect("accounts for requirement validity and refuses with the document off-reason", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+      const mail = yield* gate.state("mail");
+
+      assert.isTrue(mail.requestedEnabled);
+      assert.isFalse(mail.effectiveEnabled);
+      assert.deepStrictEqual(mail.offReason, {
+        code: "feature_document_off",
+        requirement: "routingPolicy",
+      });
+      assert.isFalse(yield* gate.isEffective("mail"));
+
+      const error = yield* gate.require("mail").pipe(Effect.flip);
+      assert.equal(error.code, "feature_document_off");
+      assert.equal(error.requirement, "routingPolicy");
+    }).pipe(
+      Effect.provide(
+        gateLayer({ mail: true, board: true, delegation: true, roles: true }).pipe(
+          Layer.provideMerge(
+            trackerWithRequirements({
+              rolesManifest: true,
+              leadSkills: true,
+              leadRole: true,
+              routingPolicy: false,
+              requestedRoles: true,
+            }),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps a feature effective when its requirements are valid", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+      const mail = yield* gate.state("mail");
+
+      assert.isTrue(mail.effectiveEnabled);
+      assert.isNull(mail.offReason);
+      yield* gate.require("mail");
+    }).pipe(
+      Effect.provide(
+        gateLayer({ mail: true, board: true, delegation: true, roles: true }).pipe(
+          Layer.provideMerge(
+            trackerWithRequirements({
+              routingPolicy: true,
+              requestedRoles: true,
+              rolesManifest: true,
+              leadSkills: true,
+              leadRole: true,
+            }),
+          ),
+        ),
+      ),
+    ),
   );
 });

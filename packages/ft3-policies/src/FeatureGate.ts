@@ -1,11 +1,12 @@
 /**
  * The single server guard for feature toggles: resolves the `ft3.policies`
- * registry against live settings and refuses an ineffective feature with the
- * Policies reason. Requirement validity arrives with the document loader.
+ * registry against live settings and the applied documents' requirement
+ * validity, and refuses an ineffective feature with the Policies reason.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
@@ -17,6 +18,7 @@ import {
   PolicyRequirementId as PolicyRequirementIdSchema,
   resolveFeatureStates,
 } from "./contracts.ts";
+import { PolicyChangeTracker } from "./policyChangeTracker.ts";
 import { readPolicySettings } from "./settings.ts";
 
 /** Why a call was refused: the requested toggle is off, or a reason the gate resolved. */
@@ -50,7 +52,7 @@ export class FeatureDisabledError extends Schema.TaggedError<FeatureDisabledErro
 export class FeatureGate extends Context.Service<
   FeatureGate,
   {
-    /** Every feature resolved once from the current settings. */
+    /** Every feature resolved once from the current settings and applied documents. */
     readonly states: Effect.Effect<Readonly<Record<FeatureId, FeatureResolution>>>;
     /** The effective state and, when off, why. */
     readonly state: (feature: FeatureId) => Effect.Effect<FeatureResolution>;
@@ -81,9 +83,20 @@ const disabledError = (
 const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
 
+  /** Requirement validity of the applied documents; absent without a tracker. */
+  const requirements = Effect.gen(function* () {
+    const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
+    if (Option.isNone(tracker)) return {};
+    const snapshot = yield* tracker.value.snapshot();
+    return snapshot.requirements;
+  });
+
   const states = Effect.gen(function* () {
     const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
-    return resolveFeatureStates({ requested: readPolicySettings(settings.ft3).features });
+    return resolveFeatureStates({
+      requested: readPolicySettings(settings.ft3).features,
+      requirements: yield* requirements,
+    });
   });
 
   const state = Effect.fn("FeatureGate.state")(function* (feature: FeatureId) {
