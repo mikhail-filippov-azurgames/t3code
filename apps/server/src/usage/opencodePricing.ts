@@ -58,7 +58,8 @@ function openCodeTokenRates(cost: OpenCodeCost, tier: OpenCodeCost = {}): TokenR
 function contextTiers(cost: OpenCodeCost): ContextTierRates[] {
   const tiers = new Map<number, TokenRates>();
   const legacy = cost["context_over_200k"];
-  if (typeof legacy === "object" && legacy !== null) {
+  // The legacy 200k field is a fallback; explicit tiers carry their own thresholds.
+  if (!Array.isArray(cost.tiers) && typeof legacy === "object" && legacy !== null) {
     const rates = openCodeTokenRates(legacy as OpenCodeCost);
     if (rates !== null) tiers.set(200_000, rates);
   }

@@ -36,14 +36,23 @@ const catalog = {
       "deepseek-v4.1-flash": { cost: { input: 0.3, output: 1.2, cache_read: 0.006 } },
       "step-5-preview-free": { cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } },
       "no-cost-model": {},
+      "dual-listed-model": { cost: { input: 1.74, output: 3.48, cache_read: 0.145 } },
     },
   },
   "opencode-go": {
     id: "opencode-go",
     models: {
       "claude-haiku-5-5": { cost: haikuCost },
-      // Catalog-specific rates OpenCode's zen service does not bill at; zen rates win instead.
+      // Known-divergent catalog rates; this model bills at the zen entry instead.
       "deepseek-v4.1-flash": { cost: { input: 0.15, output: 0.6, cache_read: 0.003 } },
+      "dual-listed-model": { cost: { input: 0.66, output: 1.98, cache_read: 0.022 } },
+      "legacy-tier-model": {
+        cost: {
+          input: 1,
+          output: 2,
+          context_over_200k: { input: 3, output: 6 },
+        },
+      },
       "qwen3.7-plus": {
         cost: {
           input: 0.4,
@@ -97,8 +106,8 @@ describe("parseOpenCodeCatalog", () => {
   it("registers provider-prefixed keys, per-1M rates, and bare zen aliases only", () => {
     const table = parseOpenCodeCatalog(catalog);
 
-    // Three priced opencode models (bare alias each) plus four priced opencode-go models.
-    expect(table.size).toBe(10);
+    // Four priced opencode models (bare alias each) plus six priced opencode-go models.
+    expect(table.size).toBe(14);
     const flash = table.get("opencode/deepseek-v4.1-flash");
     expect(flash).toMatchObject({
       inputCostPerToken: perMillion(0.3),
@@ -149,7 +158,12 @@ describe("parseOpenCodeCatalog", () => {
     expect(haiku).toMatchObject({ inputCostPerToken: perMillion(0.1) });
 
     const qwen = table.get("opencode-go/qwen3.7-plus");
-    expect(qwen?.contextTiers?.map((tier) => tier.aboveTokens)).toEqual([256_000, 200_000]);
+    expect(qwen?.contextTiers?.map((tier) => tier.aboveTokens)).toEqual([256_000]);
+  });
+
+  it("uses the legacy 200k field only when no explicit tiers exist", () => {
+    const legacy = parseOpenCodeCatalog(catalog).get("opencode-go/legacy-tier-model");
+    expect(legacy?.contextTiers?.map((tier) => tier.aboveTokens)).toEqual([200_000]);
   });
 
   it("returns an empty table for malformed documents", () => {
@@ -192,6 +206,15 @@ describe("OpenCode pricing", () => {
         cacheSavingsUsd(empty, record(model, { cachedInputTokens: 1_000_000 }), undefined, table),
       ).toBeCloseTo(1_000_000 * (perMillion(0.3) - perMillion(0.006)), 10);
     }
+    // Other opencode-go models keep their own rates even when zen lists the same model.
+    expect(
+      priceUsage(
+        empty,
+        record("opencode-go/dual-listed-model", { uncachedInputTokens: 1_000_000 }),
+        undefined,
+        table,
+      ).costUsd,
+    ).toBeCloseTo(0.66, 10);
     // A model only its own provider carries still prices from that provider's entry.
     expect(
       priceUsage(

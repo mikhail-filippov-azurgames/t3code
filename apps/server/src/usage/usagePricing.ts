@@ -233,8 +233,10 @@ export function lookupRate(table: RateTable, model: string): ModelRate | null {
   return rate;
 }
 
-// opencode-go sessions bill at the catalog's zen ("opencode") rates, which models.dev
-// keeps in step with OpenCode's actual charges; provider-specific entries are the fallback.
+// opencode-go models whose catalog entry is known to diverge from OpenCode's actual charges;
+// these bill at the zen ("opencode") entry. Every other opencode-go model keeps its own rates.
+const ZEN_BILLED_GO_MODELS: ReadonlySet<string> = new Set(["deepseek-v4.1-flash"]);
+
 export function lookupOpenCodeRate(table: RateTable, model: string): ModelRate | null {
   let resolved = resolvedOpenCodeRates.get(table);
   if (resolved === undefined) {
@@ -256,7 +258,9 @@ function resolveOpenCodeRate(table: RateTable, model: string): ModelRate | null 
     key === "opencode" || key.startsWith("opencode/")
       ? [key]
       : key.startsWith("opencode-go/")
-        ? [`opencode/${key.slice("opencode-go/".length)}`, key]
+        ? ZEN_BILLED_GO_MODELS.has(key.slice("opencode-go/".length))
+          ? [`opencode/${key.slice("opencode-go/".length)}`, key]
+          : [key, `opencode/${key.slice("opencode-go/".length)}`]
         : [key, `opencode/${bareModelName(key)}`];
   for (const candidate of candidates) {
     const rate = table.get(candidate);
