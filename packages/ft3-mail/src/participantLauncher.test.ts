@@ -12,7 +12,7 @@ it.effect("maps a mail role to its upstream delegated role", () =>
   Effect.sync(() => {
     assert.equal(participantUpstreamRole("implementation"), "implementation");
     assert.equal(participantUpstreamRole("architect"), "architecture");
-    assert.equal(participantUpstreamRole("planner"), undefined);
+    assert.equal(participantUpstreamRole("planner"), "planner");
   }),
 );
 

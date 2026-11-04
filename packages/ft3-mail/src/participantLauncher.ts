@@ -45,10 +45,15 @@ export class MailParticipantLauncher extends Context.Service<
 export const participantLaunchCommandId = (memberId: string): CommandId =>
   CommandId.make(`mail-participant-launch:${memberId}`);
 
-/** Upstream role names; the routing role `planner` has no upstream counterpart. */
+/**
+ * Upstream role names. The planner is reached by mail only, but `planner` is
+ * a declared delegated role, so its participant carries the planner identity
+ * instead of falling back to the upstream default.
+ */
 const UPSTREAM_ROLE: Readonly<Record<string, OrchestrationV2DelegatedTaskRole>> = {
   architect: "architecture",
   implementation: "implementation",
+  planner: "planner",
   research: "research",
   review: "review",
   test: "test",
