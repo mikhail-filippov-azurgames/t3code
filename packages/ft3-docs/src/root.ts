@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - the store root is a host path, not an environment program.
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as Effect from "effect/Effect";
@@ -62,11 +63,17 @@ export interface DocsRootInput {
  * server state directory (design §6.1). The value is configuration; no path is
  * part of the repository.
  */
+/** A leading `~` addresses the server user's home directory; `~other` never does. */
+const expandHome = (root: string): string =>
+  root === "~" || root.startsWith("~/") || root.startsWith("~\\")
+    ? NodePath.join(NodeOS.homedir(), root.slice(2))
+    : root;
+
 export function resolveDocsRoot(input: DocsRootInput): string {
   const configured = input.configuredRoot?.trim() ?? "";
-  if (configured !== "") return NodePath.resolve(configured);
+  if (configured !== "") return NodePath.resolve(expandHome(configured));
   const fromEnvironment = input.environment?.[DOCS_ROOT_ENV]?.trim();
   return fromEnvironment
-    ? NodePath.resolve(fromEnvironment)
+    ? NodePath.resolve(expandHome(fromEnvironment))
     : NodePath.join(input.stateDir, "documents");
 }

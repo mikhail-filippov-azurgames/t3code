@@ -6,6 +6,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import { type DocRef, parseDocRef } from "./contracts.ts";
 import { DocsChangeBus } from "./events.ts";
@@ -16,6 +17,15 @@ import * as DocsStore from "./store.ts";
 
 /** Shared change bus service-side writes publish to; provided by the composition. */
 export { DocsChangeBus };
+
+/** A change bus that drops every event; the default when no bus is provided. */
+export const noChangeEvents = Layer.succeed(
+  DocsChangeBus,
+  DocsChangeBus.of({
+    publish: Effect.fn("DocsChangeBus.publish")(() => Effect.void),
+    changes: Stream.empty,
+  }),
+);
 
 /** Every way `DocsService` refuses or fails a call (design §5). */
 export const DocsServiceErrorCode = Schema.Literals([
@@ -271,6 +281,12 @@ const mapStoreError = (cause: DocsStore.DocsStoreError): DocsServiceError => {
         ...(cause.path === undefined ? {} : { ref: cause.path }),
         cause,
       });
+    case "document_changed":
+      return new DocsServiceError({
+        code: "document_changed",
+        ...(cause.path === undefined ? {} : { ref: cause.path }),
+        cause,
+      });
     case "invalid_path":
     case "invalid_name":
     case "invalid_limit":
@@ -505,12 +521,12 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
       } satisfies DocsWriteResult;
     }
 
-    const live = yield* readContent(existing);
-    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
-      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
-    }
     const saved = yield* store
-      .saveDocContent({ relPath: existing.relPath, content: input.content })
+      .saveDocContent({
+        relPath: existing.relPath,
+        content: input.content,
+        ...(input.baseSha256 === undefined ? {} : { expectedSha256: input.baseSha256 }),
+      })
       .pipe(Effect.mapError(mapStoreError));
     if (input.description !== undefined) {
       yield* store
@@ -538,12 +554,12 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     input: DocsHumanWriteInput,
   ) {
     const existing = yield* locate(input.ref);
-    const live = yield* readContent(existing);
-    if (input.baseSha256 !== undefined && input.baseSha256 !== live.sha256) {
-      return yield* new DocsServiceError({ code: "document_changed", ref: existing.relPath });
-    }
     const saved = yield* store
-      .saveDocContent({ relPath: existing.relPath, content: input.content })
+      .saveDocContent({
+        relPath: existing.relPath,
+        content: input.content,
+        ...(input.baseSha256 === undefined ? {} : { expectedSha256: input.baseSha256 }),
+      })
       .pipe(Effect.mapError(mapStoreError));
     yield* indexDocument(saved);
     yield* emit({ kind: "changed", stableId: saved.stableId, relPath: saved.relPath });

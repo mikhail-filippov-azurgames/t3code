@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - the test asserts the path a setting resolves to.
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import {
@@ -39,6 +40,24 @@ describe("docs root setting", () => {
     expect(decodeDocsSettingsValue({ root: " " })).toMatchObject({ _tag: "None" });
     expect(decodeDocsSettingsValue({ root: "x".repeat(4097) })).toMatchObject({ _tag: "None" });
     expect(readDocsSettings({ docs: { root: "" } })).toEqual(DEFAULT_DOCS_SETTINGS);
+  });
+
+  it("expands a leading tilde to the server user's home directory", () => {
+    const home = NodeOS.homedir();
+    expect(resolveDocsRoot({ stateDir: STATE_DIR, configuredRoot: "~" })).toBe(home);
+    expect(resolveDocsRoot({ stateDir: STATE_DIR, configuredRoot: "~/docs" })).toBe(
+      NodePath.join(home, "docs"),
+    );
+    expect(
+      resolveDocsRoot({
+        stateDir: STATE_DIR,
+        configuredRoot: null,
+        environment: { [DOCS_ROOT_ENV]: "~/env-docs" },
+      }),
+    ).toBe(NodePath.join(home, "env-docs"));
+    expect(resolveDocsRoot({ stateDir: STATE_DIR, configuredRoot: "~other/docs" })).toBe(
+      NodePath.resolve("~other/docs"),
+    );
   });
 
   it("keeps OPENCONTEXT_HOME as an explicit environment fallback", () => {

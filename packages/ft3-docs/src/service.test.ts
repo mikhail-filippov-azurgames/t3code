@@ -5,6 +5,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
@@ -112,9 +113,7 @@ const withDocs = <A, E>(
       const context = { root, service: yield* Service.DocsService } satisfies DocsTest;
       return yield* use(context);
     }).pipe(
-      Effect.provide(
-        options.events === undefined ? services : services.pipe(Layer.provide(options.events)),
-      ),
+      Effect.provide(services.pipe(Layer.provide(options.events ?? Service.noChangeEvents))),
       Effect.ensuring(removeRoot(root)),
     );
   });
@@ -559,6 +558,43 @@ describe("DocsService writes", () => {
         { writable: true, events },
       );
     }),
+  );
+
+  it.effect("serializes concurrent writes with the same base sha", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const live = yield* context.service.read({ ref: "project/plan.md" });
+          const caller = { threadId: "thread:root", parentThreadId: null };
+          const outcomes = yield* Effect.forEach(
+            [
+              context.service.write({
+                caller,
+                ref: "project/plan.md",
+                content: "# Plan\n\nA.\n",
+                baseSha256: live.sha256,
+                clientRequestId: "write:a",
+              }),
+              context.service.write({
+                caller,
+                ref: "project/plan.md",
+                content: "# Plan\n\nB.\n",
+                baseSha256: live.sha256,
+                clientRequestId: "write:b",
+              }),
+            ],
+            (write) => Effect.result(write),
+            { concurrency: 2 },
+          );
+          assert.equal(outcomes.filter((outcome) => Result.isSuccess(outcome)).length, 1);
+          const [conflict = yield* Effect.die(new Error("expected one conflict"))] =
+            outcomes.flatMap((outcome) => (Result.isFailure(outcome) ? [outcome.failure] : []));
+          assert.equal(conflict.code, "document_changed");
+        }),
+      seedFiles,
+      { writable: true },
+    ),
   );
 });
 

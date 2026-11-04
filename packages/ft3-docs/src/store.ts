@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - the store owns the document files under its root.
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
@@ -9,6 +10,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import { SqlError } from "effect/sql/SqlError";
 
@@ -70,6 +72,7 @@ export const DocsStoreErrorCode = Schema.Literals([
   "folder_not_found",
   "document_exists",
   "document_not_found",
+  "document_changed",
   "file_missing",
   "duplicate_stable_id",
   "store_unavailable",
@@ -98,6 +101,8 @@ export class DocsStoreError extends Schema.TaggedError<DocsStoreError>()("DocsSt
         return `Document "${this.path ?? ""}" already exists.`;
       case "document_not_found":
         return `Document "${this.path ?? ""}" was not found.`;
+      case "document_changed":
+        return `Document "${this.path ?? ""}" changed since it was read.`;
       case "file_missing":
         return `The file of document "${this.path ?? ""}" is missing.`;
       case "duplicate_stable_id":
@@ -289,9 +294,15 @@ const databaseQuery = <A, E, R>(
     Effect.mapError((cause) => storeError("store_unavailable", path, cause)),
   );
 
+const sha256Hex = (content: string): string =>
+  NodeCrypto.createHash("sha256").update(content, "utf8").digest("hex");
+
 const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
   const sql = yield* SqlClient.SqlClient;
   const crypto = yield* Crypto.Crypto;
+  // Serializes check-and-set writes inside this store instance, so two
+  // concurrent saves with the same base SHA cannot both win.
+  const writeLock = yield* Semaphore.make(1);
   const contextsRoot = NodePath.resolve(options.root, DOCS_STORE_CONTEXTS_DIRECTORY);
 
   const folderColumns = sql`
@@ -688,18 +699,33 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
   const saveDocContent = Effect.fn("DocsStore.saveDocContent")(function* (input: {
     readonly relPath: string;
     readonly content: string;
+    /** Optimistic-concurrency guard; a mismatch is `document_changed`. */
+    readonly expectedSha256?: string;
   }) {
     const relPath = yield* requireRelPath(input.relPath);
     const document = yield* requireDocument(relPath);
-    const at = yield* timestamp;
-    yield* writeDocumentFile(
-      absoluteFor(relPath),
-      Frontmatter.writeStableId(input.content, document.stableId),
+    return yield* Semaphore.withPermits(
+      writeLock,
+      1,
+    )(
+      Effect.gen(function* () {
+        if (input.expectedSha256 !== undefined) {
+          const live = yield* readDocumentFile(absoluteFor(relPath));
+          if (sha256Hex(live) !== input.expectedSha256) {
+            return yield* storeError("document_changed", relPath);
+          }
+        }
+        const at = yield* timestamp;
+        yield* writeDocumentFile(
+          absoluteFor(relPath),
+          Frontmatter.writeStableId(input.content, document.stableId),
+        );
+        yield* retryWhenBusy(
+          sql`UPDATE docs SET updated_at = ${at} WHERE id = ${document.id}`,
+        ).pipe(Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)));
+        return yield* requireDocument(relPath);
+      }),
     );
-    yield* retryWhenBusy(sql`UPDATE docs SET updated_at = ${at} WHERE id = ${document.id}`).pipe(
-      Effect.mapError((cause) => storeError("store_unavailable", relPath, cause)),
-    );
-    return yield* requireDocument(relPath);
   });
 
   const updateLocationByStableId = Effect.fn("DocsStore.updateLocationByStableId")(
@@ -969,6 +995,7 @@ export class DocsStore extends Context.Service<
     readonly saveDocContent: (input: {
       readonly relPath: string;
       readonly content: string;
+      readonly expectedSha256?: string;
     }) => Effect.Effect<DocRecord, DocsStoreError>;
     readonly setDescription: (input: {
       readonly relPath: string;

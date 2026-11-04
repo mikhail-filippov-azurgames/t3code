@@ -342,8 +342,6 @@ export const mcpLayer = (options: DocsToolkitOptions) => {
   );
 
   return toolkitRegistration(toolkit, handlers).pipe(
-    Layer.provide(
-      options.events === undefined ? services : services.pipe(Layer.provide(options.events)),
-    ),
+    Layer.provide(services.pipe(Layer.provide(options.events ?? Service.noChangeEvents))),
   );
 };
