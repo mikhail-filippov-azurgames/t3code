@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import { DocsServiceError } from "@t3tools/ft3-docs/server";
 import * as Effect from "effect/Effect";
 
 import type { PolicyDocumentKey, PolicyDocumentSource } from "./contracts.ts";
@@ -164,6 +165,32 @@ describe("policy document protection identities", () => {
     }),
   );
 
+  it.effect("fails when the manifest lookup fails instead of dropping the identity", () =>
+    Effect.gen(function* () {
+      const failed = yield* resolveProtectedIdentities(
+        {
+          ...builtin,
+          roles: { kind: "doc", address: { kind: "id", stableId: "roles-manifest" } },
+        },
+        "/store",
+        {
+          manifestRelPathOf: () => Effect.fail(new DocsServiceError({ code: "store_unavailable" })),
+          planStableIds: Effect.succeed([]),
+        },
+      ).pipe(Effect.flip);
+      expect(failed.code).toBe("store_unavailable");
+    }),
+  );
+
+  it.effect("fails when the plan lookup fails instead of proceeding unprotected", () =>
+    Effect.gen(function* () {
+      const failed = yield* resolveProtectedIdentities(builtin, "/store", {
+        manifestRelPathOf: () => Effect.succeed(null),
+        planStableIds: Effect.fail(new DocsServiceError({ code: "store_unavailable" })),
+      }).pipe(Effect.flip);
+      expect(failed.code).toBe("store_unavailable");
+    }),
+  );
   it("ignores a path source outside the store", () => {
     const identities = protectedDocumentIdentities(
       {

@@ -1,4 +1,3 @@
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -43,6 +42,59 @@ const docsChangeBus = Layer.unwrap(
     (docs) => docs.docsChangeBusLayer(),
   ),
 );
+
+/**
+ * Per-call protected-document identities over this store and board table.
+ * A lookup the identities need can fail; the failure refuses the agent
+ * write instead of reading as no identity (design §3.4).
+ */
+export const docsProtectionLayer = (
+  docs: typeof import("@t3tools/ft3-docs/server"),
+  root: string,
+) =>
+  Layer.effect(
+    docs.DocsProtection,
+    Effect.gen(function* () {
+      const store = yield* docs.DocsStore;
+      const state = yield* SqlClient.SqlClient;
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      return docs.DocsProtection.of({
+        isProtected: Effect.fn("DocsProtection.isProtected")(function* (document: {
+          readonly stableId: string;
+          readonly relPath: string;
+        }) {
+          const live = yield* serverSettings.getSettings.pipe(Effect.orDie);
+          const sources = FeatureGate.resolvePolicyDocumentSources(
+            FeatureGate.readPolicySettings(live.ft3),
+          );
+          const identities = yield* FeatureGate.resolveProtectedIdentities(sources, root, {
+            manifestRelPathOf: (stableId) =>
+              store.getByStableId(stableId).pipe(
+                Effect.map((manifest) => manifest?.relPath ?? null),
+                Effect.tapError((cause) =>
+                  Effect.logWarning(
+                    `Protected-document manifest lookup failed; refusing the write: ${cause}`,
+                  ),
+                ),
+                Effect.mapError(() => new docs.DocsServiceError({ code: "store_unavailable" })),
+              ),
+            planStableIds: state<{ readonly plan_doc_id: string }>`
+              SELECT plan_doc_id FROM ft3_board_card_plans
+            `.pipe(
+              Effect.map((rows) => rows.map((row) => row.plan_doc_id)),
+              Effect.tapError((cause) =>
+                Effect.logWarning(
+                  `Protected plan-document lookup failed; refusing the write: ${cause}`,
+                ),
+              ),
+              Effect.mapError(() => new docs.DocsServiceError({ code: "store_unavailable" })),
+            ),
+          });
+          return FeatureGate.isProtectedDocument(identities, document);
+        }),
+      });
+    }),
+  );
 
 const layerDocuments = Layer.unwrap(
   Effect.gen(function* () {
@@ -221,47 +273,9 @@ const layerDocsToolkit = Layer.unwrap(
       ),
       mail.documentsWriteFacts.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
     );
-    // Agents never change policy documents or plans of other cards through
-    // MCP: the policies tab and Apply stay the human path (design §3.4).
-    // The set resolves per call, so a changed source or a new card applies
-    // without a restart; a failed lookup reads as no identity for that part.
-    const protection = Layer.effect(
-      docs.DocsProtection,
-      Effect.gen(function* () {
-        const store = yield* docs.DocsStore;
-        const state = yield* SqlClient.SqlClient;
-        const serverSettings = yield* ServerSettings.ServerSettingsService;
-        return docs.DocsProtection.of({
-          isProtected: Effect.fn("DocsProtection.isProtected")(function* (document: {
-            readonly stableId: string;
-            readonly relPath: string;
-          }) {
-            const live = yield* serverSettings.getSettings.pipe(Effect.orDie);
-            const sources = FeatureGate.resolvePolicyDocumentSources(
-              FeatureGate.readPolicySettings(live.ft3),
-            );
-            const identities = yield* FeatureGate.resolveProtectedIdentities(sources, root, {
-              manifestRelPathOf: (stableId) =>
-                store.getByStableId(stableId).pipe(
-                  Effect.map((manifest) => manifest?.relPath ?? null),
-                  Effect.orElseSucceed(() => null),
-                ),
-              planStableIds: state<{ readonly plan_doc_id: string }>`
-                SELECT plan_doc_id FROM ft3_board_card_plans
-              `.pipe(
-                Effect.map((rows) => rows.map((row) => row.plan_doc_id)),
-                Effect.catchCause((cause: Cause.Cause<unknown>) =>
-                  Effect.logWarning(
-                    `Plan documents are not protected: the board table is unavailable: ${cause}`,
-                  ).pipe(Effect.as([] as Array<string>)),
-                ),
-              ),
-            });
-            return FeatureGate.isProtectedDocument(identities, document);
-          }),
-        });
-      }),
-    ).pipe(
+    // Fail closed when the protected identities cannot be established: the
+    // service below refuses the agent write, while reads stay available.
+    const protection = docsProtectionLayer(docs, root).pipe(
       Layer.provide(docs.docsStoreLayer({ root })),
       Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
       Layer.provide(Layer.succeed(ServerSettings.ServerSettingsService, settings)),

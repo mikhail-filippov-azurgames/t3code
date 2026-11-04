@@ -4,6 +4,8 @@ import * as NodePath from "node:path";
 
 import * as Effect from "effect/Effect";
 
+import type { DocsServiceError } from "@t3tools/ft3-docs/server";
+
 import type { PolicyDocumentKey, PolicyDocumentSource } from "./contracts.ts";
 
 /** Store identities no agent write may touch, however broad its right. */
@@ -80,11 +82,12 @@ export function isProtectedDocument(
 /**
  * Store reads the static identities cannot do: an id-addressed tree
  * manifest resolves to its folder, and the board table names every plan
- * document. Both callbacks are total; a miss reads as no identity.
+ * document. A miss reads as no identity; a failed lookup fails, so the
+ * caller refuses the write instead of proceeding unprotected.
  */
 export interface ProtectionLookups {
-  readonly manifestRelPathOf: (stableId: string) => Effect.Effect<string | null, never, never>;
-  readonly planStableIds: Effect.Effect<ReadonlyArray<string>, never, never>;
+  readonly manifestRelPathOf: (stableId: string) => Effect.Effect<string | null, DocsServiceError>;
+  readonly planStableIds: Effect.Effect<ReadonlyArray<string>, DocsServiceError>;
 }
 
 /**

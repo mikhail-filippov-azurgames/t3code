@@ -157,10 +157,10 @@ export const denyAllDocumentsWrite: Layer.Layer<DocumentsWriteAccess> = Layer.su
 );
 
 /**
- * Port of the protected-document rule: policy documents and the plans of other
- * cards are never writable through a store-wide MCP right (design §3.5). A
- * planner's document-scoped right names its own plan and bypasses this check
- * in `requireWrite`; until a rule is provided, nothing is protected.
+ * Port of the protected-document rule (design §3.5): policy documents and
+ * other cards' plans are never writable through a store-wide MCP right; a
+ * planner's document-scoped right bypasses this check. A failed check
+ * refuses the write instead of treating unknown as unprotected.
  */
 export class DocsProtection extends Context.Service<
   DocsProtection,
@@ -168,7 +168,7 @@ export class DocsProtection extends Context.Service<
     readonly isProtected: (document: {
       readonly stableId: string;
       readonly relPath: string;
-    }) => Effect.Effect<boolean, never, never>;
+    }) => Effect.Effect<boolean, DocsServiceError, never>;
   }
 >()("@t3tools/ft3-docs/service/DocsProtection") {}
 

@@ -74,8 +74,16 @@ interface DocsTest {
 
 interface WithDocsOptions {
   readonly writable?: boolean;
-  /** Protection port override; nothing is protected by default. */
-  readonly isProtected?: boolean;
+  /**
+   * Protection port override; nothing is protected by default. `true`
+   * protects every document, a predicate protects only what it names, and
+   * `"fail"` fails every check, proving writes refuse when the identities
+   * cannot be established.
+   */
+  readonly isProtected?:
+    | boolean
+    | "fail"
+    | ((document: { readonly stableId: string; readonly relPath: string }) => boolean);
   /** Write rule override; the default ports refuse every write. */
   readonly writeAccess?: Layer.Layer<Service.DocumentsWriteAccess>;
   /** Change bus service-side writes publish to; nothing is emitted without it. */
@@ -94,13 +102,29 @@ const withDocs = <A, E>(
 ) =>
   Effect.gen(function* () {
     const root = yield* makeRoot();
+    const isProtectedOption = options.isProtected;
     const protection =
-      options.isProtected === true
-        ? Layer.succeed(
-            Service.DocsProtection,
-            Service.DocsProtection.of({ isProtected: () => Effect.succeed(true) }),
-          )
-        : Service.noProtectedDocuments;
+      isProtectedOption === undefined
+        ? Service.noProtectedDocuments
+        : isProtectedOption === "fail"
+          ? Layer.succeed(
+              Service.DocsProtection,
+              Service.DocsProtection.of({
+                isProtected: () =>
+                  Effect.fail(new Service.DocsServiceError({ code: "store_unavailable" })),
+              }),
+            )
+          : Layer.succeed(
+              Service.DocsProtection,
+              Service.DocsProtection.of({
+                isProtected: (document) =>
+                  Effect.succeed(
+                    typeof isProtectedOption === "function"
+                      ? isProtectedOption(document)
+                      : isProtectedOption,
+                  ),
+              }),
+            );
     const services = (
       options.writeAccess !== undefined
         ? Service.layer({ root }).pipe(Layer.provide(options.writeAccess))
@@ -463,6 +487,26 @@ describe("DocsService writes", () => {
         writeAccess: lineageWithFacts({ role: "general", planStableId: null, granted: true }),
         isProtected: true,
       },
+    ),
+  );
+
+  it.effect("refuses the write when the protection check itself fails", () =>
+    withDocs(
+      (context) =>
+        Effect.gen(function* () {
+          yield* prime(context.service);
+          const error = yield* context.service
+            .write({
+              caller: { threadId: "thread:root", parentThreadId: null },
+              ref: "project/plan.md",
+              content: "# Rewritten\n",
+              clientRequestId: "write:protection-down",
+            })
+            .pipe(Effect.flip);
+          assert.equal(error.code, "store_unavailable");
+        }),
+      seedFiles,
+      { writable: true, isProtected: "fail" },
     ),
   );
 
