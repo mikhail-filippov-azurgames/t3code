@@ -171,9 +171,17 @@ const mailDeliveryFailure = Effect.gen(function* () {
   yield* sql`ALTER TABLE ft3_mail_deliveries ADD COLUMN failure_reason TEXT`;
 });
 
+/** Lookup for the board's implement-started flag, bounded by the selected cards. */
+const implementLookup = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`CREATE INDEX idx_ft3_mail_tasks_card_id ON ft3_mail_tasks(card_id)`;
+  yield* sql`CREATE INDEX idx_ft3_mail_letters_task_phase ON ft3_mail_letters(task_id, plan_phase)`;
+});
+
 export const migrations = {
   "11_Mail": mail,
   "14_MailRoute": mailRoute,
   "15_MailReactor": mailReactor,
   "16_MailDeliveryFailure": mailDeliveryFailure,
+  "18_MailImplementLookup": implementLookup,
 };

@@ -126,9 +126,15 @@ const planning = Effect.gen(function* () {
   yield* sql`CREATE INDEX idx_ft3_board_card_plans_planner_thread_id ON ft3_board_card_plans(planner_thread_id)`;
 });
 
+const planImplementStarted = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE ft3_board_card_plans ADD COLUMN implement_started_at TEXT`;
+});
+
 export const migrations = {
   "2_Board": board,
   "3_BoardReactor": reactor,
   "9_BoardRetention": retention,
   "12_BoardPlanning": planning,
+  "17_BoardPlanImplementStarted": planImplementStarted,
 };

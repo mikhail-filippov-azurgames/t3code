@@ -110,6 +110,8 @@ describe("board migrations through ft3-host", () => {
         [14, "MailRoute"],
         [15, "MailReactor"],
         [16, "MailDeliveryFailure"],
+        [17, "BoardPlanImplementStarted"],
+        [18, "MailImplementLookup"],
       ]);
       yield* sql`INSERT INTO ft3_board_orchestrators VALUES ('thread:retained', 'human', '2000-01-01')`;
       yield* sql`INSERT INTO ft3_board_cards (card_id, orchestrator_thread_id, title, body, status, created_by, executor_role, failure_streak, order_index, archived, created_at, updated_at) VALUES ('card:retained', 'thread:retained', 'Retain', 'Body', 'done', 'human', 'general', 0, 0, 1, '2000-01-01', '2000-01-02')`;
@@ -162,6 +164,8 @@ describe("board migrations through ft3-host", () => {
           [14, "MailRoute"],
           [15, "MailReactor"],
           [16, "MailDeliveryFailure"],
+          [17, "BoardPlanImplementStarted"],
+          [18, "MailImplementLookup"],
         ]);
         assert.deepStrictEqual(yield* runMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

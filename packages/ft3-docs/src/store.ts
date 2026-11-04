@@ -323,9 +323,9 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
     relPath === "" ? contextsRoot : NodePath.resolve(contextsRoot, ...relPath.split("/"));
 
   /**
-   * Fail-closed symlink guard: the resolved real path must stay under the
-   * real contexts root, else `document_outside_store`. A missing file still
-   * reports `file_missing`, so the repair pass keeps working.
+   * Fail-closed symlink guard: the resolved real path must stay under the real
+   * contexts root, else `document_outside_store` (`file_missing` still lets the
+   * repair pass run). Narrows but does not close the check-then-read race.
    */
   const realPathUnderRoot = Effect.fn("DocsStore.realPathUnderRoot")(function* (
     absolutePath: string,

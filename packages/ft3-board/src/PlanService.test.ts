@@ -178,6 +178,64 @@ describe("PlanService", () => {
     ),
   );
 
+  it.effect("keeps implementStarted after the implement letters are purged", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard("Storage plan");
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_tasks (task_id TEXT NOT NULL PRIMARY KEY, card_id TEXT)`;
+        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_letters (letter_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, plan_phase TEXT)`;
+        yield* sql`INSERT INTO ft3_mail_tasks (task_id, card_id) VALUES ('task:implement', ${cardId})`;
+        yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, plan_phase) VALUES ('letter:implement-1', 'task:implement', 'implement')`;
+        // The first list backfills the persisted flag from the join.
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [true],
+        );
+        // Retention purges the finished task and its letters; the flag stays.
+        yield* sql`DELETE FROM ft3_mail_letters WHERE task_id = 'task:implement'`;
+        yield* sql`DELETE FROM ft3_mail_tasks WHERE task_id = 'task:implement'`;
+        assert.deepStrictEqual(
+          yield* sql<{ readonly letter_id: string }>`SELECT letter_id FROM ft3_mail_letters`,
+          [],
+        );
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [true],
+        );
+        assert.isNotNull(
+          (yield* sql<{ readonly implement_started_at: string | null }>`
+              SELECT implement_started_at FROM ft3_board_card_plans WHERE card_id = ${cardId}
+            `)[0]?.implement_started_at,
+        );
+      }),
+    ),
+  );
+
+  it("evicts the oldest step counts past the cap and refreshes recency in place", () => {
+    const cache = new Map<string, PlanService.StepCountEntry>();
+    const entry = (n: number): PlanService.StepCountEntry => ({
+      fingerprint: `fp${n}`,
+      sha256: `sha${n}`,
+      stepCount: n,
+    });
+    PlanService.storeStepCount(cache, "a", entry(1), 2);
+    PlanService.storeStepCount(cache, "b", entry(2), 2);
+    PlanService.storeStepCount(cache, "c", entry(3), 2);
+    assert.deepStrictEqual([...cache.keys()], ["b", "c"]);
+    PlanService.storeStepCount(cache, "b", entry(20), 2);
+    PlanService.storeStepCount(cache, "d", entry(4), 2);
+    assert.deepStrictEqual([...cache.keys()], ["b", "d"]);
+    assert.equal(cache.get("b")?.stepCount, 20);
+  });
+
   it.effect("refuses to flag a card while planning is off and creates nothing", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {

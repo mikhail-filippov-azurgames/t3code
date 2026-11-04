@@ -172,6 +172,38 @@ export class PlanService extends Context.Service<
   }
 >()("@t3tools/ft3-board/PlanService") {}
 
+/** A cached step count with the signals that produced it. */
+export interface StepCountEntry {
+  readonly fingerprint: string;
+  readonly sha256: string;
+  readonly stepCount: number;
+}
+
+/** Bound on cached step counts; the oldest entry is evicted past the cap. */
+export const MAX_CACHED_STEP_COUNTS = 500;
+
+/**
+ * Stores a step count in place, refreshing recency of a re-stored key and
+ * evicting the oldest entries past the cap. The cap alone bounds the cache;
+ * no per-list scan of the plans table is needed.
+ */
+export const storeStepCount = (
+  cache: Map<string, StepCountEntry>,
+  planDocId: string,
+  entry: StepCountEntry,
+  cap: number = MAX_CACHED_STEP_COUNTS,
+): void => {
+  if (cache.has(planDocId)) cache.delete(planDocId);
+  else {
+    while (cache.size >= cap) {
+      const oldest = cache.keys().next();
+      if (oldest.done) break;
+      cache.delete(oldest.value);
+    }
+  }
+  cache.set(planDocId, entry);
+};
+
 const make = Effect.fn("PlanService.make")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const docs = yield* DocsServer.DocsService;
@@ -475,36 +507,36 @@ const make = Effect.fn("PlanService.make")(function* () {
   );
 
   /** Step counts by plan document, keyed by the digest the count was parsed from. */
-  const stepCounts = yield* Ref.make(
-    new Map<string, { fingerprint: string; sha256: string; stepCount: number }>(),
-  );
+  const stepCounts = yield* Ref.make(new Map<string, StepCountEntry>());
 
   /**
-   * Cards with at least one plan.phase=implement letter on their mail task.
-   * The mail tables live in the same database; one batched read, no package
-   * dependency.
+   * Cards among the candidates with an implement letter on their mail task.
+   * Bounded by the selected cards: an EXISTS per task through the
+   * `letters(task_id, plan_phase)` index, no DISTINCT scan, no package dep.
    */
-  const queryImplementedCardIds = Effect.fn("PlanService.implementedCardIds")(function* (
+  const queryNewlyImplementedCardIds = Effect.fn("PlanService.newlyImplementedCardIds")(function* (
     cardIds: ReadonlyArray<string>,
   ) {
     if (cardIds.length === 0) return new Set<string>();
     // Board-only compositions (tests, MCP) never migrate the mail tables;
     // without them no implement letter can exist.
     const tables = yield* sql<{ readonly name: string }>`
-      SELECT name FROM sqlite_master
-      WHERE type = 'table' AND name IN ('ft3_mail_tasks', 'ft3_mail_letters')
-    `;
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN ('ft3_mail_tasks', 'ft3_mail_letters')
+      `;
     if (tables.length < 2) return new Set<string>();
     const rows = yield* sql<{ readonly card_id: string }>`
-      SELECT DISTINCT t.card_id
-      FROM ft3_mail_tasks AS t
-      JOIN ft3_mail_letters AS l ON l.task_id = t.task_id
-      WHERE t.card_id IN ${sql.in(cardIds)} AND l.plan_phase = 'implement'
-    `;
+        SELECT t.card_id
+        FROM ft3_mail_tasks AS t
+        WHERE t.card_id IN ${sql.in(cardIds)} AND EXISTS (
+          SELECT 1 FROM ft3_mail_letters AS l
+          WHERE l.task_id = t.task_id AND l.plan_phase = 'implement'
+        )
+      `;
     return new Set(rows.map((row) => row.card_id));
   });
-  const implementedCardIds = (cardIds: ReadonlyArray<string>) =>
-    queryImplementedCardIds(cardIds).pipe(Effect.mapError(storeFailure("")));
+  const newlyImplementedCardIds = (cardIds: ReadonlyArray<string>) =>
+    queryNewlyImplementedCardIds(cardIds).pipe(Effect.mapError(storeFailure("")));
 
   /**
    * Cheap change fingerprint of a plan document from its filesystem stat,
@@ -522,6 +554,7 @@ const make = Effect.fn("PlanService.make")(function* () {
     readonly state: PlanningContracts.PlanState;
     readonly plan_doc_id: string;
     readonly planner_thread_id: string | null;
+    readonly implement_started_at: string | null;
     readonly title: string;
   }
 
@@ -550,25 +583,20 @@ const make = Effect.fn("PlanService.make")(function* () {
       Effect.map((read) => ({ content: read.content, sha256: read.sha256 })),
       Effect.orElseSucceed(() => null),
     );
+    const cache = yield* Ref.get(stepCounts);
     if (document === null) {
-      yield* Ref.update(stepCounts, (cache) => {
-        const next = new Map(cache);
-        next.delete(row.plan_doc_id);
-        return next;
-      });
+      cache.delete(row.plan_doc_id);
       return summarize(0);
     }
     const stepCount =
       cached !== undefined && cached.sha256 === document.sha256
         ? cached.stepCount
         : countPlanSteps(document.content);
-    yield* Ref.update(stepCounts, (cache) =>
-      new Map(cache).set(row.plan_doc_id, {
-        fingerprint: stamp,
-        sha256: document.sha256,
-        stepCount,
-      }),
-    );
+    storeStepCount(cache, row.plan_doc_id, {
+      fingerprint: stamp,
+      sha256: document.sha256,
+      stepCount,
+    });
     return summarize(stepCount);
   });
 
@@ -577,18 +605,33 @@ const make = Effect.fn("PlanService.make")(function* () {
   }) {
     if (input.cardIds.length === 0) return [];
     const rows = yield* sql<SummaryRow>`
-      SELECT p.card_id, p.state, p.plan_doc_id, p.planner_thread_id, c.title
+      SELECT p.card_id, p.state, p.plan_doc_id, p.planner_thread_id,
+             p.implement_started_at, c.title
       FROM ft3_board_card_plans AS p
       JOIN ft3_board_cards AS c ON c.card_id = p.card_id
       WHERE p.card_id IN ${sql.in(input.cardIds)}
       ORDER BY p.card_id
     `.pipe(Effect.mapError(storeFailure("")));
     if (rows.length === 0) return [];
-    const cardIds = rows.map((row) => row.card_id);
-    const implemented = yield* implementedCardIds(cardIds);
-    return yield* Effect.forEach(rows, (row) => summaryOf(row, implemented.has(row.card_id)), {
-      concurrency: 8,
-    });
+    // The persisted flag survives mail retention purges, which delete the
+    // implement letters the flag used to derive from. The join below runs only
+    // for plans whose flag is not yet set and backfills it when one is found;
+    // writes stay in the board package, the mail side never touches plan rows.
+    const unset = rows.filter((row) => row.implement_started_at === null);
+    const found = yield* newlyImplementedCardIds(unset.map((row) => row.card_id));
+    if (found.size > 0) {
+      const at = yield* nowIso;
+      yield* sql`UPDATE ft3_board_card_plans SET implement_started_at = ${at}
+        WHERE card_id IN ${sql.in([...found])} AND implement_started_at IS NULL`.pipe(
+        Effect.mapError(storeFailure("")),
+        Effect.asVoid,
+      );
+    }
+    return yield* Effect.forEach(
+      rows,
+      (row) => summaryOf(row, row.implement_started_at !== null || found.has(row.card_id)),
+      { concurrency: 8 },
+    );
   });
 
   return PlanService.of({
