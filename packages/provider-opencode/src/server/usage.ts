@@ -48,7 +48,14 @@ function parseOpenCodeMessage(
   const usage = object(message.tokens);
   const cache = object(usage.cache);
   const modelReference = object(message.model);
-  const model = text(modelReference.id) || text(modelReference.modelID) || text(message.modelID);
+  const idText = text(modelReference.id);
+  const model = idText || text(modelReference.modelID) || text(message.modelID);
+  const providerID = text(modelReference.providerID) || text(message.providerID);
+  // model.id may carry the provider prefix itself; rateModel wants the bare model ID.
+  const bareModelID =
+    text(modelReference.modelID) ||
+    text(message.modelID) ||
+    (idText.includes("/") ? idText.slice(idText.lastIndexOf("/") + 1) : idText);
   const timestampMs = object(message.time).created ?? fallback.timestampMs;
   if (!model || typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) return null;
   const reasoningTokens = tokens(usage.reasoning);
@@ -71,6 +78,10 @@ function parseOpenCodeMessage(
     // OpenCode uses zero for unknown rates, including paid subscriptions; let shared pricing estimate.
     reportedCostUsd: typeof cost === "number" && Number.isFinite(cost) && cost > 0 ? cost : null,
     speed: "standard",
+    // The provider prefix picks the right catalog rates; model alone can be a bare ID shared by providers.
+    ...(providerID.length > 0 && bareModelID.length > 0
+      ? { rateModel: `${providerID}/${bareModelID}` }
+      : {}),
     dedupeKey: id ? `opencode:${id}` : null,
   };
 }

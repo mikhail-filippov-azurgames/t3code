@@ -14,10 +14,18 @@ export interface TokenRates {
   readonly cacheCreationCostPerToken: number;
 }
 
+export interface ContextTierRates {
+  // The tier bills requests whose input context exceeds this many tokens.
+  readonly aboveTokens: number;
+  readonly rates: TokenRates;
+}
+
 /** Omits LiteLLM's above_272k_tokens, flex and batches variants, which transcripts do not record. */
 export interface ModelRate extends TokenRates {
   readonly fast: TokenRates | null;
   readonly ultrafast: TokenRates | null;
+  // Descending by aboveTokens; absent for LiteLLM-sourced rates.
+  readonly contextTiers?: ReadonlyArray<ContextTierRates>;
 }
 
 export type RateTable = ReadonlyMap<string, ModelRate>;
@@ -167,8 +175,17 @@ function mergeAliasRate(a: ModelRate, b: ModelRate): ModelRate | null {
   return { ...a, fast, ultrafast };
 }
 
-function ratesAt(rate: ModelRate, speed: UsageSpeed): TokenRates {
-  return (speed === "standard" ? null : rate[speed]) ?? rate;
+function ratesAt(rate: ModelRate, speed: UsageSpeed, contextTokens = 0): TokenRates {
+  if (speed !== "standard") return rate[speed] ?? rate;
+  for (const tier of rate.contextTiers ?? []) {
+    if (contextTokens > tier.aboveTokens) return tier.rates;
+  }
+  return rate;
+}
+
+// A request's input context is its whole prompt: fresh, cache-read, and cache-written tokens.
+function inputContextTokens(totals: UsageTokenTotals): number {
+  return totals.uncachedInputTokens + totals.cachedInputTokens + totals.cacheCreationTokens;
 }
 
 function normalizeRateKey(model: string): string {
@@ -199,6 +216,9 @@ const UNPRICEABLE_MODELS = new Set([
 // Immutable tables permit caching rates across twice-per-record pricing lookups.
 const resolvedRates = new WeakMap<RateTable, Map<string, ModelRate | null>>();
 
+// OpenCode tables resolve provider-prefixed names against OpenCode's own zen rates first.
+const resolvedOpenCodeRates = new WeakMap<RateTable, Map<string, ModelRate | null>>();
+
 export function lookupRate(table: RateTable, model: string): ModelRate | null {
   let resolved = resolvedRates.get(table);
   if (resolved === undefined) {
@@ -211,6 +231,38 @@ export function lookupRate(table: RateTable, model: string): ModelRate | null {
     resolved.set(model, rate);
   }
   return rate;
+}
+
+// opencode-go sessions bill at the catalog's zen ("opencode") rates, which models.dev
+// keeps in step with OpenCode's actual charges; provider-specific entries are the fallback.
+export function lookupOpenCodeRate(table: RateTable, model: string): ModelRate | null {
+  let resolved = resolvedOpenCodeRates.get(table);
+  if (resolved === undefined) {
+    resolved = new Map();
+    resolvedOpenCodeRates.set(table, resolved);
+  }
+  let rate = resolved.get(model);
+  if (rate === undefined) {
+    rate = resolveOpenCodeRate(table, model);
+    resolved.set(model, rate);
+  }
+  return rate;
+}
+
+function resolveOpenCodeRate(table: RateTable, model: string): ModelRate | null {
+  const key = stripVariantSuffix(normalizeRateKey(model));
+  if (key.length === 0 || UNPRICEABLE_MODELS.has(bareModelName(key))) return null;
+  const candidates =
+    key === "opencode" || key.startsWith("opencode/")
+      ? [key]
+      : key.startsWith("opencode-go/")
+        ? [`opencode/${key.slice("opencode-go/".length)}`, key]
+        : [key, `opencode/${bareModelName(key)}`];
+  for (const candidate of candidates) {
+    const rate = table.get(candidate);
+    if (rate !== undefined) return rate;
+  }
+  return null;
 }
 
 function resolveRate(table: RateTable, model: string): ModelRate | null {
@@ -250,6 +302,7 @@ export function priceUsage(
   table: RateTable,
   record: PricedRecord,
   overrides?: RateTable,
+  openCodeRates?: RateTable,
 ): PricedUsage {
   const { model, totals, reportedCostUsd } = record;
   const override = overrides?.get(model.trim());
@@ -263,12 +316,17 @@ export function priceUsage(
     categoryCostUsd: null,
     speedPremiumUsd: 0,
   });
-  const rate = override ?? lookupRate(table, record.rateModel ?? model);
+  const lookupKey = record.rateModel ?? model;
+  const rate =
+    override ??
+    (openCodeRates === undefined
+      ? lookupRate(table, lookupKey)
+      : lookupOpenCodeRate(openCodeRates, lookupKey));
   if (rate === null) {
     return reported === null ? unsplit(0, "unpriced") : unsplit(reported, "providerReported");
   }
 
-  const listCost = costByCategory(totals, ratesAt(rate, record.speed));
+  const listCost = costByCategory(totals, ratesAt(rate, record.speed, inputContextTokens(totals)));
   const listCostUsd = sumCategories(listCost);
   if (reported !== null && listCostUsd <= 0) return unsplit(reported, "providerReported");
   const premiumUsd =
@@ -291,10 +349,15 @@ export function cacheSavingsUsd(
   table: RateTable,
   record: PricedRecord,
   overrides?: RateTable,
+  openCodeRates?: RateTable,
 ): number {
+  const lookupKey = record.rateModel ?? record.model;
   const rate =
-    overrides?.get(record.model.trim()) ?? lookupRate(table, record.rateModel ?? record.model);
+    overrides?.get(record.model.trim()) ??
+    (openCodeRates === undefined
+      ? lookupRate(table, lookupKey)
+      : lookupOpenCodeRate(openCodeRates, lookupKey));
   if (rate === null) return 0;
-  const rates = ratesAt(rate, record.speed);
+  const rates = ratesAt(rate, record.speed, inputContextTokens(record.totals));
   return record.totals.cachedInputTokens * (rates.inputCostPerToken - rates.cacheReadCostPerToken);
 }

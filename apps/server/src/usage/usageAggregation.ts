@@ -67,6 +67,7 @@ export interface AggregateOptions {
   readonly sinceDay: string;
   readonly untilDay: string;
   readonly rates: RateTable;
+  readonly openCodeRates?: RateTable;
   readonly priceOverrides?: RateTable;
   readonly modelAliases?: ReadonlyMap<string, string>;
   readonly modelFilter?: UsageModelFilter;
@@ -198,7 +199,13 @@ export class UsageAggregator {
         : Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / HOUR_MS);
     const bucket = this.#bucketFor(day, hourIndex, record.provider, record.model, sourcePath ?? "");
 
-    const priced = priceUsage(this.#options.rates, record, this.#options.priceOverrides);
+    const openCodeRates = record.provider === "opencode" ? this.#options.openCodeRates : undefined;
+    const priced = priceUsage(
+      this.#options.rates,
+      record,
+      this.#options.priceOverrides,
+      openCodeRates,
+    );
 
     const totals = bucket.totals;
     totals.uncachedInputTokens += record.totals.uncachedInputTokens;
@@ -227,6 +234,7 @@ export class UsageAggregator {
       this.#options.rates,
       record,
       this.#options.priceOverrides,
+      openCodeRates,
     );
     bucket.records += 1;
     if (priced.costSource === "unpriced") bucket.unpricedRecords += 1;

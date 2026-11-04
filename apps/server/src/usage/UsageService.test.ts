@@ -1757,6 +1757,109 @@ describe("UsageService", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.live("prices OpenCode records from the on-disk OpenCode catalog, tiers included", () =>
+    Effect.gen(function* () {
+      const { settings, home } = yield* setup;
+      const root = NodePath.join(home, "opencode");
+      const cacheDir = NodePath.join(home, "xdg-cache");
+      const created = Date.parse("2026-08-01T10:00:00Z");
+      const message = (id: string, data: Record<string, unknown>) =>
+        encodeUnknownJsonString({ id, sessionID: "session-1", time: { created }, ...data });
+      yield* Effect.promise(async () => {
+        const directory = NodePath.join(root, "storage", "message", "session-1");
+        await NodeFSP.mkdir(directory, { recursive: true });
+        await NodeFSP.mkdir(NodePath.join(cacheDir, "opencode"), { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(directory, "haiku.json"),
+          message("haiku", {
+            role: "assistant",
+            model: { id: "claude-haiku-5-5", providerID: "opencode-go" },
+            tokens: { input: 50_000, output: 10_000, cache: { read: 60_000, write: 0 } },
+          }),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(directory, "flash.json"),
+          message("flash", {
+            role: "assistant",
+            providerID: "opencode-go",
+            modelID: "deepseek-v4.1-flash",
+            tokens: { input: 1_000, output: 500 },
+          }),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(directory, "unknown.json"),
+          message("unknown", {
+            role: "assistant",
+            providerID: "opencode-go",
+            modelID: "not-in-catalog",
+            tokens: { input: 100, output: 50 },
+          }),
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(cacheDir, "opencode", "models.json"),
+          JSON.stringify({
+            opencode: {
+              id: "opencode",
+              models: {
+                "claude-haiku-5-5": {
+                  cost: {
+                    input: 0.1,
+                    output: 0.5,
+                    cache_read: 0.01,
+                    cache_write: 0.125,
+                    tiers: [
+                      {
+                        input: 0.5,
+                        output: 2.5,
+                        cache_read: 0.05,
+                        cache_write: 0.625,
+                        tier: { type: "context", size: 100_000 },
+                      },
+                    ],
+                  },
+                },
+                "deepseek-v4.1-flash": {
+                  cost: { input: 0.3, output: 1.2, cache_read: 0.006 },
+                },
+              },
+            },
+            "opencode-go": {
+              id: "opencode-go",
+              models: {
+                "deepseek-v4.1-flash": {
+                  cost: { input: 0.15, output: 0.6, cache_read: 0.003 },
+                },
+              },
+            },
+          }),
+        );
+      });
+      const service = yield* UsageService.make.pipe(
+        Effect.provide(
+          layerService({
+            prefix: "usage-service-opencode-pricing",
+            home,
+            environment: { XDG_CACHE_HOME: cacheDir },
+            settings,
+          }),
+        ),
+      );
+      const summary = yield* service.readSummary(WINDOW);
+      const byModel = new Map(summary.buckets.map((bucket) => [bucket.model, bucket]));
+      // 110k-token prompt crosses Haiku's 100k tier: 50k*0.5 + 60k*0.05 + 10k*2.5 per 1M.
+      const haiku = byModel.get("claude-haiku-5-5");
+      assert.strictEqual(haiku?.costSource, "modelPriced");
+      assert.closeTo(haiku?.costUsd ?? NaN, 0.053, 1e-12);
+      // opencode-go bills Flash at zen rates even though its own catalog entry is cheaper.
+      const flash = byModel.get("deepseek-v4.1-flash");
+      assert.strictEqual(flash?.costSource, "modelPriced");
+      assert.closeTo(flash?.costUsd ?? NaN, 0.0009, 1e-12);
+      const unknown = byModel.get("not-in-catalog");
+      assert.strictEqual(unknown?.costSource, "unpriced");
+      assert.strictEqual(unknown?.unpricedRecords, 1);
+    }).pipe(Effect.scoped),
+  );
+
   it.live("includes host and merged OpenCode instance histories once across list aliases", () =>
     Effect.gen(function* () {
       const { settings, home } = yield* setup;

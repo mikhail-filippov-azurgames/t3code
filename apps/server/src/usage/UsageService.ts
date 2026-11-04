@@ -41,6 +41,7 @@ import type {
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
 import { canonicalModelFilter, resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
+import { openCodeCatalogCandidates, parseOpenCodeCatalog } from "./opencodePricing.ts";
 import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
 import {
   listTranscriptFiles,
@@ -101,6 +102,7 @@ const RatesCacheFile = Schema.Struct({
 });
 const decodeRatesCache = Schema.decodeUnknownEffect(Schema.fromJsonString(RatesCacheFile));
 const encodeRatesCache = Schema.encodeEffect(Schema.fromJsonString(RatesCacheFile));
+const decodeOpenCodeCatalogJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 const ScanCacheJson = Schema.fromJsonString(Schema.Unknown);
 const decodeScanCacheFile = Schema.decodeUnknownEffect(ScanCacheJson);
@@ -215,6 +217,52 @@ export const make = Effect.gen(function* () {
   let ratesStatus: UsagePricing["status"] = "unavailable";
   const ratesLock = yield* Semaphore.make(1);
 
+  const homeDirectory = yield* HostProcess.HomeDirectory;
+  const platform = yield* HostProcess.Platform;
+  let openCodeRates: RateTable | undefined;
+  let openCodeCatalogStamp: {
+    readonly path: string;
+    readonly mtimeMs: number;
+    readonly size: number;
+  } | null = null;
+
+  // The OpenCode catalog is a local cache the CLI refreshes; reparse only when it changes.
+  const loadOpenCodeRates = Effect.fnUntraced(function* () {
+    for (const candidate of openCodeCatalogCandidates(hostEnvironment, homeDirectory, platform)) {
+      const info = yield* fileSystem.stat(candidate).pipe(Effect.option);
+      if (Option.isNone(info) || info.value.type !== "File") continue;
+      const mtimeMs = Option.match(info.value.mtime, {
+        onNone: () => 0,
+        onSome: (mtime) => mtime.getTime(),
+      });
+      const size = Number(info.value.size);
+      if (
+        openCodeRates !== undefined &&
+        openCodeCatalogStamp !== null &&
+        openCodeCatalogStamp.path === candidate &&
+        openCodeCatalogStamp.mtimeMs === mtimeMs &&
+        openCodeCatalogStamp.size === size
+      ) {
+        return;
+      }
+      const raw = yield* fileSystem
+        .readFileString(candidate)
+        .pipe(Effect.catchCause(() => Effect.succeed(null)));
+      if (raw === null) continue;
+      const document = yield* decodeOpenCodeCatalogJson(raw).pipe(
+        Effect.catchCause(() => Effect.succeed(null)),
+      );
+      if (document !== null) {
+        const parsed = parseOpenCodeCatalog(document);
+        if (parsed.size > 0) {
+          openCodeRates = parsed;
+          openCodeCatalogStamp = { path: candidate, mtimeMs, size };
+        }
+      }
+      return;
+    }
+  });
+
   const pricing = (): UsagePricing => ({
     status: ratesStatus,
     source: LITELLM_RATES_URL,
@@ -236,6 +284,7 @@ export const make = Effect.gen(function* () {
     );
 
   const loadRates = Effect.fn("UsageService.loadRates")(function* (force: boolean) {
+    yield* loadOpenCodeRates();
     const now = yield* Clock.currentTimeMillis;
     const maxAgeMs = force ? RATES_REFRESH_FLOOR_MS : RATES_TTL_MS;
     if (ratesFetchedAtMs !== null && now - ratesFetchedAtMs < maxAgeMs) return;
@@ -727,6 +776,7 @@ export const make = Effect.gen(function* () {
       resolution: input.resolution ?? "day",
       ...hourlyWindow,
       rates,
+      ...(openCodeRates === undefined ? {} : { openCodeRates }),
       priceOverrides: createOverrideRateTable({
         ...kimiPriceOverrides,
         ...settings.usagePriceOverrides,

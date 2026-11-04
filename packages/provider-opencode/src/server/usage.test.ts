@@ -136,6 +136,49 @@ describe("readOpenCodeUsage", () => {
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("keeps the provider prefix on rateModel so pricing can pick catalog rates", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const dir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "usage-reader-test-" });
+      const db = yield* openDatabase(path.join(dir, "opencode.db"));
+      yield* db.unsafe("CREATE TABLE message (id TEXT, session_id TEXT, data TEXT)");
+      const insert = (id: string, data: unknown) =>
+        db.unsafe("INSERT INTO message VALUES (?, ?, ?)", [id, "session-1", JSON.stringify(data)]);
+      yield* insert("msg-fields", {
+        role: "assistant",
+        providerID: "opencode-go",
+        modelID: "deepseek-v4.1-flash",
+        time: { created: 1780000000000 },
+        tokens: { input: 100, output: 20 },
+      });
+      yield* insert("msg-object", {
+        role: "assistant",
+        model: { id: "claude-haiku-5-5", providerID: "opencode-go" },
+        time: { created: 1780000000000 },
+        tokens: { input: 100, output: 20 },
+      });
+      yield* insert("msg-bare", {
+        role: "assistant",
+        modelID: "claude-sonnet-4-5",
+        time: { created: 1780000000000 },
+        tokens: { input: 100, output: 20 },
+      });
+
+      const result = yield* readOpenCodeUsage(dir, 0);
+      assert.isFalse(result.error);
+      const records = result.files.flatMap((file) => file.records);
+      assert.deepStrictEqual(
+        records.map((record) => [record.model, record.rateModel ?? null]),
+        [
+          ["deepseek-v4.1-flash", "opencode-go/deepseek-v4.1-flash"],
+          ["claude-haiku-5-5", "opencode-go/claude-haiku-5-5"],
+          ["claude-sonnet-4-5", null],
+        ],
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("reads only legacy OpenCode messages written since the window opened", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
