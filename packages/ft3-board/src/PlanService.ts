@@ -4,6 +4,7 @@ import * as NodeURL from "node:url";
 
 import { ThreadId } from "@t3tools/contracts";
 import { docLinkOf } from "@t3tools/ft3-docs/contracts";
+import { readDocsSettings } from "@t3tools/ft3-docs/root";
 import * as DocsServer from "@t3tools/ft3-docs/server";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import * as Context from "effect/Context";
@@ -16,11 +17,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as Contracts from "./contracts.ts";
 import * as PlanningContracts from "./planningContracts.ts";
-import { validatePlan } from "./planValidation.ts";
-
-const DEFAULT_PLANS_FOLDER = "corvis/plans";
+import { countPlanSteps, validatePlan } from "./planValidation.ts";
 const PLAN_TEMPLATE_URL = new URL("../assets/plan-template.md", import.meta.url);
 
 export const PlanErrorCode = Schema.Literals([
@@ -160,6 +160,11 @@ export class PlanService extends Context.Service<
     readonly planStableIdOfPlannerThread: (
       threadId: string,
     ) => Effect.Effect<string | null, PlanError>;
+    /** One small summary per planned card, for the board card list response. */
+    readonly listSummaries: () => Effect.Effect<
+      ReadonlyArray<Contracts.BoardCardPlanSummary>,
+      PlanError
+    >;
   }
 >()("@t3tools/ft3-board/PlanService") {}
 
@@ -169,6 +174,12 @@ const make = Effect.fn("PlanService.make")(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectStoreV2;
   const gate = yield* FeatureGate.FeatureGate;
+  const serverSettings = yield* ServerSettingsService;
+  // Snapshot of the setting at layer build, like the docs root: an id-addressed
+  // plan survives a folder change, only new plan documents land in the new folder.
+  const plansFolder = readDocsSettings(
+    (yield* serverSettings.getSettings.pipe(Effect.orDie)).ft3,
+  ).plansFolder;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const storeFailure = (cardId: string) => (cause: unknown) =>
@@ -262,7 +273,7 @@ const make = Effect.fn("PlanService.make")(function* () {
           threadId: orchestratorId,
           parentThreadId: shell.lineage.parentThreadId,
         },
-        relPath: `${DEFAULT_PLANS_FOLDER}/${slug}/${cardId}.md`,
+        relPath: `${plansFolder}/${slug}/${cardId}.md`,
         content: renderPlan(template, cardId, title),
         clientRequestId: `plan:${cardId}`,
       })
@@ -459,6 +470,43 @@ const make = Effect.fn("PlanService.make")(function* () {
     },
   );
 
+  const listSummaries = Effect.fn("PlanService.listSummaries")(function* () {
+    const rows = yield* sql<{
+      readonly card_id: string;
+      readonly state: PlanningContracts.PlanState;
+      readonly plan_doc_id: string;
+      readonly planner_thread_id: string | null;
+      readonly title: string;
+    }>`
+      SELECT p.card_id, p.state, p.plan_doc_id, p.planner_thread_id, c.title
+      FROM ft3_board_card_plans AS p
+      JOIN ft3_board_cards AS c ON c.card_id = p.card_id
+      ORDER BY p.card_id
+    `.pipe(Effect.mapError(storeFailure("")));
+    return yield* Effect.forEach(
+      rows,
+      (row) =>
+        Effect.gen(function* () {
+          // A missing plan document still reports its state; the step count
+          // stays zero so one broken plan cannot fail the whole card list.
+          const content = yield* docs.read({ ref: docLinkOf(row.plan_doc_id) }).pipe(
+            Effect.map((document) => document.content),
+            Effect.orElseSucceed(() => null),
+          );
+          return {
+            cardId: Contracts.BoardCardId.make(row.card_id),
+            planDocId: row.plan_doc_id,
+            title: row.title,
+            status: row.state,
+            stepCount: content === null ? 0 : countPlanSteps(content),
+            plannerThreadId:
+              row.planner_thread_id === null ? null : ThreadId.make(row.planner_thread_id),
+          } satisfies Contracts.BoardCardPlanSummary;
+        }),
+      { concurrency: 8 },
+    );
+  });
+
   return PlanService.of({
     get: Effect.fn("PlanService.get")((cardId) => selectRecord(cardId)),
     require: requirePlan,
@@ -471,6 +519,7 @@ const make = Effect.fn("PlanService.make")(function* () {
     withdraw,
     bindPlannerThread,
     planStableIdOfPlannerThread,
+    listSummaries,
   });
 });
 

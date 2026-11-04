@@ -3,8 +3,14 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import { ProjectId, ThreadId, type OrchestrationProjectShell } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  ProjectId,
+  ThreadId,
+  type OrchestrationProjectShell,
+} from "@t3tools/contracts";
 import { docLinkOf } from "@t3tools/ft3-docs/contracts";
+import { DEFAULT_PLANS_FOLDER } from "@t3tools/ft3-docs/root";
 import * as DocsServer from "@t3tools/ft3-docs/server";
 import { migrations as docsMigrations } from "@t3tools/ft3-docs/migrations";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
@@ -18,6 +24,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as Contracts from "./contracts.ts";
 import { migrations as boardMigrations } from "./migrations.ts";
 import * as PlanGate from "./PlanGate.ts";
@@ -35,6 +42,8 @@ export interface PlanTestOptions {
   readonly childLead?: boolean;
   /** The project title for the plan folder; null when the project row is gone. */
   readonly projectTitle?: string | null;
+  /** Overrides `ft3.docs.plansFolder` for the plan service. */
+  readonly plansFolder?: string;
 }
 
 export type PlanTestServices =
@@ -112,6 +121,19 @@ const prepareSchema = Effect.gen(function* () {
   });
 });
 
+const settingsLayer = (options: PlanTestOptions) =>
+  Layer.mock(ServerSettingsService)({
+    getSettings: Effect.succeed({
+      ...DEFAULT_SERVER_SETTINGS,
+      ft3: {
+        docs: {
+          root: null,
+          plansFolder: options.plansFolder ?? DEFAULT_PLANS_FOLDER,
+        },
+      },
+    }),
+  });
+
 const testLayer = (root: string, options: PlanTestOptions) => {
   const sql = NodeSqliteClient.layer({ filename: ":memory:" });
   const base = Layer.mergeAll(
@@ -120,6 +142,7 @@ const testLayer = (root: string, options: PlanTestOptions) => {
     threadsLayer(options),
     projectsLayer(options),
     featureGateLayer(options.planning ?? true),
+    settingsLayer(options),
   );
   const docs = DocsServer.docsServiceLayer({ root }).pipe(
     Layer.provide(DocsServer.lineageDocumentsWrite),

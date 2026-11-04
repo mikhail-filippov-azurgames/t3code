@@ -50,7 +50,7 @@ export class BoardService extends Context.Service<
     ) => Effect.Effect<Contracts.BoardOrchestratorResendBriefResult, Contracts.BoardMcpFailure>;
     readonly listBoard: (
       input: Contracts.BoardListInput,
-    ) => Effect.Effect<Contracts.BoardListResult, Contracts.BoardMcpFailure>;
+    ) => Effect.Effect<Contracts.BoardListWithoutPlans, Contracts.BoardMcpFailure>;
     readonly resolveCards: (
       input: Contracts.BoardCardResolveInput,
     ) => Effect.Effect<Contracts.BoardCardResolveResult, Contracts.BoardMcpFailure>;

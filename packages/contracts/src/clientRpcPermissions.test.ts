@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { AuthSettingsWriteScope } from "./auth.ts";
+import { AuthOrchestrationReadScope, AuthSettingsWriteScope } from "./auth.ts";
 import {
   CLIENT_GUARDED_RPC_SCOPES,
   FT3_CLIENT_GUARDED_RPC_SCOPES,
@@ -15,6 +15,10 @@ describe("clientRpcRequiredScopes", () => {
     expect(clientRpcRequiredScopes("policies.setFeature", undefined)).toEqual([
       AuthSettingsWriteScope,
     ]);
+  });
+
+  it("guards the docs read with orchestration:read", () => {
+    expect(clientRpcRequiredScopes("docs.read", undefined)).toEqual([AuthOrchestrationReadScope]);
   });
 
   it("keeps the ft3 policies methods out of the upstream server scope map", () => {

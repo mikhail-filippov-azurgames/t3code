@@ -1,4 +1,7 @@
+import { TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+
+import { DocSha256 } from "@t3tools/ft3-docs/contracts";
 
 export const PLAN_STATES = [
   "required",
@@ -26,6 +29,25 @@ export const PlanVersionPhase = Schema.Literals([
   "accepted",
 ]);
 export type PlanVersionPhase = typeof PlanVersionPhase.Type;
+
+/**
+ * A plan step cited by an implement letter or the plan viewer: which document,
+ * which step, which accepted version, and the short quoted text (at most 200
+ * characters) the citation rests on.
+ */
+export const PlanCitationQuote = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(200),
+);
+export type PlanCitationQuote = typeof PlanCitationQuote.Type;
+
+export const PlanCitation = Schema.Struct({
+  planDocId: TrimmedNonEmptyString,
+  planStep: TrimmedNonEmptyString,
+  planSha256: DocSha256,
+  quote: PlanCitationQuote,
+});
+export type PlanCitation = typeof PlanCitation.Type;
 
 export const PlanRecord = Schema.Struct({
   cardId: Schema.String,

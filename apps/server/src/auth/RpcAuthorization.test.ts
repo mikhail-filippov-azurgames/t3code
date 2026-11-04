@@ -30,9 +30,20 @@ import {
 } from "./RpcAuthorization.ts";
 import * as RpcAuthorization from "./RpcAuthorization.ts";
 
+/**
+ * Upstream group tags for the `omit` filters below: RPC_REQUIRED_SCOPES also
+ * names the fork-owned "docs.read" (design §6.3), which the upstream group
+ * does not declare.
+ */
+type UpstreamRpcMethod = Exclude<keyof typeof RPC_REQUIRED_SCOPES, "docs.read">;
+
 describe("RPC authorization scopes", () => {
   it("declares exactly one scope for every RPC in the server group", () => {
-    expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(new Set(WsRpcGroup.requests.keys()));
+    // "docs.read" is fork-owned (design §6.3): it joins the server group
+    // through CLIENT_GUARDED_RPC_SCOPES, so the upstream group alone does not name it.
+    expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(
+      new Set([...WsRpcGroup.requests.keys(), "docs.read"]),
+    );
   });
 
   it("keeps webhook delivery logs, which hold request bodies, behind operate scope", () => {
@@ -74,6 +85,10 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("keeps the fork-owned docs read behind orchestration:read", () => {
+    expect(requiredScopeForRpcMethod("docs.read")).toBe(AuthOrchestrationReadScope);
+  });
+
   it("rejects unknown RPC method names", () => {
     for (const method of ["server.notRegistered", "toString", "constructor"]) {
       expect(() => requiredScopeForRpcMethod(method)).toThrow(
@@ -101,7 +116,7 @@ describe("RPC scope middleware", () => {
   const tested = [WS_METHODS.serverProbe, WS_METHODS.serverRetryResourceTelemetry] as const;
   const group = WsRpcGroup.omit(
     ...[...WsRpcGroup.requests.keys()].filter(
-      (tag): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, (typeof tested)[number]> =>
+      (tag): tag is Exclude<UpstreamRpcMethod, (typeof tested)[number]> =>
         !(tested as ReadonlyArray<string>).includes(tag),
     ),
   );
@@ -197,9 +212,7 @@ it.effect.each([WS_METHODS.subscribeVcsBranch, WS_METHODS.subscribeVcsStatus] as
 describe("settings mutation authorization", () => {
   const group = WsRpcGroup.omit(
     ...[...WsRpcGroup.requests.keys()].filter(
-      (
-        tag,
-      ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.serverUpdateSettings> =>
+      (tag): tag is Exclude<UpstreamRpcMethod, typeof WS_METHODS.serverUpdateSettings> =>
         tag !== WS_METHODS.serverUpdateSettings,
     ),
   );
@@ -299,12 +312,8 @@ it.effect("requires task permission before attaching a prepared worktree to a th
   Effect.gen(function* () {
     const group = WsRpcGroup.omit(
       ...[...WsRpcGroup.requests.keys()].filter(
-        (
-          tag,
-        ): tag is Exclude<
-          keyof typeof RPC_REQUIRED_SCOPES,
-          typeof WS_METHODS.gitPreparePullRequestThread
-        > => tag !== WS_METHODS.gitPreparePullRequestThread,
+        (tag): tag is Exclude<UpstreamRpcMethod, typeof WS_METHODS.gitPreparePullRequestThread> =>
+          tag !== WS_METHODS.gitPreparePullRequestThread,
       ),
     );
     let handled = false;
@@ -335,9 +344,7 @@ it.effect("requires task permission before attaching a prepared worktree to a th
 describe("thread context authorization", () => {
   const group = WsRpcGroup.omit(
     ...[...WsRpcGroup.requests.keys()].filter(
-      (
-        tag,
-      ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.gitRunStackedAction> =>
+      (tag): tag is Exclude<UpstreamRpcMethod, typeof WS_METHODS.gitRunStackedAction> =>
         tag !== WS_METHODS.gitRunStackedAction,
     ),
   );
@@ -389,9 +396,7 @@ it.effect("separates host file URLs from readable attachment URLs", () =>
   Effect.gen(function* () {
     const group = WsRpcGroup.omit(
       ...[...WsRpcGroup.requests.keys()].filter(
-        (
-          tag,
-        ): tag is Exclude<keyof typeof RPC_REQUIRED_SCOPES, typeof WS_METHODS.assetsCreateUrl> =>
+        (tag): tag is Exclude<UpstreamRpcMethod, typeof WS_METHODS.assetsCreateUrl> =>
           tag !== WS_METHODS.assetsCreateUrl,
       ),
     );
@@ -432,12 +437,8 @@ it.effect("denies manual cleanup before the handler without settings permission"
   Effect.gen(function* () {
     const group = WsRpcGroup.omit(
       ...[...WsRpcGroup.requests.keys()].filter(
-        (
-          tag,
-        ): tag is Exclude<
-          keyof typeof RPC_REQUIRED_SCOPES,
-          typeof WS_METHODS.serverRunStorageCleanup
-        > => tag !== WS_METHODS.serverRunStorageCleanup,
+        (tag): tag is Exclude<UpstreamRpcMethod, typeof WS_METHODS.serverRunStorageCleanup> =>
+          tag !== WS_METHODS.serverRunStorageCleanup,
       ),
     );
     let handled = false;

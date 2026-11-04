@@ -13,6 +13,8 @@ import * as Schema from "effect/Schema";
 
 import { TaskSummaryHistoryCursor } from "../../ft3-orchestration/src/contracts.ts";
 
+import { PlanState } from "./planningContracts.ts";
+
 export const BoardCardId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardId"));
 export type BoardCardId = typeof BoardCardId.Type;
 export const BoardCardEventId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardEventId"));
@@ -172,10 +174,33 @@ export const BoardArchivedCount = Schema.Struct({
   count: NonNegativeInt,
 });
 export type BoardArchivedCount = typeof BoardArchivedCount.Type;
+/**
+ * One small plan summary per planned card. The thread Lineage view and the
+ * card Plan button read it from the card list, with no extra request per card.
+ */
+export const BoardCardPlanSummary = Schema.Struct({
+  cardId: BoardCardId,
+  planDocId: Schema.String,
+  title: TrimmedNonEmptyString,
+  status: PlanState,
+  stepCount: NonNegativeInt,
+  plannerThreadId: Schema.NullOr(ThreadId),
+});
+export type BoardCardPlanSummary = typeof BoardCardPlanSummary.Type;
+
+/** Cards and events of `board.list`; the RPC layer attaches the plan summaries. */
+export const BoardListWithoutPlans = Schema.Struct({
+  cards: Schema.Array(BoardCard),
+  events: Schema.Array(BoardCardEvent),
+  archivedCounts: Schema.optional(Schema.Array(BoardArchivedCount)),
+});
+export type BoardListWithoutPlans = typeof BoardListWithoutPlans.Type;
+
 export const BoardListResult = Schema.Struct({
   cards: Schema.Array(BoardCard),
   events: Schema.Array(BoardCardEvent),
   archivedCounts: Schema.optional(Schema.Array(BoardArchivedCount)),
+  plans: Schema.Array(BoardCardPlanSummary),
 });
 export type BoardListResult = typeof BoardListResult.Type;
 

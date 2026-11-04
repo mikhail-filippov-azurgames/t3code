@@ -40,29 +40,53 @@ const frontmatterIssues = (lines: ReadonlyArray<string>, cardId: string): PlanIs
   return issues;
 };
 
-const stepsIssues = (lines: ReadonlyArray<string>): PlanIssue[] => {
+interface StepsTable {
+  /** 0-based line of the table header row. */
+  readonly header: number;
+  /** Data rows below the header and separator rows. */
+  readonly rows: ReadonlyArray<{ line: number; stepId: string }>;
+}
+
+/** The `## Steps` table; null when the section or its table is missing. */
+const findStepsTable = (lines: ReadonlyArray<string>): StepsTable | null => {
   const heading = lines.findIndex((line) => line.trim() === "## Steps");
-  if (heading === -1) return [{ line: 1, reason: "## Steps section is missing" }];
+  if (heading === -1) return null;
   const header = lines.findIndex((line, index) => index > heading && line.trim().startsWith("|"));
-  if (header === -1) return [{ line: heading + 1, reason: "## Steps has no table" }];
-  const issues: PlanIssue[] = [];
-  const seen = new Set<string>();
-  let rows = 0;
+  if (header === -1) return null;
+  const rows: Array<{ line: number; stepId: string }> = [];
   for (let index = header + 2; index < lines.length; index += 1) {
     const line = lines[index] ?? "";
     if (!line.trim().startsWith("|")) break;
-    const stepId = splitRow(line)[0] ?? "";
-    rows += 1;
-    if (!STEP_ID_PATTERN.test(stepId)) {
-      issues.push({ line: index + 1, reason: `step id "${stepId}" must look like P1` });
-    } else if (seen.has(stepId)) {
-      issues.push({ line: index + 1, reason: `step id "${stepId}" is repeated` });
-    }
-    seen.add(stepId);
+    rows.push({ line: index + 1, stepId: splitRow(line)[0] ?? "" });
   }
-  if (rows === 0) issues.push({ line: header + 1, reason: "## Steps lists no steps" });
+  return { header, rows };
+};
+
+const stepsIssues = (lines: ReadonlyArray<string>): PlanIssue[] => {
+  const table = findStepsTable(lines);
+  if (table === null) {
+    const heading = lines.findIndex((line) => line.trim() === "## Steps");
+    if (heading === -1) return [{ line: 1, reason: "## Steps section is missing" }];
+    return [{ line: heading + 1, reason: "## Steps has no table" }];
+  }
+  const issues: PlanIssue[] = [];
+  const seen = new Set<string>();
+  for (const row of table.rows) {
+    if (!STEP_ID_PATTERN.test(row.stepId)) {
+      issues.push({ line: row.line, reason: `step id "${row.stepId}" must look like P1` });
+    } else if (seen.has(row.stepId)) {
+      issues.push({ line: row.line, reason: `step id "${row.stepId}" is repeated` });
+    }
+    seen.add(row.stepId);
+  }
+  if (table.rows.length === 0)
+    issues.push({ line: table.header + 1, reason: "## Steps lists no steps" });
   return issues;
 };
+
+/** Data rows of the `## Steps` table; zero when the section or its table is missing. */
+export const countPlanSteps = (content: string): number =>
+  findStepsTable(content.split(/\r?\n/))?.rows.length ?? 0;
 
 /** Every problem the strict check finds, in file order; empty when the plan can be accepted. */
 export const validatePlan = (content: string, cardId: string): ReadonlyArray<PlanIssue> => {

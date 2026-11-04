@@ -10,6 +10,7 @@ import {
   architectRpcScopes,
   architectRpcServiceLayer,
 } from "@t3tools/ft3-architect/rpc";
+import { planServiceLayer } from "@t3tools/ft3-board/planning";
 import {
   FT3_BOARD_WS_METHODS,
   boardRpcHandlers,
@@ -63,6 +64,7 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 export { ArchitectService } from "@t3tools/ft3-architect/service";
 export { BoardService } from "@t3tools/ft3-board/service";
 export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
+export { PlanService } from "@t3tools/ft3-board/planning";
 export { BoardSummaryHistoryService } from "@t3tools/ft3-board/rpc";
 export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
 export { MailService } from "@t3tools/ft3-mail/service";
@@ -161,4 +163,8 @@ export const serviceLayer = Layer.mergeAll(
   // task row through MailRepository.
   mailServiceLayer,
   mailRepositoryLayer,
+).pipe(
+  // The `board.list` handler reads plan summaries through PlanService, which
+  // needs the merged DocsService above; provide it after the parallel merge.
+  Layer.provideMerge(planServiceLayer),
 );

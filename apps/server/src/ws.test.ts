@@ -33,6 +33,7 @@ import {
   CommitHistoryService as Ft3CommitHistoryService,
   MailService as Ft3MailService,
   MailRepository as Ft3MailRepository,
+  PlanService as Ft3PlanService,
   PolicyChangeTracker as Ft3PolicyChangeTracker,
 } from "@t3tools/ft3-host/rpc";
 import * as Deferred from "effect/Deferred";
@@ -939,6 +940,7 @@ it.effect.each([
         Layer.mock(Ft3BoardService)({}),
         Layer.mock(Ft3BoardDelegationService)({}),
         Layer.mock(Ft3BoardSummaryHistoryService)({}),
+        Layer.mock(Ft3PlanService)({}),
         Layer.mock(Ft3ArchitectService)({}),
         Layer.mock(Ft3CommitHistoryService)({}),
         Layer.mock(Ft3PolicyChangeTracker)({}),
@@ -1210,6 +1212,7 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       Layer.mock(Ft3BoardService)({}),
       Layer.mock(Ft3BoardDelegationService)({}),
       Layer.mock(Ft3BoardSummaryHistoryService)({}),
+      Layer.mock(Ft3PlanService)({}),
       Layer.mock(Ft3ArchitectService)({}),
       Layer.mock(Ft3CommitHistoryService)({}),
       Layer.mock(Ft3PolicyChangeTracker)({}),

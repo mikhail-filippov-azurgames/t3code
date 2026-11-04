@@ -17,4 +17,4 @@ export {
   decidePlanGate,
   planGateLayer,
 } from "./PlanGate.ts";
-export { validatePlan, type PlanIssue } from "./planValidation.ts";
+export { countPlanSteps, validatePlan, type PlanIssue } from "./planValidation.ts";

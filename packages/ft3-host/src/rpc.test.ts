@@ -139,7 +139,7 @@ const stubs = {
     Effect.succeed({ delegations: [], nextCursor: null }),
   [FT3_WS_METHODS.boardDelegatedTaskSummaryHistory]: () =>
     Effect.succeed({ records: [], nextCursor: null }),
-  [FT3_WS_METHODS.boardList]: () => Effect.succeed({ cards: [], events: [] }),
+  [FT3_WS_METHODS.boardList]: () => Effect.succeed({ cards: [], events: [], plans: [] }),
   [FT3_WS_METHODS.boardCreate]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardStart]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardUpdate]: () => Effect.succeed(card),
@@ -164,6 +164,7 @@ const stubs = {
   [FT3_WS_METHODS.piBonsaiPresetDetect]: () => Effect.succeed(null),
   [FT3_WS_METHODS.piBonsaiPresetApply]: () => Effect.succeed(null),
   [FT3_WS_METHODS.docsResolve]: () => Effect.succeed({ status: "not_found" as const }),
+  [FT3_WS_METHODS.docsRead]: () => Effect.succeed({ status: "not_found" as const }),
   [FT3_WS_METHODS.policiesGetSnapshot]: () => Effect.succeed(noSnapshot),
   [FT3_WS_METHODS.policiesReadDocument]: () =>
     Effect.succeed({ status: "unavailable" as const, key: "routingPolicy" as const, issues: [] }),
@@ -238,7 +239,11 @@ describe("FT3 RPC authorization", () => {
           parentThreadId: ThreadId.make("c"),
         }),
       ).toEqual({ records: [], nextCursor: null });
-      expect(yield* client[FT3_WS_METHODS.boardList]({})).toEqual({ cards: [], events: [] });
+      expect(yield* client[FT3_WS_METHODS.boardList]({})).toEqual({
+        cards: [],
+        events: [],
+        plans: [],
+      });
       expect(
         yield* client[FT3_WS_METHODS.boardCreate]({
           orchestratorThreadId: ThreadId.make("c"),
@@ -342,6 +347,9 @@ describe("FT3 RPC authorization", () => {
       expect(yield* client[FT3_WS_METHODS.mailTimeline]({ taskId: "task:timeline" })).toEqual({
         task: mailTask,
         entries: [],
+      });
+      expect(yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" })).toEqual({
+        status: "not_found",
       });
     }).pipe(Effect.scoped),
   );
@@ -508,6 +516,9 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
       expect(
         yield* client[FT3_WS_METHODS.mailTimeline]({ taskId: "task:timeline" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
     }).pipe(Effect.scoped),
   );

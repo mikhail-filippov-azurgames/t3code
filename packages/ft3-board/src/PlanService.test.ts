@@ -55,6 +55,52 @@ describe("PlanService", () => {
     ),
   );
 
+  it.effect("creates new plan documents under the configured plans folder", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const docs = yield* DocsServer.DocsService;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        const ref = yield* docs.docRef(docLinkOf(record.planDocId));
+        assert.equal(ref.relPath, `teams/plans/corvis-core/${cardId}.md`);
+      }),
+      { plansFolder: "teams/plans" },
+    ),
+  );
+
+  it.effect("lists one summary per planned card with its live step count", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard("Storage plan");
+        const service = yield* plans;
+        assert.deepStrictEqual(yield* service.listSummaries(), []);
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.bindPlannerThread({ cardId, threadId: Testkit.PLANNER_THREAD_ID });
+        const twoSteps = Testkit.validPlan(record.planDocId).replace(
+          "| P1 | add the table | ft3-board | migration test |",
+          "| P1 | add the table | ft3-board | migration test |\n| P2 | wire the gate | ft3-board | gate test |",
+        );
+        yield* Testkit.editPlan(record.planDocId, twoSteps);
+        assert.deepStrictEqual(yield* service.listSummaries(), [
+          {
+            cardId,
+            planDocId: record.planDocId,
+            title: "Storage plan",
+            status: "required",
+            stepCount: 2,
+            plannerThreadId: Testkit.PLANNER_THREAD_ID,
+          },
+        ]);
+        yield* Testkit.editPlan(record.planDocId, "# Plan: Storage plan\n");
+        assert.deepStrictEqual(
+          (yield* service.listSummaries()).map((summary) => summary.stepCount),
+          [0],
+        );
+      }),
+    ),
+  );
+
   it.effect("refuses to flag a card while planning is off and creates nothing", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {
