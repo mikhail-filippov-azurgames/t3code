@@ -40,6 +40,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
 import { selectHistoryPageFromCursor } from "../../../apps/server/src/orchestration-v2/threadHistoryPaging.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
+import { MailParticipantLauncher } from "../../ft3-mail/src/participantLauncher.ts";
 import * as Contracts from "./contracts.ts";
 
 const decodeList = Schema.decodeUnknownEffect(Contracts.TaskListResult);
@@ -284,6 +285,7 @@ function fixture() {
   });
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provide(Layer.mock(MailParticipantLauncher)({})),
     Layer.provide(dependencies),
     Layer.provide(providerRegistry),
     Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -661,6 +663,7 @@ describe("ft3 task toolkit through ft3-host", () => {
       });
       const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(Layer.mock(MailParticipantLauncher)({})),
         Layer.provide(liveQueries),
         Layer.provide(providerRegistry),
         Layer.provide(crypto),
