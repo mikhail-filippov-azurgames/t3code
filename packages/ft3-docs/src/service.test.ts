@@ -495,15 +495,21 @@ describe("DocsService writes", () => {
       (context) =>
         Effect.gen(function* () {
           yield* prime(context.service);
-          const error = yield* context.service
-            .write({
-              caller: { threadId: "thread:general", parentThreadId: "thread:root" },
-              relPath: "policies/roles/new.md",
-              content: "# New\n",
-              clientRequestId: "write:create-protected",
-            })
-            .pipe(Effect.flip);
-          assert.equal(error.code, "document_protected");
+          for (const relPath of [
+            "policies/roles/new.md",
+            "./policies/roles/new.md",
+            ".\\policies\\roles\\new.md",
+          ]) {
+            const error = yield* context.service
+              .write({
+                caller: { threadId: "thread:general", parentThreadId: "thread:root" },
+                relPath,
+                content: "# New\n",
+                clientRequestId: `write:create-protected:${relPath}`,
+              })
+              .pipe(Effect.flip);
+            assert.equal(error.code, "document_protected");
+          }
 
           const created = yield* context.service.write({
             caller: { threadId: "thread:general", parentThreadId: "thread:root" },

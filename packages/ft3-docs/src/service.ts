@@ -490,7 +490,15 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
 
   const write = Effect.fn("DocsService.write")(function* (input: DocsWriteInput) {
     const ref = input.ref?.trim();
-    const relPath = input.relPath?.trim();
+    const rawRelPath = input.relPath?.trim();
+    // Protection and the store must see the same path, so canonicalize before either.
+    const relPath =
+      rawRelPath === undefined || rawRelPath === ""
+        ? rawRelPath
+        : (DocsStore.canonicalRelPath(rawRelPath, false) ?? undefined);
+    if (rawRelPath !== undefined && rawRelPath !== "" && relPath === undefined) {
+      return yield* new DocsServiceError({ code: "invalid_input" });
+    }
     if ((ref === undefined || ref === "") === (relPath === undefined || relPath === "")) {
       return yield* new DocsServiceError({
         code: "invalid_input",

@@ -192,7 +192,7 @@ const storeError = (code: DocsStoreErrorCode, path?: string, cause?: unknown): D
  * Canonicalizes a store-relative path: `/` separators, no absolute roots, no
  * `.` or `..` segments, no empty segments. Returns null for anything else.
  */
-function canonicalRelPath(input: string, allowEmpty: boolean): string | null {
+export function canonicalRelPath(input: string, allowEmpty: boolean): string | null {
   let candidate = input.trim().replace(/\\/g, "/");
   while (candidate.startsWith("./")) candidate = candidate.slice(2);
   if (candidate.length === 0) return allowEmpty ? "" : null;
