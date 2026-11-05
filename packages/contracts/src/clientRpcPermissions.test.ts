@@ -41,13 +41,18 @@ describe("clientRpcRequiredScopes", () => {
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.setDocument");
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.setFeature");
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.browseServerDirectory");
+    expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("policies.listStoreDocuments");
     expect(clientRpcRequiredScopes("policies.browseServerDirectory", undefined)).toEqual([
       AuthSettingsWriteScope,
+    ]);
+    expect(clientRpcRequiredScopes("policies.listStoreDocuments", undefined)).toEqual([
+      AuthOrchestrationReadScope,
     ]);
     expect(Object.keys(FT3_CLIENT_GUARDED_RPC_SCOPES)).toEqual([
       "policies.setDocument",
       "policies.setFeature",
       "policies.browseServerDirectory",
+      "policies.listStoreDocuments",
     ]);
   });
 });

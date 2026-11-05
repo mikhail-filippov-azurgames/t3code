@@ -183,6 +183,32 @@ describe("command permissions", () => {
     ),
   );
 
+  it.effect("requires the destination orchestration read grant to list store documents", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const registry = yield* setup;
+        const list = createCommandPermissions(runtime, "policies.listStoreDocuments");
+        registry.set(sessions(env), AsyncResult.success(grant(false)));
+        expect(registry.get(list.permissionAtom(env))).toBe(false);
+        expect((yield* list.authorize(registry, env).pipe(Effect.flip))._tag).toBe(
+          "EnvironmentAuthorizationError",
+        );
+        registry.set(
+          sessions(env),
+          AsyncResult.success({
+            ...grant(false),
+            scopes: [AuthOrchestrationReadScope],
+            permissions: [AuthOrchestrationReadScope],
+          }),
+        );
+        expect(registry.get(list.permissionAtom(env))).toBe(true);
+        yield* list.authorize(registry, env);
+        registry.set(sessions(other), AsyncResult.success(grant(false)));
+        expect(registry.get(list.permissionAtom(other))).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("requires the destination settings grant to check OTLP endpoints", () =>
     Effect.scoped(
       Effect.gen(function* () {
