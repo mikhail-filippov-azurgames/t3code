@@ -21,20 +21,16 @@ import { memoryPolicyDocumentPort } from "../../ft3-policies/src/policyDocuments
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
 import * as Contracts from "./contracts.ts";
-import * as PlanGate from "./PlanGate.ts";
+import {
+  configuredLeadPolicyFiles,
+  LEAD_SKILLS_MANIFEST_FILE,
+  ROLES_MANIFEST_FILE,
+} from "./leadPolicies.testkit.ts";
 
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
-const ROLES_MANIFEST_PATH = "policies/roles/roles.json";
-const LEAD_SKILLS_MANIFEST_PATH = "policies/lead-skills/lead-skills.json";
-const LEAD_SKILL_IDS = ["t3-orchestrator", "board-orchestrator", "plan-orchestrator"] as const;
-const leadSkillFiles = LEAD_SKILL_IDS.map(
-  (id) =>
-    [
-      `policies/lead-skills/${id}/SKILL.md`,
-      `---\nname: ${id}\ndescription: Test lead skill.\n---\n\n# ${id}\n`,
-    ] as const,
-);
+const ROLES_MANIFEST_PATH = `policies/${ROLES_MANIFEST_FILE}`;
+const LEAD_SKILLS_MANIFEST_PATH = `policies/${LEAD_SKILLS_MANIFEST_FILE}`;
 
 const cryptoLayer = Layer.succeed(
   Crypto.Crypto,
@@ -45,48 +41,12 @@ const cryptoLayer = Layer.succeed(
 );
 
 const appliedLeadPolicies = (leadBody: string): ReadonlyMap<string, string> =>
-  new Map([
-    [
-      ROLES_MANIFEST_PATH,
-      [
-        "{",
-        '  "schema": "corvis-role-map-v1",',
-        '  "revision": 1,',
-        '  "configured": true,',
-        '  "roles": [ { "id": "lead", "roleId": "lead", "file": "lead.md" } ]',
-        "}",
-        "",
-      ].join("\n"),
-    ],
-    [
-      "policies/roles/lead.md",
-      [
-        "---",
-        "schema: corvis-role-v1",
-        "roleId: lead",
-        "revision: 1",
-        "configured: true",
-        "---",
-        "",
-        leadBody,
-        "",
-      ].join("\n"),
-    ],
-    [
-      LEAD_SKILLS_MANIFEST_PATH,
-      JSON.stringify(
-        {
-          schema: "corvis-lead-skills-v1",
-          revision: 1,
-          configured: true,
-          skills: LEAD_SKILL_IDS.map((id) => ({ id, file: `${id}/SKILL.md` })),
-        },
-        null,
-        2,
-      ),
-    ],
-    ...leadSkillFiles,
-  ]);
+  new Map(
+    [...configuredLeadPolicyFiles(leadBody)].map(([file, content]) => [
+      `policies/${file}`,
+      content,
+    ]),
+  );
 
 const rolesSource = {
   routingPolicy: { kind: "builtin" },
@@ -126,12 +86,6 @@ const wake = <A>(
         Layer.provide(threads),
         Layer.provide(cryptoLayer),
         Layer.provide(ServerSettings.layerTest()),
-        Layer.provide(
-          Layer.succeed(PlanGate.PlanGate, {
-            check: () => Effect.void,
-            recordPlanLetter: () => Effect.void,
-          }),
-        ),
       ),
       tracker,
     );

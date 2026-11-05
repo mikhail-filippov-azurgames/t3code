@@ -23,12 +23,9 @@ import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
-import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
-import { configuredLeadPolicySettings } from "./leadPolicies.testkit.ts";
-import * as PlanGate from "./PlanGate.ts";
-import * as PlanService from "./PlanService.ts";
 import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import * as Contracts from "./contracts.ts";
+import { configuredLeadPolicySettings } from "./leadPolicies.testkit.ts";
 
 const parentId = ThreadId.make("thread:board-parent");
 const otherId = ThreadId.make("thread:other-board");
@@ -38,8 +35,6 @@ const epoch = "2026-10-26T00:00:00.000Z";
 const decodeCard = Schema.decodeUnknownEffect(Contracts.BoardCard);
 const decodeList = Schema.decodeUnknownEffect(Contracts.BoardListCardsResult);
 const decodeFailure = Schema.decodeUnknownSync(Contracts.BoardMcpFailure);
-const decodePlanRead = Schema.decodeUnknownEffect(Contracts.BoardPlanReadResult);
-const decodePlanSubmit = Schema.decodeUnknownEffect(Contracts.BoardPlanSubmitResult);
 const scope: McpInvocationContext.McpInvocationScope = {
   environmentId: EnvironmentId.make("environment:board-test"),
   capabilities: new Set(["orchestration"]),
@@ -72,10 +67,7 @@ const crypto = Layer.succeed(
   }),
 );
 
-function fixture(
-  features: Readonly<Record<string, boolean>> = {},
-  planService: Layer.Layer<PlanService.PlanService> = Layer.mock(PlanService.PlanService)({}),
-) {
+function fixture(features: Readonly<Record<string, boolean>> = {}) {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
     [parentId, otherId, childId, architectId].map((id) => [id, liveThreadShell(id)]),
   );
@@ -90,25 +82,10 @@ function fixture(
   const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
     getProviders: Effect.succeed([]),
   });
-  // BoardService takes the gate on starting execution; these toolkit tests
-  // predate it, so the fake allows everything. PlanService reads the project
-  // shell when a plan is required; no row means the id-addressed fallback.
-  // The plan tools take the injected PlanService, empty unless a test stubs it.
-  const planningFakes = Layer.mergeAll(
-    Layer.mock(PlanGate.PlanGate)({
-      check: () => Effect.void,
-      recordPlanLetter: () => Effect.void,
-    }),
-    planService,
-    Layer.mock(ProjectStoreV2)({
-      getShell: () => Effect.succeedNone,
-    }),
-  );
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits, Ft3Host.layer).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(threads),
-    Layer.provide(planningFakes),
     Layer.provide(providerRegistry),
     Layer.provide(crypto),
     Layer.provide(ServerSettings.layerTest(configuredLeadPolicySettings(features))),
@@ -196,16 +173,12 @@ describe("ft3 board toolkit through ft3-host", () => {
     return Effect.gen(function* () {
       yield* seedThreads;
       const server = yield* McpServer.McpServer;
-      const advertised = server.tools.filter(
-        ({ tool }) => tool.name.startsWith("board_") || tool.name.startsWith("plan_"),
-      );
+      const advertised = server.tools.filter(({ tool }) => tool.name.startsWith("board_"));
       assert.deepStrictEqual(advertised.map(({ tool }) => tool.name).sort(), [
         "board_create_card",
         "board_delete_card",
         "board_list_cards",
         "board_update_card",
-        "plan_read",
-        "plan_submit_for_discussion",
       ]);
       assert.equal(
         advertised.find(({ tool }) => tool.name === "board_list_cards")!.tool.annotations
@@ -237,9 +210,7 @@ describe("ft3 board toolkit through ft3-host", () => {
       assert.deepStrictEqual((yield* list()).cards, []);
       yield* create();
       assert.deepStrictEqual(
-        server.tools.filter(
-          ({ tool }) => tool.name.startsWith("board_") || tool.name.startsWith("plan_"),
-        ),
+        server.tools.filter(({ tool }) => tool.name.startsWith("board_")),
         advertised,
       );
     }).pipe(Effect.provide(f.layer));
@@ -634,73 +605,6 @@ describe("ft3 board toolkit through ft3-host", () => {
       assert.equal(
         Buffer.byteLength(JSON.stringify(page), "utf8"),
         Contracts.BOARD_LIST_BUDGET_BYTES,
-      );
-    }).pipe(Effect.provide(f.layer));
-  });
-
-  it.effect("reads and submits plans only for the calling lead's cards", () => {
-    const recordOf = (cardId: Contracts.BoardCardId) => ({
-      cardId,
-      required: true,
-      requiredBy: "lead" as const,
-      requiredReason: null,
-      state: "discussion" as const,
-      planDocId: `plan:${cardId}`,
-      plannerMemberId: null,
-      plannerThreadId: null,
-      reviewRounds: 0,
-      acceptedSha256: "a".repeat(64),
-      acceptedRevision: 1,
-      acceptedAt: "2026-10-26T00:00:00.000Z",
-      updatedAt: "2026-10-26T00:00:00.000Z",
-    });
-    const plans = Layer.mock(PlanService.PlanService)({
-      readDetail: (input) =>
-        Effect.succeed({
-          record: recordOf(input.cardId),
-          doc: { stableId: `plan:${input.cardId}`, relPath: "plans/card.md", name: "plan" },
-          sha256: "a".repeat(64),
-          stepIds: ["P1"],
-          content: input.version === "accepted" ? "# Plan" : null,
-        }),
-      submitForDiscussion: (cardId) => Effect.succeed(recordOf(cardId)),
-    });
-    const f = fixture({}, plans);
-    return Effect.gen(function* () {
-      yield* seedThreads;
-      yield* mark();
-      yield* mark(otherId);
-      const card = yield* create();
-      const read = yield* call("plan_read", { cardId: card.cardId, version: "accepted" });
-      assert.isFalse(read.isError);
-      const detail = yield* decodePlanRead(read.structuredContent);
-      assert.equal(detail.state, "discussion");
-      assert.deepStrictEqual(detail.stepIds, ["P1"]);
-      assert.equal(detail.content, "# Plan");
-      assert.equal(
-        failure(yield* call("plan_read", { cardId: card.cardId }, asThread(otherId))).code,
-        "task_not_found",
-      );
-      assert.equal(
-        failure(yield* call("plan_read", { cardId: "card:missing" })).code,
-        "task_not_found",
-      );
-      const submitted = yield* call("plan_submit_for_discussion", {
-        cardId: card.cardId,
-        clientRequestId: "submit:one",
-      });
-      assert.isFalse(submitted.isError);
-      const submittedRecord = yield* decodePlanSubmit(submitted.structuredContent);
-      assert.equal(submittedRecord.state, "discussion");
-      assert.equal(
-        failure(
-          yield* call(
-            "plan_submit_for_discussion",
-            { cardId: card.cardId, clientRequestId: "submit:two" },
-            asThread(otherId),
-          ),
-        ).code,
-        "task_not_found",
       );
     }).pipe(Effect.provide(f.layer));
   });

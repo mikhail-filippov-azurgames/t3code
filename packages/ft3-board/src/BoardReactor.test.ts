@@ -46,6 +46,7 @@ import * as Ft3Host from "../../ft3-host/src/server.ts";
 import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import * as BoardReactor from "./BoardReactor.ts";
 import * as Contracts from "./contracts.ts";
+import { configuredLeadPolicySettings } from "./leadPolicies.testkit.ts";
 import {
   buildBoardWakePrompt,
   buildBoardWakeShortMessage,
@@ -267,7 +268,7 @@ function fixture() {
     Layer.provideMerge(managedThreads),
     Layer.provideMerge(infrastructure),
     Layer.provideMerge(SqlitePersistence.layerMemory),
-    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(ServerSettings.layerTest(configuredLeadPolicySettings())),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-reactor-" })),
     Layer.provideMerge(NodeServices.layer),
     Layer.provide(launcher.layer),
