@@ -27,6 +27,7 @@ import {
   mailTasksUnsupported,
 } from "./mail.logic.ts";
 import { mailEnvironment } from "./state.ts";
+import { useMailTabPolling } from "./useMailTabPolling.ts";
 
 /**
  * The board chat panel's Mail tab. One `mail.tasks` request carries the whole
@@ -39,6 +40,8 @@ export function BoardMailTab(props: {
 }) {
   const { environmentId } = props.threadRef;
   const tasksQuery = useBoardMailTasks(environmentId, props.cardIds);
+  const refresh = useCallback(() => void tasksQuery.refresh(), [tasksQuery]);
+  useMailTabPolling(refresh);
   const snapshotQuery = useEnvironmentQuery(
     policiesEnvironment.snapshot({ environmentId, input: {} }),
   );

@@ -131,7 +131,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
   const historyLoadSequence = useRef(0);
   const historyLoadingMore = useRef(false);
   const boardList = useEnvironmentQuery(
-    boardEnvironment.list({ environmentId, input: { includeArchived: true } }),
+    boardEnvironment.listForChatPanel({ environmentId, input: { includeArchived: true } }),
   );
   const boardCardIds = useMemo(
     () => (boardList.data?.cards ?? []).map((card) => String(card.cardId)),

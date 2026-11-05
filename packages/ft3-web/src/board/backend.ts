@@ -67,6 +67,13 @@ export function createBoardEnvironmentAtoms<R, E>(
     staleTimeMs: 15_000,
     refreshIntervalMs: 15_000,
   });
+  // The chat side panel reads the card list to scope the Mail tab; it polls on
+  // its own visibility gate instead of the board page's fixed interval.
+  const listForChatPanel = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:board:list-chat-panel",
+    tag: WS_METHODS.boardList,
+    staleTimeMs: 60_000,
+  });
   const refreshLists = (environmentId: EnvironmentId, registry: AtomRegistry.AtomRegistry) => {
     registry.refresh(list({ environmentId, input: {} }));
     registry.refresh(list({ environmentId, input: { includeArchived: true } }));
@@ -94,6 +101,7 @@ export function createBoardEnvironmentAtoms<R, E>(
   return {
     orchestratorsList,
     list,
+    listForChatPanel,
     resolve,
     delegations,
     delegatedTaskSummaryHistory,
