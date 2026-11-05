@@ -70,4 +70,27 @@ describe("BoardWakeNoticeRow", () => {
     expect(screen.container.textContent).toBe("");
     expect(screen.container.querySelector("[data-ft3-board-wake-notice]")).toBeNull();
   });
+
+  it("collapses a mail wake to kind, sender and task, expanding to the letter body", async () => {
+    const text = [
+      'New answer letter from implementation in mail task "Refactor":',
+      "",
+      "The module is split and the tests pass.",
+    ].join("\n");
+    await using screen = await render(
+      <BoardWakeNoticeRow message={{ id: "mail:wake:delivery:letter-1", text }} />,
+      { router: false },
+    );
+
+    const line = screen.getByRole("button");
+    expect(line.element().textContent).toContain("⚙ Mail: answer from implementation · Refactor");
+    expect(screen.container.textContent).not.toContain("The module is split");
+
+    await userEvent.click(line);
+    expect(line.element().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.container.textContent).toContain("The module is split and the tests pass.");
+    // The expanded body is the letter itself, without the server header line.
+    const body = screen.container.querySelector("[data-ft3-board-wake-notice-body]");
+    expect(body?.textContent).not.toContain("New answer letter");
+  });
 });

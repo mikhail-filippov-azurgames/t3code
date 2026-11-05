@@ -30,6 +30,7 @@ describe("boardWakeNoticeKind", () => {
     expect(boardWakeNoticeKind("ft3:board:orphan:card-1:thread-1:2026-11-02")).toBe("wake");
     expect(boardWakeNoticeKind("ft3:board:brief:thread-lead:nonce")).toBe("brief");
     expect(boardWakeNoticeKind("board:idle-nudge:thread-lead:card-1:review:123")).toBe("nudge");
+    expect(boardWakeNoticeKind("mail:wake:delivery:letter-1")).toBe("mail");
   });
 
   it("leaves human and unrelated messages alone", () => {
@@ -82,5 +83,47 @@ describe("boardWakeNoticeOf", () => {
     expect(
       boardWakeNoticeOf({ id: "11111111-1111-4111-8111-111111111111", text: wakeText }),
     ).toBeNull();
+  });
+});
+
+describe("mail wake notices", () => {
+  const mailText = [
+    'New answer letter from implementation in mail task "Refactor":',
+    "",
+    "The module is split and the tests pass.",
+  ].join("\n");
+
+  it("parses sender, kind, task and body out of a mail wake", () => {
+    const notice = boardWakeNoticeOf({ id: "mail:wake:delivery:letter-1", text: mailText });
+    expect(notice).toEqual({
+      kind: "mail",
+      text: mailText,
+      detail: "answer from implementation · Refactor",
+      mail: {
+        kind: "answer",
+        sender: "implementation",
+        task: "Refactor",
+        body: "The module is split and the tests pass.",
+      },
+    });
+    expect(boardWakeNoticeLine(notice!)).toBe("⚙ Mail: answer from implementation · Refactor");
+  });
+
+  it("accepts a wake without a resolved sender", () => {
+    const notice = boardWakeNoticeOf({
+      id: "mail:wake:delivery:letter-2",
+      text: 'New info letter in mail task "Refactor":\n\nHeads up.',
+    });
+    expect(notice?.detail).toBe("info · Refactor");
+    expect(notice?.mail?.sender).toBeNull();
+    expect(notice?.mail?.body).toBe("Heads up.");
+  });
+
+  it("falls back to the first line when the text is not the expected shape", () => {
+    const legacy = "Queued mail wake from before the sender label landed.";
+    const notice = boardWakeNoticeOf({ id: "mail:wake:delivery:letter-3", text: legacy });
+    expect(notice?.kind).toBe("mail");
+    expect(notice?.detail).toBe(legacy);
+    expect(notice?.mail).toBeUndefined();
   });
 });

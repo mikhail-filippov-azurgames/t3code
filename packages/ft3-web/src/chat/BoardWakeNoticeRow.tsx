@@ -17,6 +17,7 @@ export {
   type BoardWakeNotice,
   type BoardWakeNoticeKind,
   type BoardWakeNoticeMessage,
+  type MailWakeDetail,
 } from "./boardWakeNotice.logic.ts";
 
 /**
@@ -29,6 +30,8 @@ export function BoardWakeNoticeRow({ message }: { readonly message: BoardWakeNot
   const notice = boardWakeNoticeOf(message);
   if (notice === null) return null;
   const line = boardWakeNoticeLine(notice);
+  const body =
+    notice.mail !== undefined && notice.mail.body.trim() !== "" ? notice.mail.body : notice.text;
   return (
     <div
       className="flex min-w-0 flex-col items-center gap-1 py-0.5"
@@ -52,7 +55,7 @@ export function BoardWakeNoticeRow({ message }: { readonly message: BoardWakeNot
           data-ft3-board-wake-notice-body=""
         >
           <p className="max-h-96 overflow-auto break-words whitespace-pre-wrap text-xs text-muted-foreground">
-            {notice.text}
+            {body}
           </p>
         </div>
       ) : null}
