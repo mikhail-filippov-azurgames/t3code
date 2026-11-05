@@ -25,6 +25,7 @@ import { runMigrations as runCoreMigrations } from "../../../apps/server/src/per
 import { runMigrations } from "../../ft3-host/src/Migrations.ts";
 import { boardMailFactsLayer } from "../../ft3-mail/src/boardMailFacts.ts";
 import { layer as mailRepositoryLayer } from "../../ft3-mail/src/repository.ts";
+import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
@@ -121,7 +122,13 @@ interface HarnessSeed {
   readonly history?: ReadonlyArray<Contracts.BoardCardEvent>;
 }
 
-function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
+function makeHarness(
+  seed: HarnessSeed = {},
+  settings = makeSettings(),
+  mailFactsLayer: Layer.Layer<BoardMailFacts.BoardMailFacts> = boardMailFactsLayer.pipe(
+    Layer.provide(mailRepositoryLayer),
+  ),
+) {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runCoreMigrations();
@@ -178,11 +185,10 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       ),
     });
 
-    // The reactor reads mail only through the board port; the harness answers
-    // it with the real mail implementation over the same migrated store.
-    const mailFacts = boardMailFactsLayer.pipe(Layer.provide(mailRepositoryLayer));
+    // The reactor reads mail only through the board port; by default the
+    // harness answers it with the real mail implementation over the same store.
     const reactor = yield* CoordinatorBoardNudgeReactor.make.pipe(
-      Effect.provide(Layer.mergeAll(engine, settingsLayer, BoardRepository.layer, mailFacts)),
+      Effect.provide(Layer.mergeAll(engine, settingsLayer, BoardRepository.layer, mailFactsLayer)),
     );
 
     return { reactor, commands, settingsReads, settingsReadNotifications, repository };
@@ -249,6 +255,35 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
         assert.equal(events.length, 1);
       }),
     ),
+  );
+
+  it.effect("keeps a blocked coordinator quiet when the open-mail check fails", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW_MS);
+      const reads = yield* Ref.make(0);
+      const failingMail = Layer.succeed(
+        BoardMailFacts.BoardMailFacts,
+        BoardMailFacts.BoardMailFacts.of({
+          hasImplementLetter: () => Effect.succeed(new Set<string>()),
+          hasOpenMailWork: (cardId) =>
+            Ref.update(reads, (count) => count + 1).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new BoardMailFacts.BoardMailFactsError({ cardId, cause: "database is locked" }),
+                ),
+              ),
+            ),
+        }),
+      );
+      const harness = yield* makeHarness(
+        { cards: [blockedCard] },
+        makeSettings(),
+        failingMail,
+      ).pipe(Effect.provide(BoardRepository.layer));
+      yield* startAndSweep(harness);
+      assert.isAbove(yield* Ref.get(reads), 0);
+      assert.equal(turnCommands(yield* Ref.get(harness.commands)).length, 0);
+    }),
   );
 
   it.effect("skips busy, human-waiting, deferred, and recently messaged coordinators", () =>

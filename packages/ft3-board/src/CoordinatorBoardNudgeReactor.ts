@@ -184,10 +184,20 @@ export const make = Effect.gen(function* () {
     Effect.logInfo("coordinator board nudge", { reason, ...details });
 
   // The mail package answers through the BoardMailFacts port, so this file
-  // never names a mail table. A missing mail store reads as no open work.
+  // never names a mail table. A missing mail store reads as no open work; a
+  // failed read blocks the nudge, since the card may still have mail open.
   const blockedByOpenMailItem = Effect.fn("CoordinatorBoardNudgeReactor.blockedByOpenMailItem")(
     function* (cardId: string) {
-      if (yield* mailFacts.hasOpenMailWork(cardId)) {
+      const open = yield* mailFacts.hasOpenMailWork(cardId).pipe(
+        Effect.catchTags({
+          BoardMailFactsError: (error) =>
+            logReason("blocked-while-mail-open", { cardId, error: String(error.cause) }).pipe(
+              Effect.as(null),
+            ),
+        }),
+      );
+      if (open === null) return true;
+      if (open) {
         yield* logReason("blocked-while-mail-open", { cardId, openMailWork: true });
         return true;
       }

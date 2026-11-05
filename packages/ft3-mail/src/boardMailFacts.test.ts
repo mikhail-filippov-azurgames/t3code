@@ -119,6 +119,18 @@ describe("BoardMailFacts over the mail repository", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("fails, not reads no work, when the open-mail query fails", () =>
+    Effect.gen(function* () {
+      yield* migrateMail;
+      const db = yield* SqlClient.SqlClient;
+      const mail = yield* BoardMailFacts;
+      yield* db`ALTER TABLE ft3_mail_tasks RENAME COLUMN status TO task_state`;
+      const error = yield* mail.hasOpenMailWork("card:one").pipe(Effect.flip);
+      assert.equal(error._tag, "BoardMailFactsError");
+      assert.equal(error.cardId, "card:one");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("reads no mail activity when the mail tables are absent", () =>
     Effect.gen(function* () {
       const mail = yield* BoardMailFacts;
