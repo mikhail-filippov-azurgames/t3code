@@ -123,7 +123,7 @@ WS RPC в V2 закрыт для пакетов, поэтому ft3 держит
 `@t3tools/ft3-host/rpc` (`RpcGroup.make(...boardRpcs)` со своим
 middleware `Ft3RpcScopeAuthorization`) и сливает её в серверную группу одной
 строкой — `WsRpcGroup` и `RpcAuthorization.ts` не правятся; записи прав планов
-лежат в `clientRpcPermissions.ts` (см. таблицу ниже). Права повторяют старый форк: чтение доски →
+команд планов лежат в `clientRpcPermissions.ts` (см. таблицу ниже); чтения туда не вносятся. Права повторяют старый форк: чтение доски →
 `orchestration:read`, запись → `orchestration:operate`. Обработчики
 вызывают сервисы `ft3-board`. Контракты методов (payload/success) перенесены из
 старого форка; `vcs.listCommitHistory` в этот срез не входит — см. «Граф
@@ -136,10 +136,10 @@ middleware `Ft3RpcScopeAuthorization`) и сливает её в серверн�
 
 Швы планирования доски (план карточки, gate и MCP-доступ к плану):
 
-| Upstream-файл                                    | Правка                                                                                     | Зачем                                                                                                         |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `apps/server/src/server.ts` (~793)               | `Layer.provide(Ft3Rpc.serviceLayer)` на `McpHttpServer.layer`                              | board MCP-инструменты берут `PlanGate` при старте исполнения; MCP получает тот же сервисный слой, что WS-путь |
-| `packages/contracts/src/clientRpcPermissions.ts` | `board.planGet`, `board.planSetRequired`, `board.planAccept` в `CLIENT_GUARDED_RPC_SCOPES` | права клиентских вызовов плана; проверяются тестом permission behavior в `packages/ft3-host/src/rpc.test.ts`  |
+| Upstream-файл                                    | Правка                                                                                                                     | Зачем                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/server/src/server.ts` (~793)               | `Layer.provide(Ft3Rpc.serviceLayer)` на `McpHttpServer.layer`                                                              | board MCP-инструменты берут `PlanGate` при старте исполнения; MCP получает тот же сервисный слой, что WS-путь                                                                                                                                                                                               |
+| `packages/contracts/src/clientRpcPermissions.ts` | `board.planSetRequired`, `board.planAccept` в `CLIENT_GUARDED_RPC_SCOPES`; чтений (`board.planGet`, `docs.read`) здесь нет | клиентский guard только для команд плана: query atoms клиентский guard не проходят, поэтому чтение в этой карте всегда отказывало бы. Права чтений проверяет сервер через `boardRpcScopes`/`docsRpcScopes` в `packages/ft3-host/src/rpc.ts`; тест permission behavior — `packages/ft3-host/src/rpc.test.ts` |
 
 ## Граф коммитов (срез S2)
 
