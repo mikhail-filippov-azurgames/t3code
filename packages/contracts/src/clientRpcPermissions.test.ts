@@ -53,6 +53,13 @@ describe("clientRpcRequiredScopes", () => {
       "policies.setFeature",
       "policies.browseServerDirectory",
       "policies.listStoreDocuments",
+      "mail.tasks",
+    ]);
+  });
+
+  it("guards the board mail task listing with orchestration:read", () => {
+    expect(clientRpcRequiredScopes("mail.tasks", { cardIds: ["card-1"] })).toEqual([
+      AuthOrchestrationReadScope,
     ]);
   });
 });

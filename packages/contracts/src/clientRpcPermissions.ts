@@ -98,6 +98,8 @@ export const FT3_CLIENT_GUARDED_RPC_SCOPES = {
   // The server-file picker reads the server's filesystem to write a policy source.
   "policies.browseServerDirectory": AuthSettingsWriteScope,
   "policies.listStoreDocuments": AuthOrchestrationReadScope,
+  // The board chat panel reads mail tasks through the lead's orchestration view.
+  "mail.tasks": AuthOrchestrationReadScope,
 } as const;
 export type Ft3ClientGuardedRpcTag = keyof typeof FT3_CLIENT_GUARDED_RPC_SCOPES;
 
