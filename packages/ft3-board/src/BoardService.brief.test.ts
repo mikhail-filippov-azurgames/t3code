@@ -93,6 +93,9 @@ const wake = <A>(
             Layer.succeed(PlanGate.PlanGate, {
               check: () => Effect.void,
               recordPlanLetter: () => Effect.void,
+              recordPlannerAnswer: () => Effect.void,
+              plannerThreadOf: () => Effect.succeed(null),
+              bindPlannerThread: () => Effect.void,
             }),
             Layer.mock(PlanService.PlanService)({ get: () => Effect.succeed(null) }),
           ),

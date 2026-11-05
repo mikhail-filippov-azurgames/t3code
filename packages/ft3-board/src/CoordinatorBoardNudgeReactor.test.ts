@@ -125,9 +125,11 @@ interface HarnessSeed {
 function makeHarness(
   seed: HarnessSeed = {},
   settings = makeSettings(),
-  mailFactsLayer: Layer.Layer<BoardMailFacts.BoardMailFacts> = boardMailFactsLayer.pipe(
-    Layer.provide(mailRepositoryLayer),
-  ),
+  mailFactsLayer: Layer.Layer<
+    BoardMailFacts.BoardMailFacts,
+    never,
+    SqlClient.SqlClient
+  > = boardMailFactsLayer.pipe(Layer.provide(mailRepositoryLayer)),
 ) {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
