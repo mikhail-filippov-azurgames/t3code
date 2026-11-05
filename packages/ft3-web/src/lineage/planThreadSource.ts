@@ -15,7 +15,7 @@ export interface PlanThread {
   readonly orchestratorThreadId: ThreadId;
   readonly plannerThreadId: ThreadId;
   readonly state: PlanState;
-  readonly implementStarted: boolean;
+  readonly implementStarted: boolean | null;
 }
 
 /** Returns only plans that already have a planner thread. */

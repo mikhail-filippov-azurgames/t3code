@@ -929,7 +929,7 @@ const make = Effect.fn("PlanService.make")(function* () {
    * answered through the BoardMailFacts port so this file names no mail table.
    */
   const newlyImplementedCardIds = (cardIds: ReadonlyArray<string>) =>
-    mailFacts.hasImplementLetter(cardIds).pipe(Effect.mapError(storeFailure("")));
+    mailFacts.hasImplementLetter(cardIds);
 
   /**
    * Cheap change fingerprint of a plan document from its filesystem stat,
@@ -953,7 +953,7 @@ const make = Effect.fn("PlanService.make")(function* () {
 
   const summaryOf = Effect.fn("PlanService.planSummary")(function* (
     row: SummaryRow,
-    implementStarted: boolean,
+    implementStarted: boolean | null,
   ) {
     const summarize = (stepCount: number): Contracts.BoardCardPlanSummary => ({
       cardId: Contracts.BoardCardId.make(row.card_id),
@@ -1011,20 +1011,31 @@ const make = Effect.fn("PlanService.make")(function* () {
     // for plans whose flag is not yet set and backfills it when one is found;
     // writes stay in the board package, the mail side never touches plan rows.
     const unset = rows.filter((row) => row.implement_started_at === null);
-    const found = yield* newlyImplementedCardIds(unset.map((row) => row.card_id));
-    if (found.size > 0) {
+    // A failed lookup leaves the unset flags unknown: nothing is backfilled and the cards still list.
+    const lookup = yield* newlyImplementedCardIds(unset.map((row) => row.card_id)).pipe(
+      Effect.map((found) => ({ known: true, found })),
+      Effect.catchTags({
+        BoardMailFactsError: (error) =>
+          Effect.logWarning("plan implement lookup failed", { error: String(error.cause) }).pipe(
+            Effect.as({ known: false, found: new Set<string>() }),
+          ),
+      }),
+    );
+    if (lookup.known && lookup.found.size > 0) {
       const at = yield* nowIso;
       yield* sql`UPDATE ft3_board_card_plans SET implement_started_at = ${at}
-        WHERE card_id IN ${sql.in([...found])} AND implement_started_at IS NULL`.pipe(
+        WHERE card_id IN ${sql.in([...lookup.found])} AND implement_started_at IS NULL`.pipe(
         Effect.mapError(storeFailure("")),
         Effect.asVoid,
       );
     }
-    return yield* Effect.forEach(
-      rows,
-      (row) => summaryOf(row, row.implement_started_at !== null || found.has(row.card_id)),
-      { concurrency: 8 },
-    );
+    const implementStartedOf = (row: SummaryRow): boolean | null => {
+      if (row.implement_started_at !== null || lookup.found.has(row.card_id)) return true;
+      return lookup.known ? false : null;
+    };
+    return yield* Effect.forEach(rows, (row) => summaryOf(row, implementStartedOf(row)), {
+      concurrency: 8,
+    });
   });
 
   return PlanService.of({

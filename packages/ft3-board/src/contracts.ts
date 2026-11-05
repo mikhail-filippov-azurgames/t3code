@@ -187,7 +187,8 @@ export const BoardCardPlanSummary = Schema.Struct({
   stepCount: NonNegativeInt,
   plannerThreadId: Schema.NullOr(ThreadId),
   /** True once a plan.phase=implement letter exists for the plan's task (§11.3). */
-  implementStarted: Schema.Boolean,
+  /** Null when the implement lookup failed and the flag is not persisted: unknown, not false. */
+  implementStarted: Schema.NullOr(Schema.Boolean),
 });
 export type BoardCardPlanSummary = typeof BoardCardPlanSummary.Type;
 

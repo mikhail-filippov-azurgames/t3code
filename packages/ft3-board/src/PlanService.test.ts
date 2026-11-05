@@ -124,14 +124,26 @@ describe("PlanService", () => {
     ),
   );
 
-  it.effect("reports a failed implement lookup instead of an unstarted plan", () =>
+  it.effect("keeps the cards and their known implement flags when the implement lookup fails", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {
         yield* Testkit.seedCard();
+        const otherCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000002");
+        yield* Testkit.seedCard("Other plan", otherCardId);
         const service = yield* plans;
         yield* service.require({ cardId, requiredBy: "lead" });
-        const error = yield* service.listSummaries({ cardIds: [cardId] }).pipe(Effect.flip);
-        assert.equal(error.code, "plan_store_failed");
+        yield* service.require({ cardId: otherCardId, requiredBy: "lead" });
+        yield* service.markImplementStarted(cardId);
+        const summaries = yield* service.listSummaries({ cardIds: [cardId, otherCardId] });
+        const flagOf = (id: Contracts.BoardCardId) =>
+          summaries.find((summary) => summary.cardId === id)?.implementStarted;
+        assert.equal(summaries.length, 2);
+        assert.isTrue(flagOf(cardId));
+        assert.isNull(flagOf(otherCardId));
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{ readonly implement_started_at: string | null }>`
+          SELECT implement_started_at FROM ft3_board_card_plans WHERE card_id = ${otherCardId}`;
+        assert.isNull(rows[0]?.implement_started_at);
       }),
       {
         mailFacts: Layer.succeed(
