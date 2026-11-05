@@ -26,6 +26,15 @@ import * as PlanGate from "./PlanGate.ts";
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
 const ROLES_MANIFEST_PATH = "policies/roles/roles.json";
+const LEAD_SKILLS_MANIFEST_PATH = "policies/lead-skills/lead-skills.json";
+const LEAD_SKILL_IDS = ["t3-orchestrator", "board-orchestrator", "plan-orchestrator"] as const;
+const leadSkillFiles = LEAD_SKILL_IDS.map(
+  (id) =>
+    [
+      `policies/lead-skills/${id}/SKILL.md`,
+      `---\nname: ${id}\ndescription: Test lead skill.\n---\n\n# ${id}\n`,
+    ] as const,
+);
 
 const cryptoLayer = Layer.succeed(
   Crypto.Crypto,
@@ -35,7 +44,7 @@ const cryptoLayer = Layer.succeed(
   }),
 );
 
-const appliedRoles = (leadBody: string): ReadonlyMap<string, string> =>
+const appliedLeadPolicies = (leadBody: string): ReadonlyMap<string, string> =>
   new Map([
     [
       ROLES_MANIFEST_PATH,
@@ -63,12 +72,26 @@ const appliedRoles = (leadBody: string): ReadonlyMap<string, string> =>
         "",
       ].join("\n"),
     ],
+    [
+      LEAD_SKILLS_MANIFEST_PATH,
+      JSON.stringify(
+        {
+          schema: "corvis-lead-skills-v1",
+          revision: 1,
+          configured: true,
+          skills: LEAD_SKILL_IDS.map((id) => ({ id, file: `${id}/SKILL.md` })),
+        },
+        null,
+        2,
+      ),
+    ],
+    ...leadSkillFiles,
   ]);
 
 const rolesSource = {
   routingPolicy: { kind: "builtin" },
   roles: { kind: "doc", address: { kind: "path", relPath: ROLES_MANIFEST_PATH } },
-  leadSkills: { kind: "builtin" },
+  leadSkills: { kind: "doc", address: { kind: "path", relPath: LEAD_SKILLS_MANIFEST_PATH } },
 } as const;
 
 type Service = BoardService.BoardService["Service"];
@@ -160,7 +183,7 @@ describe("ft3 board Coordinator brief", () => {
 
   it.effect("starts with the applied lead role instruction when roles are configured", () =>
     Effect.gen(function* () {
-      const result = yield* resend({ applied: appliedRoles("# Lead\n\nOwn the board.") });
+      const result = yield* resend({ applied: appliedLeadPolicies("# Lead\n\nOwn the board.") });
       assert.equal(result.rolesConfigured, true);
       assert.isTrue(
         result.texts[0]!.startsWith(
@@ -189,17 +212,19 @@ describe("ft3 board Coordinator brief", () => {
 
   it.effect("sends a short wake instead of the brief when a human starts a card", () =>
     Effect.gen(function* () {
-      const result = yield* wake({ applied: appliedRoles("# Lead\n\nOwn the board.") }, (service) =>
-        Effect.gen(function* () {
-          const card = yield* service.createHumanCard({
-            orchestratorThreadId: threadId,
-            title: "Mail: address matrix",
-            body: "Map every address to its owner.",
-            executorRole: "implementation",
-          });
-          yield* service.startCard({ cardId: card.cardId });
-          return card;
-        }),
+      const result = yield* wake(
+        { applied: appliedLeadPolicies("# Lead\n\nOwn the board.") },
+        (service) =>
+          Effect.gen(function* () {
+            const card = yield* service.createHumanCard({
+              orchestratorThreadId: threadId,
+              title: "Mail: address matrix",
+              body: "Map every address to its owner.",
+              executorRole: "implementation",
+            });
+            yield* service.startCard({ cardId: card.cardId });
+            return card;
+          }),
       );
       assert.equal(result.texts.length, 1);
       const text = result.texts[0]!;
