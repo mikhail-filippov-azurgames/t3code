@@ -335,9 +335,11 @@ function PolicyDocumentRow({
 
 function PolicyIssueList({
   issues,
+  tone = "error",
   onJumpToLine,
 }: {
   issues: ReadonlyArray<PolicyIssueSchema>;
+  tone?: "error" | "warning";
   onJumpToLine: (file: string | null, line: number) => void;
 }) {
   return (
@@ -358,7 +360,9 @@ function PolicyIssueList({
               </button>
             ) : null}
             <span className="min-w-0">
-              <span className="text-destructive-foreground">{issue.message}</span>
+              <span className={tone === "error" ? "text-destructive-foreground" : "text-warning"}>
+                {issue.message}
+              </span>
               {issue.hint !== undefined ? (
                 <span className="text-muted-foreground"> {issue.hint}</span>
               ) : null}
@@ -641,6 +645,14 @@ function PolicyDocumentEditor({
               : "Errors: the previous version stays active until these are fixed:"}
           </p>
           <PolicyIssueList issues={errors} onJumpToLine={jumpToLine} />
+        </div>
+      ) : null}
+      {document.warnings.length > 0 ? (
+        <div>
+          <p className="px-3 pt-2 text-xs font-medium text-muted-foreground sm:px-4">
+            Warnings: the document is applied; these only need a look:
+          </p>
+          <PolicyIssueList issues={document.warnings} tone="warning" onJumpToLine={jumpToLine} />
         </div>
       ) : null}
       {pendingQuery.error !== null ? (
