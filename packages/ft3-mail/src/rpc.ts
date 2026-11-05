@@ -2,14 +2,26 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { MailRepository, type MailIdempotencyConflict, MailRepositoryError } from "./repository.ts";
-import { FT3_MAIL_WS_METHODS, type MailTimelineRpcInput } from "./rpc-contracts.ts";
+import {
+  FT3_MAIL_WS_METHODS,
+  type MailTasksRpcInput,
+  type MailTimelineRpcInput,
+} from "./rpc-contracts.ts";
 import { MailService, MailServiceError } from "./service.ts";
 import { MailMcpFailure } from "./toolContracts.ts";
 
 export { FT3_MAIL_WS_METHODS, mailRpcs, mailRpcScopes } from "./rpc-contracts.ts";
-export type { MailTimelineRpcInput, MailTimelineRpcSuccess } from "./rpc-contracts.ts";
+export type {
+  MailTasksRpcInput,
+  MailTasksRpcSuccess,
+  MailTimelineRpcInput,
+  MailTimelineRpcSuccess,
+} from "./rpc-contracts.ts";
 
 const isMailServiceError = Schema.is(MailServiceError);
+
+/** The board panel lists at most this many mail tasks per refresh. */
+const MAIL_TASKS_MAX_LIMIT = 50;
 
 const toMcpFailure = (
   error: MailServiceError | MailRepositoryError | MailIdempotencyConflict,
@@ -60,5 +72,27 @@ export const mailRpcHandlers = {
       })
       .pipe(Effect.mapError(toMcpFailure));
     return { task, entries };
+  }),
+  [FT3_MAIL_WS_METHODS.mailTasks]: Effect.fn("MailRpc.mailTasks")(function* (
+    input: MailTasksRpcInput,
+  ) {
+    // Task listing mirrors the timeline: the history of board cards stays
+    // readable while the mail feature is off, so no feature gate here.
+    const limit = input.limit ?? MAIL_TASKS_MAX_LIMIT;
+    if (!Number.isInteger(limit) || limit < 1 || limit > MAIL_TASKS_MAX_LIMIT) {
+      return yield* new MailMcpFailure({
+        code: "invalid_request",
+        message: `A mail tasks limit must be 1..${MAIL_TASKS_MAX_LIMIT}.`,
+      });
+    }
+    const repository = yield* MailRepository;
+    const tasks = yield* repository
+      .listTasksByCardIds({ cardIds: input.cardIds, limit })
+      .pipe(
+        Effect.mapError(
+          (error) => new MailMcpFailure({ code: "internal", message: error.message }),
+        ),
+      );
+    return { tasks };
   }),
 };

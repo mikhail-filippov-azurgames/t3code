@@ -7,6 +7,7 @@ import { MailMcpFailure } from "./toolContracts.ts";
 
 export const FT3_MAIL_WS_METHODS = {
   mailTimeline: "mail.timeline",
+  mailTasks: "mail.tasks",
 } as const;
 
 export const MailTimelineRpcInput = Schema.Struct({
@@ -22,6 +23,17 @@ export const MailTimelineRpcSuccess = Schema.Struct({
 });
 export type MailTimelineRpcSuccess = typeof MailTimelineRpcSuccess.Type;
 
+export const MailTasksRpcInput = Schema.Struct({
+  cardIds: Schema.Array(Schema.String.check(Schema.isMinLength(1))),
+  limit: Schema.optional(Schema.Number),
+});
+export type MailTasksRpcInput = typeof MailTasksRpcInput.Type;
+
+export const MailTasksRpcSuccess = Schema.Struct({
+  tasks: Schema.Array(MailTask),
+});
+export type MailTasksRpcSuccess = typeof MailTasksRpcSuccess.Type;
+
 export const MailRpcError = Schema.Union([MailMcpFailure, EnvironmentAuthorizationError]);
 
 export const mailRpcs = [
@@ -30,8 +42,14 @@ export const mailRpcs = [
     success: MailTimelineRpcSuccess,
     error: MailRpcError,
   }),
+  Rpc.make(FT3_MAIL_WS_METHODS.mailTasks, {
+    payload: MailTasksRpcInput,
+    success: MailTasksRpcSuccess,
+    error: MailRpcError,
+  }),
 ];
 
 export const mailRpcScopes = {
   [FT3_MAIL_WS_METHODS.mailTimeline]: AuthOrchestrationReadScope,
+  [FT3_MAIL_WS_METHODS.mailTasks]: AuthOrchestrationReadScope,
 } as const;

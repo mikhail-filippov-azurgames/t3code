@@ -30,7 +30,8 @@
   (`mail_task_create`, `mail_send`, `mail_read`, `mail_task_read`, `mail_member_set_model`,
   `mail_letter_set_kind`, `mail_task_close`); при выключенном `mail` — код `mail_disabled_notice`.
 - `./rpc`, `./rpc-contracts` — серверный `mail.timeline` (таск глазами лида, скоуп
-  `orchestration:read`); wire-up в `packages/ft3-host/src/rpc.ts`.
+  `orchestration:read`) и `mail.tasks` (задачи по карточкам доски для вкладки Mail); wire-up в
+  `packages/ft3-host/src/rpc.ts`.
 - `./timeoutReactor` — `MailTimeoutReactor`: минутный тик гасит просроченные доставки
   (участники остаются активными, лиду одно системное письмо на задачу); wire-up в
   `packages/ft3-host/src/server.ts`.

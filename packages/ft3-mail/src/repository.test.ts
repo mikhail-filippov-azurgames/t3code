@@ -642,3 +642,50 @@ it.effect("lists only wakes for open tasks with an active member", () =>
     assert.deepStrictEqual(yield* repository.listUndeliveredWakes({ limit: 10 }), []);
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect("lists mail tasks for board cards newest first and caps the page", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:card-a-older",
+        title: "Older card task",
+        cardId: "card-a",
+        clientRequestId: "request:card-a-older",
+        requestFingerprint: "fingerprint:card-a-older",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:card-a-newer",
+        title: "Newer card task",
+        cardId: "card-a",
+        clientRequestId: "request:card-a-newer",
+        requestFingerprint: "fingerprint:card-a-newer",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    assert.deepStrictEqual(
+      (yield* repository.listTasksByCardIds({ cardIds: ["card-a"], limit: 10 })).map(
+        (task) => task.taskId,
+      ),
+      ["task:card-a-newer", "task:card-a-older"],
+    );
+    // Tasks without a card and cards with no tasks stay out of the page.
+    assert.deepStrictEqual(
+      yield* repository.listTasksByCardIds({ cardIds: ["card-b"], limit: 10 }),
+      [],
+    );
+    assert.deepStrictEqual(
+      (yield* repository.listTasksByCardIds({ cardIds: ["card-a"], limit: 1 })).map(
+        (task) => task.taskId,
+      ),
+      ["task:card-a-newer"],
+    );
+    assert.deepStrictEqual(yield* repository.listTasksByCardIds({ cardIds: [], limit: 10 }), []);
+  }).pipe(Effect.provide(testLayer)),
+);
