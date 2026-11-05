@@ -190,6 +190,10 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       );
       sender = lookedUp._tag === "Some" ? (lookedUp.value?.member.roleId ?? null) : null;
     }
+    // The header is model-facing (the lead reads the wake) and parsed by the
+    // web notice in ft3-web/boardWakeNotice.logic.ts, which also accepts the
+    // sender-less legacy shape; keep `New <kind> letter[ from <sender>] in
+    // mail task "<title>":` stable.
     yield* wake({
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
