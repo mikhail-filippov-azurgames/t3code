@@ -516,6 +516,28 @@ describe("PlanService", () => {
 
   const dispatched: Array<unknown> = [];
 
+  it.effect("refuses a retried accept once the accepted document has changed", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        yield* service.accept({ cardId, sha256 });
+        yield* Testkit.editPlan(
+          record.planDocId,
+          `${Testkit.validPlan(record.planDocId)}\nLater edit.\n`,
+        );
+        const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_changed");
+        assert.equal((yield* service.get(cardId))?.acceptedRevision, 1);
+      }),
+    ),
+  );
+
   it.effect("accepting the same digest twice emits a single lead event", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {

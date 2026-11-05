@@ -681,6 +681,10 @@ const make = Effect.fn("PlanService.make")(function* () {
   }) {
     const record = yield* loadRecord(input.cardId);
     if (record.state === "accepted" && record.acceptedSha256 === input.sha256) {
+      const live = yield* readPlanDocument(record);
+      if (live.sha256 !== input.sha256) {
+        return yield* new PlanError({ code: "plan_changed", cardId: input.cardId });
+      }
       yield* deliverPendingAccepts(sql, threads, record.cardId);
       return record;
     }
