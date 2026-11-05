@@ -234,6 +234,9 @@ function fixture() {
       Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-summary-" })),
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(launcherFake().layer),
+      // The mail stack builds the plan layers, and PlanService reads the
+      // project store; the summary tests never touch plans.
+      Layer.provide(projectStore),
     ),
     DelegatedTaskSummaryReactor.layer.pipe(Layer.provideMerge(support)),
     TaskQueryService.layer.pipe(Layer.provideMerge(support), Layer.provideMerge(taskHandoffs)),
