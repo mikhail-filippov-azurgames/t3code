@@ -247,7 +247,7 @@ function fixture(enabled = true, failParticipantLookup = false, failSteer = fals
       title: "Refactor",
       brief: "Split the module.",
       level: "medium",
-      members: [{ role: "implementation" }],
+      members: [{ role: "implementation", specialization: "contracts" }],
     });
     return created;
   });
@@ -550,8 +550,20 @@ it.effect("names the participant role in a wake on the lead thread", () => {
     assert.equal(harness.dispatched.length, 1);
     const wake = harness.dispatched[0]!;
     assert.equal(wake.threadId, leadId);
-    assert.include(wake.text, 'New answer letter from implementation in mail task "Refactor":');
+    assert.include(
+      wake.text,
+      'New answer letter from implementation/contracts in mail task "Refactor":',
+    );
     assert.include(wake.text, "Done.");
+    assert.equal(
+      wake.notification?.summary,
+      'Mail answer letter from implementation/contracts in "Refactor"',
+    );
+    assert.deepEqual(wake.notification?.source, {
+      kind: "delegated_task",
+      taskIds: [],
+      childThreadId: childId,
+    });
   }).pipe(Effect.provide(harness.layer));
 });
 
