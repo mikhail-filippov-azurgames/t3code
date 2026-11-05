@@ -45,6 +45,7 @@ const docsOver = (options: {
         ? Effect.succeed(options.manifest.map((entry) => ({ ...entry, updatedAt: "" })))
         : Effect.fail(options.manifestError),
     read: () => Effect.die("unused in the picker tests"),
+    docStat: () => Effect.die("unused in the picker tests"),
     resolve: () => Effect.die("unused in the picker tests"),
     search: () => options.search,
     write: () => Effect.die("unused in the picker tests"),
