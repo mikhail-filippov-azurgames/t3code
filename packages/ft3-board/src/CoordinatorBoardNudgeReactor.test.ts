@@ -282,6 +282,137 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
     }),
   );
 
+  const blockedCard = card("blocked-1", {
+    status: "orchestrator",
+    readiness: "blocked",
+    readinessNote: "Waiting for the participant.",
+  });
+
+  const clearMail = (sql: SqlClient.SqlClient) =>
+    Effect.gen(function* () {
+      yield* sql`DELETE FROM ft3_mail_deliveries`;
+      yield* sql`DELETE FROM ft3_mail_kind_feedback`;
+      yield* sql`DELETE FROM ft3_mail_letters`;
+      yield* sql`DELETE FROM ft3_mail_rounds`;
+      yield* sql`DELETE FROM ft3_mail_wakes`;
+      yield* sql`DELETE FROM ft3_mail_members`;
+      yield* sql`DELETE FROM ft3_mail_tasks`;
+    });
+
+  const seedMailTask = (sql: SqlClient.SqlClient, taskId: string, requestId: string) =>
+    sql`INSERT INTO ft3_mail_tasks (
+        task_id, title, brief, level, card_id, response_budget_seconds, status,
+        created_by_thread_id, client_request_id, request_fingerprint, created_at, updated_at
+      ) VALUES (
+        ${taskId}, 'Mail task', 'Brief', 'medium', 'blocked-1', 1800, 'open',
+        ${COORDINATOR_ID}, ${requestId}, 'fingerprint', ${NOW}, ${NOW}
+      )`;
+
+  const startAndSweep = (harness: Harness) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* harness.reactor.start();
+        yield* TestClock.adjust(Duration.minutes(10));
+        yield* waitForSettingsReads(harness, 3);
+      }),
+    );
+
+  it.effect("skips a blocked card while a mail round is open", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW_MS);
+      const harness = yield* makeHarness({ cards: [blockedCard] }).pipe(
+        Effect.provide(BoardRepository.layer),
+      );
+      const sql = yield* SqlClient.SqlClient;
+      yield* clearMail(sql);
+      yield* seedMailTask(sql, "task-round", "request-round");
+      yield* sql`INSERT INTO ft3_mail_rounds (round_id, task_id, round_number, kind, opened_at)
+        VALUES ('round-open', 'task-round', 1, 'request', ${NOW})`;
+      yield* startAndSweep(harness);
+      assert.equal(turnCommands(yield* Ref.get(harness.commands)).length, 0);
+    }),
+  );
+
+  it.effect("skips a blocked card while a mail delivery is undelivered or unanswered", () =>
+    Effect.gen(function* () {
+      const cases: ReadonlyArray<{
+        readonly taskId: string;
+        readonly deliveryId: string;
+        readonly deliveredAt: string | null;
+        readonly state: string;
+      }> = [
+        {
+          taskId: "task-undelivered",
+          deliveryId: "delivery-undelivered",
+          deliveredAt: null,
+          state: "pending",
+        },
+        {
+          taskId: "task-unanswered",
+          deliveryId: "delivery-unanswered",
+          deliveredAt: NOW,
+          state: "read",
+        },
+      ];
+      for (const item of cases) {
+        yield* TestClock.setTime(NOW_MS);
+        const harness = yield* makeHarness({ cards: [blockedCard] }).pipe(
+          Effect.provide(BoardRepository.layer),
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* clearMail(sql);
+        yield* seedMailTask(sql, item.taskId, `request-${item.taskId}`);
+        yield* sql`INSERT INTO ft3_mail_letters (
+            letter_id, task_id, sequence, sender_thread_id, recipient, kind, body,
+            client_request_id, request_fingerprint, created_at
+          ) VALUES (
+            ${`letter-${item.taskId}`}, ${item.taskId}, 1, ${COORDINATOR_ID}, 'member-1', 'request', 'Body',
+            ${`letter-request-${item.taskId}`}, 'fingerprint', ${NOW}
+          )`;
+        yield* sql`INSERT INTO ft3_mail_deliveries (
+            delivery_id, task_id, letter_id, recipient, state, delivered_at, created_at, updated_at
+          ) VALUES (
+            ${item.deliveryId}, ${item.taskId}, ${`letter-${item.taskId}`}, 'member-1', ${item.state},
+            ${item.deliveredAt}, ${NOW}, ${NOW}
+          )`;
+        yield* startAndSweep(harness);
+        assert.equal(turnCommands(yield* Ref.get(harness.commands)).length, 0, item.deliveryId);
+      }
+    }),
+  );
+
+  it.effect("nudges a blocked card once its mail round and deliveries settled", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW_MS);
+      const harness = yield* makeHarness({ cards: [blockedCard] }).pipe(
+        Effect.provide(BoardRepository.layer),
+      );
+      const sql = yield* SqlClient.SqlClient;
+      yield* clearMail(sql);
+      yield* seedMailTask(sql, "task-settled", "request-settled");
+      yield* sql`INSERT INTO ft3_mail_rounds (round_id, task_id, round_number, kind, opened_at, closed_at)
+        VALUES ('round-settled', 'task-settled', 1, 'request', ${NOW}, ${NOW})`;
+      yield* sql`INSERT INTO ft3_mail_letters (
+          letter_id, task_id, sequence, sender_thread_id, recipient, kind, body,
+          client_request_id, request_fingerprint, created_at
+        ) VALUES (
+          'letter-settled', 'task-settled', 1, ${COORDINATOR_ID}, 'member-1', 'request', 'Body',
+          'letter-request-settled', 'fingerprint', ${NOW}
+        )`;
+      yield* sql`INSERT INTO ft3_mail_deliveries (
+          delivery_id, task_id, letter_id, recipient, state, delivered_at, read_at, answered_at, created_at, updated_at
+        ) VALUES (
+          'delivery-settled', 'task-settled', 'letter-settled', 'member-1', 'answered', ${NOW}, ${NOW}, ${NOW}, ${NOW}, ${NOW}
+        )`;
+      yield* startAndSweep(harness);
+      const commands = turnCommands(yield* Ref.get(harness.commands));
+      assert.equal(commands.length, 1);
+      const command = commands[0];
+      if (command?.type !== "message.dispatch") return;
+      assert.ok(command.text.includes("Card id: blocked-1"));
+    }),
+  );
+
   it.effect("waits for live child work and treats the active-child threshold as busy", () =>
     Effect.gen(function* () {
       const child = shell(ThreadId.make("child-1"), {

@@ -183,24 +183,44 @@ export const make = Effect.gen(function* () {
   const logReason = (reason: string, details: Record<string, unknown> = {}) =>
     Effect.logInfo("coordinator board nudge", { reason, ...details });
 
-  const blockedByOpenReview = Effect.fn("CoordinatorBoardNudgeReactor.blockedByOpenReview")(
-    function* (coordinatorId: ThreadId) {
-      const result = yield* sql<{ readonly present: number }>`
-        SELECT 1 AS "present" FROM ft3_architect_review
-        WHERE coordinator_thread_id = ${coordinatorId} AND status = 'open' LIMIT 1
+  const blockedByOpenMailItem = Effect.fn("CoordinatorBoardNudgeReactor.blockedByOpenMailItem")(
+    function* (cardId: string) {
+      const openRound = yield* sql<{ readonly present: number }>`
+        SELECT 1 AS "present" FROM ft3_mail_rounds
+        JOIN ft3_mail_tasks ON ft3_mail_tasks.task_id = ft3_mail_rounds.task_id
+        WHERE ft3_mail_tasks.card_id = ${cardId} AND ft3_mail_rounds.closed_at IS NULL
+        LIMIT 1
       `.pipe(
         Effect.map((rows) => ({ _tag: "success" as const, open: rows.length > 0 })),
         Effect.catch((error) => Effect.succeed({ _tag: "failure" as const, error })),
       );
-      if (result._tag === "failure") {
-        yield* logReason("blocked-while-review-open", {
-          coordinatorId,
-          error: String(result.error),
+      if (openRound._tag === "failure") {
+        yield* logReason("blocked-while-mail-open", { cardId, error: String(openRound.error) });
+        return true;
+      }
+      if (openRound.open) {
+        yield* logReason("blocked-while-mail-open", { cardId, openRound: true });
+        return true;
+      }
+      const pendingDelivery = yield* sql<{ readonly present: number }>`
+        SELECT 1 AS "present" FROM ft3_mail_deliveries
+        JOIN ft3_mail_tasks ON ft3_mail_tasks.task_id = ft3_mail_deliveries.task_id
+        WHERE ft3_mail_tasks.card_id = ${cardId}
+          AND (ft3_mail_deliveries.delivered_at IS NULL OR ft3_mail_deliveries.answered_at IS NULL)
+        LIMIT 1
+      `.pipe(
+        Effect.map((rows) => ({ _tag: "success" as const, open: rows.length > 0 })),
+        Effect.catch((error) => Effect.succeed({ _tag: "failure" as const, error })),
+      );
+      if (pendingDelivery._tag === "failure") {
+        yield* logReason("blocked-while-mail-open", {
+          cardId,
+          error: String(pendingDelivery.error),
         });
         return true;
       }
-      if (result.open) {
-        yield* logReason("blocked-while-review-open", { coordinatorId, openReviewCount: 1 });
+      if (pendingDelivery.open) {
+        yield* logReason("blocked-while-mail-open", { cardId, pendingDelivery: true });
         return true;
       }
       return false;
@@ -350,7 +370,14 @@ export const make = Effect.gen(function* () {
           yield* logReason("blocked-while-children-live", { coordinatorId, activeChildCount });
           continue;
         }
-        if (yield* blockedByOpenReview(coordinatorId)) continue;
+        let everyCardWaitsOnMail = true;
+        for (const blockedCard of blockedCards) {
+          if (!(yield* blockedByOpenMailItem(blockedCard.cardId))) {
+            everyCardWaitsOnMail = false;
+            break;
+          }
+        }
+        if (everyCardWaitsOnMail) continue;
         coordinatorCards = blockedCards;
       }
 
@@ -405,7 +432,7 @@ export const make = Effect.gen(function* () {
             });
             continue;
           }
-          if (yield* blockedByOpenReview(coordinatorId)) continue;
+          if (yield* blockedByOpenMailItem(currentCard.cardId)) continue;
         }
 
         const attemptId = coordinatorBoardNudgeAttemptId(coordinatorId, currentCard);
