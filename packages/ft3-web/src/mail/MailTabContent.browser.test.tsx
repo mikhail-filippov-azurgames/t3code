@@ -133,7 +133,11 @@ const renderTab = (
 ) =>
   render(
     <RegistryContext.Provider value={state.registry}>
-      <BoardMailTab threadRef={threadRef} cardIds={cardIds} refreshCards={refreshCards} />
+      <BoardMailTab
+        threadRef={threadRef}
+        cardIds={cardIds}
+        {...(refreshCards === undefined ? {} : { refreshCards })}
+      />
     </RegistryContext.Provider>,
   );
 
