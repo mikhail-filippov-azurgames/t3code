@@ -1009,14 +1009,16 @@ function ServerFilePickerDialog({
               List
             </Button>
           </div>
-          {pending ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+          {pending && listing === null ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : null}
           {error !== null ? <p className="text-sm text-destructive">{error}</p> : null}
           {listing?.truncated ? (
             <p className="text-sm text-muted-foreground">
               This folder has more entries than can be listed; type a more specific path.
             </p>
           ) : null}
-          {listing !== null && !pending ? (
+          {listing !== null ? (
             <ul className="max-h-72 space-y-1 overflow-auto">
               {listing.parent !== null ? (
                 <li>
@@ -1059,10 +1061,7 @@ function ServerFilePickerDialog({
               ))}
             </ul>
           ) : null}
-          {listing !== null &&
-          !pending &&
-          listing.directories.length === 0 &&
-          listing.files.length === 0 ? (
+          {listing !== null && listing.directories.length === 0 && listing.files.length === 0 ? (
             <p className="text-sm text-muted-foreground">No policy files here.</p>
           ) : null}
         </div>

@@ -1,10 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import {
-  AuthOrchestrationOperateScope,
-  AuthOrchestrationReadScope,
-  AuthSettingsWriteScope,
-} from "./auth.ts";
+import { AuthOrchestrationOperateScope, AuthSettingsWriteScope } from "./auth.ts";
 import {
   CLIENT_GUARDED_RPC_SCOPES,
   FT3_CLIENT_GUARDED_RPC_SCOPES,
@@ -21,14 +17,8 @@ describe("clientRpcRequiredScopes", () => {
     ]);
   });
 
-  it("guards the docs read with orchestration:read", () => {
-    expect(clientRpcRequiredScopes("docs.read", undefined)).toEqual([AuthOrchestrationReadScope]);
-  });
-
   it("guards the plan RPCs for human clients only", () => {
-    expect(clientRpcRequiredScopes("board.planGet", undefined)).toEqual([
-      AuthOrchestrationReadScope,
-    ]);
+    expect(clientRpcRequiredScopes("board.planGet", undefined)).toEqual([]);
     expect(clientRpcRequiredScopes("board.planSetRequired", undefined)).toEqual([
       AuthOrchestrationOperateScope,
     ]);
@@ -45,21 +35,12 @@ describe("clientRpcRequiredScopes", () => {
     expect(clientRpcRequiredScopes("policies.browseServerDirectory", undefined)).toEqual([
       AuthSettingsWriteScope,
     ]);
-    expect(clientRpcRequiredScopes("policies.listStoreDocuments", undefined)).toEqual([
-      AuthOrchestrationReadScope,
-    ]);
+    expect(clientRpcRequiredScopes("policies.listStoreDocuments", undefined)).toEqual([]);
+    expect(clientRpcRequiredScopes("docs.read", undefined)).toEqual([]);
     expect(Object.keys(FT3_CLIENT_GUARDED_RPC_SCOPES)).toEqual([
       "policies.setDocument",
       "policies.setFeature",
       "policies.browseServerDirectory",
-      "policies.listStoreDocuments",
-      "mail.tasks",
-    ]);
-  });
-
-  it("guards the board mail task listing with orchestration:read", () => {
-    expect(clientRpcRequiredScopes("mail.tasks", { cardIds: ["card-1"] })).toEqual([
-      AuthOrchestrationReadScope,
     ]);
   });
 });

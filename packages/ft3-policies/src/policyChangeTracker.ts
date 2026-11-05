@@ -384,7 +384,8 @@ const make = Effect.gen(function* () {
       const appliedBy = forced ? (input.appliedBy ?? "human_apply") : "auto";
       const nextApplied: AppliedEntry =
         unchanged && applied !== null
-          ? applied
+          ? // Same files, but requirements depend on the current feature toggles.
+            { ...applied, document: loaded }
           : {
               revision: revision ?? applied?.revision ?? 1,
               sha256: sha256 ?? "",

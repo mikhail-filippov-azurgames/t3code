@@ -288,6 +288,26 @@ describe("PolicyChangeTracker applied versions", () => {
       }),
     );
   });
+
+  it.effect("recomputes requirements when a feature turns on over unchanged files", () => {
+    const store = new Map([
+      [ROUTING_POLICY_PATH, routingPolicy(1)],
+      [`${ROLES_DIR}roles.json`, ROLES_MANIFEST],
+      [`${ROLES_DIR}lead.md`, roleFile("lead")],
+      [`${ROLES_DIR}implementation.md`, roleFile("implementation")],
+    ]);
+    const withRoles = { ...sources, roles: docSource(`${ROLES_DIR}roles.json`) };
+    return withTracker(store, (tracker) =>
+      Effect.gen(function* () {
+        const off = yield* tracker.refresh({ sources: withRoles, features: {} });
+        assert.equal(off.requirements.leadRole, false);
+
+        const on = yield* tracker.refresh({ sources: withRoles, features: { board: true } });
+        assert.equal(on.requirements.leadRole, true);
+        assert.equal(on.configVersion, off.configVersion);
+      }),
+    );
+  });
 });
 
 describe("PolicyDocumentLoader store trees", () => {

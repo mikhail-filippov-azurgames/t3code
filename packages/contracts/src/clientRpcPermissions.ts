@@ -77,11 +77,6 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.peerLinksUnlink]: AuthAccessWriteScope,
   // A link lets every agent here reach the other environment: Settings' bar.
   [WS_METHODS.peerLinksAnswerRequest]: AuthAccessWriteScope,
-  // Fork-owned reads the spec names here (design §6.3): the plan viewer reads
-  // document text through docs.read, like chat chips resolve through docs.resolve.
-  ["docs.read"]: AuthOrchestrationReadScope,
-  // plan detail for human clients only; agents read plans through MCP.
-  ["board.planGet"]: AuthOrchestrationReadScope,
   ["board.planSetRequired"]: AuthOrchestrationOperateScope,
   ["board.planAccept"]: AuthOrchestrationOperateScope,
 } as const;
@@ -91,15 +86,13 @@ export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
  * Client guards for fork-owned RPC methods, kept out of CLIENT_GUARDED_RPC_SCOPES
  * because that map is spread into the upstream server scope map one-for-one.
  * Changing a policy document source or feature writes server settings (design §6.3).
+ * Reads stay out: query atoms never pass the client guard, so a listed read always fails.
  */
 export const FT3_CLIENT_GUARDED_RPC_SCOPES = {
   "policies.setDocument": AuthSettingsWriteScope,
   "policies.setFeature": AuthSettingsWriteScope,
   // The server-file picker reads the server's filesystem to write a policy source.
   "policies.browseServerDirectory": AuthSettingsWriteScope,
-  "policies.listStoreDocuments": AuthOrchestrationReadScope,
-  // The board chat panel reads mail tasks through the lead's orchestration view.
-  "mail.tasks": AuthOrchestrationReadScope,
 } as const;
 export type Ft3ClientGuardedRpcTag = keyof typeof FT3_CLIENT_GUARDED_RPC_SCOPES;
 
