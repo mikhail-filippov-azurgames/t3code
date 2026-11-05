@@ -77,6 +77,7 @@ export function createBoardEnvironmentAtoms<R, E>(
   const refreshLists = (environmentId: EnvironmentId, registry: AtomRegistry.AtomRegistry) => {
     registry.refresh(list({ environmentId, input: {} }));
     registry.refresh(list({ environmentId, input: { includeArchived: true } }));
+    registry.refresh(listForChatPanel({ environmentId, input: { includeArchived: true } }));
   };
   const refreshAll = (
     { environmentId }: { readonly environmentId: EnvironmentId },

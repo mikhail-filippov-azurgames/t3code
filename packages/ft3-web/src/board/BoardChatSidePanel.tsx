@@ -329,10 +329,11 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
     [environmentId, requestOrchestrator],
   );
 
+  const refreshBoardCards = useCallback(() => void boardList.refresh(), [boardList]);
   const refreshMail = useCallback(() => {
-    void boardList.refresh();
+    refreshBoardCards();
     void mailTasks.refresh();
-  }, [boardList, mailTasks]);
+  }, [refreshBoardCards, mailTasks]);
 
   const refreshActiveTab =
     activeTab === "cards" ? refresh : activeTab === "history" ? refreshHistory : refreshMail;
@@ -406,7 +407,11 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
         </div>
       ) : activeTab === "mail" ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <BoardMailTab threadRef={props.threadRef} cardIds={boardCardIds} />
+          <BoardMailTab
+            threadRef={props.threadRef}
+            cardIds={boardCardIds}
+            refreshCards={refreshBoardCards}
+          />
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">

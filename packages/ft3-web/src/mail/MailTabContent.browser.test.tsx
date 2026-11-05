@@ -5,7 +5,7 @@ import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { render } from "../../../../apps/web/test/render";
+import { fakeTimers, render } from "../../../../apps/web/test/render";
 import { BoardMailTab } from "./MailTabContent.tsx";
 
 const mocks = vi.hoisted(() => ({
@@ -103,7 +103,7 @@ const mailDisabledSnapshot = {
 function setup(options: {
   readonly tasks?: MailTask[];
   readonly letters?: Record<string, MailTimelineEntry[]>;
-  readonly tasksFailure?: "offline";
+  readonly tasksFailure?: "offline" | "unknown-method";
   readonly snapshot?: unknown;
 }) {
   vi.clearAllMocks();
@@ -129,10 +129,11 @@ function setup(options: {
 const renderTab = (
   state: ReturnType<typeof setup>,
   cardIds: ReadonlyArray<string> = ["11111111-1111-4111-8111-111111111111"],
+  refreshCards?: () => void,
 ) =>
   render(
     <RegistryContext.Provider value={state.registry}>
-      <BoardMailTab threadRef={threadRef} cardIds={cardIds} />
+      <BoardMailTab threadRef={threadRef} cardIds={cardIds} refreshCards={refreshCards} />
     </RegistryContext.Provider>,
   );
 
@@ -243,6 +244,18 @@ describe("BoardMailTab", () => {
     await expect.element(screen.getByRole("link", { name: "Settings → Policies" })).toBeVisible();
     // History stays visible while the feature is off.
     await expect.element(screen.getByRole("heading", { name: "Refactor" })).toBeVisible();
+  });
+
+  it("re-reads the board's cards on each poll so new cards join the mail page", async () => {
+    using state = setup({ tasks: [] });
+    const refreshCards = vi.fn();
+    // The poll interval is armed on mount, so fake timers come first.
+    using _timers = fakeTimers();
+    await using _screen = await renderTab(state, [], refreshCards);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(refreshCards).toHaveBeenCalledTimes(2);
   });
 
   it("shows an empty note when the board has no mail tasks", async () => {
