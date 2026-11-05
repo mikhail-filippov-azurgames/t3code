@@ -110,12 +110,14 @@ function setup(options: {
   mocks.tasks.mockReturnValue(
     options.tasksFailure === "offline"
       ? Atom.make(AsyncResult.failure(Cause.fail(new Error("offline"))))
-      : Atom.make(
-          AsyncResult.success({
-            tasks: options.tasks ?? [],
-            letters: options.letters ?? {},
-          }),
-        ),
+      : options.tasksFailure === "unknown-method"
+        ? Atom.make(AsyncResult.failure(Cause.die(new Error("Unknown request tag: mail.tasks"))))
+        : Atom.make(
+            AsyncResult.success({
+              tasks: options.tasks ?? [],
+              letters: options.letters ?? {},
+            }),
+          ),
   );
   mocks.snapshot.mockReturnValue(
     Atom.make(AsyncResult.success(options.snapshot ?? mailEnabledSnapshot)),
@@ -248,6 +250,17 @@ describe("BoardMailTab", () => {
     await using screen = await renderTab(state, []);
 
     await expect.element(screen.getByText("No mail tasks for this board yet.")).toBeVisible();
+  });
+
+  it("explains the unsupported state instead of retrying on an old server", async () => {
+    using state = setup({ tasksFailure: "unknown-method" });
+    await using screen = await renderTab(state);
+
+    await expect
+      .element(screen.getByText(/This server does not support the Mail tab yet/))
+      .toBeVisible();
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+    expect(screen.container.textContent).not.toContain("Retry");
   });
 
   it("keeps a failed task listing retryable", async () => {

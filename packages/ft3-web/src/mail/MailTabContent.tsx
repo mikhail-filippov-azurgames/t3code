@@ -24,6 +24,7 @@ import {
   mailPlanPhaseLabel,
   mailRecipientLabel,
   mailTaskGroups,
+  mailTasksUnsupported,
 } from "./mail.logic.ts";
 import { mailEnvironment } from "./state.ts";
 
@@ -47,6 +48,13 @@ export function BoardMailTab(props: {
     return (
       <p role="status" className="text-xs text-muted-foreground">
         Loading mail…
+      </p>
+    );
+  }
+  if (mailTasksUnsupported(tasksQuery.error, tasksQuery.failure)) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        This server does not support the Mail tab yet. Update the server to use it here.
       </p>
     );
   }

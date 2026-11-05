@@ -7,6 +7,7 @@ export {
   mailPlanPhaseLabel,
   mailRecipientLabel,
   mailTaskGroups,
+  mailTasksUnsupported,
   type MailDeliveryBadgeVariant,
   type MailTaskGroup,
 } from "./mail.logic.ts";

@@ -7,6 +7,7 @@ import {
   mailPlanPhaseLabel,
   mailRecipientLabel,
   mailTaskGroups,
+  mailTasksUnsupported,
 } from "./mail.logic.ts";
 
 const task: MailTask = {
@@ -104,6 +105,19 @@ describe("mailPlanPhaseLabel", () => {
   it("shows the phase alone or with its step", () => {
     expect(mailPlanPhaseLabel("draft", null)).toBe("draft");
     expect(mailPlanPhaseLabel("implement", "P2")).toBe("implement P2");
+  });
+});
+
+describe("mailTasksUnsupported", () => {
+  it("recognizes the unknown-method defect of an old server", () => {
+    expect(mailTasksUnsupported("Unknown request tag: mail.tasks", null)).toBe(true);
+    expect(mailTasksUnsupported(null, null)).toBe(false);
+  });
+
+  it("keeps real server errors retryable", () => {
+    const typedFailure = { _tag: "OrchestratorMcpFailure", code: "internal", message: "boom" };
+    expect(mailTasksUnsupported("boom", typedFailure)).toBe(false);
+    expect(mailTasksUnsupported("The environment request failed.", null)).toBe(false);
   });
 });
 

@@ -34,6 +34,15 @@ export const MAIL_TIMELINE_PAGE_LIMIT = 50;
 /** The tab asks for at most this many tasks; hitting the cap shows a note. */
 export const MAIL_TASKS_PAGE_LIMIT = 50;
 
+/**
+ * An old server without the mail.tasks method dies with an unknown-request-tag
+ * defect, which surfaces as a formatted error with no typed failure. Real
+ * server errors keep their typed failure, so the two stay distinguishable.
+ */
+export function mailTasksUnsupported(error: string | null, failure: unknown): boolean {
+  return failure === null && error !== null && error.startsWith("Unknown request tag");
+}
+
 export function mailLetterSenderLabel(letter: MailLetter, task: MailTask): string {
   if (letter.senderThreadId === task.createdByThreadId) return "lead";
   if (letter.senderThreadId === "system") return "system";
