@@ -7,13 +7,20 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
+import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import { vi } from "vite-plus/test";
 
 import type { DocsChanged } from "./reconciler.ts";
 import * as Service from "./service.ts";
 import * as WriteRule from "./writeRule.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeFS>();
+  return { ...actual, statSync: vi.fn(actual.statSync) };
+});
 
 // The repository never carries real document ids; tests use nil-style ids.
 const NIL_ID = "00000000-0000-0000-0000-000000000000";
@@ -401,6 +408,10 @@ describe("DocsService reads", () => {
               (after.mtimeMs !== stamped.mtimeMs || after.size !== stamped.size),
           );
           assert.isNull(yield* context.service.docStat(`oc://doc/${crypto.randomUUID()}`));
+          vi.mocked(NodeFS.statSync).mockImplementationOnce(() => {
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          });
+          assert.isNull(yield* context.service.docStat(`oc://doc/${NIL_ID}`));
         }),
       (root) => seedFiles(root),
     ),

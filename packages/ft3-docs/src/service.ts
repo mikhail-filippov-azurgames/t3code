@@ -744,11 +744,15 @@ const make = Effect.fn("DocsService.make")(function* (options: DocsServiceOption
     if (located._tag === "Failure") return null;
     const real = yield* realPathUnderRoot(located.success.relPath);
     if (real === null) return null;
-    const stat = yield* Effect.result(
-      Effect.sync(() => NodeFS.statSync(real, { throwIfNoEntry: true })),
-    );
-    if (stat._tag === "Failure") return null;
-    return { mtimeMs: stat.success.mtimeMs, size: stat.success.size };
+    const stat = yield* Effect.sync(() => {
+      try {
+        return NodeFS.statSync(real, { throwIfNoEntry: true });
+      } catch {
+        return null;
+      }
+    });
+    if (stat === null) return null;
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
   });
 
   /** The design's `DocRef` for an address, used by other packages. */
