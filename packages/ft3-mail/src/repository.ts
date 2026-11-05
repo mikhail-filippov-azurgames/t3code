@@ -694,9 +694,9 @@ export class MailRepository extends Context.Service<
       cardIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlySet<string>, MailRepositoryError>;
     /**
-     * Whether the card's open task has an open mail round (closed_at NULL) or
-     * a live delivery (pending, delivered or read: sent but not answered).
-     * Closed tasks never count, and missing mail tables read as no open work.
+     * Whether the card has a non-closed task with an open mail round
+     * (closed_at NULL) or a non-terminal delivery (any state but answered
+     * and failed). Missing mail tables read as no open work.
      */
     readonly hasOpenMailWork: (cardId: string) => Effect.Effect<boolean, MailRepositoryError>;
     readonly purgeFinishedTasks: (input: {
@@ -1481,13 +1481,13 @@ const make = Effect.gen(function* () {
           if (tables.length < 3) return false;
           const rows = yield* sql<{ readonly open: number }>`
             SELECT 1 AS "open" FROM ft3_mail_tasks AS t
-            WHERE t.card_id = ${cardId} AND t.status = 'open' AND (
+            WHERE t.card_id = ${cardId} AND t.status <> 'closed' AND (
               EXISTS (
                 SELECT 1 FROM ft3_mail_rounds AS r
                 WHERE r.task_id = t.task_id AND r.closed_at IS NULL
               ) OR EXISTS (
                 SELECT 1 FROM ft3_mail_deliveries AS d
-                WHERE d.task_id = t.task_id AND d.state IN ('pending', 'delivered', 'read')
+                WHERE d.task_id = t.task_id AND d.state NOT IN ('answered', 'failed')
               )
             ) LIMIT 1`;
           return rows.length > 0;

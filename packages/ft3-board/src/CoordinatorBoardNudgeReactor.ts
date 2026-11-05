@@ -21,11 +21,11 @@ import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
-import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
+import * as BoardMailFacts from "./boardMailFacts.ts";
 import { boardWakeRulesLine, failureWords } from "./boardWakePrompt.ts";
 import { readBoardAutomationSettings } from "./settings.ts";
 import * as Contracts from "./contracts.ts";
@@ -178,52 +178,17 @@ export const make = Effect.gen(function* () {
   const board = yield* BoardRepository.BoardRepository;
   const engine = yield* ThreadManagement.ThreadManagementService;
   const settingsService = yield* ServerSettingsService;
-  const sql = yield* SqlClient.SqlClient;
+  const mailFacts = yield* BoardMailFacts.BoardMailFacts;
 
   const logReason = (reason: string, details: Record<string, unknown> = {}) =>
     Effect.logInfo("coordinator board nudge", { reason, ...details });
 
+  // The mail package answers through the BoardMailFacts port, so this file
+  // never names a mail table. A missing mail store reads as no open work.
   const blockedByOpenMailItem = Effect.fn("CoordinatorBoardNudgeReactor.blockedByOpenMailItem")(
     function* (cardId: string) {
-      const openRound = yield* sql<{ readonly present: number }>`
-        SELECT 1 AS "present" FROM ft3_mail_rounds
-        JOIN ft3_mail_tasks ON ft3_mail_tasks.task_id = ft3_mail_rounds.task_id
-        WHERE ft3_mail_tasks.card_id = ${cardId}
-          AND ft3_mail_tasks.status <> 'closed'
-          AND ft3_mail_rounds.closed_at IS NULL
-        LIMIT 1
-      `.pipe(
-        Effect.map((rows) => ({ _tag: "success" as const, open: rows.length > 0 })),
-        Effect.catch((error) => Effect.succeed({ _tag: "failure" as const, error })),
-      );
-      if (openRound._tag === "failure") {
-        yield* logReason("blocked-while-mail-open", { cardId, error: String(openRound.error) });
-        return true;
-      }
-      if (openRound.open) {
-        yield* logReason("blocked-while-mail-open", { cardId, openRound: true });
-        return true;
-      }
-      const pendingDelivery = yield* sql<{ readonly present: number }>`
-        SELECT 1 AS "present" FROM ft3_mail_deliveries
-        JOIN ft3_mail_tasks ON ft3_mail_tasks.task_id = ft3_mail_deliveries.task_id
-        WHERE ft3_mail_tasks.card_id = ${cardId}
-          AND ft3_mail_tasks.status <> 'closed'
-          AND ft3_mail_deliveries.state NOT IN ('answered', 'failed')
-        LIMIT 1
-      `.pipe(
-        Effect.map((rows) => ({ _tag: "success" as const, open: rows.length > 0 })),
-        Effect.catch((error) => Effect.succeed({ _tag: "failure" as const, error })),
-      );
-      if (pendingDelivery._tag === "failure") {
-        yield* logReason("blocked-while-mail-open", {
-          cardId,
-          error: String(pendingDelivery.error),
-        });
-        return true;
-      }
-      if (pendingDelivery.open) {
-        yield* logReason("blocked-while-mail-open", { cardId, pendingDelivery: true });
+      if (yield* mailFacts.hasOpenMailWork(cardId)) {
+        yield* logReason("blocked-while-mail-open", { cardId, openMailWork: true });
         return true;
       }
       return false;

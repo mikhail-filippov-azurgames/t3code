@@ -18,8 +18,8 @@ export class BoardMailFacts extends Context.Service<
       cardIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlySet<string>>;
     /**
-     * Whether the card's open task has an open mail round or a live delivery
-     * (sent but not answered). False when mail is absent.
+     * Whether the card has a non-closed task with an open mail round or a
+     * non-terminal delivery. False when mail is absent.
      */
     readonly hasOpenMailWork: (cardId: string) => Effect.Effect<boolean>;
   }

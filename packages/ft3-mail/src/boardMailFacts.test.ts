@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
-import { BoardMailFacts } from "@t3tools/ft3-board/planning";
+import { BoardMailFacts } from "@t3tools/ft3-board/boardMailFacts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -93,6 +93,10 @@ describe("BoardMailFacts over the mail repository", () => {
       yield* seedLetter("letter:read", "task:read", "implement");
       yield* seedDelivery("delivery:read", "task:read", "letter:read", "read");
       assert.isTrue(yield* mail.hasOpenMailWork("card:read"));
+      yield* seedTask("task:sent", "card:sent", "open");
+      yield* seedLetter("letter:sent", "task:sent", "implement");
+      yield* seedDelivery("delivery:sent", "task:sent", "letter:sent", "delivered");
+      assert.isTrue(yield* mail.hasOpenMailWork("card:sent"));
       yield* seedTask("task:done", "card:done", "open");
       yield* seedLetter("letter:done", "task:done", "implement");
       yield* seedDelivery("delivery:answered", "task:done", "letter:done", "answered");

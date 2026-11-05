@@ -11,6 +11,10 @@
       "types": "./src/repository.ts",
       "import": "./src/repository.ts"
     },
+    "./boardMailFacts": {
+      "types": "./src/boardMailFacts.ts",
+      "import": "./src/boardMailFacts.ts"
+    },
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"

@@ -59,6 +59,10 @@
       "types": "./src/planning.ts",
       "import": "./src/planning.ts"
     },
+    "./boardMailFacts": {
+      "types": "./src/boardMailFacts.ts",
+      "import": "./src/boardMailFacts.ts"
+    },
     "./planning-contracts": {
       "types": "./src/planningContracts.ts",
       "import": "./src/planningContracts.ts"

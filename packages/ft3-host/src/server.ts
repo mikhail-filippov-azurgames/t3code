@@ -4,6 +4,8 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
+import { boardMailFactsLayer } from "@t3tools/ft3-mail/boardMailFacts";
+import { layer as mailRepositoryLayer } from "@t3tools/ft3-mail/repository";
 import { applyNativeSubagentGuidance } from "@t3tools/ft3-delegation/server";
 import { setDocumentsBriefEnabled } from "@t3tools/ft3-docs/brief";
 import { readDocsSettings, resolveDocsRoot } from "@t3tools/ft3-docs/root";
@@ -243,6 +245,9 @@ export const layer = layerMail.pipe(
   ),
 );
 
+// The nudge reactor reads mail facts through the board port, so the board
+// never queries mail tables directly; without mail tables the facts read empty.
+const nudgeMailFacts = boardMailFactsLayer.pipe(Layer.provide(mailRepositoryLayer));
 export const boardReactorLayer = () =>
   Layer.unwrap(
     Effect.promise(() => import("@t3tools/ft3-board/reactor")).pipe(
@@ -275,7 +280,7 @@ export const reactorLayer = () =>
     mailTimeoutReactorLayer(),
     Layer.unwrap(
       Effect.promise(() => import("@t3tools/ft3-board/automation")).pipe(
-        Effect.map((module) => module.layerWorker()),
+        Effect.map((module) => module.layerWorker().pipe(Layer.provide(nudgeMailFacts))),
       ),
     ),
     Layer.unwrap(

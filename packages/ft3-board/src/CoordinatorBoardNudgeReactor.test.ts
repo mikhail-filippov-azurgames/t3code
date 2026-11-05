@@ -23,6 +23,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations as runCoreMigrations } from "../../../apps/server/src/persistence/Migrations.ts";
 import { runMigrations } from "../../ft3-host/src/Migrations.ts";
+import { boardMailFactsLayer } from "../../ft3-mail/src/boardMailFacts.ts";
+import { layer as mailRepositoryLayer } from "../../ft3-mail/src/repository.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as Contracts from "./contracts.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
@@ -176,8 +178,11 @@ function makeHarness(seed: HarnessSeed = {}, settings = makeSettings()) {
       ),
     });
 
+    // The reactor reads mail only through the board port; the harness answers
+    // it with the real mail implementation over the same migrated store.
+    const mailFacts = boardMailFactsLayer.pipe(Layer.provide(mailRepositoryLayer));
     const reactor = yield* CoordinatorBoardNudgeReactor.make.pipe(
-      Effect.provide(Layer.mergeAll(engine, settingsLayer, BoardRepository.layer)),
+      Effect.provide(Layer.mergeAll(engine, settingsLayer, BoardRepository.layer, mailFacts)),
     );
 
     return { reactor, commands, settingsReads, settingsReadNotifications, repository };
