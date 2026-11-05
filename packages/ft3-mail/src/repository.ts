@@ -630,21 +630,7 @@ export class MailRepository extends Context.Service<
       readonly humanInstruction: string;
       readonly at: string;
     }) => Effect.Effect<MailMember | null, MailRepositoryError>;
-    /** Closes a member whose participant thread settled; the lead closes the rest. */
-    readonly closeMember: (input: {
-      readonly memberId: string;
-      readonly at: string;
-    }) => Effect.Effect<MailMember | null, MailRepositoryError>;
     readonly getMember: (memberId: string) => Effect.Effect<MailMember | null, MailRepositoryError>;
-    /**
-     * Marks a member's pending deliveries failed with the reason; delivered, read
-     * and answered rows keep their state. Returns the rows it failed, oldest first.
-     */
-    readonly failMemberDeliveries: (input: {
-      readonly memberId: string;
-      readonly at: string;
-      readonly reason: string;
-    }) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
     /** Fails one pending delivery; a delivery that already moved on is left alone. */
     readonly failDelivery: (input: {
       readonly deliveryId: string;
@@ -1100,43 +1086,11 @@ const make = Effect.gen(function* () {
         }),
       ),
     ),
-    closeMember: Effect.fn("MailRepository.closeMember")((input) =>
-      mapError("closeMember")(
-        Effect.gen(function* () {
-          yield* sql`UPDATE ft3_mail_members SET status = 'closed', updated_at = ${input.at}
-            WHERE member_id = ${input.memberId} AND status = 'active'`;
-          const rows = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
-            FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
-          return rows[0] === undefined ? null : toMember(rows[0]);
-        }),
-      ),
-    ),
     getMember: Effect.fn("MailRepository.getMember")((memberId: string) =>
       mapError("getMember")(
         sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
           FROM ft3_mail_members WHERE member_id = ${memberId}`.pipe(
           Effect.map((rows) => (rows[0] === undefined ? null : toMember(rows[0]))),
-        ),
-      ),
-    ),
-    failMemberDeliveries: Effect.fn("MailRepository.failMemberDeliveries")((input) =>
-      mapError("failMemberDeliveries")(
-        sql<DeliveryRow>`UPDATE ft3_mail_deliveries
-          SET state = 'failed', failure_reason = ${input.reason}, updated_at = ${input.at}
-          WHERE member_id = ${input.memberId} AND state = 'pending'
-          RETURNING ${sql.literal(DELIVERY_COLUMNS)}`.pipe(
-          Effect.map((rows) =>
-            rows.toSorted((left, right) =>
-              left.createdAt < right.createdAt
-                ? -1
-                : left.createdAt > right.createdAt
-                  ? 1
-                  : left.deliveryId < right.deliveryId
-                    ? -1
-                    : 1,
-            ),
-          ),
-          Effect.map((rows) => rows.map(toDelivery)),
         ),
       ),
     ),

@@ -461,10 +461,8 @@ it.effect("marks a dead wake handled without dispatching after the task closes",
     const member = yield* memberOf(created.task.taskId);
     yield* bindChild(member.memberId);
     const repository = yield* MailRepository;
-    yield* repository.closeMember({
-      memberId: member.memberId,
-      at: DateTime.formatIso(now),
-    });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE ft3_mail_members SET status = 'closed' WHERE member_id = ${member.memberId}`;
     const closed = yield* repository.closeTask({
       taskId: created.task.taskId,
       outcome: "succeeded",

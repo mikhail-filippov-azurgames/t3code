@@ -513,7 +513,7 @@ it.effect("purges only closed tasks older than the retention cutoff", () =>
   }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("fails a closed member's pending deliveries without touching settled ones", () =>
+it.effect("fails listed pending deliveries without touching delivered ones", () =>
   Effect.gen(function* () {
     yield* migrate;
     const repository = yield* MailRepository;
@@ -552,19 +552,19 @@ it.effect("fails a closed member's pending deliveries without touching settled o
       at: "2026-01-01T00:00:06.000Z",
     });
 
-    const failed = yield* repository.failMemberDeliveries({
-      memberId: "member:one",
-      at: "2026-01-01T00:00:07.000Z",
-      reason: "The implementation participant completed before its letters were delivered.",
+    const failed = yield* repository.applyTimeoutNotices({
+      now: "2026-01-01T00:00:07.000Z",
+      failed: [
+        { deliveryId: "delivery:pending", reason: "The implementation participant timed out." },
+        { deliveryId: "delivery:settled", reason: "A delivered letter is not failed." },
+      ],
+      letters: [],
     });
     assert.deepStrictEqual(
-      failed.map((delivery) => [delivery.deliveryId, delivery.state]),
+      failed.failed.map((delivery) => [delivery.deliveryId, delivery.state]),
       [["delivery:pending", "failed"]],
     );
-    assert.equal(
-      failed[0]?.failureReason,
-      "The implementation participant completed before its letters were delivered.",
-    );
+    assert.equal(failed.failed[0]?.failureReason, "The implementation participant timed out.");
     assert.equal((yield* repository.getDelivery("delivery:settled"))?.state, "delivered");
 
     // A late mark cannot resurrect a failed delivery.
@@ -579,14 +579,12 @@ it.effect("fails a closed member's pending deliveries without touching settled o
     assert.equal((yield* repository.listUndeliveredDeliveries({ limit: 10 })).length, 0);
 
     // A repeat finds nothing left to fail.
-    assert.deepStrictEqual(
-      yield* repository.failMemberDeliveries({
-        memberId: "member:one",
-        at: "2026-01-01T00:00:09.000Z",
-        reason: "again",
-      }),
-      [],
-    );
+    const repeated = yield* repository.applyTimeoutNotices({
+      now: "2026-01-01T00:00:09.000Z",
+      failed: [{ deliveryId: "delivery:pending", reason: "again" }],
+      letters: [],
+    });
+    assert.deepStrictEqual(repeated.failed, []);
   }).pipe(Effect.provide(testLayer)),
 );
 
@@ -628,7 +626,8 @@ it.effect("lists only wakes for open tasks with an active member", () =>
       ["mail:wake:delivery:one", "wake:odd"],
     );
 
-    yield* repository.closeMember({ memberId: "member:one", at: "2026-01-01T00:00:07.000Z" });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE ft3_mail_members SET status = 'closed' WHERE member_id = ${"member:one"}`;
     assert.deepStrictEqual(
       (yield* repository.listUndeliveredWakes({ limit: 10 })).map((wake) => wake.wakeId),
       ["wake:odd"],
