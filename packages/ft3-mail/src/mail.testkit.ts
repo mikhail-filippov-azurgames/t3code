@@ -123,13 +123,18 @@ export const routingFake = (options: {
 };
 
 /** The applied snapshot is fixed; each card write is recorded for the test to read. */
-export const policyEvidenceFake = (knownCards: ReadonlyArray<string> = ["card:one"]) => {
+export const policyEvidenceFake = (
+  cardOwners: Readonly<Record<string, string>> = {
+    "card:one": "thread:lead",
+    "card:foreign": "thread:other-lead",
+  },
+) => {
   const cardSnapshots: Array<{ readonly cardId: string; readonly snapshotJson: string }> = [];
   const layer = Layer.succeed(
     MailPolicyEvidence,
     MailPolicyEvidence.of({
       snapshotJson: Effect.succeed('{"revision":3}'),
-      cardExists: (cardId) => Effect.succeed(knownCards.includes(cardId)),
+      cardOwnerThreadId: (cardId) => Effect.succeed(cardOwners[cardId] ?? null),
       recordCardSnapshot: (input) =>
         Effect.sync(() => {
           cardSnapshots.push(input);
@@ -252,10 +257,11 @@ export const mailHarness = (
     readonly planning?: boolean;
     readonly planRecordsFail?: boolean;
     readonly planBindsFail?: boolean;
+    readonly cardOwners?: Readonly<Record<string, string>>;
   } = {},
 ) => {
   const routing = routingFake(options);
-  const evidence = policyEvidenceFake();
+  const evidence = policyEvidenceFake(options.cardOwners);
   const launcher = launcherFake(options.launchFail);
   const classifier = classifierFake(options.classify);
   const gate = planGateFake(

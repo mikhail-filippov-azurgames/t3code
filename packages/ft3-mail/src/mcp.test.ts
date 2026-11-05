@@ -54,7 +54,7 @@ const cryptoLayer = Layer.succeed(
 );
 
 const fixture = (enabled: boolean) => {
-  const harness = mailHarness({ enabled });
+  const harness = mailHarness({ enabled, cardOwners: { "card:one": leadId } });
   const shells = new Map([[leadId, liveThreadShell(leadId)]]);
   const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),

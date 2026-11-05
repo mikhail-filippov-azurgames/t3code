@@ -202,28 +202,28 @@ it.effect("stores the policy snapshot on the card a task belongs to, once", () =
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("refuses a task for an unknown board card and creates nothing", () => {
+it.effect("refuses a task for a missing or another lead's board card and creates nothing", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {
     yield* migrateMail;
     const mail = yield* MailService;
     const repository = yield* MailRepository;
-    const input: CreateMailTaskInput = {
-      callerThreadId: LEAD,
-      clientRequestId: "request:missing-card",
-      title: "Card work",
-      brief: "Do it.",
-      level: "medium",
-      cardId: "card:missing",
-      members: [{ role: "implementation" }],
-    };
-    assert.equal(yield* refusal(mail.createTask(input)), "card_not_found");
-    assert.isNull(
-      yield* repository.getTaskByRequestKey({
-        createdByThreadId: LEAD,
-        clientRequestId: "request:missing-card",
-      }),
-    );
+    for (const cardId of ["card:missing", "card:foreign"]) {
+      const clientRequestId = `request:${cardId}`;
+      const input: CreateMailTaskInput = {
+        callerThreadId: LEAD,
+        clientRequestId,
+        title: "Card work",
+        brief: "Do it.",
+        level: "medium",
+        cardId,
+        members: [{ role: "implementation" }],
+      };
+      assert.equal(yield* refusal(mail.createTask(input)), "card_not_found");
+      assert.isNull(
+        yield* repository.getTaskByRequestKey({ createdByThreadId: LEAD, clientRequestId }),
+      );
+    }
     assert.equal(harness.selects.length, 0);
     assert.deepStrictEqual(harness.cardSnapshots, []);
   }).pipe(Effect.provide(harness.layer));

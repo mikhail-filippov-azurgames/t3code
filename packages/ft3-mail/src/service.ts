@@ -334,7 +334,8 @@ export class MailPolicyEvidence extends Context.Service<
   MailPolicyEvidence,
   {
     readonly snapshotJson: Effect.Effect<string>;
-    readonly cardExists: (cardId: string) => Effect.Effect<boolean>;
+    /** The lead thread that owns the board card, or null when no such card exists. */
+    readonly cardOwnerThreadId: (cardId: string) => Effect.Effect<string | null>;
     readonly recordCardSnapshot: (input: {
       readonly cardId: string;
       readonly snapshotJson: string;
@@ -740,7 +741,8 @@ const make = Effect.gen(function* () {
     });
     if (existing !== null) return yield* replayTask(existing, requestFingerprint);
     const cardId = input.cardId ?? null;
-    if (cardId !== null && !(yield* evidence.cardExists(cardId))) {
+    // A card of another lead is refused like a missing one, so its id is not revealed.
+    if (cardId !== null && (yield* evidence.cardOwnerThreadId(cardId)) !== input.callerThreadId) {
       return yield* refuse("card_not_found", `Board card "${cardId}" was not found.`);
     }
 

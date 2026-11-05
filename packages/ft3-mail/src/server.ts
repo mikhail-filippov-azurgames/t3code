@@ -28,9 +28,11 @@ const policyEvidenceLayer = Layer.effect(
     const tracker = yield* PolicyChangeTracker;
     return MailPolicyEvidence.of({
       snapshotJson: tracker.snapshot().pipe(Effect.map((snapshot) => JSON.stringify(snapshot))),
-      cardExists: Effect.fn("MailPolicyEvidence.cardExists")(function* (cardId: string) {
+      cardOwnerThreadId: Effect.fn("MailPolicyEvidence.cardOwnerThreadId")(function* (
+        cardId: string,
+      ) {
         const card = yield* board.getCard(BoardCardId.make(cardId)).pipe(Effect.orDie);
-        return card !== null;
+        return card === null ? null : card.orchestratorThreadId;
       }),
       recordCardSnapshot: Effect.fn("MailPolicyEvidence.recordCardSnapshot")(function* (input) {
         yield* board
