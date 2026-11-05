@@ -472,11 +472,14 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
     const existing = yield* findRootFolderRow();
     if (existing !== null) return existing;
     yield* ensureDirectory(contextsRoot);
+    // Two store opens race here during parallel layer builds; the loser takes
+    // the winner's row below instead of failing on the unique rel_path.
     yield* databaseQuery(
       ROOT_FOLDER_REL_PATH,
       sql`
         INSERT INTO folders (parent_id, name, rel_path, abs_path, description, created_at, updated_at)
         VALUES (NULL, '', ${ROOT_FOLDER_REL_PATH}, ${contextsRoot}, '', ${at}, ${at})
+        ON CONFLICT DO NOTHING
       `,
     );
     return yield* requireFolder(ROOT_FOLDER_REL_PATH);
@@ -1089,12 +1092,23 @@ export class DocsStore extends Context.Service<
  * same file, and `foreign_keys` is on so folder deletion cascades.
  */
 export const layer = (options: DocsStoreOptions) =>
-  Layer.effect(DocsStore, make(options)).pipe(
-    Layer.provide(
-      NodeSqliteClient.layer({
-        filename: NodePath.join(options.root, DOCS_STORE_DATABASE_FILENAME),
-        readerWorker: false,
-        checkpointWorker: false,
-      }),
-    ),
+  Layer.unwrap(
+    Effect.gen(function* () {
+      // The sqlite client opens the file at build time, before make() runs
+      // its own directory setup; parallel builds share one root, so create it
+      // up front and let concurrent opens race only on the idempotent seed.
+      yield* Effect.tryPromise({
+        try: () => NodeFSP.mkdir(options.root, { recursive: true }),
+        catch: (cause) => storeError("store_unavailable", options.root, cause),
+      }).pipe(Effect.asVoid);
+      return Layer.effect(DocsStore, make(options)).pipe(
+        Layer.provide(
+          NodeSqliteClient.layer({
+            filename: NodePath.join(options.root, DOCS_STORE_DATABASE_FILENAME),
+            readerWorker: false,
+            checkpointWorker: false,
+          }),
+        ),
+      );
+    }),
   );
