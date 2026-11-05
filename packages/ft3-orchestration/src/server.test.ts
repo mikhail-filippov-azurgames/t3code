@@ -42,6 +42,11 @@ import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderReg
 import { selectHistoryPageFromCursor } from "../../../apps/server/src/orchestration-v2/threadHistoryPaging.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import { MailParticipantLauncher } from "../../ft3-mail/src/participantLauncher.ts";
+// The board toolkit takes PlanGate on starting execution and reads PlanService
+// for the plan tools; the task tests below never execute either, like the
+// agent-context budget test which mocks the same two services.
+import { PlanGate } from "../../ft3-board/src/PlanGate.ts";
+import { PlanService } from "../../ft3-board/src/PlanService.ts";
 import * as Contracts from "./contracts.ts";
 
 const decodeList = Schema.decodeUnknownEffect(Contracts.TaskListResult);
@@ -288,6 +293,8 @@ function fixture() {
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
     Layer.provide(Layer.mock(MailParticipantLauncher)({})),
+    Layer.provide(Layer.mock(PlanGate)({})),
+    Layer.provide(Layer.mock(PlanService)({})),
     Layer.provide(dependencies),
     Layer.provide(providerRegistry),
     Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -666,6 +673,8 @@ describe("ft3 task toolkit through ft3-host", () => {
       const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provide(Layer.mock(MailParticipantLauncher)({})),
+        Layer.provide(Layer.mock(PlanGate)({})),
+        Layer.provide(Layer.mock(PlanService)({})),
         Layer.provide(liveQueries),
         Layer.provide(providerRegistry),
         Layer.provide(crypto),
