@@ -381,7 +381,7 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
     }),
   );
 
-  it.effect("nudges a blocked card once its mail round and deliveries settled", () =>
+  it.effect("nudges a blocked card once its mail settled, failed, or closed", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(NOW_MS);
       const harness = yield* makeHarness({ cards: [blockedCard] }).pipe(
@@ -404,6 +404,20 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
         ) VALUES (
           'delivery-settled', 'task-settled', 'letter-settled', 'member-1', 'answered', ${NOW}, ${NOW}, ${NOW}, ${NOW}, ${NOW}
         )`;
+      yield* seedMailTask(sql, "task-failed", "request-failed");
+      yield* sql`INSERT INTO ft3_mail_letters (
+          letter_id, task_id, sequence, sender_thread_id, recipient, kind, body,
+          client_request_id, request_fingerprint, created_at
+        ) VALUES (
+          'letter-failed', 'task-failed', 1, ${COORDINATOR_ID}, 'member-1', 'request', 'Body',
+          'letter-request-failed', 'fingerprint', ${NOW}
+        )`;
+      yield* sql`INSERT INTO ft3_mail_deliveries (
+          delivery_id, task_id, letter_id, recipient, state, delivered_at, created_at, updated_at
+        ) VALUES (
+          'delivery-failed', 'task-failed', 'letter-failed', 'member-1', 'failed', ${NOW}, ${NOW}, ${NOW}
+        )`;
+      yield* sql`UPDATE ft3_mail_tasks SET status = 'closed' WHERE task_id = 'task-failed'`;
       yield* startAndSweep(harness);
       const commands = turnCommands(yield* Ref.get(harness.commands));
       assert.equal(commands.length, 1);

@@ -188,7 +188,9 @@ export const make = Effect.gen(function* () {
       const openRound = yield* sql<{ readonly present: number }>`
         SELECT 1 AS "present" FROM ft3_mail_rounds
         JOIN ft3_mail_tasks ON ft3_mail_tasks.task_id = ft3_mail_rounds.task_id
-        WHERE ft3_mail_tasks.card_id = ${cardId} AND ft3_mail_rounds.closed_at IS NULL
+        WHERE ft3_mail_tasks.card_id = ${cardId}
+          AND ft3_mail_tasks.status <> 'closed'
+          AND ft3_mail_rounds.closed_at IS NULL
         LIMIT 1
       `.pipe(
         Effect.map((rows) => ({ _tag: "success" as const, open: rows.length > 0 })),
@@ -206,7 +208,8 @@ export const make = Effect.gen(function* () {
         SELECT 1 AS "present" FROM ft3_mail_deliveries
         JOIN ft3_mail_tasks ON ft3_mail_tasks.task_id = ft3_mail_deliveries.task_id
         WHERE ft3_mail_tasks.card_id = ${cardId}
-          AND (ft3_mail_deliveries.delivered_at IS NULL OR ft3_mail_deliveries.answered_at IS NULL)
+          AND ft3_mail_tasks.status <> 'closed'
+          AND ft3_mail_deliveries.state NOT IN ('answered', 'failed')
         LIMIT 1
       `.pipe(
         Effect.map((rows) => ({ _tag: "success" as const, open: rows.length > 0 })),
