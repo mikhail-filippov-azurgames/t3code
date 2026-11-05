@@ -9,6 +9,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { TaskSummaryHistoryCursor } from "../../ft3-orchestration/src/contracts.ts";
@@ -202,7 +203,7 @@ export const BoardListResult = Schema.Struct({
   cards: Schema.Array(BoardCard),
   events: Schema.Array(BoardCardEvent),
   archivedCounts: Schema.optional(Schema.Array(BoardArchivedCount)),
-  plans: Schema.Array(BoardCardPlanSummary),
+  plans: Schema.Array(BoardCardPlanSummary).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
 });
 export type BoardListResult = typeof BoardListResult.Type;
 
