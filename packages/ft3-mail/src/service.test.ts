@@ -750,7 +750,7 @@ const flagGateLayer = (flag: Ref.Ref<boolean>) =>
     }),
   );
 
-it.effect("reads the timeline while the mail feature is off", () => {
+it.effect("reads history while the mail feature is off without marking deliveries", () => {
   const flagHarness = (flag: Ref.Ref<boolean>) => {
     const layer = mailServiceLayer.pipe(
       Layer.provide(
@@ -777,7 +777,15 @@ it.effect("reads the timeline while the mail feature is off", () => {
       yield* migrateMail;
       const created = yield* teamOf([{ role: "implementation" }]);
       const taskId = created.task.taskId;
-      yield* sendAs(LEAD, taskId, "human", "info", "Hello.");
+      yield* bindParticipant(idsOf(created, "implementation")[0] ?? "", WORKER);
+      const sent = yield* sendAs(LEAD, taskId, "role:implementation", "request", "Start.");
+      const delivery = sent.deliveries[0]!;
+      const repository = yield* MailRepository;
+      yield* repository.markDeliveryDelivered({
+        deliveryId: delivery.deliveryId,
+        at: "2026-11-04T01:00:00.000Z",
+      });
+      yield* sendAs(LEAD, taskId, "human", "info", "Hello.", "request:hello");
       yield* Ref.set(flag, false);
 
       const mail = yield* MailService;
@@ -786,8 +794,16 @@ it.effect("reads the timeline while the mail feature is off", () => {
         "mail_disabled",
       );
       const entries = yield* mail.listTimeline({ taskId, callerThreadId: LEAD, limit: 10 });
-      assert.equal(entries.length, 1);
+      assert.equal(entries.length, 2);
       assert.equal(entries[0]!.letter.body, "Hello.");
+      const task = yield* mail.readTask({ taskId, callerThreadId: LEAD, limit: 10 });
+      assert.equal(task.entries.length, 2);
+      const letter = yield* mail.readLetter({
+        letterId: sent.letter.letterId,
+        callerThreadId: WORKER,
+      });
+      assert.equal(letter.letter.body, "Start.");
+      assert.equal((yield* repository.getDelivery(delivery.deliveryId))?.state, "delivered");
     }).pipe(Effect.provide(harness.layer));
   });
 });

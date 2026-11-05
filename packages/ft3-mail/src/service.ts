@@ -429,7 +429,7 @@ export class MailService extends Context.Service<
     readonly closeRound: (
       input: CloseMailRoundInput,
     ) => Effect.Effect<MailRound, MailServiceError | MailRepositoryError>;
-    /** A full letter; reading marks the caller's own delivered delivery read. */
+    /** A full letter; while mail is on, reading marks the caller's own delivered delivery read. */
     readonly readLetter: (
       input: ReadMailLetterInput,
     ) => Effect.Effect<ReadMailLetterResult, MailServiceError | MailRepositoryError>;
@@ -1261,14 +1261,14 @@ const make = Effect.gen(function* () {
   });
 
   const readLetter = Effect.fn("MailService.readLetter")(function* (input: ReadMailLetterInput) {
-    yield* requireMail;
     const letter = yield* repository.getLetter(input.letterId);
     if (letter === null) {
       return yield* refuse("letter_not_found", `Letter "${input.letterId}" was not found.`);
     }
     const task = yield* requireTask(letter.taskId);
     yield* requireTaskAccess(task, input.callerThreadId);
-    if (task.status === "open") {
+    // Marking a delivery read is a write, so only an enabled mail feature does it.
+    if (task.status === "open" && (yield* gate.isEffective("mail"))) {
       const pending = yield* repository.listLetterDeliveries(letter.letterId);
       for (const delivery of pending) {
         if (
@@ -1291,7 +1291,6 @@ const make = Effect.gen(function* () {
   });
 
   const readTask = Effect.fn("MailService.readTask")(function* (input: ReadMailTaskInput) {
-    yield* requireMail;
     const task = yield* requireTask(input.taskId);
     yield* requireTaskAccess(task, input.callerThreadId);
     const limit = yield* requireTimelineLimit(input.limit);

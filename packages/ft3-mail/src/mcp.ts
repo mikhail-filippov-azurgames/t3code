@@ -118,7 +118,6 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
         ),
         mail_read: McpToolAccess.readsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
             const service = yield* MailService;
             return yield* service
               .readLetter({ letterId: input.letterId, callerThreadId: yield* callerThreadId })
@@ -127,7 +126,6 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
         ),
         mail_task_read: McpToolAccess.readsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
             const service = yield* MailService;
             return yield* service
               .readTask({

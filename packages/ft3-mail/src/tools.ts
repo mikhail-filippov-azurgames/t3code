@@ -41,7 +41,8 @@ const mailSend = Tool.make("mail_send", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 const mailRead = Tool.make("mail_read", {
-  description: `Read one full letter. An agent recipient reading marks its delivered delivery read.${offNotice}`,
+  description:
+    "Read one full letter. An agent recipient reading marks its delivered delivery read while mail is on.",
   parameters: Contracts.MailReadInput,
   success: Contracts.MailReadResult,
   failure: Contracts.MailMcpFailure,
@@ -54,7 +55,8 @@ const mailRead = Tool.make("mail_read", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 const mailTaskRead = Tool.make("mail_task_read", {
-  description: `Read a mail task with its members, rounds and the newest-first letter timeline.${offNotice}`,
+  description:
+    "Read a mail task with its members, rounds and the newest-first letter timeline. Works while mail is off.",
   parameters: Contracts.MailTaskReadInput,
   success: Contracts.MailTaskReadResult,
   failure: Contracts.MailMcpFailure,

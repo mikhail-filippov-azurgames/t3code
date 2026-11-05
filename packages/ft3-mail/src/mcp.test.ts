@@ -180,7 +180,7 @@ describe("mail MCP tools", () => {
     }).pipe(Effect.provide(fixture(true))),
   );
 
-  it.effect("refuses every tool with the mail notice while mail is off", () =>
+  it.effect("refuses writes with the mail notice while mail is off and lets reads through", () =>
     Effect.gen(function* () {
       yield* migrateMail;
       assert.equal(
@@ -194,6 +194,15 @@ describe("mail MCP tools", () => {
           }),
         ).code,
         "mail_disabled_notice",
+      );
+      // A read that reaches the service reports the missing record, not the notice.
+      assert.equal(
+        decodeFailure(yield* call("mail_task_read", { taskId: "task:missing" })).code,
+        "task_not_found",
+      );
+      assert.equal(
+        decodeFailure(yield* call("mail_read", { letterId: "letter:missing" })).code,
+        "letter_not_found",
       );
     }).pipe(Effect.provide(fixture(false))),
   );
