@@ -116,6 +116,7 @@ const make = Effect.gen(function* () {
   const crypto = yield* Crypto.Crypto;
   const roles = yield* RoleResolver;
   const gate = yield* PlanGate.PlanGate;
+  const plans = yield* PlanService.PlanService;
 
   const gateFailure = (
     failure: PlanGate.PlanGateError | PlanService.PlanError,
@@ -309,6 +310,15 @@ const make = Effect.gen(function* () {
           code: "readiness_note_required",
           message: "A non-ready card needs a non-empty readinessNote.",
         });
+      }
+      if (next.readiness === "ready" && card.readiness !== "ready") {
+        const plan = yield* plans.get(card.cardId).pipe(Effect.mapError(gateFailure));
+        if (plan?.state === "discussion") {
+          return yield* new Contracts.BoardMcpFailure({
+            code: "plan_not_accepted",
+            message: "The plan is in discussion: the human accepts it before the card is ready.",
+          });
+        }
       }
       const startingExecution = card.status !== "in_progress" && next.status === "in_progress";
       for (const field of ["title", "body", "lastError", "readinessNote"] as const) {

@@ -26,6 +26,8 @@ import {
   LEAD_SKILLS_MANIFEST_FILE,
   ROLES_MANIFEST_FILE,
 } from "./leadPolicies.testkit.ts";
+import * as PlanGate from "./PlanGate.ts";
+import * as PlanService from "./PlanService.ts";
 
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
@@ -86,6 +88,15 @@ const wake = <A>(
         Layer.provide(threads),
         Layer.provide(cryptoLayer),
         Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(PlanGate.PlanGate, {
+              check: () => Effect.void,
+              recordPlanLetter: () => Effect.void,
+            }),
+            Layer.mock(PlanService.PlanService)({ get: () => Effect.succeed(null) }),
+          ),
+        ),
       ),
       tracker,
     );
