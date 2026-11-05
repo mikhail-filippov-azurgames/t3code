@@ -262,12 +262,19 @@ describe("PlanGate layer", () => {
         const gate = yield* PlanGate.PlanGate;
         yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "draft" });
         const record = yield* plans.require({ cardId: Testkit.CARD_ID, requiredBy: "lead" });
-        assert.isNull(yield* gate.plannerThreadOf(Testkit.CARD_ID));
-        yield* gate.bindPlannerThread({
+        assert.deepStrictEqual(
+          yield* gate.claimPlanner({ cardId: Testkit.CARD_ID, memberId: "member:planner" }),
+          { _tag: "Launch" },
+        );
+        yield* gate.bindPlanner({
           cardId: Testkit.CARD_ID,
+          memberId: "member:planner",
           threadId: Testkit.PLANNER_THREAD_ID,
         });
-        assert.equal(yield* gate.plannerThreadOf(Testkit.CARD_ID), Testkit.PLANNER_THREAD_ID);
+        assert.deepStrictEqual(
+          yield* gate.claimPlanner({ cardId: Testkit.CARD_ID, memberId: "member:other" }),
+          { _tag: "Bound", threadId: Testkit.PLANNER_THREAD_ID },
+        );
         yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
         yield* gate.recordPlannerAnswer({ cardId: Testkit.CARD_ID });
         yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "review" });
@@ -276,6 +283,44 @@ describe("PlanGate layer", () => {
         assert.equal((yield* plans.get(Testkit.CARD_ID))?.state, "discussion");
         const phases = (yield* plans.listVersions(Testkit.CARD_ID)).map((version) => version.phase);
         assert.deepStrictEqual(phases.toSorted(), ["discussion", "draft"]);
+      }),
+    ),
+  );
+
+  it.effect("claims one planner per card and resolves its plan from the bound thread", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const plans = yield* PlanService.PlanService;
+        const gate = yield* PlanGate.PlanGate;
+        const record = yield* plans.require({ cardId: Testkit.CARD_ID, requiredBy: "lead" });
+        const claim = (memberId: string) =>
+          gate.claimPlanner({ cardId: Testkit.CARD_ID, memberId });
+        assert.deepStrictEqual(yield* claim("member:one"), { _tag: "Launch" });
+        assert.deepStrictEqual(yield* claim("member:two"), { _tag: "Pending" });
+        yield* gate.bindPlanner({
+          cardId: Testkit.CARD_ID,
+          memberId: "member:two",
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+        assert.deepStrictEqual(yield* claim("member:two"), { _tag: "Pending" });
+        yield* gate.bindPlanner({
+          cardId: Testkit.CARD_ID,
+          memberId: "member:one",
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+        assert.deepStrictEqual(yield* claim("member:two"), {
+          _tag: "Bound",
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+        assert.deepStrictEqual(yield* claim("member:one"), {
+          _tag: "Bound",
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+        assert.equal(
+          yield* plans.planStableIdOfPlannerThread(Testkit.PLANNER_THREAD_ID),
+          record.planDocId,
+        );
       }),
     ),
   );

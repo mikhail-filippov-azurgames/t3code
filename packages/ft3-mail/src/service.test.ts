@@ -867,6 +867,67 @@ it.effect("refuses a retry whose plan payload changed, and changes no state", ()
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("keeps one planner thread per card when the binding is interrupted and retried", () => {
+  const harness = mailHarness({ planBindsFail: true });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const first = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-one",
+      title: "Plan work",
+      brief: "Write the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const draftFirst = {
+      callerThreadId: LEAD,
+      taskId: first.task.taskId,
+      to: "role:planner",
+      kind: "request" as const,
+      body: "Draft it.",
+      clientRequestId: "request:draft-one",
+      plan: { phase: "draft" as const },
+    };
+    assert.equal(yield* refusal(mail.sendLetter(draftFirst)), "invalid_request");
+    assert.lengthOf(harness.launches, 1);
+    harness.planFailBinds.current = false;
+    const retried = yield* mail.sendLetter(draftFirst);
+    assert.isFalse(retried.created);
+    assert.lengthOf(harness.launches, 1);
+    const second = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-two",
+      title: "Plan again",
+      brief: "Revise the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const draftSecond = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: second.task.taskId,
+      to: "role:planner",
+      kind: "request",
+      body: "Draft again.",
+      clientRequestId: "request:draft-two",
+      plan: { phase: "draft" },
+    });
+    assert.lengthOf(harness.launches, 1);
+    const plannerThread = harness.planBoundThread();
+    assert.isNotNull(plannerThread);
+    assert.deepStrictEqual(
+      retried.deliveries.map((delivery) => delivery.participantThreadId),
+      [plannerThread],
+    );
+    assert.deepStrictEqual(
+      draftSecond.deliveries.map((delivery) => delivery.participantThreadId),
+      [plannerThread],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("starts one planner thread per card and reuses it in later tasks", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {
@@ -891,7 +952,7 @@ it.effect("starts one planner thread per card and reuses it in later tasks", () 
       plan: { phase: "draft" },
     });
     const plannerThread = draftOne.launched[0]!.participantThreadId;
-    assert.deepStrictEqual(harness.planBinds, [{ cardId: "card:one", threadId: plannerThread }]);
+    assert.equal(harness.planBoundThread(), plannerThread);
     yield* sendAs(plannerThread, first.task.taskId, "lead", "answer", "Drafted.", "request:answer");
     assert.deepStrictEqual(harness.planAnswers, ["card:one"]);
     const second = yield* mail.createTask({
@@ -917,7 +978,7 @@ it.effect("starts one planner thread per card and reuses it in later tasks", () 
       draftTwo.deliveries.map((delivery) => delivery.participantThreadId),
       [plannerThread],
     );
-    assert.lengthOf(harness.planBinds, 1);
+    assert.equal(harness.planBoundThread(), plannerThread);
   }).pipe(Effect.provide(harness.layer));
 });
 

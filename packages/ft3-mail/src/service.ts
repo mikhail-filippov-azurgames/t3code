@@ -1062,21 +1062,44 @@ const make = Effect.gen(function* () {
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
-        if (member === null || member.participantThreadId !== null) {
+        if (member === null) {
+          continue;
+        }
+        // A card has one planner: the claim decides who launches. A launched planner whose
+        // binding was interrupted is bound again here, never launched a second time.
+        const plannerCardId = member.roleId === "planner" ? task.cardId : null;
+        if (member.participantThreadId !== null) {
+          if (plannerCardId !== null) {
+            yield* planGate
+              .bindPlanner({
+                cardId: plannerCardId,
+                memberId: member.memberId,
+                threadId: member.participantThreadId,
+              })
+              .pipe(Effect.mapError(planFailure));
+            launchedThreads.set(member.memberId, member.participantThreadId);
+          }
           continue;
         }
         let current = member;
-        if (current.roleId === "planner" && task.cardId !== null) {
-          const plannerThread = yield* planGate
-            .plannerThreadOf(task.cardId)
+        if (plannerCardId !== null) {
+          const claim = yield* planGate
+            .claimPlanner({ cardId: plannerCardId, memberId: current.memberId })
             .pipe(Effect.mapError(planFailure));
-          if (plannerThread !== null) {
+          if (claim._tag === "Bound") {
             yield* repository.setParticipantThread({
               memberId: current.memberId,
-              participantThreadId: plannerThread,
+              participantThreadId: claim.threadId,
               at: yield* nowIso,
             });
-            launchedThreads.set(current.memberId, plannerThread);
+            launchedThreads.set(current.memberId, claim.threadId);
+            continue;
+          }
+          if (claim._tag === "Pending") {
+            launchFailures.push({
+              memberId: current.memberId,
+              reason: "the card's planner is still launching; resend the letter",
+            });
             continue;
           }
         }
@@ -1126,9 +1149,13 @@ const make = Effect.gen(function* () {
         });
         launched.push({ memberId: current.memberId, participantThreadId: outcome.threadId });
         launchedThreads.set(current.memberId, outcome.threadId);
-        if (current.roleId === "planner" && task.cardId !== null) {
+        if (plannerCardId !== null) {
           yield* planGate
-            .bindPlannerThread({ cardId: task.cardId, threadId: outcome.threadId })
+            .bindPlanner({
+              cardId: plannerCardId,
+              memberId: current.memberId,
+              threadId: outcome.threadId,
+            })
             .pipe(Effect.mapError(planFailure));
         }
       }

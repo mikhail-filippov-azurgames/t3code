@@ -177,13 +177,17 @@ export const settingsLayer = (overrides: Partial<{ readonly classifierThreshold:
   Layer.succeed(MailSettingsService, { ...DEFAULT_MAIL_SETTINGS, ...overrides });
 
 /** A plan gate fake: records checks and records unless told to refuse. */
-export const planGateFake = (refuseCode?: PlanGateErrorCode, recordsFail = false) => {
+export const planGateFake = (
+  refuseCode?: PlanGateErrorCode,
+  recordsFail = false,
+  bindsFail = false,
+) => {
   const checks: Array<{ readonly cardId: string; readonly roleId: string }> = [];
   const records: Array<{ readonly cardId: string; readonly phase: string }> = [];
   const failRecords = { current: recordsFail };
+  const failBinds = { current: bindsFail };
+  const planner: { owner: string | null; thread: string | null } = { owner: null, thread: null };
   const answers: Array<string> = [];
-  const binds: Array<{ readonly cardId: string; readonly threadId: string }> = [];
-  const planner: { thread: string | null } = { thread: null };
   const layer = Layer.succeed(
     PlanGate,
     PlanGate.of({
@@ -209,15 +213,26 @@ export const planGateFake = (refuseCode?: PlanGateErrorCode, recordsFail = false
         Effect.sync(() => {
           answers.push(input.cardId);
         }),
-      plannerThreadOf: () => Effect.succeed(planner.thread),
-      bindPlannerThread: (input) =>
+      claimPlanner: (input) =>
         Effect.sync(() => {
-          binds.push(input);
-          planner.thread = input.threadId;
+          planner.owner ??= input.memberId;
+          if (planner.thread !== null) return { _tag: "Bound" as const, threadId: planner.thread };
+          return planner.owner === input.memberId
+            ? { _tag: "Launch" as const }
+            : { _tag: "Pending" as const };
+        }),
+      bindPlanner: (input) =>
+        Effect.gen(function* () {
+          if (failBinds.current) {
+            return yield* new PlanError({ code: "plan_store_failed", cardId: input.cardId });
+          }
+          if (planner.owner === input.memberId && planner.thread === null) {
+            planner.thread = input.threadId;
+          }
         }),
     }),
   );
-  return { layer, checks, records, answers, binds, failRecords };
+  return { layer, checks, records, answers, failRecords, failBinds, planner };
 };
 
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
@@ -232,13 +247,18 @@ export const mailHarness = (
     readonly planRefuse?: PlanGateErrorCode;
     readonly planning?: boolean;
     readonly planRecordsFail?: boolean;
+    readonly planBindsFail?: boolean;
   } = {},
 ) => {
   const routing = routingFake(options);
   const evidence = policyEvidenceFake();
   const launcher = launcherFake(options.launchFail);
   const classifier = classifierFake(options.classify);
-  const gate = planGateFake(options.planRefuse, options.planRecordsFail ?? false);
+  const gate = planGateFake(
+    options.planRefuse,
+    options.planRecordsFail ?? false,
+    options.planBindsFail ?? false,
+  );
   const layer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -266,7 +286,8 @@ export const mailHarness = (
     planChecks: gate.checks,
     planRecords: gate.records,
     planAnswers: gate.answers,
-    planBinds: gate.binds,
     planFailRecords: gate.failRecords,
+    planFailBinds: gate.failBinds,
+    planBoundThread: () => gate.planner.thread,
   };
 };

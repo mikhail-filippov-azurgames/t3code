@@ -133,11 +133,14 @@ export class PlanGate extends Context.Service<
     readonly recordPlannerAnswer: (input: {
       readonly cardId: string;
     }) => Effect.Effect<void, PlanService.PlanError>;
-    readonly plannerThreadOf: (
-      cardId: string,
-    ) => Effect.Effect<string | null, PlanService.PlanError>;
-    readonly bindPlannerThread: (input: {
+    /** Claims the card's planner for a mail member; see `PlannerClaim`. */
+    readonly claimPlanner: (input: {
       readonly cardId: string;
+      readonly memberId: string;
+    }) => Effect.Effect<PlanService.PlannerClaim, PlanService.PlanError>;
+    readonly bindPlanner: (input: {
+      readonly cardId: string;
+      readonly memberId: string;
       readonly threadId: string;
     }) => Effect.Effect<void, PlanService.PlanError>;
   }
@@ -243,13 +246,16 @@ export const planGateLayer = Layer.effect(
           yield* plans.recordDraft(cardId);
         }
       }),
-      plannerThreadOf: Effect.fn("PlanGate.plannerThreadOf")(function* (cardId) {
-        const plan = yield* plans.get(cardId as Contracts.BoardCardId);
-        return plan?.plannerThreadId ?? null;
-      }),
-      bindPlannerThread: Effect.fn("PlanGate.bindPlannerThread")(function* (input) {
-        yield* plans.bindPlannerThread({
+      claimPlanner: Effect.fn("PlanGate.claimPlanner")(function* (input) {
+        return yield* plans.claimPlanner({
           cardId: input.cardId as Contracts.BoardCardId,
+          memberId: input.memberId,
+        });
+      }),
+      bindPlanner: Effect.fn("PlanGate.bindPlanner")(function* (input) {
+        yield* plans.bindPlanner({
+          cardId: input.cardId as Contracts.BoardCardId,
+          memberId: input.memberId,
           threadId: ThreadId.make(input.threadId),
         });
       }),

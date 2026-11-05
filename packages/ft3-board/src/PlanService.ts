@@ -153,6 +153,16 @@ export const planFailureCode = (failure: PlanError): Contracts.BoardMcpFailure["
   }
 };
 
+/**
+ * Who may run the card's planner: `Launch` when this member claimed the card and
+ * may start the thread, `Bound` when the card already has one, `Pending` while
+ * another member's launch has not recorded its thread yet.
+ */
+export type PlannerClaim =
+  | { readonly _tag: "Launch" }
+  | { readonly _tag: "Bound"; readonly threadId: string }
+  | { readonly _tag: "Pending" };
+
 export class PlanService extends Context.Service<
   PlanService,
   {
@@ -192,6 +202,17 @@ export class PlanService extends Context.Service<
       readonly cardId: Contracts.BoardCardId;
       readonly threadId: ThreadId;
     }) => Effect.Effect<PlanningContracts.PlanRecord, PlanError>;
+    /** Claims the card's planner for a member; the first claim wins, a repeat by the same member is `Launch` again. */
+    readonly claimPlanner: (input: {
+      readonly cardId: Contracts.BoardCardId;
+      readonly memberId: string;
+    }) => Effect.Effect<PlannerClaim, PlanError>;
+    /** Records the thread of the member that claimed the card; only that member binds, and a bound card stays bound. */
+    readonly bindPlanner: (input: {
+      readonly cardId: Contracts.BoardCardId;
+      readonly memberId: string;
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<void, PlanError>;
     /** The plan document a planner thread may write; null for any other thread. */
     readonly planStableIdOfPlannerThread: (
       threadId: string,
@@ -755,6 +776,50 @@ const make = Effect.fn("PlanService.make")(function* () {
     return next;
   });
 
+  /**
+   * The claim is one transaction: the first member to find the planner column
+   * empty takes it, so a concurrent task cannot also see the card as free.
+   */
+  const claimPlanner = Effect.fn("PlanService.claimPlanner")(function* (input: {
+    readonly cardId: Contracts.BoardCardId;
+    readonly memberId: string;
+  }) {
+    const rows = yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* sql`UPDATE ft3_board_card_plans SET planner_member_id = ${input.memberId}
+            WHERE card_id = ${input.cardId} AND planner_member_id IS NULL`;
+          return yield* sql<{
+            readonly planner_member_id: string | null;
+            readonly planner_thread_id: string | null;
+          }>`SELECT planner_member_id, planner_thread_id FROM ft3_board_card_plans
+            WHERE card_id = ${input.cardId}`;
+        }),
+      )
+      .pipe(Effect.mapError(storeFailure(input.cardId)));
+    const row = rows[0];
+    if (row === undefined) {
+      return yield* new PlanError({ code: "plan_not_found", cardId: input.cardId });
+    }
+    if (row.planner_thread_id !== null) {
+      return { _tag: "Bound", threadId: row.planner_thread_id } as const;
+    }
+    return row.planner_member_id === input.memberId
+      ? ({ _tag: "Launch" } as const)
+      : ({ _tag: "Pending" } as const);
+  });
+
+  const bindPlanner = Effect.fn("PlanService.bindPlanner")(function* (input: {
+    readonly cardId: Contracts.BoardCardId;
+    readonly memberId: string;
+    readonly threadId: ThreadId;
+  }) {
+    const at = yield* nowIso;
+    yield* sql`UPDATE ft3_board_card_plans SET planner_thread_id = ${input.threadId}, updated_at = ${at}
+      WHERE card_id = ${input.cardId} AND planner_member_id = ${input.memberId}
+        AND planner_thread_id IS NULL`.pipe(Effect.mapError(storeFailure(input.cardId)));
+  });
+
   const planStableIdOfPlannerThread = Effect.fn("PlanService.planStableIdOfPlannerThread")(
     function* (threadId: string) {
       const rows = yield* sql<{
@@ -959,6 +1024,8 @@ const make = Effect.fn("PlanService.make")(function* () {
     accept,
     withdraw,
     bindPlannerThread,
+    claimPlanner,
+    bindPlanner,
     planStableIdOfPlannerThread,
     listSummaries,
     markImplementStarted,

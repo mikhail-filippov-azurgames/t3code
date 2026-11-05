@@ -4,6 +4,7 @@ export {
   PlanError,
   PlanErrorCode,
   PlanService,
+  type PlannerClaim,
   planAcceptOutboxDrainLayer,
   planFailureCode,
   planningDocumentsWriteFacts,
