@@ -10,7 +10,7 @@ import {
   architectRpcScopes,
   architectRpcServiceLayer,
 } from "@t3tools/ft3-architect/rpc";
-import { planServiceLayer } from "@t3tools/ft3-board/planning";
+import { planGateLayer, planServiceLayer } from "@t3tools/ft3-board/planning";
 import {
   FT3_BOARD_WS_METHODS,
   boardRpcHandlers,
@@ -33,6 +33,7 @@ import {
   mailRpcs,
 } from "@t3tools/ft3-mail/rpc";
 import { layer as mailRepositoryLayer } from "@t3tools/ft3-mail/repository";
+import { boardMailFactsLayer } from "@t3tools/ft3-mail/server";
 import { layer as mailServiceLayer } from "./server.ts";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
@@ -65,6 +66,7 @@ export { ArchitectService } from "@t3tools/ft3-architect/service";
 export { BoardService } from "@t3tools/ft3-board/service";
 export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
 export { PlanService } from "@t3tools/ft3-board/planning";
+export { PlanGate } from "@t3tools/ft3-board/planning";
 export { BoardSummaryHistoryService } from "@t3tools/ft3-board/rpc";
 export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
 export { MailService } from "@t3tools/ft3-mail/service";
@@ -154,7 +156,7 @@ const docsServiceLayer = Layer.unwrap(
 );
 
 // The plan summaries read document metadata through the store directly.
-export const serviceLayer = Layer.mergeAll(
+const rpcServices = Layer.mergeAll(
   boardRpcServiceLayer,
   architectRpcServiceLayer,
   piRpcServiceLayer,
@@ -164,8 +166,14 @@ export const serviceLayer = Layer.mergeAll(
   // task row through MailRepository.
   mailServiceLayer,
   mailRepositoryLayer,
-).pipe(
-  // The `board.list` handler reads plan summaries through PlanService, which
-  // needs the merged DocsService above; provide it after the parallel merge.
-  Layer.provideMerge(planServiceLayer),
 );
+
+// BoardService and the RPC handlers read PlanService through the gate layer;
+// plan facts come from the mail repository, so the board never queries mail
+// tables directly and reads empty without mail tables.
+const mailFacts = boardMailFactsLayer.pipe(Layer.provide(mailRepositoryLayer));
+const planServices = planGateLayer.pipe(
+  Layer.provideMerge(planServiceLayer.pipe(Layer.provide(mailFacts))),
+);
+
+export const serviceLayer = rpcServices.pipe(Layer.provideMerge(planServices));
