@@ -271,7 +271,11 @@ layer("CoordinatorBoardNudgeReactor", (it) => {
             Ref.update(reads, (count) => count + 1).pipe(
               Effect.andThen(
                 Effect.fail(
-                  new BoardMailFacts.BoardMailFactsError({ cardId, cause: "database is locked" }),
+                  new BoardMailFacts.BoardMailFactsError({
+                    operation: "hasOpenMailWork",
+                    cardId,
+                    cause: "database is locked",
+                  }),
                 ),
               ),
             ),

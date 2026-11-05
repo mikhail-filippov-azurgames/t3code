@@ -16,12 +16,22 @@ export const boardMailFactsLayer: Layer.Layer<BoardMailFacts, never, MailReposit
     const mail = yield* MailRepository;
     return BoardMailFacts.of({
       hasImplementLetter: Effect.fn("BoardMailFacts.hasImplementLetter")((cardIds) =>
-        mail.tasksWithImplementLetters(cardIds).pipe(Effect.orElseSucceed(() => new Set<string>())),
+        mail
+          .tasksWithImplementLetters(cardIds)
+          .pipe(
+            Effect.mapError(
+              (cause) => new BoardMailFactsError({ operation: "hasImplementLetter", cause }),
+            ),
+          ),
       ),
       hasOpenMailWork: Effect.fn("BoardMailFacts.hasOpenMailWork")((cardId) =>
         mail
           .hasOpenMailWork(cardId)
-          .pipe(Effect.mapError((cause) => new BoardMailFactsError({ cardId, cause }))),
+          .pipe(
+            Effect.mapError(
+              (cause) => new BoardMailFactsError({ operation: "hasOpenMailWork", cardId, cause }),
+            ),
+          ),
       ),
     });
   }),

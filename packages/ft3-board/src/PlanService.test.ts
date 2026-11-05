@@ -124,6 +124,33 @@ describe("PlanService", () => {
     ),
   );
 
+  it.effect("reports a failed implement lookup instead of an unstarted plan", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        yield* service.require({ cardId, requiredBy: "lead" });
+        const error = yield* service.listSummaries({ cardIds: [cardId] }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_store_failed");
+      }),
+      {
+        mailFacts: Layer.succeed(
+          BoardMailFacts.BoardMailFacts,
+          BoardMailFacts.BoardMailFacts.of({
+            hasImplementLetter: () =>
+              Effect.fail(
+                new BoardMailFacts.BoardMailFactsError({
+                  operation: "hasImplementLetter",
+                  cause: "database is locked",
+                }),
+              ),
+            hasOpenMailWork: () => Effect.succeed(false),
+          }),
+        ),
+      },
+    ),
+  );
+
   it.effect("reads only the requested cards and skips unchanged docs on repeat", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {

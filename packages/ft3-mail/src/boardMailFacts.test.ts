@@ -131,6 +131,17 @@ describe("BoardMailFacts over the mail repository", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("fails, not reads no implement letters, when the implement query fails", () =>
+    Effect.gen(function* () {
+      yield* migrateMail;
+      const db = yield* SqlClient.SqlClient;
+      const mail = yield* BoardMailFacts;
+      yield* db`ALTER TABLE ft3_mail_letters RENAME COLUMN plan_phase TO plan_phase_renamed`;
+      const error = yield* mail.hasImplementLetter(["card:one"]).pipe(Effect.flip);
+      assert.equal(error._tag, "BoardMailFactsError");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("reads no mail activity when the mail tables are absent", () =>
     Effect.gen(function* () {
       const mail = yield* BoardMailFacts;

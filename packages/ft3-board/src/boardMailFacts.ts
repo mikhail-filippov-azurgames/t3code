@@ -3,11 +3,12 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
-/** A failed mail read: the caller must not treat the card as free of mail work. */
+/** A failed mail read: the caller must not treat the card as free of mail work or as unstarted. */
 export class BoardMailFactsError extends Schema.TaggedError<BoardMailFactsError>()(
   "BoardMailFactsError",
   {
-    cardId: Schema.String,
+    operation: Schema.String,
+    cardId: Schema.optionalKey(Schema.String),
     cause: Schema.Defect(),
   },
 ) {}
@@ -26,7 +27,7 @@ export class BoardMailFacts extends Context.Service<
      */
     readonly hasImplementLetter: (
       cardIds: ReadonlyArray<string>,
-    ) => Effect.Effect<ReadonlySet<string>>;
+    ) => Effect.Effect<ReadonlySet<string>, BoardMailFactsError>;
     /**
      * Whether the card has a non-closed task with an open mail round or a
      * non-terminal delivery. False when mail is absent.
