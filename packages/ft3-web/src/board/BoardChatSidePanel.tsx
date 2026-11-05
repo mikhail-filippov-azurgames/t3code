@@ -54,8 +54,10 @@ import {
 import { useCoordinatorSummaryHistoryLoader } from "./useCoordinatorSummaryHistoryLoader";
 import { clearBoardCardMentionCache } from "../chat/boardCardMentions";
 import { boardEnvironment } from "./state";
+import { BoardMailTab } from "../mail/MailTabContent.tsx";
+import { mailEnvironment } from "../mail/state.ts";
 
-type ChatPanelTab = "cards" | "history";
+type ChatPanelTab = "cards" | "history" | "mail";
 
 type SummaryHistoryLoadState = {
   readonly threadId: ThreadId;
@@ -82,7 +84,7 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
   };
 }
 
-const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history"]);
+const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history", "mail"]);
 
 export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = props.threadRef;
@@ -129,6 +131,19 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
   const loadHistory = useCoordinatorSummaryHistoryLoader(props.threadRef);
   const historyLoadSequence = useRef(0);
   const historyLoadingMore = useRef(false);
+  const boardList = useEnvironmentQuery(
+    boardEnvironment.list({ environmentId, input: { includeArchived: true } }),
+  );
+  const boardCardIds = useMemo(
+    () => (boardList.data?.cards ?? []).map((card) => String(card.cardId)),
+    [boardList.data],
+  );
+  const mailTasks = useEnvironmentQuery(
+    boardCardIds.length > 0
+      ? mailEnvironment.tasks({ environmentId, input: { cardIds: boardCardIds } })
+      : null,
+  );
+  const [mailRefreshSeq, setMailRefreshSeq] = useState(0);
   const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
   const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
   const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
@@ -137,9 +152,14 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
 
   const currentHistoryState =
     historyState.threadId === threadId ? historyState : emptyHistoryState(threadId);
-  // Failed coordinator history remains panel content so its error can be retried.
+  // Failed coordinator history and failed mail task listing remain panel
+  // content so their errors can be retried.
+  const hasMailContent = mailTasks.error !== null || (mailTasks.data?.tasks.length ?? 0) > 0;
   const hasPanelContent =
-    pins.length > 0 || currentHistoryState.entries.length > 0 || currentHistoryState.error;
+    pins.length > 0 ||
+    currentHistoryState.entries.length > 0 ||
+    currentHistoryState.error ||
+    hasMailContent;
 
   const toggleCardCollapsed = useCallback((cardId: string) => {
     setCollapsedCardIds((current) => {
@@ -315,8 +335,20 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
     [environmentId, requestOrchestrator],
   );
 
-  const refreshActiveTab = activeTab === "cards" ? refresh : refreshHistory;
-  const refreshingActiveTab = activeTab === "cards" ? loading : currentHistoryState.loading;
+  const refreshMail = useCallback(() => {
+    void boardList.refresh();
+    void mailTasks.refresh();
+    setMailRefreshSeq((seq) => seq + 1);
+  }, [boardList, mailTasks]);
+
+  const refreshActiveTab =
+    activeTab === "cards" ? refresh : activeTab === "history" ? refreshHistory : refreshMail;
+  const refreshingActiveTab =
+    activeTab === "cards"
+      ? loading
+      : activeTab === "history"
+        ? currentHistoryState.loading
+        : mailTasks.isPending && mailTasks.data !== null;
 
   if (!hasPanelContent) return null;
 
@@ -340,7 +372,13 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
       activeTab={activeTab}
       onSelectTab={setActiveTab}
       onCollapse={() => setCollapsed(true)}
-      refreshButtonLabel={activeTab === "cards" ? "Reload cards" : "Refresh history"}
+      refreshButtonLabel={
+        activeTab === "cards"
+          ? "Reload cards"
+          : activeTab === "history"
+            ? "Refresh history"
+            : "Refresh mail"
+      }
       onRefresh={refreshActiveTab}
       refreshing={refreshingActiveTab}
     >
@@ -372,6 +410,14 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
           {pins.length === 0 ? (
             <p className="text-xs text-muted-foreground">No pinned cards yet.</p>
           ) : null}
+        </div>
+      ) : activeTab === "mail" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          <BoardMailTab
+            threadRef={props.threadRef}
+            cardIds={boardCardIds}
+            refreshSeq={mailRefreshSeq}
+          />
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -581,6 +627,7 @@ function ChatSidePanelShell(props: {
             [
               ["cards", "Cards"],
               ["history", "History"],
+              ["mail", "Mail"],
             ] as const
           ).map(([tab, label]) => (
             <button
