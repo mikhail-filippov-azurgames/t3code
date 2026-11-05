@@ -2,19 +2,10 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environ
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 
 /**
- * Section-local delegation forest for the sidebar, ported from the ft3 v1
- * fork (`apps/web/src/components/Sidebar.logic.ts`) onto V2 thread shells.
- * V2 carries delegation lineage on the shell (`lineage.parentThreadId` for
- * `relationshipToParent === "subagent"`) instead of a separate
- * `delegationParent` record, and exposes run state as `latestRun`/`runtime`
- * instead of `latestTurn`/`session`.
- *
- * Roots keep their incoming order; each root is immediately followed by its
- * descendants in incoming relative order. Depth is capped so deeper chains
- * render flat at the cap instead of nesting forever. Cycles, self-parents,
- * and parents outside the section detach to top level: no input row is ever
- * dropped by the ordering itself (the sidebar hides orphan subagents before
- * ordering; see `useFt3SidebarRows`).
+ * Section-local delegation forest for the sidebar on V2 thread shells.
+ * Roots keep incoming order, each followed by its descendants; depth is
+ * capped. Cycles, self-parents, and parents outside the section detach to
+ * top level: no input row is dropped by the ordering itself.
  */
 export type SidebarForestEntry<TThread> = {
   readonly key: string;
@@ -46,23 +37,11 @@ export function sidebarSubagentParentKey(thread: SidebarForestThread): string | 
 }
 
 /**
- * Forest parent key for a row: delegation lineage first, then the
- * binding-derived Architect nesting. A bound Architect has no delegation
- * lineage by contract, so its parent comes from the coordinator↔architect
- * binding index (`architectParentKeys`: architect key → coordinator key).
- * A real delegated child keeps its lineage parent even if a binding entry
- * ever names it, so existing delegation hierarchy is untouched. Absent
- * both = top-level row.
+ * Forest parent key for a row: delegation lineage decides, absent lineage =
+ * top-level row.
  */
-export function sidebarForestParentKey(
-  thread: SidebarForestThread,
-  architectParentKeys: ReadonlyMap<string, string>,
-): string | null {
-  return (
-    sidebarSubagentParentKey(thread) ??
-    architectParentKeys.get(scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))) ??
-    null
-  );
+export function sidebarForestParentKey(thread: SidebarForestThread): string | null {
+  return sidebarSubagentParentKey(thread);
 }
 
 export function orderSidebarSectionForest<TThread>(input: {
@@ -326,7 +305,7 @@ export function collectDelegatedWorkingStartedAt<
 
 /**
  * Shell lookup for row actions: the upstream section shells plus the forest
- * rows those sections never list (delegated children, bound architects). A row
+ * rows those sections never list (delegated children). A row
  * the sections do list keeps its section shell.
  */
 export function mergeForestRowThreads<TThread>(input: {

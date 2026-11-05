@@ -1,14 +1,10 @@
 import type { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 /**
- * Client-side contract for the thread-menu "Switch provider" entry point,
- * rebuilt on V2's native provider handoff: the target provider/model is
- * persisted with `thread.update-metadata`, and the server hands the thread
- * off when the current provider session supports it. The UI still collects
- * the same three fields the old engine switch did (target provider, model,
- * and a reason), but the reason now only rides along for surfaces that can
- * use it (for example the Architect replace prompt); the native handoff
- * itself carries no reason.
+ * Client-side contract for the thread-menu "Switch provider" entry point on
+ * V2's native provider handoff: the target provider/model persists with
+ * `thread.update-metadata`; the collected reason rides along for surfaces
+ * that can use it, the handoff itself carries no reason.
  */
 
 export interface SwitchProviderTarget {
@@ -60,11 +56,9 @@ export function buildSwitchProviderInput(input: {
 }
 
 /**
- * The menu entry is visible where a handoff can happen: subagent threads
- * (delegated, `lineage.parentThreadId`) and started threads with provider
- * work behind them (`latestRun` / `latestUserMessageAt` / `runtime`). The
- * server stays authoritative — an unsupported handoff fails with a visible
- * toast. Optional fields so shells from older servers still decode.
+ * The menu entry is visible where a handoff can happen; the server stays
+ * authoritative and an unsupported handoff fails with a visible toast.
+ * Optional fields keep shells from older servers decoding.
  */
 export function canSwitchThreadProvider(
   thread:

@@ -116,8 +116,6 @@ describe("filterCollapsedSidebarForest", () => {
 describe("sidebarSubagentParentKey", () => {
   const env = EnvironmentId.make("env-a");
   const parentId = ThreadId.make("thread-parent");
-  const keyOf = (thread: { environmentId: EnvironmentId; id: ThreadId }) =>
-    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
 
   it("returns null for non-subagent lineage and parentless subagents", () => {
     expect(
@@ -155,8 +153,6 @@ describe("sidebarSubagentParentKey", () => {
 
 describe("sidebarForestParentKey", () => {
   const coordinatorEnv = EnvironmentId.make("env-coordinator");
-  const coordinatorId = ThreadId.make("coordinator-1");
-  const architectId = ThreadId.make("arch:binding-1");
   type ForestParentThread = {
     readonly environmentId: EnvironmentId;
     readonly id: ThreadId;
@@ -167,129 +163,20 @@ describe("sidebarForestParentKey", () => {
   };
   const coordinator: ForestParentThread = {
     environmentId: coordinatorEnv,
-    id: coordinatorId,
-    lineage: { parentThreadId: null, relationshipToParent: null },
-  };
-  const architect: ForestParentThread = {
-    environmentId: coordinatorEnv,
-    id: architectId,
+    id: ThreadId.make("coordinator-1"),
     lineage: { parentThreadId: null, relationshipToParent: null },
   };
   const keyOf = (thread: ForestParentThread) =>
     scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-  const coordinatorKey = keyOf(coordinator);
-  const architectKey = keyOf(architect);
-  const bindingParents = new Map([[architectKey, coordinatorKey]]);
 
-  it("nests the bound Architect under its Coordinator from the binding index", () => {
-    expect(sidebarForestParentKey(architect, bindingParents)).toBe(coordinatorKey);
-    const forest = orderSidebarSectionForest({
-      threads: [coordinator, architect],
-      getKey: keyOf,
-      getParentKey: (thread) => sidebarForestParentKey(thread, bindingParents),
-    });
-    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
-      [coordinatorKey, 0, null],
-      [architectKey, 1, coordinatorKey],
-    ]);
-    expect(forest[0]?.descendantCount).toBe(1);
-  });
-
-  it("keeps a real delegated child on its lineage parent when a binding entry names it too", () => {
+  it("follows delegation lineage and stays top-level without it", () => {
     const delegated: ForestParentThread = {
       environmentId: coordinatorEnv,
       id: ThreadId.make("task-1"),
-      lineage: { parentThreadId: coordinatorId, relationshipToParent: "subagent" },
+      lineage: { parentThreadId: coordinator.id, relationshipToParent: "subagent" },
     };
-    const contested = new Map([[keyOf(delegated), architectKey]]);
-    expect(sidebarForestParentKey(delegated, contested)).toBe(coordinatorKey);
-  });
-
-  it("stays top-level with no binding entry and no lineage", () => {
-    expect(sidebarForestParentKey(architect, new Map())).toBeNull();
-    expect(sidebarForestParentKey(coordinator, bindingParents)).toBeNull();
-  });
-
-  it("drops no rows when the bound Architect thread is gone", () => {
-    const forest = orderSidebarSectionForest({
-      threads: [coordinator],
-      getKey: keyOf,
-      getParentKey: (thread) => sidebarForestParentKey(thread, bindingParents),
-    });
-    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
-      [coordinatorKey, 0, null],
-    ]);
-  });
-
-  it("keeps the Architect openable as one detached row when its Coordinator is absent", () => {
-    const forest = orderSidebarSectionForest({
-      threads: [architect],
-      getKey: keyOf,
-      getParentKey: (thread) => sidebarForestParentKey(thread, bindingParents),
-    });
-    expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
-      [architectKey, 0, null],
-    ]);
-  });
-});
-
-describe("groupSidebarForestChildrenBySection", () => {
-  type BoundThread = {
-    readonly environmentId: EnvironmentId;
-    readonly id: ThreadId;
-    readonly lineage: {
-      readonly parentThreadId: ThreadId | null;
-      readonly relationshipToParent: "fork" | "subagent" | null;
-    };
-  };
-  const environmentId = EnvironmentId.make("environment-architect-binding");
-  const coordinator: BoundThread = {
-    environmentId,
-    id: ThreadId.make("197154b1-09f3-437f-a483-a94a4aef0ab0"),
-    lineage: { parentThreadId: null, relationshipToParent: null },
-  };
-  const architect: BoundThread = {
-    environmentId,
-    id: ThreadId.make("arch:27ee0970b18c558369cb90424499dc5f7d7c68b6"),
-    lineage: { parentThreadId: null, relationshipToParent: null },
-  };
-  const architectChild: BoundThread = {
-    environmentId,
-    id: ThreadId.make("delegated-task:architect-child"),
-    lineage: { parentThreadId: architect.id, relationshipToParent: "subagent" },
-  };
-  const keyOf = (thread: BoundThread) =>
-    scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-  const coordinatorKey = keyOf(coordinator);
-  const architectKey = keyOf(architect);
-  const bindingParents = new Map([[architectKey, coordinatorKey]]);
-  const getParentKey = (thread: BoundThread) => sidebarForestParentKey(thread, bindingParents);
-
-  it("moves a bound Architect and its out-of-order child chain into the Coordinator section", () => {
-    const sections = groupSidebarForestChildrenBySection({
-      sections: [
-        { section: "active", threads: [coordinator] },
-        { section: "settled", threads: [architect] },
-      ],
-      pool: [architectChild, architect, coordinator],
-      getKey: keyOf,
-      getParentKey,
-    });
-    const active = sections.get("active") ?? [];
-    const forest = orderSidebarSectionForest({ threads: active, getKey: keyOf, getParentKey });
-
-    expect(sections.get("settled")).toEqual([]);
-    expect(forest.map((entry) => [entry.thread.id, entry.depth, entry.parentKey])).toEqual([
-      [coordinator.id, 0, null],
-      [architect.id, 1, coordinatorKey],
-      [architectChild.id, 2, architectKey],
-    ]);
-    expect(
-      filterCollapsedSidebarForest({
-        entries: forest,
-        collapsedKeys: new Set([coordinatorKey]),
-      }).map((entry) => entry.key),
-    ).toEqual([coordinatorKey]);
+    expect(sidebarForestParentKey(delegated)).toBe(keyOf(coordinator));
+    expect(sidebarForestParentKey(coordinator)).toBeNull();
   });
 });
 
@@ -647,12 +534,12 @@ describe("imported delegated thread shapes", () => {
       sections: [{ section: "active", threads: [parent] }],
       pool: [...importedChildren, parent],
       getKey,
-      getParentKey: (thread) => sidebarForestParentKey(thread, new Map()),
+      getParentKey: (thread) => sidebarForestParentKey(thread),
     });
     const forest = orderSidebarSectionForest({
       threads: sections.get("active") ?? [],
       getKey,
-      getParentKey: (thread) => sidebarForestParentKey(thread, new Map()),
+      getParentKey: (thread) => sidebarForestParentKey(thread),
     });
     expect(forest.map((entry) => [entry.key, entry.depth, entry.parentKey])).toEqual([
       [parentKey, 0, null],

@@ -32,8 +32,6 @@ export type {
 } from "./SidebarForestRowDecorations.tsx";
 export { resolveSidebarRoleBadge, useSidebarRoleBadges } from "./roleBadges.ts";
 export type { SidebarRoleBadge } from "./roleBadges.ts";
-export { reportActiveArchitectChild, useArchitectParentKeys } from "./architectBindingIndex.ts";
-export { ArchitectSidebarPin } from "./ArchitectSidebarPin.tsx";
 export { sidebarThreadFamilyRoots } from "./familyRoots.ts";
 export type { ThreadFamilyRoot } from "./familyRoots.ts";
 export { runFt3SidebarDelegatedAction } from "./delegatedThreadActions.ts";

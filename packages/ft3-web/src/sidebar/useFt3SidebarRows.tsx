@@ -5,7 +5,6 @@ import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 
 import { useLocalStorage } from "~/hooks/useLocalStorage";
-import { useArchitectParentKeys } from "./architectBindingIndex.ts";
 import {
   collectDelegatedWorkingStartedAt,
   collectUnseenDelegatedChildCounts,
@@ -30,9 +29,10 @@ import type {
   SidebarRowStatusOverride,
 } from "./SidebarForestRowDecorations.tsx";
 import { sidebarThreadFamilyRoots, type ThreadFamilyRoot } from "./familyRoots.ts";
-import { ArchitectSidebarPin } from "./ArchitectSidebarPin.tsx";
 
 const EXPANDED_FOREST_KEYS_KEY = "t3code:sidebar:forest-expanded";
+const noAfterRows: ReadonlyMap<string, ReactNode> = new Map();
+const expandedForestKeysSchema = Schema.Array(Schema.String);
 
 export type SidebarForestSectionInput = {
   readonly section: string;
@@ -65,16 +65,10 @@ export type Ft3SidebarRowProps = {
 };
 
 /**
- * Delegation forest for the sidebar thread list, ported from the ft3 v1 fork.
- * Upstream keeps owning section assignment; this hook nests subagent
- * children under their parent row inside the parent's section, nests the
- * bound Architect row via the binding index, hides subagent orphans (V2 hid
- * every subagent thread before; only parented ones gain a row), and derives
- * working/returned child counters plus board role badges for the rows.
- *
- * `pool` carries the unfiltered thread shells (including subagents) the
- * sections were drawn from. Parented rows join the section containing their
- * visible parent, including an Architect that would otherwise be elsewhere.
+ * Delegation forest for the sidebar thread list: subagent children nest
+ * under their parent row inside the parent's section, orphan subagents are
+ * hidden, and working/returned counters and board role badges decorate the
+ * rows. `pool` carries the unfiltered shells the sections were drawn from.
  */
 export function useFt3SidebarRows(input: {
   readonly sections: readonly SidebarForestSectionInput[];
@@ -83,11 +77,10 @@ export function useFt3SidebarRows(input: {
   readonly getLastVisitedAt: (thread: EnvironmentThreadShell) => string | undefined;
   readonly onNavigate: (threadRef: ScopedThreadRef) => void;
 }): Ft3SidebarRows {
-  const architectParentKeys = useArchitectParentKeys();
   const [expandedForestKeys, setExpandedForestKeys] = useLocalStorage(
     EXPANDED_FOREST_KEYS_KEY,
     [] as readonly string[],
-    Schema.Array(Schema.String),
+    expandedForestKeysSchema,
   );
   const expandedForestKeySet = useMemo(() => new Set(expandedForestKeys), [expandedForestKeys]);
   const toggleCollapsed = useCallback(
@@ -108,7 +101,7 @@ export function useFt3SidebarRows(input: {
       sections: input.sections,
       pool: input.pool.filter((thread) => thread.archivedAt === null),
       getKey,
-      getParentKey: (thread) => sidebarForestParentKey(thread, architectParentKeys),
+      getParentKey: (thread) => sidebarForestParentKey(thread),
     });
     const forests = new Map<string, SidebarForestEntry<EnvironmentThreadShell>[]>();
     const parentByKey = new Map<string, string>();
@@ -119,7 +112,7 @@ export function useFt3SidebarRows(input: {
       const forest = orderSidebarSectionForest({
         threads: sectionCandidates,
         getKey,
-        getParentKey: (thread) => sidebarForestParentKey(thread, architectParentKeys),
+        getParentKey: (thread) => sidebarForestParentKey(thread),
       });
       // Hide orphan subagents: attached rows only. Non-subagent rows keep the
       // forest invariant that no input row is dropped.
@@ -143,9 +136,10 @@ export function useFt3SidebarRows(input: {
       getLastVisitedAt: input.getLastVisitedAt,
     });
     return { forests, parentByKey, workingCounts, workingStartedAt, unseenCounts };
-  }, [architectParentKeys, input.pool, input.sections, input.getLastVisitedAt]);
+  }, [input.pool, input.sections, input.getLastVisitedAt]);
 
   // A selected descendant temporarily expands its ancestor path.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the localStorage-backed collapse set in step with the route selection
   useEffect(() => {
     if (input.routeThreadKey === null) return;
     const ancestors: string[] = [];
@@ -272,21 +266,7 @@ export function useFt3SidebarRows(input: {
     return overrides;
   }, [modelByKey]);
 
-  const afterRowByKey = useMemo(() => {
-    const rows = new Map<string, ReactNode>();
-    for (const entry of entryByKey.values()) {
-      rows.set(
-        entry.key,
-        <ArchitectSidebarPin
-          key={`architect-pin:${entry.key}`}
-          thread={entry.thread}
-          depth={entry.depth}
-          onNavigate={input.onNavigate}
-        />,
-      );
-    }
-    return rows;
-  }, [entryByKey, input.onNavigate]);
+  const afterRowByKey = noAfterRows;
 
   const hasFt3Rows = useMemo(
     () =>

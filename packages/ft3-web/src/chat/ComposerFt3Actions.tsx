@@ -5,7 +5,6 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 
-import { ArchitectPublishButton } from "../architect/ArchitectPublishButton.tsx";
 import { PiInferenceServerControl } from "../pi/PiInferenceServerControl.tsx";
 
 export interface ChatComposerFt3ActionsProps {
@@ -17,11 +16,10 @@ export interface ChatComposerFt3ActionsProps {
   readonly model: string;
 }
 
-/** Fork additions to the composer action row: Architect publish and Pi inference. */
+/** Fork additions to the composer action row: Pi inference. */
 export function ChatComposerFt3Actions(props: ChatComposerFt3ActionsProps) {
   return (
     <>
-      <ArchitectPublishButton threadRef={props.threadRef} compact={props.compact} />
       {props.provider === "pi" ? (
         <PiInferenceServerControl
           environmentId={props.environmentId}
