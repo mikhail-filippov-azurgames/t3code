@@ -7,11 +7,25 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
+import { vi } from "vite-plus/test";
 
 import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as Contracts from "./contracts.ts";
 import * as PlanService from "./PlanService.ts";
 import * as Testkit from "./planning.testkit.ts";
+
+// The bundled server ships no assets/ directory, so the plan template must never be read from disk.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    readFile: (...args: Parameters<typeof actual.readFile>) => {
+      if (String(args[0]).endsWith("plan-template.md"))
+        return Promise.reject(new Error("ENOENT: plan-template.md"));
+      return actual.readFile(...args);
+    },
+  };
+});
 
 const cardId = Testkit.CARD_ID;
 const plans = PlanService.PlanService;
@@ -58,6 +72,20 @@ describe("PlanService", () => {
         assert.include(document.content, "schema: corvis-plan-v1");
         assert.include(document.content, `cardId: ${cardId}`);
         assert.include(document.content, "# Plan: Storage plan");
+      }),
+    ),
+  );
+
+  it.effect("writes the plan document without reading the template from disk", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        assert.equal(record.state, "required");
+        const docs = yield* DocsServer.DocsService;
+        const document = yield* docs.read({ ref: docLinkOf(record.planDocId) });
+        assert.include(document.content, "## Risks and rollback");
       }),
     ),
   );

@@ -1,7 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off - the plan template is a package asset read at runtime.
-import * as NodeFSP from "node:fs/promises";
-import * as NodeURL from "node:url";
-
 import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
 import { docLinkOf } from "@t3tools/ft3-docs/contracts";
 import { readDocsSettings } from "@t3tools/ft3-docs/root";
@@ -22,8 +18,8 @@ import { ServerSettingsService } from "../../../apps/server/src/serverSettings.t
 import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as Contracts from "./contracts.ts";
 import * as PlanningContracts from "./planningContracts.ts";
+import { PLAN_TEMPLATE } from "./planTemplate.ts";
 import { countPlanSteps, planStepIds, validatePlan } from "./planValidation.ts";
-const PLAN_TEMPLATE_URL = new URL("../assets/plan-template.md", import.meta.url);
 
 export const PlanErrorCode = Schema.Literals([
   "planning_disabled",
@@ -499,12 +495,6 @@ const make = Effect.fn("PlanService.make")(function* () {
       Effect.mapError(storeFailure(input.cardId)),
     );
 
-  const readTemplate = (cardId: string) =>
-    Effect.tryPromise({
-      try: () => NodeFSP.readFile(NodeURL.fileURLToPath(PLAN_TEMPLATE_URL), "utf8"),
-      catch: (cause) => new PlanError({ code: "plan_document_failed", cardId, cause }),
-    });
-
   const createPlanDocument = Effect.fn("PlanService.createPlanDocument")(function* (
     cardId: Contracts.BoardCardId,
     orchestratorThreadId: string,
@@ -523,7 +513,6 @@ const make = Effect.fn("PlanService.make")(function* () {
         Effect.mapError((cause) => new PlanError({ code: "plan_document_failed", cardId, cause })),
       );
     const slug = slugOf(Option.isSome(project) ? project.value.title : "", String(shell.projectId));
-    const template = yield* readTemplate(cardId);
     const written = yield* docs
       .write({
         caller: {
@@ -531,7 +520,7 @@ const make = Effect.fn("PlanService.make")(function* () {
           parentThreadId: shell.lineage.parentThreadId,
         },
         relPath: `${plansFolder}/${slug}/${cardId}.md`,
-        content: renderPlan(template, cardId, title),
+        content: renderPlan(PLAN_TEMPLATE, cardId, title),
         clientRequestId: `plan:${cardId}`,
       })
       .pipe(Effect.mapError(documentFailure(cardId)));
