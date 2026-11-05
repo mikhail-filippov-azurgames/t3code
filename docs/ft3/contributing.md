@@ -26,6 +26,10 @@
 поведение сам. Примеры текущего состояния — Codex drain и Muse reconciliation в
 `fork-boundary.md`.
 
+Шаблоны, которые пакет использует во время работы, встраиваются в код с тестом сверки с файлом
+в `assets/` (как `ft3-policies/src/builtinAssets.ts`, `ft3-board/src/planTemplate.ts`). Код не
+читает исходные файлы пакета рядом с `import.meta.url`: в сборку сервера они не попадают.
+
 ## 2. Швы должны переживать upstream
 
 Предпочитайте generic-швы:

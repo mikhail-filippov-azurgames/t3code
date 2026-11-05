@@ -72,19 +72,7 @@ describe("PlanService", () => {
         assert.include(document.content, "schema: corvis-plan-v1");
         assert.include(document.content, `cardId: ${cardId}`);
         assert.include(document.content, "# Plan: Storage plan");
-      }),
-    ),
-  );
-
-  it.effect("writes the plan document without reading the template from disk", () =>
-    Testkit.withPlanning(
-      Effect.gen(function* () {
-        yield* Testkit.seedCard();
-        const service = yield* plans;
-        const record = yield* service.require({ cardId, requiredBy: "lead" });
-        assert.equal(record.state, "required");
-        const docs = yield* DocsServer.DocsService;
-        const document = yield* docs.read({ ref: docLinkOf(record.planDocId) });
+        // readFile is mocked to fail for the template: the bundled server has no asset file.
         assert.include(document.content, "## Risks and rollback");
       }),
     ),
