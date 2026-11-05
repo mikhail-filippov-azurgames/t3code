@@ -867,6 +867,129 @@ it.effect("refuses a retry whose plan payload changed, and changes no state", ()
   }).pipe(Effect.provide(harness.layer));
 });
 
+const FAR_FUTURE = "9999-12-31T23:59:59.000Z";
+
+it.effect("keeps the planner thread of a purged member whose binding was interrupted", () => {
+  const harness = mailHarness({ planBindsFail: true });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const first = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-one",
+      title: "Plan work",
+      brief: "Write the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const memberOne = first.members[0]!.member.memberId;
+    const threadOne = `thread:participant:${memberOne}`;
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: LEAD,
+          taskId: first.task.taskId,
+          to: "role:planner",
+          kind: "request",
+          body: "Draft it.",
+          clientRequestId: "request:draft-one",
+          plan: { phase: "draft" },
+        }),
+      ),
+      "invalid_request",
+    );
+    harness.planFailBinds.current = false;
+    yield* finishMember(memberOne);
+    yield* closeAs(LEAD, first.task);
+    assert.equal(yield* mail.purgeFinishedTasks({ before: FAR_FUTURE, limit: 10 }), 1);
+    const second = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-two",
+      title: "Plan again",
+      brief: "Revise the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const draft = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: second.task.taskId,
+      to: "role:planner",
+      kind: "request",
+      body: "Draft again.",
+      clientRequestId: "request:draft-two",
+      plan: { phase: "draft" },
+    });
+    assert.lengthOf(harness.launches, 1);
+    assert.equal(harness.planBoundThread(), threadOne);
+    assert.deepStrictEqual(
+      draft.deliveries.map((delivery) => delivery.participantThreadId),
+      [threadOne],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("releases the claim of a purged member that never launched", () => {
+  const failing = new Set<string>();
+  const harness = mailHarness({ launchFail: failing });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const first = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-one",
+      title: "Plan work",
+      brief: "Write the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const memberOne = first.members[0]!.member.memberId;
+    failing.add(memberOne);
+    const refused = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: first.task.taskId,
+      to: "role:planner",
+      kind: "request",
+      body: "Draft it.",
+      clientRequestId: "request:draft-one",
+      plan: { phase: "draft" },
+    });
+    assert.lengthOf(refused.launchFailures, 1);
+    assert.lengthOf(harness.launches, 0);
+    yield* finishMember(memberOne);
+    yield* closeAs(LEAD, first.task);
+    assert.equal(yield* mail.purgeFinishedTasks({ before: FAR_FUTURE, limit: 10 }), 1);
+    const second = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-two",
+      title: "Plan again",
+      brief: "Revise the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const memberTwo = second.members[0]!.member.memberId;
+    const threadTwo = `thread:participant:${memberTwo}`;
+    const draft = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: second.task.taskId,
+      to: "role:planner",
+      kind: "request",
+      body: "Draft again.",
+      clientRequestId: "request:draft-two",
+      plan: { phase: "draft" },
+    });
+    assert.lengthOf(harness.launches, 1);
+    assert.equal(harness.planBoundThread(), threadTwo);
+    assert.deepStrictEqual(
+      draft.deliveries.map((delivery) => delivery.participantThreadId),
+      [threadTwo],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("keeps one planner thread per card when the binding is interrupted and retried", () => {
   const harness = mailHarness({ planBindsFail: true });
   return Effect.gen(function* () {

@@ -213,6 +213,11 @@ export class PlanService extends Context.Service<
       readonly memberId: string;
       readonly threadId: ThreadId;
     }) => Effect.Effect<void, PlanError>;
+    /** Drops the claim of its owner while no thread is recorded; a bound card keeps its planner. */
+    readonly releasePlanner: (input: {
+      readonly cardId: Contracts.BoardCardId;
+      readonly memberId: string;
+    }) => Effect.Effect<void, PlanError>;
     /** The plan document a planner thread may write; null for any other thread. */
     readonly planStableIdOfPlannerThread: (
       threadId: string,
@@ -820,6 +825,15 @@ const make = Effect.fn("PlanService.make")(function* () {
         AND planner_thread_id IS NULL`.pipe(Effect.mapError(storeFailure(input.cardId)));
   });
 
+  const releasePlanner = Effect.fn("PlanService.releasePlanner")(function* (input: {
+    readonly cardId: Contracts.BoardCardId;
+    readonly memberId: string;
+  }) {
+    yield* sql`UPDATE ft3_board_card_plans SET planner_member_id = NULL
+      WHERE card_id = ${input.cardId} AND planner_member_id = ${input.memberId}
+        AND planner_thread_id IS NULL`.pipe(Effect.mapError(storeFailure(input.cardId)));
+  });
+
   const planStableIdOfPlannerThread = Effect.fn("PlanService.planStableIdOfPlannerThread")(
     function* (threadId: string) {
       const rows = yield* sql<{
@@ -1026,6 +1040,7 @@ const make = Effect.fn("PlanService.make")(function* () {
     bindPlannerThread,
     claimPlanner,
     bindPlanner,
+    releasePlanner,
     planStableIdOfPlannerThread,
     listSummaries,
     markImplementStarted,

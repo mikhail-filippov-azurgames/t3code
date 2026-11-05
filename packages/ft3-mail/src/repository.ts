@@ -50,6 +50,12 @@ export class MailIdempotencyConflict extends Schema.TaggedError<MailIdempotencyC
   }
 }
 
+export interface PlannerMemberToPurge {
+  readonly memberId: string;
+  readonly cardId: string;
+  readonly participantThreadId: string | null;
+}
+
 export interface AppendLetterResult {
   readonly letter: MailLetter;
   readonly created: boolean;
@@ -711,6 +717,11 @@ export class MailRepository extends Context.Service<
      * and failed). Missing mail tables read as no open work.
      */
     readonly hasOpenMailWork: (cardId: string) => Effect.Effect<boolean, MailRepositoryError>;
+    /** Planner members of the tasks a purge with the same input would delete. */
+    readonly plannerMembersToPurge: (input: {
+      readonly before: string;
+      readonly limit: number;
+    }) => Effect.Effect<ReadonlyArray<PlannerMemberToPurge>, MailRepositoryError>;
     readonly purgeFinishedTasks: (input: {
       readonly before: string;
       readonly limit: number;
@@ -1531,6 +1542,19 @@ const make = Effect.gen(function* () {
             ) LIMIT 1`;
           return rows.length > 0;
         }),
+      ),
+    ),
+    plannerMembersToPurge: Effect.fn("MailRepository.plannerMembersToPurge")((input) =>
+      mapError("plannerMembersToPurge")(
+        sql<PlannerMemberToPurge>`SELECT m.member_id AS "memberId", t.card_id AS "cardId",
+            m.participant_thread_id AS "participantThreadId"
+          FROM ft3_mail_members AS m
+          JOIN ft3_mail_tasks AS t ON t.task_id = m.task_id
+          WHERE m.role_id = 'planner' AND t.card_id IS NOT NULL AND t.task_id IN (
+            SELECT task_id FROM ft3_mail_tasks
+            WHERE status = 'closed' AND closed_at IS NOT NULL AND closed_at < ${input.before}
+            ORDER BY closed_at ASC LIMIT ${input.limit}
+          )`,
       ),
     ),
     purgeFinishedTasks: Effect.fn("MailRepository.purgeFinishedTasks")((input) =>

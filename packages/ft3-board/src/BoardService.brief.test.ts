@@ -96,6 +96,7 @@ const wake = <A>(
               recordPlannerAnswer: () => Effect.void,
               claimPlanner: () => Effect.succeed({ _tag: "Launch" as const }),
               bindPlanner: () => Effect.void,
+              releasePlanner: () => Effect.void,
             }),
             Layer.mock(PlanService.PlanService)({ get: () => Effect.succeed(null) }),
           ),

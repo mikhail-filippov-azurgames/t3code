@@ -465,6 +465,11 @@ export class MailService extends Context.Service<
       SettleMailMemberResult | null,
       MailRepositoryError | MailIdempotencyConflict
     >;
+    /** Purges closed tasks older than the cutoff, with their planner claims settled first. */
+    readonly purgeFinishedTasks: (input: {
+      readonly before: string;
+      readonly limit: number;
+    }) => Effect.Effect<number, MailServiceError | MailRepositoryError>;
   }
 >()("@t3tools/ft3-mail/service/MailService") {}
 
@@ -1521,6 +1526,34 @@ const make = Effect.gen(function* () {
     return closed;
   });
 
+  const purgeFinishedTasks = Effect.fn("MailService.purgeFinishedTasks")(function* (input: {
+    readonly before: string;
+    readonly limit: number;
+  }) {
+    // Claims settle in the same transaction as the purge, so no card keeps a claim
+    // held by a member that no longer exists.
+    return yield* repository.transaction(
+      Effect.gen(function* () {
+        for (const member of yield* repository.plannerMembersToPurge(input)) {
+          if (member.participantThreadId !== null) {
+            yield* planGate
+              .bindPlanner({
+                cardId: member.cardId,
+                memberId: member.memberId,
+                threadId: member.participantThreadId,
+              })
+              .pipe(Effect.mapError(planFailure));
+          } else {
+            yield* planGate
+              .releasePlanner({ cardId: member.cardId, memberId: member.memberId })
+              .pipe(Effect.mapError(planFailure));
+          }
+        }
+        return yield* repository.purgeFinishedTasks(input);
+      }),
+    );
+  });
+
   const settleMember = Effect.fn("MailService.settleMember")(function* (
     input: SettleMailMemberInput,
   ) {
@@ -1603,6 +1636,7 @@ const make = Effect.gen(function* () {
     timeoutOverdueDeliveries,
     closeTask,
     settleMember,
+    purgeFinishedTasks,
   });
 });
 

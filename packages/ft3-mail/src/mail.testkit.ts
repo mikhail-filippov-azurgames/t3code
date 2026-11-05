@@ -221,6 +221,10 @@ export const planGateFake = (
             ? { _tag: "Launch" as const }
             : { _tag: "Pending" as const };
         }),
+      releasePlanner: (input) =>
+        Effect.sync(() => {
+          if (planner.owner === input.memberId && planner.thread === null) planner.owner = null;
+        }),
       bindPlanner: (input) =>
         Effect.gen(function* () {
           if (failBinds.current) {

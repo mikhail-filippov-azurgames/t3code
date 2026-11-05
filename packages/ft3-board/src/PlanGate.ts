@@ -143,6 +143,10 @@ export class PlanGate extends Context.Service<
       readonly memberId: string;
       readonly threadId: string;
     }) => Effect.Effect<void, PlanService.PlanError>;
+    readonly releasePlanner: (input: {
+      readonly cardId: string;
+      readonly memberId: string;
+    }) => Effect.Effect<void, PlanService.PlanError>;
   }
 >()("@t3tools/ft3-board/PlanGate") {}
 
@@ -257,6 +261,12 @@ export const planGateLayer = Layer.effect(
           cardId: input.cardId as Contracts.BoardCardId,
           memberId: input.memberId,
           threadId: ThreadId.make(input.threadId),
+        });
+      }),
+      releasePlanner: Effect.fn("PlanGate.releasePlanner")(function* (input) {
+        yield* plans.releasePlanner({
+          cardId: input.cardId as Contracts.BoardCardId,
+          memberId: input.memberId,
         });
       }),
     });

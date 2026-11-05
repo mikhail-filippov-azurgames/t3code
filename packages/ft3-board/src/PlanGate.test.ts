@@ -325,6 +325,34 @@ describe("PlanGate layer", () => {
     ),
   );
 
+  it.effect("releases an unbound claim for its owner only", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const plans = yield* PlanService.PlanService;
+        const gate = yield* PlanGate.PlanGate;
+        yield* plans.require({ cardId: Testkit.CARD_ID, requiredBy: "lead" });
+        const claim = (memberId: string) =>
+          gate.claimPlanner({ cardId: Testkit.CARD_ID, memberId });
+        assert.deepStrictEqual(yield* claim("member:one"), { _tag: "Launch" });
+        yield* gate.releasePlanner({ cardId: Testkit.CARD_ID, memberId: "member:two" });
+        assert.deepStrictEqual(yield* claim("member:two"), { _tag: "Pending" });
+        yield* gate.releasePlanner({ cardId: Testkit.CARD_ID, memberId: "member:one" });
+        assert.deepStrictEqual(yield* claim("member:two"), { _tag: "Launch" });
+        yield* gate.bindPlanner({
+          cardId: Testkit.CARD_ID,
+          memberId: "member:two",
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+        yield* gate.releasePlanner({ cardId: Testkit.CARD_ID, memberId: "member:two" });
+        assert.deepStrictEqual(yield* claim("member:one"), {
+          _tag: "Bound",
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+      }),
+    ),
+  );
+
   it.effect("closes the review round when changes go back to the planner", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {
