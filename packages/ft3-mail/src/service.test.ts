@@ -831,6 +831,42 @@ it.effect("rolls the letter back when its plan transition fails, and applies it 
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("refuses a retry whose plan payload changed, and changes no state", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const team = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-team",
+      title: "Plan work",
+      brief: "Write the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const draft = (plan: { readonly phase: "draft"; readonly step?: string }) =>
+      mail.sendLetter({
+        callerThreadId: LEAD,
+        taskId: team.task.taskId,
+        to: "role:planner",
+        kind: "request",
+        body: "Draft it.",
+        clientRequestId: "request:draft",
+        plan,
+      });
+    const first = yield* draft({ phase: "draft" });
+    const timeline = () =>
+      mail.readTask({ taskId: team.task.taskId, callerThreadId: LEAD, limit: 10 });
+    const entries = (yield* timeline()).entries.length;
+    assert.equal(yield* refusal(draft({ phase: "draft", step: "P1" })), "idempotency_conflict");
+    assert.equal((yield* timeline()).entries.length, entries);
+    assert.lengthOf(harness.planRecords, 1);
+    const replayed = yield* draft({ phase: "draft" });
+    assert.equal(replayed.letter.letterId, first.letter.letterId);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("starts one planner thread per card and reuses it in later tasks", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {

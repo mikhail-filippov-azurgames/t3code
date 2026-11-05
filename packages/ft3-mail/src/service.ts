@@ -944,7 +944,32 @@ const make = Effect.gen(function* () {
       classification,
       mailSettings.classifierThreshold,
     );
-    const requestFingerprint = yield* fingerprintOf([to, input.kind, input.body, replyToLetterId]);
+    // A plan letter's payload joins the fingerprint, so a retry with a changed plan conflicts;
+    // plain letters keep the fingerprint they were stored with.
+    const planFingerprint =
+      plan === undefined
+        ? []
+        : [
+            {
+              phase: plan.phase,
+              step: plan.step ?? null,
+              citation:
+                plan.citation === undefined
+                  ? null
+                  : {
+                      planDocId: plan.citation.planDocId,
+                      planSha256: plan.citation.planSha256,
+                      planStep: plan.citation.planStep ?? null,
+                    },
+            },
+          ];
+    const requestFingerprint = yield* fingerprintOf([
+      to,
+      input.kind,
+      input.body,
+      replyToLetterId,
+      ...planFingerprint,
+    ]);
     const letterId = yield* newId;
     const now = yield* nowIso;
     const cardId = task.cardId;
