@@ -80,6 +80,10 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   // Fork-owned reads the spec names here (design §6.3): the plan viewer reads
   // document text through docs.read, like chat chips resolve through docs.resolve.
   ["docs.read"]: AuthOrchestrationReadScope,
+  // plan detail for human clients only; agents read plans through MCP.
+  ["board.planGet"]: AuthOrchestrationReadScope,
+  ["board.planSetRequired"]: AuthOrchestrationOperateScope,
+  ["board.planAccept"]: AuthOrchestrationOperateScope,
 } as const;
 export type ClientGuardedRpcTag = keyof typeof CLIENT_GUARDED_RPC_SCOPES;
 

@@ -2,7 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodeURL from "node:url";
 
-import { ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
 import { docLinkOf } from "@t3tools/ft3-docs/contracts";
 import { readDocsSettings } from "@t3tools/ft3-docs/root";
 import * as DocsServer from "@t3tools/ft3-docs/server";
@@ -19,9 +19,10 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
+import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as Contracts from "./contracts.ts";
 import * as PlanningContracts from "./planningContracts.ts";
-import { countPlanSteps, validatePlan } from "./planValidation.ts";
+import { countPlanSteps, planStepIds, validatePlan } from "./planValidation.ts";
 const PLAN_TEMPLATE_URL = new URL("../assets/plan-template.md", import.meta.url);
 
 export const PlanErrorCode = Schema.Literals([
@@ -31,6 +32,7 @@ export const PlanErrorCode = Schema.Literals([
   "plan_transition_invalid",
   "plan_review_rounds_exhausted",
   "plan_changed",
+  "plan_not_accepted",
   "plan_invalid",
   "plan_document_denied",
   "plan_document_failed",
@@ -59,6 +61,8 @@ export class PlanError extends Schema.TaggedError<PlanError>()("PlanError", {
         return `Plan for card "${this.cardId}" has used its two review rounds.`;
       case "plan_changed":
         return `Plan for card "${this.cardId}" changed since it was reviewed. Read it again and accept the current version.`;
+      case "plan_not_accepted":
+        return `Plan for card "${this.cardId}" is not accepted: there is no accepted version to work from.`;
       case "plan_invalid":
         return `Plan for card "${this.cardId}" line ${this.line ?? 1}: ${this.reason ?? "invalid"}. Fix the plan and accept again.`;
       case "plan_document_denied":
@@ -118,6 +122,37 @@ const slugOf = (title: string, fallback: string): string => {
 const renderPlan = (template: string, cardId: string, title: string): string =>
   template.replace("<cardId>", () => cardId).replace("<card title>", () => title);
 
+/**
+ * Reports a plan failure as the matching board failure, so RPC and MCP
+ * handlers share one mapping.
+ */
+export const planFailureCode = (failure: PlanError): Contracts.BoardMcpFailure["code"] => {
+  switch (failure.code) {
+    case "planning_disabled":
+      return "feature_disabled";
+    case "plan_document_denied":
+      return "capability_denied";
+    case "plan_not_found":
+      return "plan_not_found";
+    case "plan_card_not_found":
+      return "task_not_found";
+    case "plan_transition_invalid":
+      return "plan_transition_invalid";
+    case "plan_review_rounds_exhausted":
+      return "plan_review_rounds_exhausted";
+    case "plan_changed":
+      return "plan_changed";
+    case "plan_not_accepted":
+      return "plan_not_accepted";
+    case "plan_document_failed":
+      return "orchestration_error";
+    case "plan_store_failed":
+    case "plan_invalid":
+    default:
+      return "invalid_request";
+  }
+};
+
 export class PlanService extends Context.Service<
   PlanService,
   {
@@ -161,6 +196,44 @@ export class PlanService extends Context.Service<
     readonly planStableIdOfPlannerThread: (
       threadId: string,
     ) => Effect.Effect<string | null, PlanError>;
+    /**
+     * Records that an implement letter was sent for the card; survives mail
+     * retention purges that delete the letters. Idempotent.
+     */
+    readonly markImplementStarted: (
+      cardId: Contracts.BoardCardId,
+    ) => Effect.Effect<PlanningContracts.PlanRecord, PlanError>;
+    /** Version rows of the card's plan, oldest first. */
+    readonly listVersions: (cardId: Contracts.BoardCardId) => Effect.Effect<
+      ReadonlyArray<{
+        readonly phase: string;
+        readonly sha256: string;
+        readonly createdAt: string;
+      }>,
+      PlanError
+    >;
+    /**
+     * One plan read for viewers and agents: the record, the document address,
+     * the digest of the requested version, its step ids, and the content for
+     * the accepted snapshot (null for the live document).
+     */
+    readonly readDetail: (input: {
+      readonly cardId: Contracts.BoardCardId;
+      readonly version: "current" | "accepted";
+    }) => Effect.Effect<
+      {
+        readonly record: PlanningContracts.PlanRecord;
+        readonly doc: {
+          readonly stableId: string;
+          readonly relPath: string;
+          readonly name: string;
+        };
+        readonly sha256: string;
+        readonly stepIds: ReadonlyArray<string>;
+        readonly content: string | null;
+      },
+      PlanError
+    >;
     /**
      * One small summary per planned card of the given cards, for the board
      * card list response. Step counts are cached by document digest, so an
@@ -210,6 +283,7 @@ const make = Effect.fn("PlanService.make")(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectStoreV2;
   const gate = yield* FeatureGate.FeatureGate;
+  const mailFacts = yield* BoardMailFacts.BoardMailFacts;
   const serverSettings = yield* ServerSettingsService;
   // Snapshot of the setting at layer build, like the docs root: an id-addressed
   // plan survives a folder change, only new plan documents land in the new folder.
@@ -430,15 +504,95 @@ const make = Effect.fn("PlanService.make")(function* () {
     return next;
   });
 
+  /**
+   * Marks the card so the human sees what the plan flow needs: discussion
+   * waits for the human, an accepted plan clears the card back to ready.
+   */
+  const setCardReadiness = Effect.fn("PlanService.setCardReadiness")(function* (
+    cardId: Contracts.BoardCardId,
+    readiness: "needs_human" | "ready",
+    note: string | null,
+  ) {
+    const at = yield* nowIso;
+    yield* sql`UPDATE ft3_board_cards SET readiness = ${readiness}, readiness_note = ${note},
+      updated_at = ${at} WHERE card_id = ${cardId}`.pipe(Effect.mapError(storeFailure(cardId)));
+  });
+
+  const latestVersionSha = Effect.fn("PlanService.latestVersionSha")(function* (
+    cardId: Contracts.BoardCardId,
+    phase: string,
+  ) {
+    const rows = yield* sql<{ readonly sha256: string }>`
+      SELECT sha256 FROM ft3_board_plan_versions
+      WHERE card_id = ${cardId} AND phase = ${phase}
+      ORDER BY created_at DESC LIMIT 1
+    `.pipe(Effect.mapError(storeFailure(cardId)));
+    return rows[0]?.sha256 ?? null;
+  });
+
   const submitForDiscussion = Effect.fn("PlanService.submitForDiscussion")(function* (
     cardId: Contracts.BoardCardId,
   ) {
     const record = yield* loadRecord(cardId);
-    yield* requireState(record, ["drafting", "accepted"]);
-    const doc = yield* readPlanDocument(record);
-    const next = { ...record, state: "discussion" as const, updatedAt: yield* nowIso };
-    yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });
+    let next = record;
+    if (record.state === "discussion") {
+      // Retry-safe: an unchanged plan resubmits as a no-op success instead of
+      // a version-spamming failure. A changed draft records a new version.
+      const doc = yield* readPlanDocument(record);
+      const latest = yield* latestVersionSha(cardId, "discussion");
+      if (latest === null || latest !== doc.sha256) {
+        next = { ...record, updatedAt: yield* nowIso };
+        yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });
+      }
+    } else {
+      yield* requireState(record, ["drafting", "accepted"]);
+      const doc = yield* readPlanDocument(record);
+      next = { ...record, state: "discussion" as const, updatedAt: yield* nowIso };
+      yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });
+    }
+    yield* setCardReadiness(cardId, "needs_human", "Waiting for the human to accept the plan.");
     return next;
+  });
+
+  /**
+   * The single lead event of the plan flow: exactly one per accepted revision,
+   * sent after the accept commits. A retried accept of the recorded version is
+   * a success without a new event.
+   */
+  const notifyAccepted = Effect.fn("PlanService.notifyAccepted")(function* (
+    record: PlanningContracts.PlanRecord,
+  ) {
+    const card = yield* sql<{
+      readonly orchestrator_thread_id: string;
+      readonly title: string;
+    }>`SELECT orchestrator_thread_id, title FROM ft3_board_cards
+      WHERE card_id = ${record.cardId}`.pipe(Effect.mapError(storeFailure(record.cardId)));
+    const row = card[0];
+    if (row === undefined) {
+      return yield* new PlanError({ code: "plan_card_not_found", cardId: record.cardId });
+    }
+    const id = `ft3:plan:accepted:${record.cardId}:${record.acceptedRevision}`;
+    const text =
+      `Plan accepted for card "${row.title}": oc://doc/${record.planDocId}, ` +
+      `revision ${record.acceptedRevision} (sha256 ${(record.acceptedSha256 ?? "").slice(0, 12)}). ` +
+      `Dispatch implementation strictly by steps of plan_read(version: accepted).`;
+    yield* threads
+      .dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(id),
+        threadId: ThreadId.make(row.orchestrator_thread_id),
+        messageId: MessageId.make(id),
+        text,
+        attachments: [],
+        createdBy: "agent",
+        creationSource: "server",
+        dispatchMode: { type: "start_immediately" },
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) => new PlanError({ code: "plan_store_failed", cardId: record.cardId, cause }),
+        ),
+      );
   });
 
   const accept = Effect.fn("PlanService.accept")(function* (input: {
@@ -446,6 +600,10 @@ const make = Effect.fn("PlanService.make")(function* () {
     readonly sha256: string;
   }) {
     const record = yield* loadRecord(input.cardId);
+    if (record.state === "accepted" && record.acceptedSha256 === input.sha256) return record;
+    if (record.state === "accepted") {
+      return yield* new PlanError({ code: "plan_changed", cardId: input.cardId });
+    }
     yield* requireState(record, ["discussion"]);
     const doc = yield* readPlanDocument(record);
     if (doc.sha256 !== input.sha256) {
@@ -470,6 +628,8 @@ const make = Effect.fn("PlanService.make")(function* () {
       updatedAt: at,
     };
     yield* commit(next, { phase: "accepted", sha256: doc.sha256, content: doc.content });
+    yield* setCardReadiness(input.cardId, "ready", null);
+    yield* notifyAccepted(next);
     return next;
   });
 
@@ -506,37 +666,91 @@ const make = Effect.fn("PlanService.make")(function* () {
     },
   );
 
+  /**
+   * Records that an implement letter was sent for the card. The flag survives
+   * mail retention purges; the list backfill keeps older letters covered.
+   * Idempotent: a set flag stays untouched.
+   */
+  const markImplementStarted = Effect.fn("PlanService.markImplementStarted")(function* (
+    cardId: Contracts.BoardCardId,
+  ) {
+    yield* loadRecord(cardId);
+    const at = yield* nowIso;
+    yield* sql`UPDATE ft3_board_card_plans SET implement_started_at = ${at}
+      WHERE card_id = ${cardId} AND implement_started_at IS NULL`.pipe(
+      Effect.mapError(storeFailure(cardId)),
+    );
+    return yield* loadRecord(cardId);
+  });
+
+  const listVersions = Effect.fn("PlanService.listVersions")(function* (
+    cardId: Contracts.BoardCardId,
+  ) {
+    yield* loadRecord(cardId);
+    const rows = yield* sql<{
+      readonly phase: string;
+      readonly sha256: string;
+      readonly created_at: string;
+    }>`SELECT phase, sha256, created_at FROM ft3_board_plan_versions
+      WHERE card_id = ${cardId} ORDER BY created_at ASC`.pipe(
+      Effect.mapError(storeFailure(cardId)),
+    );
+    return rows.map((row) => ({
+      phase: row.phase,
+      sha256: row.sha256,
+      createdAt: row.created_at,
+    }));
+  });
+
+  const readDetail = Effect.fn("PlanService.readDetail")(function* (input: {
+    readonly cardId: Contracts.BoardCardId;
+    readonly version: "current" | "accepted";
+  }) {
+    const record = yield* loadRecord(input.cardId);
+    const meta = yield* docs
+      .docRef(docLinkOf(record.planDocId))
+      .pipe(Effect.mapError(documentFailure(record.cardId)));
+    const doc = { stableId: meta.stableId, relPath: meta.relPath, name: meta.name };
+    if (input.version === "current") {
+      const body = yield* readPlanDocument(record);
+      return {
+        record,
+        doc,
+        sha256: body.sha256,
+        stepIds: planStepIds(body.content),
+        content: null,
+      };
+    }
+    if (record.acceptedSha256 === null) {
+      return yield* new PlanError({ code: "plan_not_accepted", cardId: input.cardId });
+    }
+    const rows = yield* sql<{ readonly content: string }>`
+      SELECT content FROM ft3_board_plan_versions
+      WHERE card_id = ${input.cardId} AND phase = 'accepted' AND sha256 = ${record.acceptedSha256}
+      ORDER BY created_at DESC LIMIT 1
+    `.pipe(Effect.mapError(storeFailure(input.cardId)));
+    const snapshot = rows[0];
+    if (snapshot === undefined) {
+      return yield* new PlanError({ code: "plan_not_accepted", cardId: input.cardId });
+    }
+    return {
+      record,
+      doc,
+      sha256: record.acceptedSha256,
+      stepIds: planStepIds(snapshot.content),
+      content: snapshot.content,
+    };
+  });
+
   /** Step counts by plan document, keyed by the digest the count was parsed from. */
   const stepCounts = yield* Ref.make(new Map<string, StepCountEntry>());
 
   /**
-   * Cards among the candidates with an implement letter on their mail task.
-   * Bounded by the selected cards: an EXISTS per task through the
-   * `letters(task_id, plan_phase)` index, no DISTINCT scan, no package dep.
+   * Cards among the candidates with an implement letter on their mail task,
+   * answered through the BoardMailFacts port so this file names no mail table.
    */
-  const queryNewlyImplementedCardIds = Effect.fn("PlanService.newlyImplementedCardIds")(function* (
-    cardIds: ReadonlyArray<string>,
-  ) {
-    if (cardIds.length === 0) return new Set<string>();
-    // Board-only compositions (tests, MCP) never migrate the mail tables;
-    // without them no implement letter can exist.
-    const tables = yield* sql<{ readonly name: string }>`
-        SELECT name FROM sqlite_master
-        WHERE type = 'table' AND name IN ('ft3_mail_tasks', 'ft3_mail_letters')
-      `;
-    if (tables.length < 2) return new Set<string>();
-    const rows = yield* sql<{ readonly card_id: string }>`
-        SELECT t.card_id
-        FROM ft3_mail_tasks AS t
-        WHERE t.card_id IN ${sql.in(cardIds)} AND EXISTS (
-          SELECT 1 FROM ft3_mail_letters AS l
-          WHERE l.task_id = t.task_id AND l.plan_phase = 'implement'
-        )
-      `;
-    return new Set(rows.map((row) => row.card_id));
-  });
   const newlyImplementedCardIds = (cardIds: ReadonlyArray<string>) =>
-    queryNewlyImplementedCardIds(cardIds).pipe(Effect.mapError(storeFailure("")));
+    mailFacts.hasImplementLetter(cardIds).pipe(Effect.mapError(storeFailure("")));
 
   /**
    * Cheap change fingerprint of a plan document from its filesystem stat,
@@ -647,6 +861,9 @@ const make = Effect.fn("PlanService.make")(function* () {
     bindPlannerThread,
     planStableIdOfPlannerThread,
     listSummaries,
+    markImplementStarted,
+    listVersions,
+    readDetail,
   });
 });
 

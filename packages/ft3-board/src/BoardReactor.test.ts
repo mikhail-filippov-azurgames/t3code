@@ -41,6 +41,7 @@ import * as EventStore from "../../../apps/server/src/orchestration-v2/EventStor
 import { OrchestratorDispatchError } from "../../../apps/server/src/orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
 import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import * as BoardReactor from "./BoardReactor.ts";
@@ -255,13 +256,22 @@ function fixture() {
       });
     }),
   );
-  const layer = Layer.mergeAll(Ft3Host.layer, managedThreads).pipe(
+  // PlanService builds with the mail stack now; its project reads never run here.
+  const projects = Layer.mock(ProjectStoreV2)({
+    getShell: () => Effect.die("unused in the board reactor tests"),
+  });
+  // Ft3Host.layer takes PlanService through the mail stack, which needs the
+  // managed threads; provide the fake into the host instead of merging it in
+  // parallel, where the requirement would stay open.
+  const layer = Ft3Host.layer.pipe(
+    Layer.provideMerge(managedThreads),
     Layer.provideMerge(infrastructure),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSettings.layerTest()),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-reactor-" })),
     Layer.provideMerge(NodeServices.layer),
     Layer.provide(launcher.layer),
+    Layer.provideMerge(projects),
   );
   const emit = Effect.fn("test.emitBoardEvent")(function* (event: OrchestrationV2DomainEvent) {
     const sink = yield* EventSink.EventSinkV2;

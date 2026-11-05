@@ -21,6 +21,9 @@ export const FT3_BOARD_WS_METHODS = {
   boardStart: "board.start",
   boardUpdate: "board.update",
   boardDelete: "board.delete",
+  boardPlanGet: "board.planGet",
+  boardPlanSetRequired: "board.planSetRequired",
+  boardPlanAccept: "board.planAccept",
 } as const;
 
 const BoardRpcError = Schema.Union([Contracts.BoardMcpFailure, EnvironmentAuthorizationError]);
@@ -86,6 +89,21 @@ export const boardRpcs = [
     success: Contracts.BoardDeleteResult,
     error: BoardRpcError,
   }),
+  Rpc.make(FT3_BOARD_WS_METHODS.boardPlanGet, {
+    payload: Contracts.BoardPlanGetInput,
+    success: Contracts.BoardPlanGetResult,
+    error: BoardRpcError,
+  }),
+  Rpc.make(FT3_BOARD_WS_METHODS.boardPlanSetRequired, {
+    payload: Contracts.BoardPlanSetRequiredInput,
+    success: Contracts.BoardPlanSetRequiredResult,
+    error: BoardRpcError,
+  }),
+  Rpc.make(FT3_BOARD_WS_METHODS.boardPlanAccept, {
+    payload: Contracts.BoardPlanAcceptInput,
+    success: Contracts.BoardPlanAcceptResult,
+    error: BoardRpcError,
+  }),
 ] as const;
 
 export const boardRpcScopes = {
@@ -101,4 +119,7 @@ export const boardRpcScopes = {
   [FT3_BOARD_WS_METHODS.boardStart]: AuthOrchestrationOperateScope,
   [FT3_BOARD_WS_METHODS.boardUpdate]: AuthOrchestrationOperateScope,
   [FT3_BOARD_WS_METHODS.boardDelete]: AuthOrchestrationOperateScope,
+  [FT3_BOARD_WS_METHODS.boardPlanGet]: AuthOrchestrationReadScope,
+  [FT3_BOARD_WS_METHODS.boardPlanSetRequired]: AuthOrchestrationOperateScope,
+  [FT3_BOARD_WS_METHODS.boardPlanAccept]: AuthOrchestrationOperateScope,
 } as const;

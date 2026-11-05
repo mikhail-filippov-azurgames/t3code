@@ -27,6 +27,7 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
+import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as Contracts from "./contracts.ts";
 import { migrations as boardMigrations } from "./migrations.ts";
 import * as PlanGate from "./PlanGate.ts";
@@ -46,6 +47,13 @@ export interface PlanTestOptions {
   readonly projectTitle?: string | null;
   /** Overrides `ft3.docs.plansFolder` for the plan service. */
   readonly plansFolder?: string;
+  /** Receives every threads.dispatch input, so tests can count lead events. */
+  readonly onDispatch?: (input: unknown) => void;
+  /**
+   * The board's mail facts. The default reports no mail activity, as if the
+   * mail tables were purged; tests that need mail provide a fake layer.
+   */
+  readonly mailFacts?: Layer.Layer<BoardMailFacts.BoardMailFacts>;
 }
 
 /** Counts `DocsService.read` calls, so summary tests can prove the step cache. */
@@ -84,6 +92,10 @@ const threadsLayer = (options: PlanTestOptions) =>
         },
       });
     },
+    dispatch: (command) =>
+      Effect.sync(() => {
+        options.onDispatch?.(command);
+      }).pipe(Effect.as({} as never)),
   });
 
 const projectsLayer = (options: PlanTestOptions) =>
@@ -170,7 +182,11 @@ const testLayer = (root: string, options: PlanTestOptions) => {
       });
     }),
   ).pipe(Layer.provide(Layer.mergeAll(docsReads, docsInner)));
-  const plans = PlanService.planServiceLayer.pipe(Layer.provide(Layer.mergeAll(base, docs)));
+  const plans = PlanService.planServiceLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(base, docs, options.mailFacts ?? BoardMailFacts.noBoardMailFactsLayer),
+    ),
+  );
   const gate = PlanGate.planGateLayer.pipe(Layer.provide(Layer.mergeAll(plans, docs)));
   const facts = PlanService.planningDocumentsWriteFacts.pipe(Layer.provide(plans));
   return Layer.mergeAll(sql, docs, plans, gate, facts, docsReads);

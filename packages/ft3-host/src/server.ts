@@ -1,5 +1,7 @@
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as BoardRepository from "@t3tools/ft3-board/repository";
 import { applyNativeSubagentGuidance } from "@t3tools/ft3-delegation/server";
@@ -14,6 +16,28 @@ import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 
 export { runMigrations } from "./Migrations.ts";
 export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
+
+// The mail stack takes PlanService, which reads plan documents through the
+// store. Same docs root as rpc.ts, created here because a fresh state
+// directory has no documents folder yet.
+const layerDocsService = Layer.unwrap(
+  Effect.gen(function* () {
+    const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/rpc"));
+    const config = yield* ServerConfig.ServerConfig;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const current = yield* settings.getSettings.pipe(Effect.orDie);
+    const root = resolveDocsRoot({
+      stateDir: config.stateDir,
+      configuredRoot: readDocsSettings(current.ft3).root,
+    });
+    // The store resolves paths under contexts/, so the whole branch must
+    // exist before the service opens it; the reconciler creates it as well.
+    yield* fs.makeDirectory(path.join(root, "contexts"), { recursive: true });
+    return docs.docsRpcServiceLayer({ root });
+  }),
+);
 
 export { BoardRepository };
 
@@ -209,6 +233,7 @@ export const layer = layerMail.pipe(
       BoardRepository.layer,
       layerStartup,
       layerDocuments,
+      layerDocsService,
       layerAppliedPolicies,
       FeatureGate.layer,
     ),

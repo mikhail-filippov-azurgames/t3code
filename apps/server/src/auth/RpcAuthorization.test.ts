@@ -35,14 +35,23 @@ import * as RpcAuthorization from "./RpcAuthorization.ts";
  * names the fork-owned "docs.read" (design §6.3), which the upstream group
  * does not declare.
  */
-type UpstreamRpcMethod = Exclude<keyof typeof RPC_REQUIRED_SCOPES, "docs.read">;
+type UpstreamRpcMethod = Exclude<
+  keyof typeof RPC_REQUIRED_SCOPES,
+  "docs.read" | "board.planGet" | "board.planSetRequired" | "board.planAccept"
+>;
 
 describe("RPC authorization scopes", () => {
   it("declares exactly one scope for every RPC in the server group", () => {
     // "docs.read" is fork-owned (design §6.3): it joins the server group
     // through CLIENT_GUARDED_RPC_SCOPES, so the upstream group alone does not name it.
     expect(new Set(Object.keys(RPC_REQUIRED_SCOPES))).toEqual(
-      new Set([...WsRpcGroup.requests.keys(), "docs.read"]),
+      new Set([
+        ...WsRpcGroup.requests.keys(),
+        "docs.read",
+        "board.planGet",
+        "board.planSetRequired",
+        "board.planAccept",
+      ]),
     );
   });
 
@@ -87,6 +96,12 @@ describe("RPC authorization scopes", () => {
 
   it("keeps the fork-owned docs read behind orchestration:read", () => {
     expect(requiredScopeForRpcMethod("docs.read")).toBe(AuthOrchestrationReadScope);
+  });
+
+  it("keeps the fork-owned plan RPCs behind orchestration scopes", () => {
+    expect(requiredScopeForRpcMethod("board.planGet")).toBe(AuthOrchestrationReadScope);
+    expect(requiredScopeForRpcMethod("board.planSetRequired")).toBe(AuthOrchestrationOperateScope);
+    expect(requiredScopeForRpcMethod("board.planAccept")).toBe(AuthOrchestrationOperateScope);
   });
 
   it("rejects unknown RPC method names", () => {

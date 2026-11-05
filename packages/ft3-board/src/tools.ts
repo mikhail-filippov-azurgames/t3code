@@ -3,13 +3,20 @@ import { Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
 import * as Contracts from "./contracts.ts";
+import * as PlanService from "./PlanService.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   BoardService.BoardService,
   ThreadManagement.ThreadManagementService,
+];
+const planDependencies = [
+  ...dependencies,
+  BoardRepository.BoardRepository,
+  PlanService.PlanService,
 ];
 const boardCreateCard = Tool.make("board_create_card", {
   description:
@@ -68,9 +75,40 @@ const boardDeleteCard = Tool.make("board_delete_card", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, false);
 
+const planRead = Tool.make("plan_read", {
+  description:
+    "Read one card's plan: its state, document reference, live digest, and step ids. Version current (the default) reads the live draft the planner is editing; version accepted reads the snapshot the human accepted, with its full content. Dispatch implementation strictly by the accepted steps, never by a newer draft. Only cards owned by the calling lead thread are readable. There is no plan accept tool: the human accepts in the card thread, which emits a Plan accepted lead event.",
+  parameters: Contracts.BoardPlanReadInput,
+  success: Contracts.BoardPlanReadResult,
+  failure: Contracts.BoardMcpFailure,
+  failureMode: "return",
+  dependencies: planDependencies,
+})
+  .annotate(Tool.Title, "Read card plan")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+const planSubmitForDiscussion = Tool.make("plan_submit_for_discussion", {
+  description:
+    "Snapshot the current draft and put the plan up for human review: the plan moves to discussion and the card moves to readiness needs_human, so the human sees it in the card thread. Repeat calls are safe: resubmitting an unchanged plan succeeds without recording another version. The human accepts with board.planAccept outside MCP; the Plan accepted lead event carries the doc reference and revision to implement against.",
+  parameters: Contracts.BoardPlanSubmitInput,
+  success: Contracts.BoardPlanSubmitResult,
+  failure: Contracts.BoardMcpFailure,
+  failureMode: "return",
+  dependencies: planDependencies,
+})
+  .annotate(Tool.Title, "Submit plan for discussion")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const toolkit = Toolkit.make(
   boardCreateCard,
   boardListCards,
   boardUpdateCard,
   boardDeleteCard,
+  planRead,
+  planSubmitForDiscussion,
 );

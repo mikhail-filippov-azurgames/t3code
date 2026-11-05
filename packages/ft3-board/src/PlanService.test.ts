@@ -7,12 +7,30 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as Contracts from "./contracts.ts";
 import * as PlanService from "./PlanService.ts";
 import * as Testkit from "./planning.testkit.ts";
 
 const cardId = Testkit.CARD_ID;
 const plans = PlanService.PlanService;
+
+/**
+ * A mail-facts fake whose implement set the test rewrites mid-run: emptying
+ * it models the retention purge deleting the mail rows.
+ */
+const mailFactsCell = (initial: ReadonlySet<string>) => {
+  const implemented = { current: new Set(initial) };
+  const layer = Layer.succeed(
+    BoardMailFacts.BoardMailFacts,
+    BoardMailFacts.BoardMailFacts.of({
+      hasImplementLetter: (cardIds) =>
+        Effect.succeed(new Set([...cardIds].filter((id) => implemented.current.has(id)))),
+      hasOpenMailWork: () => Effect.succeed(false),
+    }),
+  );
+  return { layer, implemented };
+};
 
 const versionPhases = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -139,8 +157,9 @@ describe("PlanService", () => {
     ),
   );
 
-  it.effect("marks the summary implemented once an implement letter exists", () =>
-    Testkit.withPlanning(
+  it.effect("marks the summary implemented once an implement letter exists", () => {
+    const mail = mailFactsCell(new Set([cardId]));
+    return Testkit.withPlanning(
       Effect.gen(function* () {
         const secondCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000003");
         yield* Testkit.seedCard("Storage plan");
@@ -154,70 +173,48 @@ describe("PlanService", () => {
           (yield* service.listSummaries({ cardIds: [cardId, secondCardId] })).map(
             (summary) => summary.implementStarted,
           ),
-          [false, false],
-        );
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_tasks (task_id TEXT NOT NULL PRIMARY KEY, card_id TEXT)`;
-        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_letters (letter_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, plan_phase TEXT)`;
-        yield* sql`INSERT INTO ft3_mail_tasks (task_id, card_id) VALUES ('task:implement', ${cardId})`;
-        yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, plan_phase) VALUES ('letter:discussion-1', 'task:implement', 'discussion')`;
-        assert.deepStrictEqual(
-          (yield* service.listSummaries({ cardIds: [cardId, secondCardId] })).map(
-            (summary) => summary.implementStarted,
-          ),
-          [false, false],
-        );
-        yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, plan_phase) VALUES ('letter:implement-1', 'task:implement', 'implement')`;
-        assert.deepStrictEqual(
-          (yield* service.listSummaries({ cardIds: [cardId, secondCardId] })).map(
-            (summary) => summary.implementStarted,
-          ),
           [true, false],
         );
       }),
-    ),
-  );
+      { mailFacts: mail.layer },
+    );
+  });
 
-  it.effect("keeps implementStarted after the implement letters are purged", () =>
-    Testkit.withPlanning(
+  it.effect("keeps implementStarted after the implement letters are purged", () => {
+    const mail = mailFactsCell(new Set([cardId]));
+    return Testkit.withPlanning(
       Effect.gen(function* () {
         yield* Testkit.seedCard("Storage plan");
         const service = yield* plans;
         const record = yield* service.require({ cardId, requiredBy: "lead" });
         yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        // The first list backfills the persisted flag from the mail facts, as
+        // with implement letters written before the send-time flag existed.
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [true],
+        );
+        // Retention purges the finished task and its letters; the facts go
+        // empty but the persisted flag stays.
+        mail.implemented.current = new Set();
+        assert.deepStrictEqual(
+          (yield* service.listSummaries({ cardIds: [cardId] })).map(
+            (summary) => summary.implementStarted,
+          ),
+          [true],
+        );
         const sql = yield* SqlClient.SqlClient;
-        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_tasks (task_id TEXT NOT NULL PRIMARY KEY, card_id TEXT)`;
-        yield* sql`CREATE TABLE IF NOT EXISTS ft3_mail_letters (letter_id TEXT NOT NULL PRIMARY KEY, task_id TEXT NOT NULL, plan_phase TEXT)`;
-        yield* sql`INSERT INTO ft3_mail_tasks (task_id, card_id) VALUES ('task:implement', ${cardId})`;
-        yield* sql`INSERT INTO ft3_mail_letters (letter_id, task_id, plan_phase) VALUES ('letter:implement-1', 'task:implement', 'implement')`;
-        // The first list backfills the persisted flag from the join.
-        assert.deepStrictEqual(
-          (yield* service.listSummaries({ cardIds: [cardId] })).map(
-            (summary) => summary.implementStarted,
-          ),
-          [true],
-        );
-        // Retention purges the finished task and its letters; the flag stays.
-        yield* sql`DELETE FROM ft3_mail_letters WHERE task_id = 'task:implement'`;
-        yield* sql`DELETE FROM ft3_mail_tasks WHERE task_id = 'task:implement'`;
-        assert.deepStrictEqual(
-          yield* sql<{ readonly letter_id: string }>`SELECT letter_id FROM ft3_mail_letters`,
-          [],
-        );
-        assert.deepStrictEqual(
-          (yield* service.listSummaries({ cardIds: [cardId] })).map(
-            (summary) => summary.implementStarted,
-          ),
-          [true],
-        );
         assert.isNotNull(
           (yield* sql<{ readonly implement_started_at: string | null }>`
               SELECT implement_started_at FROM ft3_board_card_plans WHERE card_id = ${cardId}
             `)[0]?.implement_started_at,
         );
       }),
-    ),
-  );
+      { mailFacts: mail.layer },
+    );
+  });
 
   it("evicts the oldest step counts past the cap and refreshes recency in place", () => {
     const cache = new Map<string, PlanService.StepCountEntry>();
@@ -385,6 +382,97 @@ describe("PlanService", () => {
         assert.equal(error.code, "plan_changed");
         assert.equal((yield* service.get(cardId))?.state, "discussion");
       }),
+    ),
+  );
+
+  it.effect("marks the card needs_human on submit and ready on accept", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        const submitted = yield* service.submitForDiscussion(cardId);
+        assert.equal(submitted.state, "discussion");
+        const discussing = yield* sql<{
+          readonly readiness: string;
+          readonly readiness_note: string | null;
+        }>`SELECT readiness, readiness_note FROM ft3_board_cards WHERE card_id = ${cardId}`;
+        assert.equal(discussing[0]?.readiness, "needs_human");
+        assert.isTrue((discussing[0]?.readiness_note ?? "").length > 0);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const accepted = yield* service.accept({ cardId, sha256 });
+        assert.equal(accepted.state, "accepted");
+        const decided = yield* sql<{
+          readonly readiness: string;
+          readonly readiness_note: string | null;
+        }>`SELECT readiness, readiness_note FROM ft3_board_cards WHERE card_id = ${cardId}`;
+        assert.equal(decided[0]?.readiness, "ready");
+        assert.isNull(decided[0]?.readiness_note ?? null);
+      }),
+    ),
+  );
+
+  it.effect("resubmitting an unchanged plan succeeds without a new version", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const discussionVersions = Effect.gen(function* () {
+          const rows = yield* sql<{ readonly sha256: string }>`
+            SELECT sha256 FROM ft3_board_plan_versions
+            WHERE card_id = ${cardId} AND phase = 'discussion'`;
+          return rows;
+        });
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        const first = yield* service.submitForDiscussion(cardId);
+        assert.equal(first.state, "discussion");
+        assert.equal((yield* discussionVersions).length, 1);
+        const second = yield* service.submitForDiscussion(cardId);
+        assert.equal(second.state, "discussion");
+        assert.equal((yield* discussionVersions).length, 1);
+        const edited = Testkit.validPlan(record.planDocId).replace(
+          "| P1 | add the table | ft3-board | migration test |",
+          "| P1 | add the table | ft3-board | migration test |\n| P2 | wire the gate | ft3-board | gate test |",
+        );
+        yield* Testkit.editPlan(record.planDocId, edited);
+        const third = yield* service.submitForDiscussion(cardId);
+        assert.equal(third.state, "discussion");
+        assert.equal((yield* discussionVersions).length, 2);
+      }),
+    ),
+  );
+
+  const dispatched: Array<unknown> = [];
+
+  it.effect("accepting the same digest twice emits a single lead event", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const first = yield* service.accept({ cardId, sha256 });
+        assert.equal(first.acceptedRevision, 1);
+        const second = yield* service.accept({ cardId, sha256 });
+        assert.equal(second.acceptedRevision, 1);
+        assert.equal(second.state, "accepted");
+        assert.lengthOf(dispatched, 1);
+        const event = dispatched[0] as { readonly text?: unknown };
+        assert.isString(event.text);
+        assert.include(event.text as string, "Plan accepted for card");
+        assert.include(event.text as string, record.planDocId);
+        assert.include(event.text as string, "revision 1");
+      }),
+      { onDispatch: (command) => dispatched.push(command) },
     ),
   );
 

@@ -13,6 +13,8 @@ import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/Thr
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardWakeService from "./BoardWakeService.ts";
 import * as Contracts from "./contracts.ts";
+import * as PlanGate from "./PlanGate.ts";
+import * as PlanService from "./PlanService.ts";
 import { boardCardIdLine, cardStateWords, wakeActorLabel } from "./boardWakePrompt.ts";
 
 type Scope = McpInvocationContext.McpInvocationScope;
@@ -113,6 +115,17 @@ const make = Effect.gen(function* () {
   const wake = yield* BoardWakeService.BoardWakeService;
   const crypto = yield* Crypto.Crypto;
   const roles = yield* RoleResolver;
+  const gate = yield* PlanGate.PlanGate;
+
+  const gateFailure = (
+    failure: PlanGate.PlanGateError | PlanService.PlanError,
+  ): Contracts.BoardMcpFailure =>
+    failure._tag === "PlanGateError"
+      ? new Contracts.BoardMcpFailure({ code: failure.code, message: failure.message })
+      : new Contracts.BoardMcpFailure({
+          code: PlanService.planFailureCode(failure),
+          message: failure.message,
+        });
   const event = Effect.fn("Ft3BoardService.event")(function* (
     card: Contracts.BoardCard,
     at: string,
@@ -315,6 +328,11 @@ const make = Effect.gen(function* () {
           code: "executor_required",
           message: "Link assignee and executorThreadId before moving a card to in_progress.",
         });
+      }
+      if (startingExecution) {
+        yield* gate
+          .check({ cardId: card.cardId, roleId: next.executorRole })
+          .pipe(Effect.mapError(gateFailure));
       }
       const statusChanged = next.status !== card.status;
       const executorChanged =

@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 
 import { TaskSummaryHistoryCursor } from "../../ft3-orchestration/src/contracts.ts";
 
-import { PlanState } from "./planningContracts.ts";
+import { PlanReason, PlanRecord, PlanState } from "./planningContracts.ts";
 
 export const BoardCardId = TrimmedNonEmptyString.pipe(Schema.brand("BoardCardId"));
 export type BoardCardId = typeof BoardCardId.Type;
@@ -315,6 +315,70 @@ export type BoardDeleteInput = typeof BoardDeleteInput.Type;
 export const BoardDeleteResult = Schema.Struct({});
 export type BoardDeleteResult = typeof BoardDeleteResult.Type;
 
+export const BoardPlanDocRef = Schema.Struct({
+  stableId: TrimmedNonEmptyString,
+  relPath: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+});
+export type BoardPlanDocRef = typeof BoardPlanDocRef.Type;
+
+export const BoardPlanVersion = Schema.Struct({
+  phase: TrimmedNonEmptyString,
+  sha256: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+export type BoardPlanVersion = typeof BoardPlanVersion.Type;
+
+export const BoardPlanGetInput = Schema.Struct({ cardId: BoardCardId });
+export type BoardPlanGetInput = typeof BoardPlanGetInput.Type;
+export const BoardPlanGetResult = Schema.Struct({
+  record: PlanRecord,
+  doc: BoardPlanDocRef,
+  liveSha256: Schema.NullOr(TrimmedNonEmptyString),
+  versions: Schema.Array(BoardPlanVersion),
+});
+export type BoardPlanGetResult = typeof BoardPlanGetResult.Type;
+
+export const BoardPlanSetRequiredInput = Schema.Struct({
+  cardId: BoardCardId,
+  required: Schema.Boolean,
+  reason: Schema.optional(Schema.NullOr(PlanReason)),
+});
+export type BoardPlanSetRequiredInput = typeof BoardPlanSetRequiredInput.Type;
+export const BoardPlanSetRequiredResult = PlanRecord;
+export type BoardPlanSetRequiredResult = typeof BoardPlanSetRequiredResult.Type;
+
+export const BoardPlanAcceptInput = Schema.Struct({
+  cardId: BoardCardId,
+  sha256: TrimmedNonEmptyString,
+});
+export type BoardPlanAcceptInput = typeof BoardPlanAcceptInput.Type;
+export const BoardPlanAcceptResult = PlanRecord;
+export type BoardPlanAcceptResult = typeof BoardPlanAcceptResult.Type;
+
+export const BoardPlanReadInput = Schema.Struct({
+  cardId: BoardCardId,
+  version: Schema.optional(Schema.Literals(["current", "accepted"])),
+});
+export type BoardPlanReadInput = typeof BoardPlanReadInput.Type;
+export const BoardPlanReadResult = Schema.Struct({
+  cardId: BoardCardId,
+  state: PlanState,
+  doc: BoardPlanDocRef,
+  sha256: TrimmedNonEmptyString,
+  stepIds: Schema.Array(TrimmedNonEmptyString),
+  content: Schema.NullOr(Schema.String),
+});
+export type BoardPlanReadResult = typeof BoardPlanReadResult.Type;
+
+export const BoardPlanSubmitInput = Schema.Struct({
+  cardId: BoardCardId,
+  clientRequestId: TrimmedNonEmptyString,
+});
+export type BoardPlanSubmitInput = typeof BoardPlanSubmitInput.Type;
+export const BoardPlanSubmitResult = PlanRecord;
+export type BoardPlanSubmitResult = typeof BoardPlanSubmitResult.Type;
+
 export class BoardMcpFailure extends Schema.TaggedError<BoardMcpFailure>()(
   "OrchestratorMcpFailure",
   {
@@ -329,6 +393,14 @@ export class BoardMcpFailure extends Schema.TaggedError<BoardMcpFailure>()(
         "delegated_executor_denied",
         "author_text_rejected",
         "feature_disabled",
+        "plan_not_found",
+        "plan_transition_invalid",
+        "plan_review_rounds_exhausted",
+        "plan_not_accepted",
+        "plan_changed",
+        "plan_phase_required",
+        "plan_phase_invalid",
+        "plan_step_unknown",
       ]),
     ]),
     message: Schema.String,

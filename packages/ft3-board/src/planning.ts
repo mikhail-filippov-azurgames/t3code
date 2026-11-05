@@ -1,8 +1,10 @@
 /** Server entry of the plan record: the service, its write-rule facts and the gate. */
+export { BoardMailFacts, noBoardMailFactsLayer } from "./boardMailFacts.ts";
 export {
   PlanError,
   PlanErrorCode,
   PlanService,
+  planFailureCode,
   planningDocumentsWriteFacts,
   planningDocumentsWriteFactsSql,
   planServiceLayer,
@@ -12,6 +14,7 @@ export {
   PlanGate,
   PlanGateError,
   PlanGateErrorCode,
+  type CitedPlanVersion,
   type PlanGateDecision,
   type PlanGateInput,
   decidePlanGate,

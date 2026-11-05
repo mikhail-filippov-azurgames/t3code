@@ -21,6 +21,7 @@ import { memoryPolicyDocumentPort } from "../../ft3-policies/src/policyDocuments
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
 import * as Contracts from "./contracts.ts";
+import * as PlanGate from "./PlanGate.ts";
 
 const threadId = ThreadId.make("thread:ft3-brief");
 const epoch = "2026-10-26T00:00:00.000Z";
@@ -102,6 +103,12 @@ const wake = <A>(
         Layer.provide(threads),
         Layer.provide(cryptoLayer),
         Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(
+          Layer.succeed(PlanGate.PlanGate, {
+            check: () => Effect.void,
+            recordPlanLetter: () => Effect.void,
+          }),
+        ),
       ),
       tracker,
     );

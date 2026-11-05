@@ -31,6 +31,14 @@ export const PlanVersionPhase = Schema.Literals([
 export type PlanVersionPhase = typeof PlanVersionPhase.Type;
 
 /**
+ * The `plan.phase` of a mail letter (design §9.1): which plan step the letter
+ * belongs to. Shared by the mail wire contracts and the plan gate so the two
+ * stay the same literals.
+ */
+export const PlanPhase = Schema.Literals(["draft", "review", "prototype", "implement"]);
+export type PlanPhase = typeof PlanPhase.Type;
+
+/**
  * A plan step cited by an implement letter or the plan viewer: which document,
  * which step, which accepted version, and the short quoted text (at most 200
  * characters) the citation rests on.

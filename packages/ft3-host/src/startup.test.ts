@@ -10,6 +10,8 @@ import * as NodePath from "node:path";
 
 import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
 import { layer } from "./server.ts";
+import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
+import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as Crypto from "effect/Crypto";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
@@ -37,6 +39,20 @@ const buildHostLayer = (env: Record<string, string>) =>
       Layer.provide(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-host-" })),
       Layer.provideMerge(NodeServices.layer),
       Layer.provide(launcherFake().layer),
+      // The mail stack takes PlanService, which reads the project shell and
+      // the thread shell. Startup only builds the layer, so these never run.
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: () => Effect.die("unused in host startup tests"),
+            getThreadRecords: () => Effect.die("unused in host startup tests"),
+            dispatch: () => Effect.die("unused in host startup tests"),
+          }),
+          Layer.mock(ProjectStoreV2)({
+            getShell: () => Effect.succeedNone,
+          }),
+        ),
+      ),
     ),
   ).pipe(Effect.scoped);
 

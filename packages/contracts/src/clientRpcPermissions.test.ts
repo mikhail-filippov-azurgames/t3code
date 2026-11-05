@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { AuthOrchestrationReadScope, AuthSettingsWriteScope } from "./auth.ts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  AuthSettingsWriteScope,
+} from "./auth.ts";
 import {
   CLIENT_GUARDED_RPC_SCOPES,
   FT3_CLIENT_GUARDED_RPC_SCOPES,
@@ -19,6 +23,18 @@ describe("clientRpcRequiredScopes", () => {
 
   it("guards the docs read with orchestration:read", () => {
     expect(clientRpcRequiredScopes("docs.read", undefined)).toEqual([AuthOrchestrationReadScope]);
+  });
+
+  it("guards the plan RPCs for human clients only", () => {
+    expect(clientRpcRequiredScopes("board.planGet", undefined)).toEqual([
+      AuthOrchestrationReadScope,
+    ]);
+    expect(clientRpcRequiredScopes("board.planSetRequired", undefined)).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+    expect(clientRpcRequiredScopes("board.planAccept", undefined)).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
   });
 
   it("keeps the ft3 policies methods out of the upstream server scope map", () => {

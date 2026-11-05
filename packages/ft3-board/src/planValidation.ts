@@ -88,6 +88,10 @@ const stepsIssues = (lines: ReadonlyArray<string>): PlanIssue[] => {
 export const countPlanSteps = (content: string): number =>
   findStepsTable(content.split(/\r?\n/))?.rows.length ?? 0;
 
+/** Step ids of the `## Steps` table; empty when the section or its table is missing. */
+export const planStepIds = (content: string): ReadonlyArray<string> =>
+  findStepsTable(content.split(/\r?\n/))?.rows.map((row) => row.stepId) ?? [];
+
 /** Every problem the strict check finds, in file order; empty when the plan can be accepted. */
 export const validatePlan = (content: string, cardId: string): ReadonlyArray<PlanIssue> => {
   const lines = content.split(/\r?\n/);

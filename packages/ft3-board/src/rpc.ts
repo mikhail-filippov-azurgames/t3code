@@ -11,7 +11,7 @@ import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
 import * as BoardSummaryHistoryService from "./BoardSummaryHistoryService.ts";
 import * as Contracts from "./contracts.ts";
-import { PlanService, type PlanError } from "./PlanService.ts";
+import { PlanService, planFailureCode, type PlanError } from "./PlanService.ts";
 
 export { BoardSummaryHistoryService } from "./BoardSummaryHistoryService.ts";
 
@@ -41,22 +41,15 @@ export const boardRpcServiceLayer = Layer.mergeAll(
  * The web group reports board failures as BoardMcpFailure; a plan failure
  * reads as the matching board failure for the whole list.
  */
-const planFailureCode = (failure: PlanError): Contracts.BoardMcpFailure["code"] => {
-  switch (failure.code) {
-    case "planning_disabled":
-      return "feature_disabled";
-    case "plan_document_denied":
-      return "capability_denied";
-    case "plan_not_found":
-    case "plan_card_not_found":
-      return "task_not_found";
-    case "plan_store_failed":
-    case "plan_document_failed":
-      return "orchestration_error";
-    default:
-      return "invalid_request";
-  }
-};
+export { planFailureCode };
+
+const mapPlanError = <A>(effect: Effect.Effect<A, PlanError>) =>
+  effect.pipe(
+    Effect.mapError(
+      (failure): Contracts.BoardMcpFailure =>
+        new Contracts.BoardMcpFailure({ code: planFailureCode(failure), message: failure.message }),
+    ),
+  );
 
 export const boardRpcHandlers = {
   [FT3_BOARD_WS_METHODS.boardOrchestratorsList]: Effect.fn("BoardRpc.orchestratorsList")(
@@ -143,5 +136,45 @@ export const boardRpcHandlers = {
   ) {
     const service = yield* BoardService.BoardService;
     return yield* service.deleteHumanCard(input);
+  }),
+  [FT3_BOARD_WS_METHODS.boardPlanGet]: Effect.fn("BoardRpc.planGet")(function* (
+    input: Contracts.BoardPlanGetInput,
+  ) {
+    const plans = yield* PlanService;
+    const detail = yield* mapPlanError(
+      plans.readDetail({ cardId: input.cardId, version: "current" }),
+    );
+    const versions = yield* mapPlanError(plans.listVersions(input.cardId));
+    return {
+      record: detail.record,
+      doc: detail.doc,
+      liveSha256: detail.sha256,
+      versions: versions.map((version) => ({
+        phase: version.phase,
+        sha256: version.sha256,
+        createdAt: version.createdAt,
+      })),
+    };
+  }),
+  [FT3_BOARD_WS_METHODS.boardPlanSetRequired]: Effect.fn("BoardRpc.planSetRequired")(function* (
+    input: Contracts.BoardPlanSetRequiredInput,
+  ) {
+    const plans = yield* PlanService;
+    if (input.required) {
+      return yield* mapPlanError(
+        plans.require({
+          cardId: input.cardId,
+          requiredBy: "human",
+          ...(input.reason === undefined || input.reason === null ? {} : { reason: input.reason }),
+        }),
+      );
+    }
+    return yield* mapPlanError(plans.withdraw(input.cardId));
+  }),
+  [FT3_BOARD_WS_METHODS.boardPlanAccept]: Effect.fn("BoardRpc.planAccept")(function* (
+    input: Contracts.BoardPlanAcceptInput,
+  ) {
+    const plans = yield* PlanService;
+    return yield* mapPlanError(plans.accept({ cardId: input.cardId, sha256: input.sha256 }));
   }),
 };
