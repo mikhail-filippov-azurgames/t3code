@@ -10,6 +10,7 @@ import {
 } from "@t3tools/ft3-policies/routing";
 import type { RoutingLevel, RoutingRoleId } from "@t3tools/ft3-policies/routingPolicy";
 import { FeatureDisabledError, FeatureGate } from "@t3tools/ft3-policies/server";
+import { PlanGate, PlanGateError, type PlanGateErrorCode } from "@t3tools/ft3-board/planning";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -170,6 +171,34 @@ export const classifierFake = (classify?: (body: string) => MailClassification |
 export const settingsLayer = (overrides: Partial<{ readonly classifierThreshold: number }> = {}) =>
   Layer.succeed(MailSettingsService, { ...DEFAULT_MAIL_SETTINGS, ...overrides });
 
+/** A plan gate fake: records checks and records unless told to refuse. */
+export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
+  const checks: Array<{ readonly cardId: string; readonly roleId: string }> = [];
+  const records: Array<{ readonly cardId: string; readonly phase: string }> = [];
+  const layer = Layer.succeed(
+    PlanGate,
+    PlanGate.of({
+      check: (input) =>
+        refuseCode === undefined
+          ? Effect.sync(() => {
+              checks.push({ cardId: input.cardId, roleId: input.roleId });
+            })
+          : Effect.fail(
+              new PlanGateError({
+                code: refuseCode,
+                cardId: input.cardId,
+                roleId: input.roleId,
+              }),
+            ),
+      recordPlanLetter: (input) =>
+        Effect.sync(() => {
+          records.push({ cardId: input.cardId, phase: input.phase });
+        }),
+    }),
+  );
+  return { layer, checks, records };
+};
+
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
 export const mailHarness = (
   options: {
@@ -179,12 +208,14 @@ export const mailHarness = (
     readonly launchFail?: ReadonlySet<string>;
     readonly classify?: (body: string) => MailClassification | null;
     readonly classifierThreshold?: number;
+    readonly planRefuse?: PlanGateErrorCode;
   } = {},
 ) => {
   const routing = routingFake(options);
   const evidence = policyEvidenceFake();
   const launcher = launcherFake(options.launchFail);
   const classifier = classifierFake(options.classify);
+  const gate = planGateFake(options.planRefuse);
   const layer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -194,6 +225,7 @@ export const mailHarness = (
         evidence.layer,
         launcher.layer,
         classifier.layer,
+        gate.layer,
         normalServicePolicyLayer,
         options.classifierThreshold === undefined
           ? settingsLayer()
@@ -208,5 +240,7 @@ export const mailHarness = (
     cardSnapshots: evidence.cardSnapshots,
     launches: launcher.launches,
     classified: classifier.calls,
+    planChecks: gate.checks,
+    planRecords: gate.records,
   };
 };

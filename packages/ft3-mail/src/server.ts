@@ -10,9 +10,11 @@ import {
   sqlPolicyUsageRecorderLayer,
 } from "@t3tools/ft3-policies/routing";
 import { layer as featureGateLayer, PolicyChangeTracker } from "@t3tools/ft3-policies/server";
+import { planGateLayer, planServiceLayer } from "@t3tools/ft3-board/planning";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
+import { boardMailFactsLayer } from "./boardMailFacts.ts";
 import { layerNoopClassifier } from "./classifier.ts";
 import { documentsWriteFactsLayer } from "./documentsWrite.ts";
 import { layer as repositoryLayer } from "./repository.ts";
@@ -49,6 +51,20 @@ const routingLayer = routingPolicyServiceLayer().pipe(
 // The service validates explicit model overrides against the normal-service rule.
 const overrideLayer = normalServicePolicyLayer;
 
+// PlanService and DocsService come from the host composition, which already
+// merges the docs runtime and the upstream server layers for the board RPCs.
+// The feature gate is fed here, so the parallel merge below stays
+// dependency-free.
+export { boardMailFactsLayer };
+
+// Plan facts come from the repository beside the service, so the board never
+// queries mail tables directly; without mail tables the facts read empty.
+const mailFacts = boardMailFactsLayer.pipe(Layer.provide(repositoryLayer));
+const plan = planGateLayer.pipe(
+  Layer.provide(planServiceLayer.pipe(Layer.provide(mailFacts))),
+  Layer.provide(featureGateLayer),
+);
+
 export const layer = serviceLayer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -59,6 +75,7 @@ export const layer = serviceLayer.pipe(
       policyEvidenceLayer,
       layerNoopClassifier,
       mailSettingsLayer,
+      plan,
     ),
   ),
 );

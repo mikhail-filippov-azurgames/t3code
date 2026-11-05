@@ -1,6 +1,8 @@
 import { ModelSelection, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
+import * as PlanningContracts from "@t3tools/ft3-board/planning-contracts";
+
 import {
   MailDelivery,
   MailLetter,
@@ -34,6 +36,15 @@ export const MailSpecificMcpFailureCode = Schema.Literals([
   "model_unavailable",
   "idempotency_conflict",
   "invalid_request",
+  "plan_not_found",
+  "plan_transition_invalid",
+  "plan_review_rounds_exhausted",
+  "plan_not_accepted",
+  "plan_changed",
+  "plan_phase_required",
+  "plan_phase_invalid",
+  "plan_step_unknown",
+  "planning_disabled",
   "mail_disabled_notice",
   "thread_credential_required",
   "internal",
@@ -108,6 +119,17 @@ export const MailTaskCreateResult = Schema.Struct({
 });
 export type MailTaskCreateResult = typeof MailTaskCreateResult.Type;
 
+/**
+ * The plan payload of a letter (design §9.1): the phase it belongs to, the
+ * step it executes, and the cited plan version. Absent on plain letters.
+ */
+export const MailSendPlan = Schema.Struct({
+  phase: PlanningContracts.PlanPhase,
+  step: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
+  citation: Schema.optional(PlanningContracts.PlanCitation),
+});
+export type MailSendPlan = typeof MailSendPlan.Type;
+
 export const MailSendInput = Schema.Struct({
   taskId: Schema.String.check(Schema.isMinLength(1)),
   to: Schema.String.check(Schema.isMinLength(1)),
@@ -115,6 +137,7 @@ export const MailSendInput = Schema.Struct({
   body: MailBody,
   replyToLetterId: Schema.optional(Schema.String),
   clientRequestId: MailClientRequestId,
+  plan: Schema.optional(MailSendPlan),
 });
 export type MailSendInput = typeof MailSendInput.Type;
 

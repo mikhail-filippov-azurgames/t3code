@@ -18,6 +18,7 @@ import {
   launcherFake,
   mailHarness,
   migrateMail,
+  planGateFake,
   policyEvidenceFake,
   routingFake,
   settingsLayer,
@@ -592,6 +593,131 @@ it.effect(
   },
 );
 
+it.effect("routes plan letters by phase and records the gate calls", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const created = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-team",
+      title: "Plan work",
+      brief: "Write the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }, { role: "architect" }],
+    });
+    const taskId = created.task.taskId;
+    const draft = (to: string, clientRequestId: string) =>
+      mail.sendLetter({
+        callerThreadId: LEAD,
+        taskId,
+        to,
+        kind: "request",
+        body: "Draft it.",
+        clientRequestId,
+        plan: { phase: "draft" },
+      });
+    assert.equal(
+      yield* refusal(draft("role:architect", "request:draft-wrong")),
+      "plan_phase_invalid",
+    );
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: LEAD,
+          taskId,
+          to: "role:planner",
+          kind: "request",
+          body: "Review it.",
+          clientRequestId: "request:review-wrong",
+          plan: { phase: "review" },
+        }),
+      ),
+      "plan_phase_invalid",
+    );
+    const sent = yield* draft("role:planner", "request:draft");
+    assert.equal(sent.letter.planPhase, "draft");
+    assert.deepStrictEqual(harness.planChecks, [{ cardId: "card:one", roleId: "planner" }]);
+    assert.deepStrictEqual(harness.planRecords, [{ cardId: "card:one", phase: "draft" }]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("refuses plan letters without a board card and maps gate refusals", () => {
+  const harness = mailHarness({ planRefuse: "plan_not_accepted" });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const unlinked = yield* teamOf([{ role: "implementation" }], "request:unlinked");
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: LEAD,
+          taskId: unlinked.task.taskId,
+          to: "role:implementation",
+          kind: "request",
+          body: "Build it.",
+          clientRequestId: "request:implement-unlinked",
+          plan: { phase: "implement", step: "P1" },
+        }),
+      ),
+      "invalid_request",
+    );
+    const linked = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-team",
+      title: "Plan work",
+      brief: "Build it.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "implementation" }],
+    });
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: LEAD,
+          taskId: linked.task.taskId,
+          to: "role:implementation",
+          kind: "request",
+          body: "Build it.",
+          clientRequestId: "request:implement",
+          plan: { phase: "implement", step: "P1" },
+        }),
+      ),
+      "plan_not_accepted",
+    );
+    assert.deepStrictEqual(harness.planRecords, []);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("records the implement letter at send time", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const created = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-team",
+      title: "Plan work",
+      brief: "Build it.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "implementation" }],
+    });
+    const sent = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Build P1.",
+      clientRequestId: "request:implement",
+      plan: { phase: "implement", step: "P1" },
+    });
+    assert.equal(sent.letter.planPhase, "implement");
+    assert.deepStrictEqual(harness.planRecords, [{ cardId: "card:one", phase: "implement" }]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it("matches the kind matrix for the system, the lead and participants", () => {
   assert.isTrue(mailKindAllowed({ kind: "system" }, "lead", "blocked"));
   assert.isFalse(mailKindAllowed({ kind: "system" }, "lead", "request"));
@@ -637,6 +763,7 @@ it.effect("reads the timeline while the mail feature is off", () => {
           classifierFake().layer,
           normalServicePolicyLayer,
           settingsLayer(),
+          planGateFake().layer,
         ),
       ),
       Layer.provideMerge(databaseLayer),

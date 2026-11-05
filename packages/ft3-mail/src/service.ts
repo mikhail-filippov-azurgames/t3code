@@ -24,6 +24,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { ModelSelection } from "@t3tools/contracts";
+import { PlanGate, PlanGateError, type PlanError } from "@t3tools/ft3-board/planning";
+import type { PlanCitation, PlanPhase } from "@t3tools/ft3-board/planning-contracts";
 import type {
   MailDelivery,
   MailIsolation,
@@ -72,6 +74,15 @@ export const MailServiceErrorCode = Schema.Literals([
   "model_unavailable",
   "idempotency_conflict",
   "invalid_request",
+  "plan_not_found",
+  "plan_transition_invalid",
+  "plan_review_rounds_exhausted",
+  "plan_not_accepted",
+  "plan_changed",
+  "plan_phase_required",
+  "plan_phase_invalid",
+  "plan_step_unknown",
+  "planning_disabled",
 ]);
 export type MailServiceErrorCode = typeof MailServiceErrorCode.Type;
 
@@ -185,6 +196,12 @@ export interface MailTaskCreated {
   readonly members: ReadonlyArray<MailMemberRoute>;
 }
 
+export interface MailPlanSend {
+  readonly phase: PlanPhase;
+  readonly step?: string | undefined;
+  readonly citation?: PlanCitation | undefined;
+}
+
 export interface SendMailLetterInput {
   readonly callerThreadId: string;
   readonly taskId: string;
@@ -193,6 +210,7 @@ export interface SendMailLetterInput {
   readonly body: string;
   readonly replyToLetterId?: string | null;
   readonly clientRequestId: string;
+  readonly plan?: MailPlanSend | undefined;
 }
 
 export interface MailLetterNoCandidate extends MailNoCandidate {
@@ -460,6 +478,39 @@ const make = Effect.gen(function* () {
   const classifier = yield* MailKindClassifier;
   const mailSettings = yield* MailSettingsService;
   const normalService = yield* NormalServicePolicy;
+  const planGate = yield* PlanGate;
+
+  const requirePlanning = gate
+    .require("planning")
+    .pipe(
+      Effect.mapError(
+        (error) => new MailServiceError({ code: "planning_disabled", reason: error.message }),
+      ),
+    );
+
+  const planFailure = (failure: PlanGateError | PlanError): MailServiceError => {
+    if (failure._tag === "PlanGateError") {
+      return new MailServiceError({ code: failure.code, reason: failure.message });
+    }
+    switch (failure.code) {
+      case "plan_not_found":
+        return new MailServiceError({ code: "plan_not_found", reason: failure.message });
+      case "plan_transition_invalid":
+        return new MailServiceError({ code: "plan_transition_invalid", reason: failure.message });
+      case "plan_review_rounds_exhausted":
+        return new MailServiceError({
+          code: "plan_review_rounds_exhausted",
+          reason: failure.message,
+        });
+      case "planning_disabled":
+        return new MailServiceError({ code: "planning_disabled", reason: failure.message });
+      case "plan_document_failed":
+      case "plan_store_failed":
+        return new MailServiceError({ code: "invalid_request", reason: failure.message });
+      default:
+        return new MailServiceError({ code: "invalid_request", reason: failure.message });
+    }
+  };
 
   const requireMail = gate
     .require("mail")
@@ -842,6 +893,50 @@ const make = Effect.gen(function* () {
         );
       }
     }
+    const plan = input.plan ?? undefined;
+    if (plan !== undefined) {
+      yield* requirePlanning;
+      if (task.cardId === null) {
+        return yield* refuse(
+          "invalid_request",
+          "A plan letter needs a mail task linked to a board card.",
+        );
+      }
+      if (recipient.kind === "role") {
+        if (plan.phase === "draft" && recipient.role !== "planner") {
+          return yield* refuse(
+            "plan_phase_invalid",
+            `A draft letter goes to the planner, not to role:${recipient.role}.`,
+          );
+        }
+        if (plan.phase === "review" && recipient.role !== "architect") {
+          return yield* refuse(
+            "plan_phase_invalid",
+            `A review letter goes to architect members, not to role:${recipient.role}.`,
+          );
+        }
+      }
+      yield* planGate
+        .check({
+          cardId: task.cardId,
+          roleId: recipient.kind === "role" ? recipient.role : recipient.kind,
+          phase: plan.phase,
+          ...(plan.step === undefined ? {} : { step: plan.step }),
+          ...(plan.citation === undefined
+            ? {}
+            : {
+                citation: {
+                  planDocId: plan.citation.planDocId,
+                  planSha256: plan.citation.planSha256,
+                  ...(plan.citation.planStep === undefined
+                    ? {}
+                    : { planStep: plan.citation.planStep }),
+                },
+              }),
+          isolation: task.isolation,
+        })
+        .pipe(Effect.mapError(planFailure));
+    }
     const replyToLetterId = input.replyToLetterId ?? null;
     if (replyToLetterId !== null) {
       const parent = yield* repository.getLetter(replyToLetterId);
@@ -882,10 +977,10 @@ const make = Effect.gen(function* () {
         body: input.body,
         replyToLetterId,
         sourceLetterId: null,
-        planPhase: null,
-        planStep: null,
-        planSha256: null,
-        planDocId: null,
+        planPhase: plan?.phase ?? null,
+        planStep: plan?.step ?? plan?.citation?.planStep ?? null,
+        planSha256: plan?.citation?.planSha256 ?? null,
+        planDocId: plan?.citation?.planDocId ?? null,
         classifierKind: classified.classifierKind,
         classifierConfidence: classified.classifierConfidence,
         kindDisputed: classified.kindDisputed,
@@ -903,6 +998,11 @@ const make = Effect.gen(function* () {
             ),
         }),
       );
+    if (plan !== undefined && task.cardId !== null) {
+      yield* planGate
+        .recordPlanLetter({ cardId: task.cardId, phase: plan.phase })
+        .pipe(Effect.mapError(planFailure));
+    }
     // The lead's letter starts a threadless member; a repeat reuses the same thread.
     // A member whose route is null gets one when the letter is resent after the
     // policy is fixed; an overridden member launches on its override instead.

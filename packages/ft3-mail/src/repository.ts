@@ -699,6 +699,20 @@ export class MailRepository extends Context.Service<
     readonly listTimeline: (
       input: MailTimelineInput,
     ) => Effect.Effect<ReadonlyArray<MailTimelineEntry>, MailRepositoryError>;
+    /**
+     * Card ids with an implement letter on their mail task, bounded by the
+     * selected cards. Answers the board's implement-started backfill through
+     * the tasks' card link; missing mail tables read as no letters.
+     */
+    readonly tasksWithImplementLetters: (
+      cardIds: ReadonlyArray<string>,
+    ) => Effect.Effect<ReadonlySet<string>, MailRepositoryError>;
+    /**
+     * Whether the card's open task has an open mail round (closed_at NULL) or
+     * a live delivery (pending, delivered or read: sent but not answered).
+     * Closed tasks never count, and missing mail tables read as no open work.
+     */
+    readonly hasOpenMailWork: (cardId: string) => Effect.Effect<boolean, MailRepositoryError>;
     readonly purgeFinishedTasks: (input: {
       readonly before: string;
       readonly limit: number;
@@ -1481,6 +1495,48 @@ const make = Effect.gen(function* () {
             letter: toLetter(row),
             deliveries: byLetter.get(row.letterId) ?? [],
           }));
+        }),
+      ),
+    ),
+    tasksWithImplementLetters: Effect.fn("MailRepository.tasksWithImplementLetters")((cardIds) =>
+      mapError("tasksWithImplementLetters")(
+        Effect.gen(function* () {
+          if (cardIds.length === 0) return new Set<string>();
+          const tables = yield* sql<{ readonly name: string }>`
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name IN ('ft3_mail_tasks', 'ft3_mail_letters')`;
+          if (tables.length < 2) return new Set<string>();
+          const rows = yield* sql<{ readonly card_id: string }>`
+            SELECT t.card_id
+            FROM ft3_mail_tasks AS t
+            WHERE t.card_id IN ${sql.in([...cardIds])} AND EXISTS (
+              SELECT 1 FROM ft3_mail_letters AS l
+              WHERE l.task_id = t.task_id AND l.plan_phase = 'implement'
+            )`;
+          return new Set(rows.map((row) => row.card_id));
+        }),
+      ),
+    ),
+    hasOpenMailWork: Effect.fn("MailRepository.hasOpenMailWork")((cardId: string) =>
+      mapError("hasOpenMailWork")(
+        Effect.gen(function* () {
+          const tables = yield* sql<{ readonly name: string }>`
+            SELECT name FROM sqlite_master
+            WHERE type = 'table'
+              AND name IN ('ft3_mail_tasks', 'ft3_mail_rounds', 'ft3_mail_deliveries')`;
+          if (tables.length < 3) return false;
+          const rows = yield* sql<{ readonly open: number }>`
+            SELECT 1 AS "open" FROM ft3_mail_tasks AS t
+            WHERE t.card_id = ${cardId} AND t.status = 'open' AND (
+              EXISTS (
+                SELECT 1 FROM ft3_mail_rounds AS r
+                WHERE r.task_id = t.task_id AND r.closed_at IS NULL
+              ) OR EXISTS (
+                SELECT 1 FROM ft3_mail_deliveries AS d
+                WHERE d.task_id = t.task_id AND d.state IN ('pending', 'delivered', 'read')
+              )
+            ) LIMIT 1`;
+          return rows.length > 0;
         }),
       ),
     ),

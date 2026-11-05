@@ -39,6 +39,7 @@ import {
   gateLayer,
   launcherFake,
   migrateMail,
+  planGateFake,
   policyEvidenceFake,
   routingFake,
   settingsLayer,
@@ -149,6 +150,7 @@ function fixture(enabled = true) {
       });
     }),
   );
+  const gate = planGateFake();
   const serviceLayer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -159,6 +161,7 @@ function fixture(enabled = true) {
         classifierFake().layer,
         settingsLayer(),
         normalServicePolicyLayer,
+        gate.layer,
       ),
     ),
   );
