@@ -31,6 +31,9 @@ export function mailTaskGroups(
 /** Letters older than a full page stay reachable on the server; the tab caps at this many. */
 export const MAIL_TIMELINE_PAGE_LIMIT = 50;
 
+/** The tab asks for at most this many tasks; hitting the cap shows a note. */
+export const MAIL_TASKS_PAGE_LIMIT = 50;
+
 export function mailLetterSenderLabel(letter: MailLetter, task: MailTask): string {
   if (letter.senderThreadId === task.createdByThreadId) return "lead";
   if (letter.senderThreadId === "system") return "system";

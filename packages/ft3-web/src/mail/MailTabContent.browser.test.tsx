@@ -222,6 +222,17 @@ describe("BoardMailTab", () => {
     expect(screen.container.querySelectorAll("[data-mail-letter-id]").length).toBe(6);
   });
 
+  it("shows a note when the task page hits its cap", async () => {
+    using state = setup({
+      tasks: Array.from({ length: 50 }, (_, index) =>
+        task({ taskId: `task:${index}`, title: `Task ${index}` }),
+      ),
+    });
+    await using screen = await renderTab(state);
+
+    await expect.element(screen.getByText("Showing the latest 50 mail tasks.")).toBeVisible();
+  });
+
   it("shows a read-only note with a Policies link when mail is off", async () => {
     using state = setup({ tasks: [task()], snapshot: mailDisabledSnapshot });
     await using screen = await renderTab(state);

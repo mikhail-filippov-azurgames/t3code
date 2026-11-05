@@ -17,6 +17,7 @@ import {
 } from "../chat/openContextState.ts";
 import { policiesEnvironment } from "../policies/state.ts";
 import {
+  MAIL_TASKS_PAGE_LIMIT,
   MAIL_TIMELINE_PAGE_LIMIT,
   mailDeliveryBadgeVariant,
   mailLetterSenderLabel,
@@ -75,6 +76,11 @@ export function BoardMailTab(props: {
           .
         </p>
       )}
+      {tasks.length >= MAIL_TASKS_PAGE_LIMIT ? (
+        <p className="text-[10px] text-muted-foreground">
+          Showing the latest {MAIL_TASKS_PAGE_LIMIT} mail tasks.
+        </p>
+      ) : null}
       <ol className="space-y-3">
         {groups.map((group) => (
           <MailTaskGroupItem
