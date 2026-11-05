@@ -172,10 +172,17 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       yield* dead();
       return;
     }
+    const sender =
+      letter.senderThreadId === task.createdByThreadId
+        ? "lead"
+        : letter.senderThreadId === "system"
+          ? "system"
+          : ((yield* repository.findParticipantByThread(letter.senderThreadId))?.member.roleId ??
+            null);
     yield* wake({
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
-      text: `New ${letter.kind} letter in mail task "${task.title}":\n\n${letter.body}`,
+      text: `New ${letter.kind} letter${sender === null ? "" : ` from ${sender}`} in mail task "${task.title}":\n\n${letter.body}`,
       summary: `Mail ${letter.kind} letter in "${task.title}"`,
       ...(modelSelection === undefined ? {} : { modelSelection }),
     });

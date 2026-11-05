@@ -289,10 +289,38 @@ it.effect("drains a recorded wake and marks the delivery on the next tick", () =
     assert.equal(wake.threadId, childId);
     assert.deepStrictEqual(wake.dispatchMode, { type: "queue_after_active" });
     assert.include(wake.text, "Start.");
+    assert.include(wake.text, 'New request letter from lead in mail task "Refactor":');
     const repository = yield* MailRepository;
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "delivered");
     assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("names the participant role in a wake on the lead thread", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: "Done.",
+      clientRequestId: "request:answer",
+    });
+    assert.isTrue(sent.created);
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 1);
+    const wake = harness.dispatched[0]!;
+    assert.equal(wake.threadId, leadId);
+    assert.include(wake.text, 'New answer letter from implementation in mail task "Refactor":');
+    assert.include(wake.text, "Done.");
   }).pipe(Effect.provide(harness.layer));
 });
 
