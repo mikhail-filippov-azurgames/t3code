@@ -92,6 +92,12 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
                 ...(input.responseBudgetSeconds === undefined
                   ? {}
                   : { responseBudgetSeconds: input.responseBudgetSeconds }),
+                ...(input.cardId === undefined ? {} : { cardId: input.cardId }),
+                ...(input.isolation === undefined ? {} : { isolation: input.isolation }),
+                ...(input.runtimeMode === undefined ? {} : { runtimeMode: input.runtimeMode }),
+                ...(input.interactionMode === undefined
+                  ? {}
+                  : { interactionMode: input.interactionMode }),
               })
               .pipe(Effect.mapError(toMcpFailure));
           }),

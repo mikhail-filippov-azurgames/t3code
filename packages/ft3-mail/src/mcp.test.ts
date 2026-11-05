@@ -98,7 +98,12 @@ const structured = (result: McpSchema.CallToolResult) => {
 };
 
 const taskOf = (result: Record<string, unknown>) =>
-  result.task as { readonly taskId: string; readonly title: string };
+  result.task as {
+    readonly taskId: string;
+    readonly title: string;
+    readonly cardId: string | null;
+    readonly isolation: string | null;
+  };
 const letterOf = (result: Record<string, unknown>) =>
   result.letter as { readonly letterId: string; readonly body: string };
 const memberOf = (result: Record<string, unknown>) =>
@@ -113,6 +118,8 @@ describe("mail MCP tools", () => {
           title: "Refactor",
           brief: "Split the module.",
           level: "medium",
+          cardId: "card:one",
+          isolation: "worktree",
           members: [{ role: "implementation" }],
           clientRequestId: "request:team",
         }),
@@ -120,6 +127,8 @@ describe("mail MCP tools", () => {
       assert.isTrue(created.created);
       const task = taskOf(created);
       assert.equal(task.title, "Refactor");
+      assert.equal(task.cardId, "card:one");
+      assert.equal(task.isolation, "worktree");
       const member = memberOf(created);
 
       const sent = structured(

@@ -1,10 +1,11 @@
-import { ModelSelection, OrchestratorMcpFailure } from "@t3tools/contracts";
+import { ModelSelection, OrchestratorMcpFailure, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import * as PlanningContracts from "@t3tools/ft3-board/planning-contracts";
 
 import {
   MailDelivery,
+  MailIsolation,
   MailLetter,
   MailLetterKind,
   MailLevel,
@@ -91,6 +92,10 @@ export const MailTaskCreateInput = Schema.Struct({
   responseBudgetSeconds: Schema.optional(Schema.Number),
   members: Schema.Array(MailMemberRequestInput).check(Schema.isMinLength(1)),
   clientRequestId: MailClientRequestId,
+  cardId: Schema.optional(TrimmedNonEmptyString),
+  isolation: Schema.optional(MailIsolation),
+  runtimeMode: Schema.optional(Schema.String),
+  interactionMode: Schema.optional(Schema.String),
 });
 export type MailTaskCreateInput = typeof MailTaskCreateInput.Type;
 

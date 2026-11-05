@@ -15,7 +15,7 @@ const dependencies = [
 const offNotice = " Refused with mail_disabled_notice while the mail feature is off.";
 
 const mailTaskCreate = Tool.make("mail_task_create", {
-  description: `Start a mail task: the calling thread becomes the lead, and each member is routed to a participant thread.${offNotice}`,
+  description: `Start a mail task: the calling thread becomes the lead, and each member is routed to a participant thread. Set cardId to the board card for plan letters; prototype needs isolation worktree.${offNotice}`,
   parameters: Contracts.MailTaskCreateInput,
   success: Contracts.MailTaskCreateResult,
   failure: Contracts.MailMcpFailure,
