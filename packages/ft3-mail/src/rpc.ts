@@ -22,6 +22,8 @@ const isMailServiceError = Schema.is(MailServiceError);
 
 /** The board panel lists at most this many mail tasks per refresh. */
 const MAIL_TASKS_MAX_LIMIT = 50;
+/** A batched task page carries at most this many letters per task. */
+const MAIL_TASKS_MAX_LETTERS = 100;
 
 const toMcpFailure = (
   error: MailServiceError | MailRepositoryError | MailIdempotencyConflict,
@@ -85,6 +87,20 @@ export const mailRpcHandlers = {
         message: `A mail tasks limit must be 1..${MAIL_TASKS_MAX_LIMIT}.`,
       });
     }
+    let lettersPerTask: number | null = null;
+    if (input.lettersPerTask !== undefined) {
+      if (
+        !Number.isInteger(input.lettersPerTask) ||
+        input.lettersPerTask < 1 ||
+        input.lettersPerTask > MAIL_TASKS_MAX_LETTERS
+      ) {
+        return yield* new MailMcpFailure({
+          code: "invalid_request",
+          message: `A lettersPerTask limit must be 1..${MAIL_TASKS_MAX_LETTERS}.`,
+        });
+      }
+      lettersPerTask = input.lettersPerTask;
+    }
     const repository = yield* MailRepository;
     const tasks = yield* repository
       .listTasksByCardIds({ cardIds: input.cardIds, limit })
@@ -93,6 +109,19 @@ export const mailRpcHandlers = {
           (error) => new MailMcpFailure({ code: "internal", message: error.message }),
         ),
       );
-    return { tasks };
+    const letters =
+      lettersPerTask === null
+        ? undefined
+        : Object.fromEntries(
+            yield* Effect.forEach(tasks, (task) =>
+              repository.listTimeline({ taskId: task.taskId, limit: lettersPerTask }).pipe(
+                Effect.mapError(
+                  (error) => new MailMcpFailure({ code: "internal", message: error.message }),
+                ),
+                Effect.map((entries) => [task.taskId, entries] as const),
+              ),
+            ),
+          );
+    return { tasks, ...(letters === undefined ? {} : { letters }) };
   }),
 };

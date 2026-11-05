@@ -54,8 +54,7 @@ import {
 import { useCoordinatorSummaryHistoryLoader } from "./useCoordinatorSummaryHistoryLoader";
 import { clearBoardCardMentionCache } from "../chat/boardCardMentions";
 import { boardEnvironment } from "./state";
-import { BoardMailTab } from "../mail/MailTabContent.tsx";
-import { mailEnvironment } from "../mail/state.ts";
+import { BoardMailTab, useBoardMailTasks } from "../mail/MailTabContent.tsx";
 
 type ChatPanelTab = "cards" | "history" | "mail";
 
@@ -138,12 +137,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
     () => (boardList.data?.cards ?? []).map((card) => String(card.cardId)),
     [boardList.data],
   );
-  const mailTasks = useEnvironmentQuery(
-    boardCardIds.length > 0
-      ? mailEnvironment.tasks({ environmentId, input: { cardIds: boardCardIds } })
-      : null,
-  );
-  const [mailRefreshSeq, setMailRefreshSeq] = useState(0);
+  const mailTasks = useBoardMailTasks(environmentId, boardCardIds);
   const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
   const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
   const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
@@ -338,7 +332,6 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
   const refreshMail = useCallback(() => {
     void boardList.refresh();
     void mailTasks.refresh();
-    setMailRefreshSeq((seq) => seq + 1);
   }, [boardList, mailTasks]);
 
   const refreshActiveTab =
@@ -413,11 +406,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
         </div>
       ) : activeTab === "mail" ? (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <BoardMailTab
-            threadRef={props.threadRef}
-            cardIds={boardCardIds}
-            refreshSeq={mailRefreshSeq}
-          />
+          <BoardMailTab threadRef={props.threadRef} cardIds={boardCardIds} />
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto p-3">

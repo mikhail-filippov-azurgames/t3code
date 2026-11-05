@@ -185,7 +185,8 @@ const stubs = {
   [FT3_WS_METHODS.policiesBrowseServerDirectory]: () =>
     Effect.succeed({ parent: null, directories: [], files: [], truncated: false }),
   [FT3_WS_METHODS.mailTimeline]: () => Effect.succeed({ task: mailTask, entries: [] }),
-  [FT3_WS_METHODS.mailTasks]: () => Effect.succeed({ tasks: [mailTask] }),
+  [FT3_WS_METHODS.mailTasks]: () =>
+    Effect.succeed({ tasks: [mailTask], letters: { "task:timeline": [] } }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -327,8 +328,11 @@ describe("FT3 RPC authorization", () => {
         task: mailTask,
         entries: [],
       });
-      expect(yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"] })).toEqual({
+      expect(
+        yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"], lettersPerTask: 10 }),
+      ).toEqual({
         tasks: [mailTask],
+        letters: { "task:timeline": [] },
       });
       expect(yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" })).toEqual({
         status: "not_found",

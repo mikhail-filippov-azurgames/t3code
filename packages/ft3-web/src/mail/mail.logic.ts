@@ -13,15 +13,19 @@ export interface MailTaskGroup {
 }
 
 /**
- * Groups one `mail.tasks` row with its `mail.timeline` page: the timeline
- * arrives newest-first and flips to chronological so a task reads like a
- * conversation. Tasks keep the server's newest-first order in the tab list.
+ * Groups the batched `mail.tasks` page for the tab: tasks stay in the
+ * server's newest-first order, and each task's letters flip from the
+ * timeline's newest-first to chronological so a task reads like a
+ * conversation. Tasks without a letters entry render an empty thread.
  */
-export function mailTaskGroup(
-  task: MailTask,
-  entries: ReadonlyArray<MailTimelineEntry>,
-): MailTaskGroup {
-  return { task, entries: [...entries].reverse() };
+export function mailTaskGroups(
+  tasks: ReadonlyArray<MailTask>,
+  letters: Readonly<Record<string, ReadonlyArray<MailTimelineEntry>>>,
+): ReadonlyArray<MailTaskGroup> {
+  return tasks.map((task) => {
+    const entries = letters[task.taskId];
+    return { task, entries: entries === undefined ? [] : [...entries].reverse() };
+  });
 }
 
 /** Letters older than a full page stay reachable on the server; the tab caps at this many. */

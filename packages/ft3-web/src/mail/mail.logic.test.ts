@@ -6,7 +6,7 @@ import {
   mailLetterSenderLabel,
   mailPlanPhaseLabel,
   mailRecipientLabel,
-  mailTaskGroup,
+  mailTaskGroups,
 } from "./mail.logic.ts";
 
 const task: MailTask = {
@@ -60,22 +60,24 @@ const entry = (overrides: Partial<MailTimelineEntry> = {}): MailTimelineEntry =>
   ...overrides,
 });
 
-describe("mailTaskGroup", () => {
-  it("flips the newest-first timeline to chronological order", () => {
+describe("mailTaskGroups", () => {
+  it("flips the newest-first timelines to chronological order under each task", () => {
     const first = entry({ letter: letter({ letterId: "letter:1", sequence: 1 }) });
     const second = entry({ letter: letter({ letterId: "letter:2", sequence: 2 }) });
     const third = entry({ letter: letter({ letterId: "letter:3", sequence: 3 }) });
-    const group = mailTaskGroup(task, [third, second, first]);
-    expect(group.task).toBe(task);
-    expect(group.entries.map((item) => item.letter.letterId)).toEqual([
+    const groups = mailTaskGroups([task], { "task:one": [third, second, first] });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.task).toBe(task);
+    expect(groups[0]!.entries.map((item) => item.letter.letterId)).toEqual([
       "letter:1",
       "letter:2",
       "letter:3",
     ]);
   });
 
-  it("keeps an empty timeline empty", () => {
-    expect(mailTaskGroup(task, []).entries).toEqual([]);
+  it("keeps tasks without letters as empty threads", () => {
+    const groups = mailTaskGroups([task], {});
+    expect(groups[0]!.entries).toEqual([]);
   });
 });
 

@@ -26,11 +26,18 @@ export type MailTimelineRpcSuccess = typeof MailTimelineRpcSuccess.Type;
 export const MailTasksRpcInput = Schema.Struct({
   cardIds: Schema.Array(Schema.String.check(Schema.isMinLength(1))),
   limit: Schema.optional(Schema.Number),
+  /**
+   * When set, each returned task comes with its most recent letters (newest
+   * first, bounded by this number), so the board Mail tab needs one request
+   * for the whole page instead of one timeline request per task.
+   */
+  lettersPerTask: Schema.optional(Schema.Number),
 });
 export type MailTasksRpcInput = typeof MailTasksRpcInput.Type;
 
 export const MailTasksRpcSuccess = Schema.Struct({
   tasks: Schema.Array(MailTask),
+  letters: Schema.optional(Schema.Record(Schema.String, Schema.Array(MailTimelineEntry))),
 });
 export type MailTasksRpcSuccess = typeof MailTasksRpcSuccess.Type;
 

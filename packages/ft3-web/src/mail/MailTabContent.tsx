@@ -2,7 +2,7 @@ import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import type { MailTask, MailTimelineEntry } from "@t3tools/ft3-mail/contracts";
 import { Link } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { useCallback, useEffect } from "react";
+import { useCallback } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -22,26 +22,21 @@ import {
   mailLetterSenderLabel,
   mailPlanPhaseLabel,
   mailRecipientLabel,
-  mailTaskGroup,
+  mailTaskGroups,
 } from "./mail.logic.ts";
 import { mailEnvironment } from "./state.ts";
 
 /**
- * The board chat panel's Mail tab: one request for the board's mail tasks and
- * one timeline request per task, so a long letter count never means per-letter
- * traffic. With the mail feature off the same page stays as read-only history.
+ * The board chat panel's Mail tab. One `mail.tasks` request carries the whole
+ * page (tasks plus their recent letters); doc chips resolve only on click,
+ * never per row on mount. With mail off the page stays as read-only history.
  */
 export function BoardMailTab(props: {
   readonly threadRef: ScopedThreadRef;
   readonly cardIds: ReadonlyArray<string>;
-  readonly refreshSeq: number;
 }) {
   const { environmentId } = props.threadRef;
-  const tasksQuery = useEnvironmentQuery(
-    props.cardIds.length > 0
-      ? mailEnvironment.tasks({ environmentId, input: { cardIds: props.cardIds } })
-      : null,
-  );
+  const tasksQuery = useBoardMailTasks(environmentId, props.cardIds);
   const snapshotQuery = useEnvironmentQuery(
     policiesEnvironment.snapshot({ environmentId, input: {} }),
   );
@@ -68,6 +63,7 @@ export function BoardMailTab(props: {
   if (tasks.length === 0) {
     return <p className="text-xs text-muted-foreground">No mail tasks for this board yet.</p>;
   }
+  const groups = mailTaskGroups(tasks, tasksQuery.data?.letters ?? {});
   return (
     <div className="space-y-3">
       {mailEnabled ? null : (
@@ -80,13 +76,12 @@ export function BoardMailTab(props: {
         </p>
       )}
       <ol className="space-y-3">
-        {tasks.map((task) => (
+        {groups.map((group) => (
           <MailTaskGroupItem
-            key={task.taskId}
+            key={group.task.taskId}
             environmentId={environmentId}
             threadRef={props.threadRef}
-            task={task}
-            refreshSeq={props.refreshSeq}
+            group={group}
           />
         ))}
       </ol>
@@ -94,25 +89,25 @@ export function BoardMailTab(props: {
   );
 }
 
+/** The tab's single query; the panel subscribes to the same atom for content and refresh. */
+export function useBoardMailTasks(environmentId: EnvironmentId, cardIds: ReadonlyArray<string>) {
+  return useEnvironmentQuery(
+    cardIds.length > 0
+      ? mailEnvironment.tasks({
+          environmentId,
+          input: { cardIds, lettersPerTask: MAIL_TIMELINE_PAGE_LIMIT },
+        })
+      : null,
+  );
+}
+
 function MailTaskGroupItem(props: {
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
-  readonly task: MailTask;
-  readonly refreshSeq: number;
+  readonly group: ReturnType<typeof mailTaskGroups>[number];
 }) {
-  const { environmentId, task } = props;
-  const timelineQuery = useEnvironmentQuery(
-    mailEnvironment.timeline({
-      environmentId,
-      input: { taskId: task.taskId, limit: MAIL_TIMELINE_PAGE_LIMIT },
-    }),
-  );
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the panel refresh button revalidates this task's timeline page against the registry
-  useEffect(() => {
-    if (props.refreshSeq > 0) void timelineQuery.refresh();
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- only the bump matters, not the query identity
-  }, [props.refreshSeq]);
-  const group = mailTaskGroup(task, timelineQuery.data?.entries ?? []);
+  const { group } = props;
+  const { task, entries } = group;
   return (
     <li className="rounded-lg border border-border bg-card p-3" data-mail-task-id={task.taskId}>
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -121,38 +116,22 @@ function MailTaskGroupItem(props: {
           {task.status}
         </Badge>
       </div>
-      {timelineQuery.isPending && timelineQuery.data === null ? (
-        <p role="status" className="mt-2 text-xs text-muted-foreground">
-          Loading letters…
-        </p>
-      ) : timelineQuery.error !== null ? (
-        <div role="alert" className="mt-2 space-y-2 text-xs">
-          <p>Could not load the letter timeline.</p>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => void timelineQuery.refresh()}
-          >
-            Retry
-          </Button>
-        </div>
-      ) : group.entries.length === 0 ? (
+      {entries.length === 0 ? (
         <p className="mt-2 text-xs text-muted-foreground">No letters yet.</p>
       ) : (
         <>
           <ol className="mt-2 space-y-2">
-            {group.entries.map((entry) => (
+            {entries.map((entry) => (
               <MailLetterItem
                 key={entry.letter.letterId}
-                environmentId={environmentId}
+                environmentId={props.environmentId}
                 threadRef={props.threadRef}
                 task={task}
                 entry={entry}
               />
             ))}
           </ol>
-          {(timelineQuery.data?.entries.length ?? 0) >= MAIL_TIMELINE_PAGE_LIMIT ? (
+          {entries.length >= MAIL_TIMELINE_PAGE_LIMIT ? (
             <p className="mt-2 text-[10px] text-muted-foreground">
               Showing the latest {MAIL_TIMELINE_PAGE_LIMIT} letters.
             </p>
@@ -230,10 +209,12 @@ function MailLetterItem(props: {
       ) : null}
       {letter.planDocId !== null && documentsEnabled ? (
         <div className="mt-1">
+          {/* No label-less mount lookup: the chip resolves and opens only on click. */}
           <OpenContextDocChip
             href={`oc://doc/${letter.planDocId}`}
             stableId={letter.planDocId}
             resolvable
+            label="Plan"
             canOpenDocument
             resolveDoc={resolveDoc}
             onOpenDocument={openDocument}
