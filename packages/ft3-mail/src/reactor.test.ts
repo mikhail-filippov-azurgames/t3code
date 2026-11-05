@@ -31,7 +31,7 @@ import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.
 import * as EventStore from "../../../apps/server/src/orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
-import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
+import { MailRepository, MailRepositoryError, layer as mailRepositoryLayer } from "./repository.ts";
 import { MailService } from "./service.ts";
 import {
   classifierFake,
@@ -122,11 +122,34 @@ const infrastructure = EventSink.layer.pipe(
   ),
 );
 
-function fixture(enabled = true) {
+function fixture(enabled = true, failParticipantLookup = false) {
   const dispatched: Array<Dispatch> = [];
   const routing = routingFake({});
   const evidence = policyEvidenceFake();
   const launcher = launcherFake();
+  // The lookup fault is injected at the service boundary: the wrapper builds
+  // the real repository and replaces exactly one method.
+  const repositoryLayer = failParticipantLookup
+    ? Layer.unwrap(
+        Effect.map(
+          Effect.provide(
+            Effect.service(MailRepository),
+            mailRepositoryLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+          ),
+          (real) =>
+            Layer.succeed(MailRepository, {
+              ...real,
+              findParticipantByThread: () =>
+                Effect.fail(
+                  new MailRepositoryError({
+                    operation: "findParticipantByThread",
+                    cause: new Error("forced lookup failure"),
+                  }),
+                ),
+            }),
+        ),
+      )
+    : mailRepositoryLayer;
   const managedThreads = Layer.unwrap(
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -168,7 +191,7 @@ function fixture(enabled = true) {
   const layer = mailReactorLayer.pipe(
     Layer.provideMerge(managedThreads),
     Layer.provideMerge(serviceLayer),
-    Layer.provideMerge(mailRepositoryLayer),
+    Layer.provideMerge(repositoryLayer),
     Layer.provideMerge(gateLayer(enabled)),
     Layer.provideMerge(infrastructure),
     Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -321,6 +344,38 @@ it.effect("names the participant role in a wake on the lead thread", () => {
     assert.equal(wake.threadId, leadId);
     assert.include(wake.text, 'New answer letter from implementation in mail task "Refactor":');
     assert.include(wake.text, "Done.");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("delivers exactly one wake when the sender lookup fails", () => {
+  const harness = fixture(true, true);
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: "Done.",
+      clientRequestId: "request:answer",
+    });
+    assert.isTrue(sent.created);
+    // The sender lookup fails; delivery must go out anyway, without a sender
+    // label and without stalling the drain.
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 1);
+    const wake = harness.dispatched[0]!;
+    assert.include(wake.text, 'New answer letter in mail task "Refactor":');
+    assert.notInclude(wake.text, "from implementation");
+    const repository = yield* MailRepository;
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "delivered");
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
   }).pipe(Effect.provide(harness.layer));
 });
 

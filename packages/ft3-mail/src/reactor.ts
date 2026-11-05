@@ -172,13 +172,24 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       yield* dead();
       return;
     }
-    const sender =
-      letter.senderThreadId === task.createdByThreadId
-        ? "lead"
-        : letter.senderThreadId === "system"
-          ? "system"
-          : ((yield* repository.findParticipantByThread(letter.senderThreadId))?.member.roleId ??
-            null);
+    let sender: string | null = null;
+    if (letter.senderThreadId === task.createdByThreadId) {
+      sender = "lead";
+    } else if (letter.senderThreadId === "system") {
+      sender = "system";
+    } else {
+      // A sender lookup failure must not abort the delivery: the drain would
+      // stall on the same wake forever. Log it and deliver without a sender.
+      const lookedUp = yield* repository.findParticipantByThread(letter.senderThreadId).pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning(
+            `Mail wake could not resolve the sender of letter ${letter.letterId}: ${error.message}`,
+          ),
+        ),
+        Effect.option,
+      );
+      sender = lookedUp._tag === "Some" ? (lookedUp.value?.member.roleId ?? null) : null;
+    }
     yield* wake({
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
