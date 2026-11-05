@@ -104,6 +104,7 @@ export const decidePlanGate = (input: PlanGateInput): PlanGateDecision => {
     }
     return { _tag: "Allow" };
   }
+  if (input.phase === "prototype") return { _tag: "Refuse", code: "plan_phase_invalid" };
   return { _tag: "Allow" };
 };
 

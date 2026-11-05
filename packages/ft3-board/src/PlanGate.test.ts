@@ -55,6 +55,21 @@ describe("PlanGate phase matrix", () => {
     );
   });
 
+  it("refuses prototype once the plan is accepted, whatever the isolation", () => {
+    for (const isolation of ["worktree", null] as const) {
+      assert.deepStrictEqual(
+        PlanGate.decidePlanGate({
+          roleId: "implementation",
+          plan: accepted,
+          liveSha256: "abc",
+          phase: "prototype",
+          isolation,
+        }),
+        { _tag: "Refuse", code: "plan_phase_invalid" },
+      );
+    }
+  });
+
   it("refuses implement before accept", () => {
     assert.deepStrictEqual(
       PlanGate.decidePlanGate({
