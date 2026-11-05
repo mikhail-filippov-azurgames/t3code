@@ -19,12 +19,11 @@ import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 export { runMigrations } from "./Migrations.ts";
 export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
 
-// The mail stack takes PlanService, which reads plan documents through the
+// The mail stack takes PlanService, which writes plan documents through the
 // store. Same docs root as rpc.ts, created here because a fresh state
 // directory has no documents folder yet.
 const layerDocsService = Layer.unwrap(
   Effect.gen(function* () {
-    const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/rpc"));
     const config = yield* ServerConfig.ServerConfig;
     const settings = yield* ServerSettings.ServerSettingsService;
     const fs = yield* FileSystem.FileSystem;
@@ -37,7 +36,7 @@ const layerDocsService = Layer.unwrap(
     // The store resolves paths under contexts/, so the whole branch must
     // exist before the service opens it; the reconciler creates it as well.
     yield* fs.makeDirectory(path.join(root, "contexts"), { recursive: true });
-    return docs.docsRpcServiceLayer({ root });
+    return layerDocsServiceWithWriteRule(root);
   }),
 );
 
@@ -124,6 +123,59 @@ export const docsProtectionLayer = (
     }),
   );
 
+/**
+ * The `documents:write` inputs the host composes once (design §3.5): role, plan
+ * identity and grant from the plan record and the mail task, and protection for
+ * protected documents. The docs toolkit and the plan stack both take them.
+ */
+const documentsWriteRule = Effect.fn("ft3.documentsWriteRule")(function* (root: string) {
+  const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
+  const mail = yield* Effect.promise(() => import("@t3tools/ft3-mail/server"));
+  const planning = yield* Effect.promise(() => import("@t3tools/ft3-board/planning"));
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const sql = yield* SqlClient.SqlClient;
+  // The planner's plan identity comes from the plan record table, the role
+  // and grant from the mail task; the combined port keeps a planner that is
+  // also a mail participant confined to its own plan document (design §3.5).
+  const writeFacts = docs.combineDocumentsWriteFacts(
+    planning.planningDocumentsWriteFactsSql.pipe(
+      Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+    ),
+    mail.documentsWriteFacts.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
+  );
+  // Fail closed when the protected identities cannot be established: the
+  // service refuses the agent write, while reads stay available.
+  const protection = docsProtectionLayer(docs, root).pipe(
+    Layer.provide(docs.docsStoreLayer({ root })),
+    Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+    Layer.provide(Layer.succeed(ServerSettings.ServerSettingsService, settings)),
+    // A store that cannot open fails the service the same way; the defect surfaces here.
+    Layer.orDie,
+  );
+  return { writeFacts, protection };
+});
+
+/**
+ * The store's DocsService under the lineage rule and protection, the composition
+ * the docs toolkit builds for agents. PlanService writes plan documents through
+ * whichever DocsService the layer graph hands it, so every DocsService the host
+ * provides takes this rule; reads do not depend on it.
+ */
+export const layerDocsServiceWithWriteRule = (root: string) =>
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
+      const { writeFacts, protection } = yield* documentsWriteRule(root);
+      return docs
+        .docsServiceLayer({ root })
+        .pipe(
+          Layer.provide(docs.documentsWriteAccessLayer.pipe(Layer.provide(writeFacts))),
+          Layer.provide(protection),
+          Layer.provide(docsChangeBus),
+        );
+    }),
+  );
+
 const layerDocuments = Layer.unwrap(
   Effect.gen(function* () {
     const gate = yield* FeatureGate.FeatureGate;
@@ -188,18 +240,16 @@ const layerAppliedPolicies = Layer.unwrap(
       docRef: storeOff,
       docStat: storeOff,
     });
-    const docsService = docs
-      .docsRpcServiceLayer({ root })
-      .pipe(
-        Layer.catchCause((cause) =>
-          Layer.effect(
-            docs.DocsService,
-            Effect.logWarning(`The policy document store did not open: ${cause}`).pipe(
-              Effect.as(unavailableDocs),
-            ),
+    const docsService = layerDocsServiceWithWriteRule(root).pipe(
+      Layer.catchCause((cause) =>
+        Layer.effect(
+          docs.DocsService,
+          Effect.logWarning(`The policy document store did not open: ${cause}`).pipe(
+            Effect.as(unavailableDocs),
           ),
         ),
-      );
+      ),
+    );
     const trackerWithGuidance = withRefreshHook((tracker) =>
       tracker
         .snapshot()
@@ -302,28 +352,7 @@ const layerDocsToolkit = Layer.unwrap(
       configuredRoot: readDocsSettings(current.ft3).root,
     });
     const docs = yield* Effect.promise(() => import("@t3tools/ft3-docs/server"));
-    const mail = yield* Effect.promise(() => import("@t3tools/ft3-mail/server"));
-    const planning = yield* Effect.promise(() => import("@t3tools/ft3-board/planning"));
-    const sql = yield* SqlClient.SqlClient;
-    // The planner's plan identity comes from the plan record table, the role
-    // and grant from the mail task; the combined port keeps a planner that is
-    // also a mail participant confined to its own plan document (design §3.5).
-    const writeFacts = docs.combineDocumentsWriteFacts(
-      planning.planningDocumentsWriteFactsSql.pipe(
-        Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
-      ),
-      mail.documentsWriteFacts.pipe(Layer.provide(Layer.succeed(SqlClient.SqlClient, sql))),
-    );
-    // Fail closed when the protected identities cannot be established: the
-    // service below refuses the agent write, while reads stay available.
-    const protection = docsProtectionLayer(docs, root).pipe(
-      Layer.provide(docs.docsStoreLayer({ root })),
-      Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
-      Layer.provide(Layer.succeed(ServerSettings.ServerSettingsService, settings)),
-      // A store that cannot open fails the service below the same way, so the
-      // toolkit stays down either way; the failure shows up as a defect here.
-      Layer.orDie,
-    );
+    const { writeFacts, protection } = yield* documentsWriteRule(root);
     return docs.docsMcpLayer({
       root,
       writeFacts,

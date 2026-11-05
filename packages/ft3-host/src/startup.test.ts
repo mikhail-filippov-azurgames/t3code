@@ -8,8 +8,9 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
+import * as Docs from "@t3tools/ft3-docs/server";
 import { launcherFake } from "../../ft3-mail/src/mail.testkit.ts";
-import { layer } from "./server.ts";
+import { layer, runMigrations } from "./server.ts";
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
@@ -21,40 +22,41 @@ import * as Context from "effect/Context";
 
 const rolesDirEnv = "T3CODE_FT3_ROLES_DIR";
 
-const buildHostLayer = (env: Record<string, string>) =>
-  Layer.build(
-    layer.pipe(
-      Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
-      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
-      Layer.provide(ServerSettings.layerTest()),
-      Layer.provide(
-        Layer.succeed(
-          Crypto.Crypto,
-          Crypto.make({
-            randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-            digest: () => Effect.die("unused"),
-          }),
-        ),
-      ),
-      Layer.provide(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-host-" })),
-      Layer.provideMerge(NodeServices.layer),
-      Layer.provide(launcherFake().layer),
-      // The mail stack takes PlanService, which reads the project shell and
-      // the thread shell. Startup only builds the layer, so these never run.
-      Layer.provide(
-        Layer.mergeAll(
-          Layer.mock(ThreadManagement.ThreadManagementService)({
-            getThreadShell: () => Effect.die("unused in host startup tests"),
-            getThreadRecords: () => Effect.die("unused in host startup tests"),
-            dispatch: () => Effect.die("unused in host startup tests"),
-          }),
-          Layer.mock(ProjectStoreV2)({
-            getShell: () => Effect.succeedNone,
-          }),
-        ),
+const hostLayer = (env: Record<string, string>) =>
+  layer.pipe(
+    Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(
+      Layer.succeed(
+        Crypto.Crypto,
+        Crypto.make({
+          randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
+          digest: () => Effect.die("unused"),
+        }),
       ),
     ),
-  ).pipe(Effect.scoped);
+    Layer.provide(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-host-" })),
+    Layer.provideMerge(NodeServices.layer),
+    Layer.provide(launcherFake().layer),
+    // The mail stack takes PlanService, which reads the project shell and
+    // the thread shell. Startup only builds the layer, so these never run.
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.die("unused in host startup tests"),
+          getThreadRecords: () => Effect.die("unused in host startup tests"),
+          dispatch: () => Effect.die("unused in host startup tests"),
+        }),
+        Layer.mock(ProjectStoreV2)({
+          getShell: () => Effect.succeedNone,
+        }),
+      ),
+    ),
+  );
+
+const buildHostLayer = (env: Record<string, string>) =>
+  Layer.build(hostLayer(env)).pipe(Effect.scoped);
 
 describe("ft3 host startup", () => {
   it.effect("composes the feature gate with the default toggles", () =>
@@ -89,5 +91,31 @@ describe("ft3 host startup", () => {
       const exit = yield* Effect.exit(buildHostLayer({ [rolesDirEnv]: missing }));
       assert.equal(exit._tag, "Success");
     }),
+  );
+
+  it.effect("lets the lead write a plan document and refuses a delegated child", () =>
+    Effect.gen(function* () {
+      const context = yield* Layer.build(hostLayer({}));
+      yield* runMigrations().pipe(Effect.provideContext(context));
+      const docs = Context.get(context, Docs.DocsService);
+      const planPath = "corvis/plans/corvis/card.md";
+      const created = yield* docs.write({
+        caller: { threadId: "thread:lead", parentThreadId: null },
+        relPath: planPath,
+        content: "# Plan: card\n",
+        clientRequestId: "plan:card",
+      });
+      assert.equal(created.relPath, planPath);
+      const denied = yield* docs
+        .write({
+          caller: { threadId: "thread:child", parentThreadId: "thread:lead" },
+          relPath: "corvis/plans/corvis/other.md",
+          content: "# Plan: other\n",
+          clientRequestId: "plan:other",
+        })
+        .pipe(Effect.flip);
+      assert.equal(denied.code, "capability_denied");
+      assert.equal(denied.reason, "child_read_only");
+    }).pipe(Effect.scoped),
   );
 });
