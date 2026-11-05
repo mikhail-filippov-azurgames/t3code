@@ -1,3 +1,4 @@
+// @effect-diagnostics cryptoRandomUUID:off - Fresh document ids per test keep oc ids out of the source.
 import { describe, expect, it } from "vite-plus/test";
 
 import { DEFAULT_POLICY_SETTINGS, withPolicySettings } from "@t3tools/ft3-policies/settings";

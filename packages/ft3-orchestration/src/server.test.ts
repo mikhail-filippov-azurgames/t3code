@@ -1,3 +1,4 @@
+// @effect-diagnostics cryptoRandomUUID:off - Fresh document ids per test keep oc ids out of the source.
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,

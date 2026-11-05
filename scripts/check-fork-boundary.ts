@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - This is a build-time filesystem script.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - A build-time filesystem script that prints its findings.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
