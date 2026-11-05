@@ -209,7 +209,10 @@ const layerAppliedPolicies = Layer.unwrap(
           ),
         ),
     ).pipe(Layer.provide(policies.policiesRpcServiceLayer), Layer.provideMerge(docsService));
-    return Layer.mergeAll(trackerWithGuidance, roleResolverLayer).pipe(
+    return Layer.mergeAll(
+      policies.policyPickersLayer.pipe(Layer.provideMerge(trackerWithGuidance)),
+      roleResolverLayer,
+    ).pipe(
       Layer.tap((context) =>
         policies.refreshAppliedPolicies.pipe(
           Effect.provide(context),

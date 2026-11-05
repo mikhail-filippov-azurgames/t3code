@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - an unmanaged policy file outside the store is written atomically.
 import * as NodeFS from "node:fs";
-import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import { DocsService } from "@t3tools/ft3-docs/server";
@@ -20,6 +19,7 @@ import {
   layer as policyDocumentLoaderLayer,
 } from "./policyDocumentLoader.ts";
 import { layer as policyAppliedStoreLayer } from "./policyAppliedStore.ts";
+import { PolicyPickers } from "./policyPickers.ts";
 import {
   readPolicySettings,
   resolvePolicyDocumentSources,
@@ -31,15 +31,11 @@ import {
   type PoliciesApplyPendingInput,
   type PoliciesApplyPendingResult,
   type PoliciesBrowseServerDirectoryInput,
-  type PoliciesBrowseServerDirectoryResult,
-  PoliciesDirectoryBrowseError,
   type PoliciesGetPendingChangeInput,
   type PoliciesGetPendingChangeResult,
   type PoliciesGetSnapshotInput,
   type PoliciesGetSnapshotResult,
   type PoliciesListStoreDocumentsInput,
-  type PoliciesListStoreDocumentsResult,
-  PoliciesStoreDocumentsError,
   type PoliciesReadDocumentInput,
   type PoliciesReadDocumentResult,
   type PoliciesSaveDocumentInput,
@@ -62,6 +58,7 @@ import {
 
 export { FT3_POLICIES_WS_METHODS, policiesRpcs, policiesRpcScopes } from "./rpc-contracts.ts";
 export { PolicyChangeTracker } from "./policyChangeTracker.ts";
+export { layer as policyPickersLayer, PolicyPickers } from "./policyPickers.ts";
 
 /**
  * The snapshot loader reads through the ambient `DocsService`, so the host
@@ -478,155 +475,18 @@ const setFeature = Effect.fn("PoliciesRpc.setFeature")(function* (input: Policie
   return { snapshot } satisfies PoliciesSetFeatureResult;
 });
 
-const STORE_PICKER_LIMIT = 50;
-
-const storeDocumentsError = (cause: { readonly code: string }) =>
-  new PoliciesStoreDocumentsError({
-    message: `Could not list the store documents (${cause.code}).`,
-  });
-
-/**
- * The store side of the source picker. An empty query lists the manifest
- * (recursively, capped); a query searches titles, paths and bodies through the
- * same index `docs_search` uses, falling back to a path/name filter when the
- * index is unavailable.
- */
 const listStoreDocuments = Effect.fn("PoliciesRpc.listStoreDocuments")(function* (
   input: PoliciesListStoreDocumentsInput,
 ) {
-  const docs = yield* DocsService;
-  const query = input.query?.trim() ?? "";
-  if (query === "") {
-    const entries = yield* docs
-      .manifest({ limit: STORE_PICKER_LIMIT })
-      .pipe(Effect.mapError(storeDocumentsError));
-    return {
-      documents: entries
-        .map((entry) => ({
-          stableId: entry.stableId,
-          relPath: entry.relPath,
-          name: entry.name,
-          description: entry.description,
-        }))
-        .toSorted((left, right) => left.relPath.localeCompare(right.relPath)),
-    } satisfies PoliciesListStoreDocumentsResult;
-  }
-  const results = yield* docs.search({ query, limit: STORE_PICKER_LIMIT }).pipe(
-    Effect.catchIf(
-      (error) => error.code === "search_unavailable" || error.code === "invalid_input",
-      () => Effect.succeed(null),
-    ),
-    Effect.mapError(storeDocumentsError),
-  );
-  if (results !== null) {
-    const seen = new Set<string>();
-    return {
-      documents: results.flatMap((result) => {
-        if (seen.has(result.stableId)) return [];
-        seen.add(result.stableId);
-        return [
-          {
-            stableId: result.stableId,
-            relPath: result.relPath,
-            name: result.title,
-            description: result.snippet,
-          },
-        ];
-      }),
-    } satisfies PoliciesListStoreDocumentsResult;
-  }
-  const needle = query.toLowerCase();
-  const entries = yield* docs.manifest({ limit: 200 }).pipe(Effect.mapError(storeDocumentsError));
-  return {
-    documents: entries
-      .filter(
-        (entry) =>
-          entry.relPath.toLowerCase().includes(needle) || entry.name.toLowerCase().includes(needle),
-      )
-      .slice(0, STORE_PICKER_LIMIT)
-      .map((entry) => ({
-        stableId: entry.stableId,
-        relPath: entry.relPath,
-        name: entry.name,
-        description: entry.description,
-      })),
-  } satisfies PoliciesListStoreDocumentsResult;
+  const pickers = yield* PolicyPickers;
+  return yield* pickers.listStoreDocuments(input);
 });
 
-export const SERVER_DIRECTORY_LISTING_CAP = 1000;
-const POLICY_FILE_EXTENSIONS = new Set([".json", ".md"]);
-
-/**
- * The server-file side of the source picker: lists one absolute directory on
- * the server's filesystem (a native OS dialog can't serve remote clients) with
- * directories for navigation and .json/.md files for selection.
- */
 const browseServerDirectory = Effect.fn("PoliciesRpc.browseServerDirectory")(function* (
   input: PoliciesBrowseServerDirectoryInput,
 ) {
-  const directory = input.directory;
-  if (!NodePath.isAbsolute(directory)) {
-    return yield* new PoliciesDirectoryBrowseError({
-      directory,
-      code: "not_absolute",
-      message: `"${directory}" is not an absolute server path.`,
-    });
-  }
-  const stat = yield* Effect.tryPromise({
-    try: () => NodeFSP.stat(directory),
-    catch: () =>
-      new PoliciesDirectoryBrowseError({
-        directory,
-        code: "read_failed",
-        message: `Could not read the server directory "${directory}".`,
-      }),
-  });
-  if (!stat.isDirectory()) {
-    return yield* new PoliciesDirectoryBrowseError({
-      directory,
-      code: "not_directory",
-      message: `"${directory}" is not a server directory.`,
-    });
-  }
-  const directories: Array<{ name: string; path: string }> = [];
-  const files: Array<{ name: string; path: string }> = [];
-  const truncated = yield* Effect.tryPromise({
-    try: async () => {
-      const handle = await NodeFSP.opendir(directory);
-      try {
-        for await (const dirent of handle) {
-          if (directories.length + files.length >= SERVER_DIRECTORY_LISTING_CAP) return true;
-          const fullPath = NodePath.join(directory, dirent.name);
-          if (dirent.isDirectory()) {
-            directories.push({ name: dirent.name, path: fullPath });
-          } else if (
-            dirent.isFile() &&
-            POLICY_FILE_EXTENSIONS.has(NodePath.extname(dirent.name).toLowerCase())
-          ) {
-            files.push({ name: dirent.name, path: fullPath });
-          }
-        }
-        return false;
-      } finally {
-        await handle.close().catch(() => undefined);
-      }
-    },
-    catch: () =>
-      new PoliciesDirectoryBrowseError({
-        directory,
-        code: "read_failed",
-        message: `Could not read the server directory "${directory}".`,
-      }),
-  });
-  const byName = (left: { name: string }, right: { name: string }) =>
-    left.name.localeCompare(right.name);
-  const parent = NodePath.dirname(directory);
-  return {
-    parent: parent === directory ? null : parent,
-    directories: directories.toSorted(byName),
-    files: files.toSorted(byName),
-    truncated,
-  } satisfies PoliciesBrowseServerDirectoryResult;
+  const pickers = yield* PolicyPickers;
+  return yield* pickers.browseServerDirectory(input);
 });
 
 export const policiesRpcHandlers = {

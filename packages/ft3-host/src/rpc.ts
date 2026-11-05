@@ -61,7 +61,7 @@ export { BoardSummaryHistoryService } from "@t3tools/ft3-board/rpc";
 export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
 export { MailService } from "@t3tools/ft3-mail/service";
 export { MailRepository } from "@t3tools/ft3-mail/repository";
-export { PolicyChangeTracker } from "@t3tools/ft3-policies/rpc";
+export { PolicyChangeTracker, PolicyPickers } from "@t3tools/ft3-policies/rpc";
 
 export const FT3_WS_METHODS = {
   ...FT3_BOARD_WS_METHODS,

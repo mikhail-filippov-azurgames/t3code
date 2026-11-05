@@ -8,16 +8,24 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { policiesRpcHandlers, SERVER_DIRECTORY_LISTING_CAP } from "./rpc.ts";
 import {
-  FT3_POLICIES_WS_METHODS,
+  layer as policyPickersLayer,
+  PolicyPickers,
+  SERVER_DIRECTORY_LISTING_CAP,
+} from "./policyPickers.ts";
+import {
+  type PoliciesBrowseServerDirectoryInput,
   type PoliciesBrowseServerDirectoryResult,
   type PoliciesDirectoryBrowseError,
+  type PoliciesListStoreDocumentsInput,
 } from "./rpc-contracts.ts";
 
-const listStoreDocuments = policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesListStoreDocuments];
-const browseServerDirectory =
-  policiesRpcHandlers[FT3_POLICIES_WS_METHODS.policiesBrowseServerDirectory];
+const listStoreDocuments = (input: PoliciesListStoreDocumentsInput) =>
+  PolicyPickers.use((pickers) => pickers.listStoreDocuments(input));
+const browseServerDirectory = (input: PoliciesBrowseServerDirectoryInput) =>
+  PolicyPickers.use((pickers) => pickers.browseServerDirectory(input)).pipe(
+    Effect.provide(pickersLayer({ manifest: [], search: Effect.succeed([]) })),
+  );
 
 const docsOver = (options: {
   readonly manifest: ReadonlyArray<{
@@ -58,6 +66,9 @@ const docsOver = (options: {
 const docsLayer = (options: Parameters<typeof docsOver>[0]) =>
   Layer.succeed(DocsService, docsOver(options));
 
+const pickersLayer = (options: Parameters<typeof docsOver>[0]) =>
+  policyPickersLayer.pipe(Layer.provide(docsLayer(options)));
+
 describe("policies.listStoreDocuments", () => {
   it.effect("lists the manifest sorted by store path when no query is given", () =>
     Effect.gen(function* () {
@@ -70,7 +81,7 @@ describe("policies.listStoreDocuments", () => {
       assert.equal(result.documents[2]?.description, "Role map");
     }).pipe(
       Effect.provide(
-        docsLayer({
+        pickersLayer({
           manifest: [
             {
               relPath: "roles/roles.json",
@@ -102,7 +113,7 @@ describe("policies.listStoreDocuments", () => {
       assert.equal(result.documents[0]?.name, "Lead");
     }).pipe(
       Effect.provide(
-        docsLayer({
+        pickersLayer({
           manifest: [
             { relPath: "roles/lead.md", stableId: "id-lead", name: "lead.md", description: "hit" },
             {
@@ -135,7 +146,7 @@ describe("policies.listStoreDocuments", () => {
       );
     }).pipe(
       Effect.provide(
-        docsLayer({
+        pickersLayer({
           manifest: [
             {
               relPath: "policies/routing-policy.md",
@@ -163,7 +174,7 @@ describe("policies.listStoreDocuments", () => {
       assert.include(failure.message, "store_unavailable");
     }).pipe(
       Effect.provide(
-        docsLayer({
+        pickersLayer({
           manifest: [],
           manifestError: new DocsServiceError({ code: "store_unavailable" }),
           search: Effect.succeed([]),
