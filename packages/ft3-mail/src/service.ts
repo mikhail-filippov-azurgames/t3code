@@ -917,33 +917,6 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    if (task.cardId !== null) {
-      const citation =
-        plan?.citation === undefined
-          ? undefined
-          : {
-              planDocId: plan.citation.planDocId,
-              planSha256: plan.citation.planSha256,
-              ...(plan.citation.planStep === undefined ? {} : { planStep: plan.citation.planStep }),
-            };
-      const memberRoleIds = [
-        ...new Set(
-          targets.flatMap((target) => (target.member === null ? [] : [target.member.roleId])),
-        ),
-      ];
-      for (const roleId of memberRoleIds) {
-        yield* planGate
-          .check({
-            cardId: task.cardId,
-            roleId,
-            phase: plan?.phase,
-            step: plan?.step,
-            citation,
-            isolation: task.isolation,
-          })
-          .pipe(Effect.mapError(planFailure));
-      }
-    }
     const replyToLetterId = input.replyToLetterId ?? null;
     if (replyToLetterId !== null) {
       const parent = yield* repository.getLetter(replyToLetterId);
@@ -974,53 +947,87 @@ const make = Effect.gen(function* () {
     const requestFingerprint = yield* fingerprintOf([to, input.kind, input.body, replyToLetterId]);
     const letterId = yield* newId;
     const now = yield* nowIso;
-    const appended = yield* repository
-      .appendLetter({
-        letterId,
-        taskId: task.taskId,
-        senderThreadId: input.callerThreadId,
-        recipient: to,
-        kind: input.kind,
-        body: input.body,
-        replyToLetterId,
-        sourceLetterId: null,
-        planPhase: plan?.phase ?? null,
-        planStep: plan?.step ?? plan?.citation?.planStep ?? null,
-        planSha256: plan?.citation?.planSha256 ?? null,
-        planDocId: plan?.citation?.planDocId ?? null,
-        classifierKind: classified.classifierKind,
-        classifierConfidence: classified.classifierConfidence,
-        kindDisputed: classified.kindDisputed,
-        leadKind: null,
-        clientRequestId: input.clientRequestId,
-        requestFingerprint,
-        createdAt: now,
-      })
-      .pipe(
-        Effect.catchTags({
-          MailIdempotencyConflict: () =>
-            refuse(
-              "idempotency_conflict",
-              "This client request was already used for another letter.",
-            ),
-        }),
-      );
-    if (plan !== undefined && task.cardId !== null) {
-      yield* planGate
-        .recordPlanLetter({ cardId: task.cardId, phase: plan.phase })
-        .pipe(Effect.mapError(planFailure));
-    }
-    if (
+    const cardId = task.cardId;
+    const plannerAnswer =
       sender.kind === "participant" &&
       sender.roleId === "planner" &&
       recipient.kind === "lead" &&
-      input.kind === "answer" &&
-      task.cardId !== null
-    ) {
-      yield* planGate
-        .recordPlannerAnswer({ cardId: task.cardId })
-        .pipe(Effect.mapError(planFailure));
-    }
+      input.kind === "answer";
+    // The letter, the gate and the plan transition commit together: a refused gate or a
+    // failed transition removes the letter, and a replay applies no transition twice.
+    const appended = yield* repository.transaction(
+      Effect.gen(function* () {
+        const result = yield* repository
+          .appendLetter({
+            letterId,
+            taskId: task.taskId,
+            senderThreadId: input.callerThreadId,
+            recipient: to,
+            kind: input.kind,
+            body: input.body,
+            replyToLetterId,
+            sourceLetterId: null,
+            planPhase: plan?.phase ?? null,
+            planStep: plan?.step ?? plan?.citation?.planStep ?? null,
+            planSha256: plan?.citation?.planSha256 ?? null,
+            planDocId: plan?.citation?.planDocId ?? null,
+            classifierKind: classified.classifierKind,
+            classifierConfidence: classified.classifierConfidence,
+            kindDisputed: classified.kindDisputed,
+            leadKind: null,
+            clientRequestId: input.clientRequestId,
+            requestFingerprint,
+            createdAt: now,
+          })
+          .pipe(
+            Effect.catchTags({
+              MailIdempotencyConflict: () =>
+                refuse(
+                  "idempotency_conflict",
+                  "This client request was already used for another letter.",
+                ),
+            }),
+          );
+        if (cardId !== null) {
+          const citation =
+            plan?.citation === undefined
+              ? undefined
+              : {
+                  planDocId: plan.citation.planDocId,
+                  planSha256: plan.citation.planSha256,
+                  ...(plan.citation.planStep === undefined
+                    ? {}
+                    : { planStep: plan.citation.planStep }),
+                };
+          const memberRoleIds = [
+            ...new Set(
+              targets.flatMap((target) => (target.member === null ? [] : [target.member.roleId])),
+            ),
+          ];
+          for (const roleId of memberRoleIds) {
+            yield* planGate
+              .check({
+                cardId,
+                roleId,
+                phase: plan?.phase,
+                step: plan?.step,
+                citation,
+                isolation: task.isolation,
+              })
+              .pipe(Effect.mapError(planFailure));
+          }
+        }
+        if (result.created && cardId !== null && plan !== undefined) {
+          yield* planGate
+            .recordPlanLetter({ cardId, phase: plan.phase })
+            .pipe(Effect.mapError(planFailure));
+        }
+        if (result.created && cardId !== null && plannerAnswer) {
+          yield* planGate.recordPlannerAnswer({ cardId }).pipe(Effect.mapError(planFailure));
+        }
+        return result;
+      }),
+    );
     // The lead's letter starts a threadless member; a repeat reuses the same thread.
     // A member whose route is null gets one when the letter is resent after the
     // policy is fixed; an overridden member launches on its override instead.

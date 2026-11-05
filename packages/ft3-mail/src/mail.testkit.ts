@@ -10,7 +10,12 @@ import {
 } from "@t3tools/ft3-policies/routing";
 import type { RoutingLevel, RoutingRoleId } from "@t3tools/ft3-policies/routingPolicy";
 import { FeatureDisabledError, FeatureGate } from "@t3tools/ft3-policies/server";
-import { PlanGate, PlanGateError, type PlanGateErrorCode } from "@t3tools/ft3-board/planning";
+import {
+  PlanError,
+  PlanGate,
+  PlanGateError,
+  type PlanGateErrorCode,
+} from "@t3tools/ft3-board/planning";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -172,9 +177,10 @@ export const settingsLayer = (overrides: Partial<{ readonly classifierThreshold:
   Layer.succeed(MailSettingsService, { ...DEFAULT_MAIL_SETTINGS, ...overrides });
 
 /** A plan gate fake: records checks and records unless told to refuse. */
-export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
+export const planGateFake = (refuseCode?: PlanGateErrorCode, recordsFail = false) => {
   const checks: Array<{ readonly cardId: string; readonly roleId: string }> = [];
   const records: Array<{ readonly cardId: string; readonly phase: string }> = [];
+  const failRecords = { current: recordsFail };
   const answers: Array<string> = [];
   const binds: Array<{ readonly cardId: string; readonly threadId: string }> = [];
   const planner: { thread: string | null } = { thread: null };
@@ -193,7 +199,10 @@ export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
           }
         }),
       recordPlanLetter: (input) =>
-        Effect.sync(() => {
+        Effect.gen(function* () {
+          if (failRecords.current) {
+            return yield* new PlanError({ code: "plan_transition_invalid", cardId: input.cardId });
+          }
           records.push({ cardId: input.cardId, phase: input.phase });
         }),
       recordPlannerAnswer: (input) =>
@@ -208,7 +217,7 @@ export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
         }),
     }),
   );
-  return { layer, checks, records, answers, binds };
+  return { layer, checks, records, answers, binds, failRecords };
 };
 
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
@@ -222,13 +231,14 @@ export const mailHarness = (
     readonly classifierThreshold?: number;
     readonly planRefuse?: PlanGateErrorCode;
     readonly planning?: boolean;
+    readonly planRecordsFail?: boolean;
   } = {},
 ) => {
   const routing = routingFake(options);
   const evidence = policyEvidenceFake();
   const launcher = launcherFake(options.launchFail);
   const classifier = classifierFake(options.classify);
-  const gate = planGateFake(options.planRefuse);
+  const gate = planGateFake(options.planRefuse, options.planRecordsFail ?? false);
   const layer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -257,5 +267,6 @@ export const mailHarness = (
     planRecords: gate.records,
     planAnswers: gate.answers,
     planBinds: gate.binds,
+    planFailRecords: gate.failRecords,
   };
 };

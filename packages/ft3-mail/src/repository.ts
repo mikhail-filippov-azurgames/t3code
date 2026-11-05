@@ -562,6 +562,10 @@ export class MailRepository extends Context.Service<
     readonly findParticipantByThread: (
       threadId: string,
     ) => Effect.Effect<ParticipantRecord | null, MailRepositoryError>;
+    /** Runs `effect` in one database transaction; a failure rolls back every write in it. */
+    readonly transaction: <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | MailRepositoryError, R>;
     readonly appendLetter: (
       input: AppendLetterInput,
     ) => Effect.Effect<AppendLetterResult, MailRepositoryError | MailIdempotencyConflict>;
@@ -859,6 +863,14 @@ const make = Effect.gen(function* () {
   });
 
   return MailRepository.of({
+    transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      sql
+        .withTransaction(effect)
+        .pipe(
+          Effect.catchTag("SqlError", (cause) =>
+            Effect.fail(new MailRepositoryError({ operation: "transaction", cause })),
+          ),
+        ),
     createTask: Effect.fn("MailRepository.createTask")((input: CreateTaskInput) =>
       mapIdempotentError("createTask")(
         sql.withTransaction(

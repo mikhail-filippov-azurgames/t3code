@@ -791,6 +791,46 @@ it.effect("records the implement letter at send time", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("rolls the letter back when its plan transition fails, and applies it once", () => {
+  const harness = mailHarness({ planRecordsFail: true });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const team = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:review-team",
+      title: "Review plan",
+      brief: "Review it.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "architect" }],
+    });
+    const review = () =>
+      mail.sendLetter({
+        callerThreadId: LEAD,
+        taskId: team.task.taskId,
+        to: "role:architect",
+        kind: "request",
+        body: "Review the plan.",
+        clientRequestId: "request:review",
+        plan: { phase: "review" },
+      });
+    const timeline = () =>
+      mail.readTask({ taskId: team.task.taskId, callerThreadId: LEAD, limit: 10 });
+    const before = (yield* timeline()).entries.length;
+    assert.equal(yield* refusal(review()), "plan_transition_invalid");
+    assert.equal((yield* timeline()).entries.length, before);
+    harness.planFailRecords.current = false;
+    const retried = yield* review();
+    assert.isTrue(retried.created);
+    assert.deepStrictEqual(harness.planRecords, [{ cardId: "card:one", phase: "review" }]);
+    const replayed = yield* review();
+    assert.isFalse(replayed.created);
+    assert.equal(replayed.letter.letterId, retried.letter.letterId);
+    assert.lengthOf(harness.planRecords, 1);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("starts one planner thread per card and reuses it in later tasks", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {
