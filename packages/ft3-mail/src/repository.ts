@@ -2,6 +2,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { SqlError } from "effect/sql/SqlError";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type {
@@ -518,6 +519,8 @@ const isIdempotencyConflict = (value: unknown): value is MailIdempotencyConflict
   "_tag" in value &&
   value._tag === "MailIdempotencyConflict";
 
+const isSqlError = Schema.is(SqlError);
+
 const mapError =
   (operation: string) =>
   <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, MailRepositoryError> =>
@@ -863,14 +866,18 @@ const make = Effect.gen(function* () {
   });
 
   return MailRepository.of({
-    transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-      sql
-        .withTransaction(effect)
-        .pipe(
-          Effect.catchTag("SqlError", (cause) =>
-            Effect.fail(new MailRepositoryError({ operation: "transaction", cause })),
+    transaction: Effect.fn("MailRepository.transaction")(
+      <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        sql
+          .withTransaction(effect)
+          .pipe(
+            Effect.mapError((cause) =>
+              isSqlError(cause)
+                ? new MailRepositoryError({ operation: "transaction", cause })
+                : cause,
+            ),
           ),
-        ),
+    ),
     createTask: Effect.fn("MailRepository.createTask")((input: CreateTaskInput) =>
       mapIdempotentError("createTask")(
         sql.withTransaction(
