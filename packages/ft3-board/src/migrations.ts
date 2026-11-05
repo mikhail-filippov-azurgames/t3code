@@ -131,10 +131,26 @@ const planImplementStarted = Effect.gen(function* () {
   yield* sql`ALTER TABLE ft3_board_card_plans ADD COLUMN implement_started_at TEXT`;
 });
 
+const planAcceptOutbox = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE ft3_board_plan_accept_outbox (
+      card_id TEXT NOT NULL REFERENCES ft3_board_card_plans(card_id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL CHECK (revision > 0),
+      plan_doc_id TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT,
+      PRIMARY KEY (card_id, revision)
+    )
+  `;
+});
+
 export const migrations = {
   "2_Board": board,
   "3_BoardReactor": reactor,
   "9_BoardRetention": retention,
   "12_BoardPlanning": planning,
   "17_BoardPlanImplementStarted": planImplementStarted,
+  "19_BoardPlanAcceptOutbox": planAcceptOutbox,
 };

@@ -255,6 +255,118 @@ export interface StepCountEntry {
 /** Bound on cached step counts; the oldest entry is evicted past the cap. */
 export const MAX_CACHED_STEP_COUNTS = 500;
 
+const storeFailure =
+  (cardId: string) =>
+  (cause: unknown): PlanError =>
+    new PlanError({ code: "plan_store_failed", cardId, cause });
+
+interface PendingAcceptEvent {
+  readonly cardId: string;
+  readonly revision: number;
+  readonly planDocId: string;
+  readonly sha256: string;
+}
+
+/** The lead event for one accepted revision. Its id is the dedupe key, so a redelivery is a no-op. */
+const acceptedLeadEvent = (input: {
+  readonly cardId: string;
+  readonly revision: number;
+  readonly planDocId: string;
+  readonly sha256: string | null;
+  readonly orchestratorThreadId: string;
+  readonly title: string;
+}) => {
+  const id = `ft3:plan:accepted:${input.cardId}:${input.revision}`;
+  const text =
+    `Plan accepted for card "${input.title}": oc://doc/${input.planDocId}, ` +
+    `revision ${input.revision} (sha256 ${(input.sha256 ?? "").slice(0, 12)}). ` +
+    `Dispatch implementation strictly by steps of plan_read(version: accepted).`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(id),
+    threadId: ThreadId.make(input.orchestratorThreadId),
+    messageId: MessageId.make(id),
+    text,
+    attachments: [],
+    createdBy: "agent",
+    creationSource: "server",
+    dispatchMode: { type: "start_immediately" },
+  } as const;
+};
+
+/** Undelivered accepted events of one card, or of every card when `cardId` is null. */
+const pendingAccepts = (sql: SqlClient.SqlClient, cardId: string | null) =>
+  sql<{
+    readonly card_id: string;
+    readonly revision: number;
+    readonly plan_doc_id: string;
+    readonly sha256: string;
+  }>`SELECT card_id, revision, plan_doc_id, sha256 FROM ft3_board_plan_accept_outbox
+    WHERE delivered_at IS NULL AND (${cardId} IS NULL OR card_id = ${cardId})
+    ORDER BY card_id, revision`.pipe(
+    Effect.map((rows) =>
+      rows.map((row): PendingAcceptEvent => ({
+        cardId: row.card_id,
+        revision: row.revision,
+        planDocId: row.plan_doc_id,
+        sha256: row.sha256,
+      })),
+    ),
+    Effect.mapError(storeFailure(cardId ?? "")),
+  );
+
+/**
+ * Sends one pending accepted event and marks it delivered. A failed dispatch
+ * leaves the row pending, so the next accept retry or restart redelivers it.
+ */
+const sendPendingAccept = Effect.fn("PlanService.sendPendingAccept")(function* (
+  sql: SqlClient.SqlClient,
+  threads: ThreadManagement.ThreadManagementServiceShape,
+  row: PendingAcceptEvent,
+) {
+  const card = yield* sql<{
+    readonly orchestrator_thread_id: string;
+    readonly title: string;
+  }>`SELECT orchestrator_thread_id, title FROM ft3_board_cards WHERE card_id = ${row.cardId}`.pipe(
+    Effect.mapError(storeFailure(row.cardId)),
+  );
+  const current = card[0];
+  if (current === undefined) {
+    return yield* new PlanError({ code: "plan_card_not_found", cardId: row.cardId });
+  }
+  yield* threads
+    .dispatch(
+      acceptedLeadEvent({
+        cardId: row.cardId,
+        revision: row.revision,
+        planDocId: row.planDocId,
+        sha256: row.sha256,
+        orchestratorThreadId: current.orchestrator_thread_id,
+        title: current.title,
+      }),
+    )
+    .pipe(
+      Effect.mapError(
+        (cause) => new PlanError({ code: "plan_store_failed", cardId: row.cardId, cause }),
+      ),
+    );
+  const at = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+  yield* sql`UPDATE ft3_board_plan_accept_outbox SET delivered_at = ${yield* at} WHERE card_id = ${row.cardId} AND revision = ${row.revision} AND delivered_at IS NULL`.pipe(
+    Effect.mapError(storeFailure(row.cardId)),
+  );
+});
+
+/** Delivers the pending accepted events of one card, or of every card when `cardId` is null. */
+const deliverPendingAccepts = Effect.fn("PlanService.deliverPendingAccepts")(function* (
+  sql: SqlClient.SqlClient,
+  threads: ThreadManagement.ThreadManagementServiceShape,
+  cardId: string | null,
+) {
+  for (const row of yield* pendingAccepts(sql, cardId)) {
+    yield* sendPendingAccept(sql, threads, row);
+  }
+});
+
 /**
  * Stores a step count in place, refreshing recency of a re-stored key and
  * evicting the oldest entries past the cap. The cap alone bounds the cache;
@@ -292,8 +404,6 @@ const make = Effect.fn("PlanService.make")(function* () {
   ).plansFolder;
 
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
-  const storeFailure = (cardId: string) => (cause: unknown) =>
-    new PlanError({ code: "plan_store_failed", cardId, cause });
   const documentFailure = (cardId: string) => (cause: DocsServer.DocsServiceError) =>
     new PlanError({
       code: cause.code === "capability_denied" ? "plan_document_denied" : "plan_document_failed",
@@ -351,6 +461,17 @@ const make = Effect.fn("PlanService.make")(function* () {
         }),
       )
       .pipe(Effect.mapError(storeFailure(record.cardId)));
+
+  const insertAcceptOutbox = (input: {
+    readonly cardId: string;
+    readonly revision: number;
+    readonly planDocId: string;
+    readonly sha256: string;
+    readonly at: string;
+  }) =>
+    sql`INSERT INTO ft3_board_plan_accept_outbox (card_id, revision, plan_doc_id, sha256, created_at) VALUES (${input.cardId}, ${input.revision}, ${input.planDocId}, ${input.sha256}, ${input.at})`.pipe(
+      Effect.mapError(storeFailure(input.cardId)),
+    );
 
   const readTemplate = (cardId: string) =>
     Effect.tryPromise({
@@ -554,53 +675,15 @@ const make = Effect.fn("PlanService.make")(function* () {
     return next;
   });
 
-  /**
-   * The single lead event of the plan flow: exactly one per accepted revision,
-   * sent after the accept commits. A retried accept of the recorded version is
-   * a success without a new event.
-   */
-  const notifyAccepted = Effect.fn("PlanService.notifyAccepted")(function* (
-    record: PlanningContracts.PlanRecord,
-  ) {
-    const card = yield* sql<{
-      readonly orchestrator_thread_id: string;
-      readonly title: string;
-    }>`SELECT orchestrator_thread_id, title FROM ft3_board_cards
-      WHERE card_id = ${record.cardId}`.pipe(Effect.mapError(storeFailure(record.cardId)));
-    const row = card[0];
-    if (row === undefined) {
-      return yield* new PlanError({ code: "plan_card_not_found", cardId: record.cardId });
-    }
-    const id = `ft3:plan:accepted:${record.cardId}:${record.acceptedRevision}`;
-    const text =
-      `Plan accepted for card "${row.title}": oc://doc/${record.planDocId}, ` +
-      `revision ${record.acceptedRevision} (sha256 ${(record.acceptedSha256 ?? "").slice(0, 12)}). ` +
-      `Dispatch implementation strictly by steps of plan_read(version: accepted).`;
-    yield* threads
-      .dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(id),
-        threadId: ThreadId.make(row.orchestrator_thread_id),
-        messageId: MessageId.make(id),
-        text,
-        attachments: [],
-        createdBy: "agent",
-        creationSource: "server",
-        dispatchMode: { type: "start_immediately" },
-      })
-      .pipe(
-        Effect.mapError(
-          (cause) => new PlanError({ code: "plan_store_failed", cardId: record.cardId, cause }),
-        ),
-      );
-  });
-
   const accept = Effect.fn("PlanService.accept")(function* (input: {
     readonly cardId: Contracts.BoardCardId;
     readonly sha256: string;
   }) {
     const record = yield* loadRecord(input.cardId);
-    if (record.state === "accepted" && record.acceptedSha256 === input.sha256) return record;
+    if (record.state === "accepted" && record.acceptedSha256 === input.sha256) {
+      yield* deliverPendingAccepts(sql, threads, record.cardId);
+      return record;
+    }
     if (record.state === "accepted") {
       return yield* new PlanError({ code: "plan_changed", cardId: input.cardId });
     }
@@ -627,9 +710,22 @@ const make = Effect.fn("PlanService.make")(function* () {
       acceptedAt: at,
       updatedAt: at,
     };
-    yield* commit(next, { phase: "accepted", sha256: doc.sha256, content: doc.content });
-    yield* setCardReadiness(input.cardId, "ready", null);
-    yield* notifyAccepted(next);
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          yield* commit(next, { phase: "accepted", sha256: doc.sha256, content: doc.content });
+          yield* setCardReadiness(input.cardId, "ready", null);
+          yield* insertAcceptOutbox({
+            cardId: next.cardId,
+            revision: next.acceptedRevision,
+            planDocId: next.planDocId,
+            sha256: doc.sha256,
+            at,
+          });
+        }),
+      )
+      .pipe(Effect.mapError(storeFailure(input.cardId)));
+    yield* deliverPendingAccepts(sql, threads, input.cardId);
     return next;
   });
 
@@ -868,6 +964,36 @@ const make = Effect.fn("PlanService.make")(function* () {
 });
 
 export const planServiceLayer = Layer.effect(PlanService, make());
+
+/**
+ * Startup redelivery of the accepted-event outbox. Runs in the automation
+ * worker with only the database and the dispatcher. A row that still fails
+ * stays pending and is logged, so one bad row cannot block server startup.
+ */
+export const planAcceptOutboxDrainLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const rows = yield* pendingAccepts(sql, null).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("plan accept outbox unreadable", { error: error.message }).pipe(
+          Effect.as([]),
+        ),
+      ),
+    );
+    for (const row of rows) {
+      yield* sendPendingAccept(sql, threads, row).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("plan accept event still pending", {
+            cardId: row.cardId,
+            revision: row.revision,
+            error: error.message,
+          }),
+        ),
+      );
+    }
+  }),
+);
 
 /**
  * The docs write rule's facts for planners: a thread that is some card's planner

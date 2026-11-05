@@ -93,9 +93,13 @@ const threadsLayer = (options: PlanTestOptions) =>
       });
     },
     dispatch: (command) =>
-      Effect.sync(() => {
-        options.onDispatch?.(command);
-      }).pipe(Effect.as({} as never)),
+      Effect.try({
+        try: () => {
+          options.onDispatch?.(command);
+          return {} as never;
+        },
+        catch: (cause) => cause as never,
+      }),
   });
 
 const projectsLayer = (options: PlanTestOptions) =>
@@ -204,6 +208,13 @@ export const withPlanning = <A, E>(
       return yield* use;
     }).pipe(Effect.provide(testLayer(root, options)), Effect.ensuring(removeRoot(root)));
   });
+
+/** The startup redelivery of the accepted-event outbox, on the store and dispatcher of `options`. */
+export const restartAcceptDelivery = (options: PlanTestOptions) =>
+  Layer.build(PlanService.planAcceptOutboxDrainLayer).pipe(
+    Effect.scoped,
+    Effect.provide(threadsLayer(options)),
+  );
 
 /** Inserts the lead thread, its board orchestrator and one card; the card is the plan's card. */
 export const seedCard = (title = "Storage plan", id = CARD_ID) =>

@@ -30,6 +30,7 @@ describe("ft3 migrations", () => {
         [16, "MailDeliveryFailure"],
         [17, "BoardPlanImplementStarted"],
         [18, "MailImplementLookup"],
+        [19, "BoardPlanAcceptOutbox"],
       ]);
       const tables = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
@@ -44,6 +45,7 @@ describe("ft3 migrations", () => {
           "ft3_board_card_plans",
           "ft3_board_cards",
           "ft3_board_orchestrators",
+          "ft3_board_plan_accept_outbox",
           "ft3_board_plan_versions",
           "ft3_board_reactor_background",
           "ft3_board_reactor_cursor",
@@ -93,6 +95,7 @@ describe("ft3 migrations", () => {
         { migration_id: 16, name: "MailDeliveryFailure" },
         { migration_id: 17, name: "BoardPlanImplementStarted" },
         { migration_id: 18, name: "MailImplementLookup" },
+        { migration_id: 19, name: "BoardPlanAcceptOutbox" },
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -131,6 +134,7 @@ describe("ft3 migrations", () => {
         [16, "MailDeliveryFailure"],
         [17, "BoardPlanImplementStarted"],
         [18, "MailImplementLookup"],
+        [19, "BoardPlanAcceptOutbox"],
       ]);
       yield* sql`INSERT INTO ft3_meta VALUES ('probe', 'retained')`;
       const ft3Before = yield* sql`SELECT * FROM ft3_migrations`;
@@ -175,6 +179,7 @@ describe("ft3 migrations", () => {
         [16, "MailDeliveryFailure"],
         [17, "BoardPlanImplementStarted"],
         [18, "MailImplementLookup"],
+        [19, "BoardPlanAcceptOutbox"],
       ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );

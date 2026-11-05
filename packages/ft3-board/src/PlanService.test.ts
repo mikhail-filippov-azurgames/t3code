@@ -3,6 +3,7 @@ import { docLinkOf } from "@t3tools/ft3-docs/contracts";
 import * as DocsServer from "@t3tools/ft3-docs/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -368,6 +369,71 @@ describe("PlanService", () => {
       }),
     ),
   );
+
+  const outageDispatch = () => {
+    const dispatched: Array<unknown> = [];
+    const state = { down: true };
+    const options = {
+      onDispatch: (command: unknown) => {
+        if (state.down) throw new Error("dispatch down");
+        dispatched.push(command);
+      },
+    };
+    return { dispatched, state, options };
+  };
+
+  it.effect("redelivers the accepted event on an accept retry after a dispatch failure", () => {
+    const outage = outageDispatch();
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const exit = yield* Effect.exit(service.accept({ cardId, sha256 }));
+        assert.isTrue(Exit.isFailure(exit));
+        assert.equal((yield* service.get(cardId))?.state, "accepted");
+        const retryWhileDown = yield* Effect.exit(service.accept({ cardId, sha256 }));
+        assert.isTrue(Exit.isFailure(retryWhileDown));
+        assert.isEmpty(outage.dispatched);
+        outage.state.down = false;
+        const retry = yield* service.accept({ cardId, sha256 });
+        assert.equal(retry.state, "accepted");
+        assert.lengthOf(outage.dispatched, 1);
+        yield* service.accept({ cardId, sha256 });
+        assert.lengthOf(outage.dispatched, 1);
+      }),
+      outage.options,
+    );
+  });
+
+  it.effect("redelivers the accepted event on restart without a retry, exactly once", () => {
+    const outage = outageDispatch();
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        yield* Effect.exit(service.accept({ cardId, sha256 }));
+        assert.isEmpty(outage.dispatched);
+        yield* Testkit.restartAcceptDelivery(outage.options);
+        assert.isEmpty(outage.dispatched);
+        outage.state.down = false;
+        yield* Testkit.restartAcceptDelivery(outage.options);
+        assert.lengthOf(outage.dispatched, 1);
+        yield* Testkit.restartAcceptDelivery(outage.options);
+        assert.lengthOf(outage.dispatched, 1);
+      }),
+      outage.options,
+    );
+  });
 
   it.effect("refuses to accept a digest that is no longer the live plan", () =>
     Testkit.withPlanning(
