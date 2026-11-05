@@ -175,6 +175,9 @@ export const settingsLayer = (overrides: Partial<{ readonly classifierThreshold:
 export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
   const checks: Array<{ readonly cardId: string; readonly roleId: string }> = [];
   const records: Array<{ readonly cardId: string; readonly phase: string }> = [];
+  const answers: Array<string> = [];
+  const binds: Array<{ readonly cardId: string; readonly threadId: string }> = [];
+  const planner: { thread: string | null } = { thread: null };
   const layer = Layer.succeed(
     PlanGate,
     PlanGate.of({
@@ -193,9 +196,19 @@ export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
         Effect.sync(() => {
           records.push({ cardId: input.cardId, phase: input.phase });
         }),
+      recordPlannerAnswer: (input) =>
+        Effect.sync(() => {
+          answers.push(input.cardId);
+        }),
+      plannerThreadOf: () => Effect.succeed(planner.thread),
+      bindPlannerThread: (input) =>
+        Effect.sync(() => {
+          binds.push(input);
+          planner.thread = input.threadId;
+        }),
     }),
   );
-  return { layer, checks, records };
+  return { layer, checks, records, answers, binds };
 };
 
 /** The mail service over an in-memory database, with the given feature, routing and role set. */
@@ -242,5 +255,7 @@ export const mailHarness = (
     classified: classifier.calls,
     planChecks: gate.checks,
     planRecords: gate.records,
+    planAnswers: gate.answers,
+    planBinds: gate.binds,
   };
 };

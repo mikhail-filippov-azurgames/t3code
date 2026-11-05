@@ -3,6 +3,7 @@
  * §11.4). A flagged card keeps the gate until its plan is accepted and still
  * matches; the `planning` toggle only controls setting new flags.
  */
+import { ThreadId } from "@t3tools/contracts";
 import * as DocsServer from "@t3tools/ft3-docs/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -127,6 +128,17 @@ export class PlanGate extends Context.Service<
       readonly cardId: string;
       readonly phase: PlanningContracts.PlanPhase;
     }) => Effect.Effect<void, PlanService.PlanError>;
+    /** The planner's answer records the draft version while the plan is drafting; later answers add none. */
+    readonly recordPlannerAnswer: (input: {
+      readonly cardId: string;
+    }) => Effect.Effect<void, PlanService.PlanError>;
+    readonly plannerThreadOf: (
+      cardId: string,
+    ) => Effect.Effect<string | null, PlanService.PlanError>;
+    readonly bindPlannerThread: (input: {
+      readonly cardId: string;
+      readonly threadId: string;
+    }) => Effect.Effect<void, PlanService.PlanError>;
   }
 >()("@t3tools/ft3-board/PlanGate") {}
 
@@ -209,7 +221,10 @@ export const planGateLayer = Layer.effect(
           const plan = yield* plans.get(cardId);
           if (plan === null) {
             yield* plans.require({ cardId, requiredBy: "lead" });
+          } else if (plan.state === "reviewing") {
+            yield* plans.closeReviewRound(cardId);
           }
+          yield* plans.beginDraft(cardId);
           return;
         }
         if (input.phase === "review") {
@@ -219,6 +234,23 @@ export const planGateLayer = Layer.effect(
         if (input.phase === "implement") {
           yield* plans.markImplementStarted(cardId);
         }
+      }),
+      recordPlannerAnswer: Effect.fn("PlanGate.recordPlannerAnswer")(function* (input) {
+        const cardId = input.cardId as Contracts.BoardCardId;
+        const plan = yield* plans.get(cardId);
+        if (plan?.state === "drafting") {
+          yield* plans.recordDraft(cardId);
+        }
+      }),
+      plannerThreadOf: Effect.fn("PlanGate.plannerThreadOf")(function* (cardId) {
+        const plan = yield* plans.get(cardId as Contracts.BoardCardId);
+        return plan?.plannerThreadId ?? null;
+      }),
+      bindPlannerThread: Effect.fn("PlanGate.bindPlannerThread")(function* (input) {
+        yield* plans.bindPlannerThread({
+          cardId: input.cardId as Contracts.BoardCardId,
+          threadId: ThreadId.make(input.threadId),
+        });
       }),
     });
   }),

@@ -666,7 +666,7 @@ const make = Effect.fn("PlanService.make")(function* () {
         yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });
       }
     } else {
-      yield* requireState(record, ["drafting", "accepted"]);
+      yield* requireState(record, ["drafting", "reviewing", "accepted"]);
       const doc = yield* readPlanDocument(record);
       next = { ...record, state: "discussion" as const, updatedAt: yield* nowIso };
       yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });

@@ -791,6 +791,60 @@ it.effect("records the implement letter at send time", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("starts one planner thread per card and reuses it in later tasks", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const first = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-one",
+      title: "Plan work",
+      brief: "Write the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const draftOne = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: first.task.taskId,
+      to: "role:planner",
+      kind: "request",
+      body: "Draft it.",
+      clientRequestId: "request:draft-one",
+      plan: { phase: "draft" },
+    });
+    const plannerThread = draftOne.launched[0]!.participantThreadId;
+    assert.deepStrictEqual(harness.planBinds, [{ cardId: "card:one", threadId: plannerThread }]);
+    yield* sendAs(plannerThread, first.task.taskId, "lead", "answer", "Drafted.", "request:answer");
+    assert.deepStrictEqual(harness.planAnswers, ["card:one"]);
+    const second = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:plan-two",
+      title: "Plan again",
+      brief: "Revise the plan.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "planner" }],
+    });
+    const draftTwo = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: second.task.taskId,
+      to: "role:planner",
+      kind: "request",
+      body: "Draft again.",
+      clientRequestId: "request:draft-two",
+      plan: { phase: "draft" },
+    });
+    assert.lengthOf(harness.launches, 1);
+    assert.deepStrictEqual(
+      draftTwo.deliveries.map((delivery) => delivery.participantThreadId),
+      [plannerThread],
+    );
+    assert.lengthOf(harness.planBinds, 1);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it("matches the kind matrix for the system, the lead and participants", () => {
   assert.isTrue(mailKindAllowed({ kind: "system" }, "lead", "blocked"));
   assert.isFalse(mailKindAllowed({ kind: "system" }, "lead", "request"));

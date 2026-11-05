@@ -1010,6 +1010,17 @@ const make = Effect.gen(function* () {
         .recordPlanLetter({ cardId: task.cardId, phase: plan.phase })
         .pipe(Effect.mapError(planFailure));
     }
+    if (
+      sender.kind === "participant" &&
+      sender.roleId === "planner" &&
+      recipient.kind === "lead" &&
+      input.kind === "answer" &&
+      task.cardId !== null
+    ) {
+      yield* planGate
+        .recordPlannerAnswer({ cardId: task.cardId })
+        .pipe(Effect.mapError(planFailure));
+    }
     // The lead's letter starts a threadless member; a repeat reuses the same thread.
     // A member whose route is null gets one when the letter is resent after the
     // policy is fixed; an overridden member launches on its override instead.
@@ -1023,6 +1034,20 @@ const make = Effect.gen(function* () {
           continue;
         }
         let current = member;
+        if (current.roleId === "planner" && task.cardId !== null) {
+          const plannerThread = yield* planGate
+            .plannerThreadOf(task.cardId)
+            .pipe(Effect.mapError(planFailure));
+          if (plannerThread !== null) {
+            yield* repository.setParticipantThread({
+              memberId: current.memberId,
+              participantThreadId: plannerThread,
+              at: yield* nowIso,
+            });
+            launchedThreads.set(current.memberId, plannerThread);
+            continue;
+          }
+        }
         if (current.modelOverrideJson === null && current.routeModelSelectionJson === null) {
           const retry = yield* selectRoute(
             current.memberId,
@@ -1069,6 +1094,11 @@ const make = Effect.gen(function* () {
         });
         launched.push({ memberId: current.memberId, participantThreadId: outcome.threadId });
         launchedThreads.set(current.memberId, outcome.threadId);
+        if (current.roleId === "planner" && task.cardId !== null) {
+          yield* planGate
+            .bindPlannerThread({ cardId: task.cardId, threadId: outcome.threadId })
+            .pipe(Effect.mapError(planFailure));
+        }
       }
     }
     // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.

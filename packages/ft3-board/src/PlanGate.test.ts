@@ -229,13 +229,56 @@ describe("PlanGate layer", () => {
         const plans = yield* PlanService.PlanService;
         const gate = yield* PlanGate.PlanGate;
         yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "draft" });
-        assert.equal((yield* plans.get(Testkit.CARD_ID))?.state, "required");
-        yield* plans.beginDraft(Testkit.CARD_ID);
+        assert.equal((yield* plans.get(Testkit.CARD_ID))?.state, "drafting");
         yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "review" });
         assert.equal((yield* plans.get(Testkit.CARD_ID))?.reviewRounds, 1);
         yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "implement" });
         const summaries = yield* plans.listSummaries({ cardIds: [Testkit.CARD_ID] });
         assert.isTrue(summaries[0]?.implementStarted);
+      }),
+    ),
+  );
+
+  it.effect("walks flag, draft, answer, review and discussion through the letter effects", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const plans = yield* PlanService.PlanService;
+        const gate = yield* PlanGate.PlanGate;
+        yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "draft" });
+        const record = yield* plans.require({ cardId: Testkit.CARD_ID, requiredBy: "lead" });
+        assert.isNull(yield* gate.plannerThreadOf(Testkit.CARD_ID));
+        yield* gate.bindPlannerThread({
+          cardId: Testkit.CARD_ID,
+          threadId: Testkit.PLANNER_THREAD_ID,
+        });
+        assert.equal(yield* gate.plannerThreadOf(Testkit.CARD_ID), Testkit.PLANNER_THREAD_ID);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* gate.recordPlannerAnswer({ cardId: Testkit.CARD_ID });
+        yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "review" });
+        assert.equal((yield* plans.get(Testkit.CARD_ID))?.state, "reviewing");
+        yield* plans.submitForDiscussion(Testkit.CARD_ID);
+        assert.equal((yield* plans.get(Testkit.CARD_ID))?.state, "discussion");
+        const phases = (yield* plans.listVersions(Testkit.CARD_ID)).map((version) => version.phase);
+        assert.deepStrictEqual(phases.toSorted(), ["discussion", "draft"]);
+      }),
+    ),
+  );
+
+  it.effect("closes the review round when changes go back to the planner", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const plans = yield* PlanService.PlanService;
+        const gate = yield* PlanGate.PlanGate;
+        yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "draft" });
+        yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "review" });
+        yield* gate.recordPlanLetter({ cardId: Testkit.CARD_ID, phase: "draft" });
+        const record = yield* plans.get(Testkit.CARD_ID);
+        assert.equal(record?.state, "drafting");
+        assert.equal(record?.reviewRounds, 1);
+        const phases = (yield* plans.listVersions(Testkit.CARD_ID)).map((version) => version.phase);
+        assert.deepStrictEqual(phases, ["review_1"]);
       }),
     ),
   );
