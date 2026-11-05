@@ -185,6 +185,7 @@ const stubs = {
   [FT3_WS_METHODS.policiesBrowseServerDirectory]: () =>
     Effect.succeed({ parent: null, directories: [], files: [], truncated: false }),
   [FT3_WS_METHODS.mailTimeline]: () => Effect.succeed({ task: mailTask, entries: [] }),
+  [FT3_WS_METHODS.mailTasks]: () => Effect.succeed({ tasks: [mailTask] }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -325,6 +326,9 @@ describe("FT3 RPC authorization", () => {
       expect(yield* client[FT3_WS_METHODS.mailTimeline]({ taskId: "task:timeline" })).toEqual({
         task: mailTask,
         entries: [],
+      });
+      expect(yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"] })).toEqual({
+        tasks: [mailTask],
       });
       expect(yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" })).toEqual({
         status: "not_found",
@@ -478,6 +482,9 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: write });
       expect(
         yield* client[FT3_WS_METHODS.mailTimeline]({ taskId: "task:timeline" }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"] }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
         yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" }).pipe(Effect.flip),
