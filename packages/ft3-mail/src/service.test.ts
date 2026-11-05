@@ -690,6 +690,79 @@ it.effect("refuses plan letters without a board card and maps gate refusals", ()
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("checks plain requests to gated roles on card-linked tasks only", () => {
+  const harness = mailHarness({ planRefuse: "plan_phase_required" });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const linked = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:linked-team",
+      title: "Build work",
+      brief: "Build it.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "implementation" }],
+    });
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: LEAD,
+          taskId: linked.task.taskId,
+          to: "role:implementation",
+          kind: "request",
+          body: "Build it.",
+          clientRequestId: "request:plain",
+        }),
+      ),
+      "plan_phase_required",
+    );
+    assert.deepStrictEqual(harness.planChecks, [{ cardId: "card:one", roleId: "implementation" }]);
+    const unlinked = yield* teamOf([{ role: "implementation" }], "request:unlinked-team");
+    const sent = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId: unlinked.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Build it.",
+      clientRequestId: "request:plain-unlinked",
+    });
+    assert.equal(sent.letter.kind, "request");
+    assert.lengthOf(harness.planChecks, 1);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps checking plain requests to gated roles while planning is off", () => {
+  const harness = mailHarness({ planRefuse: "plan_phase_required", planning: false });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const linked = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:linked-team",
+      title: "Build work",
+      brief: "Build it.",
+      level: "medium",
+      cardId: "card:one",
+      members: [{ role: "test" }],
+    });
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: LEAD,
+          taskId: linked.task.taskId,
+          to: "role:test",
+          kind: "request",
+          body: "Test it.",
+          clientRequestId: "request:plain-test",
+        }),
+      ),
+      "plan_phase_required",
+    );
+    assert.deepStrictEqual(harness.planChecks, [{ cardId: "card:one", roleId: "test" }]);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("records the implement letter at send time", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {

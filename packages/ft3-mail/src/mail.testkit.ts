@@ -59,17 +59,17 @@ export const databaseLayer = mailRepositoryLayer.pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 
-export const gateLayer = (enabled: boolean) =>
+export const gateLayer = (enabled: boolean, planning = true) =>
   Layer.succeed(
     FeatureGate,
     FeatureGate.of({
       states: Effect.die("unused"),
       state: () => Effect.die("unused"),
       isEffective: () => Effect.succeed(enabled),
-      require: () =>
-        enabled
+      require: (feature) =>
+        enabled && (feature !== "planning" || planning)
           ? Effect.void
-          : Effect.fail(new FeatureDisabledError({ feature: "mail", code: "feature_disabled" })),
+          : Effect.fail(new FeatureDisabledError({ feature, code: "feature_disabled" })),
     }),
   );
 
@@ -179,17 +179,16 @@ export const planGateFake = (refuseCode?: PlanGateErrorCode) => {
     PlanGate,
     PlanGate.of({
       check: (input) =>
-        refuseCode === undefined
-          ? Effect.sync(() => {
-              checks.push({ cardId: input.cardId, roleId: input.roleId });
-            })
-          : Effect.fail(
-              new PlanGateError({
-                code: refuseCode,
-                cardId: input.cardId,
-                roleId: input.roleId,
-              }),
-            ),
+        Effect.gen(function* () {
+          checks.push({ cardId: input.cardId, roleId: input.roleId });
+          if (refuseCode !== undefined) {
+            return yield* new PlanGateError({
+              code: refuseCode,
+              cardId: input.cardId,
+              roleId: input.roleId,
+            });
+          }
+        }),
       recordPlanLetter: (input) =>
         Effect.sync(() => {
           records.push({ cardId: input.cardId, phase: input.phase });
@@ -209,6 +208,7 @@ export const mailHarness = (
     readonly classify?: (body: string) => MailClassification | null;
     readonly classifierThreshold?: number;
     readonly planRefuse?: PlanGateErrorCode;
+    readonly planning?: boolean;
   } = {},
 ) => {
   const routing = routingFake(options);
@@ -220,7 +220,7 @@ export const mailHarness = (
     Layer.provide(
       Layer.mergeAll(
         routing.layer,
-        gateLayer(options.enabled ?? true),
+        gateLayer(options.enabled ?? true, options.planning ?? true),
         cryptoLayer,
         evidence.layer,
         launcher.layer,

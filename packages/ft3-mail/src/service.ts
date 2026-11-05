@@ -916,26 +916,33 @@ const make = Effect.gen(function* () {
           );
         }
       }
-      yield* planGate
-        .check({
-          cardId: task.cardId,
-          roleId: recipient.kind === "role" ? recipient.role : recipient.kind,
-          phase: plan.phase,
-          ...(plan.step === undefined ? {} : { step: plan.step }),
-          ...(plan.citation === undefined
-            ? {}
-            : {
-                citation: {
-                  planDocId: plan.citation.planDocId,
-                  planSha256: plan.citation.planSha256,
-                  ...(plan.citation.planStep === undefined
-                    ? {}
-                    : { planStep: plan.citation.planStep }),
-                },
-              }),
-          isolation: task.isolation,
-        })
-        .pipe(Effect.mapError(planFailure));
+    }
+    if (task.cardId !== null) {
+      const citation =
+        plan?.citation === undefined
+          ? undefined
+          : {
+              planDocId: plan.citation.planDocId,
+              planSha256: plan.citation.planSha256,
+              ...(plan.citation.planStep === undefined ? {} : { planStep: plan.citation.planStep }),
+            };
+      const memberRoleIds = [
+        ...new Set(
+          targets.flatMap((target) => (target.member === null ? [] : [target.member.roleId])),
+        ),
+      ];
+      for (const roleId of memberRoleIds) {
+        yield* planGate
+          .check({
+            cardId: task.cardId,
+            roleId,
+            phase: plan?.phase,
+            step: plan?.step,
+            citation,
+            isolation: task.isolation,
+          })
+          .pipe(Effect.mapError(planFailure));
+      }
     }
     const replyToLetterId = input.replyToLetterId ?? null;
     if (replyToLetterId !== null) {
