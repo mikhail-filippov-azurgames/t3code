@@ -400,6 +400,22 @@ describe("FT3 RPC authorization", () => {
         },
       );
       expect(
+        yield* client[FT3_WS_METHODS.boardPlanGet]({ cardId }).pipe(Effect.flip),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: read,
+      });
+      expect(
+        yield* client[FT3_WS_METHODS.boardPlanSetRequired]({ cardId, required: true }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
+      expect(
+        yield* client[FT3_WS_METHODS.boardPlanAccept]({ cardId, sha256: "0".repeat(64) }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
+      expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
