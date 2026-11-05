@@ -170,6 +170,10 @@ const assistantItem = (id = turnId, ordinal = 1): OrchestrationV2TurnItem => ({
   streaming: false,
 });
 
+const projectStore = Layer.mock(ProjectStore.ProjectStoreV2)({
+  get: () => Effect.succeedNone,
+  apply: () => Effect.void,
+});
 const infrastructure = EventSink.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
@@ -177,6 +181,9 @@ const infrastructure = EventSink.layer.pipe(
         Layer.provide(OrchestrationEventStore.layer),
       ),
       ProjectionStore.layer,
+      // EventSink applies project events to the store; the summary tests never
+      // read projects back, so a no-op apply is enough here.
+      projectStore,
     ),
   ),
 );
@@ -212,12 +219,15 @@ function fixture() {
   const support = Layer.mergeAll(
     textGeneration,
     ServerSettings.ServerSettingsService.layerTest(),
-    Layer.mock(ProjectStore.ProjectStoreV2)({ get: () => Effect.succeedNone }),
+    projectStore,
     Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
       getEnvironmentId: Effect.succeed(EnvironmentId.make("environment:test")),
     }),
     SummaryRepository.layer,
   );
+  // TaskHandoffService reads the project store at build time; both uses below
+  // take it through support because sibling layers never share providers.
+  const taskHandoffs = TaskHandoffService.layer.pipe(Layer.provideMerge(support));
   const layer = Layer.mergeAll(
     Ft3Host.layer.pipe(
       Layer.provide(ServerSettings.layerTest()),
@@ -226,11 +236,8 @@ function fixture() {
       Layer.provide(launcherFake().layer),
     ),
     DelegatedTaskSummaryReactor.layer.pipe(Layer.provideMerge(support)),
-    TaskQueryService.layer.pipe(
-      Layer.provideMerge(support),
-      Layer.provideMerge(TaskHandoffService.layer),
-    ),
-    TaskHandoffService.layer,
+    TaskQueryService.layer.pipe(Layer.provideMerge(support), Layer.provideMerge(taskHandoffs)),
+    taskHandoffs,
   ).pipe(
     Layer.provideMerge(managedThreads),
     Layer.provideMerge(infrastructure),

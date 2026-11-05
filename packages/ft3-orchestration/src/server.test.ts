@@ -34,6 +34,7 @@ import {
 } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
@@ -295,6 +296,7 @@ function fixture() {
     Layer.provide(Layer.mock(MailParticipantLauncher)({})),
     Layer.provide(Layer.mock(PlanGate)({})),
     Layer.provide(Layer.mock(PlanService)({})),
+    Layer.provide(Layer.mock(ProjectStore.ProjectStoreV2)({})),
     Layer.provide(dependencies),
     Layer.provide(providerRegistry),
     Layer.provideMerge(SqlitePersistence.layerMemory),
@@ -675,6 +677,7 @@ describe("ft3 task toolkit through ft3-host", () => {
         Layer.provide(Layer.mock(MailParticipantLauncher)({})),
         Layer.provide(Layer.mock(PlanGate)({})),
         Layer.provide(Layer.mock(PlanService)({})),
+        Layer.provide(Layer.mock(ProjectStore.ProjectStoreV2)({})),
         Layer.provide(liveQueries),
         Layer.provide(providerRegistry),
         Layer.provide(crypto),
