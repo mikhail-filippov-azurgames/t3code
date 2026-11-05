@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - the tests create a document store on disk.
+// @effect-diagnostics nodeBuiltinImport:off cryptoRandomUUID:off cryptoRandomUUIDInEffect:off - the tests create a document store on disk with fresh ids.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Crypto from "effect/Crypto";
@@ -400,9 +400,7 @@ describe("DocsService reads", () => {
               stamped !== null &&
               (after.mtimeMs !== stamped.mtimeMs || after.size !== stamped.size),
           );
-          assert.isNull(
-            yield* context.service.docStat("oc://doc/00000000-0000-0000-0000-000000000001"),
-          );
+          assert.isNull(yield* context.service.docStat(`oc://doc/${crypto.randomUUID()}`));
         }),
       (root) => seedFiles(root),
     ),

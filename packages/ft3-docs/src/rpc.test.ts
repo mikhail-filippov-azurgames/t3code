@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - the tests create a document store on disk.
+// @effect-diagnostics nodeBuiltinImport:off cryptoRandomUUID:off cryptoRandomUUIDInEffect:off - the tests create a document store on disk with fresh ids.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Crypto from "effect/Crypto";
@@ -130,7 +130,7 @@ describe("docs.read", () => {
           });
           assert.equal(byPath.status, "found");
           const missing = yield* docsRpcHandlers[FT3_DOCS_WS_METHODS.docsRead]({
-            ref: "oc://doc/00000000-0000-0000-0000-000000000001",
+            ref: `oc://doc/${crypto.randomUUID()}`,
           });
           assert.deepStrictEqual(missing, { status: "not_found" });
         }),
