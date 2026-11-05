@@ -3,37 +3,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./server": {
-      "types": "./src/server.ts",
-      "import": "./src/server.ts"
-    },
-    "./reactor": {
-      "types": "./src/ArchitectReconciler.ts",
-      "import": "./src/ArchitectReconciler.ts"
-    },
     "./migrations": {
       "types": "./src/migrations.ts",
       "import": "./src/migrations.ts"
-    },
-    "./skillLocation": {
-      "types": "./src/skillLocation.ts",
-      "import": "./src/skillLocation.ts"
-    },
-    "./rpc": {
-      "types": "./src/rpc.ts",
-      "import": "./src/rpc.ts"
-    },
-    "./service": {
-      "types": "./src/ArchitectService.ts",
-      "import": "./src/ArchitectService.ts"
-    },
-    "./rpc-contracts": {
-      "types": "./src/rpc-contracts.ts",
-      "import": "./src/rpc-contracts.ts"
-    },
-    "./contracts": {
-      "types": "./src/contracts.ts",
-      "import": "./src/contracts.ts"
     }
   },
   "scripts": {
@@ -41,12 +13,9 @@
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
-    "@t3tools/contracts": "workspace:*",
-    "@t3tools/ft3-board": "workspace:*",
     "effect": "catalog:"
   },
   "devDependencies": {
-    "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
     "@t3tools/shared": "workspace:*",
     "@types/node": "catalog:",

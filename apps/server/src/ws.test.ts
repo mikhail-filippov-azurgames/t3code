@@ -26,7 +26,6 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import {
-  ArchitectService as Ft3ArchitectService,
   BoardDelegationService as Ft3BoardDelegationService,
   BoardService as Ft3BoardService,
   BoardSummaryHistoryService as Ft3BoardSummaryHistoryService,
@@ -941,7 +940,6 @@ it.effect.each([
         Layer.mock(Ft3BoardDelegationService)({}),
         Layer.mock(Ft3BoardSummaryHistoryService)({}),
         Layer.mock(Ft3PlanService)({}),
-        Layer.mock(Ft3ArchitectService)({}),
         Layer.mock(Ft3CommitHistoryService)({}),
         Layer.mock(Ft3PolicyChangeTracker)({}),
         Layer.mock(DirectEndpoints.DirectEndpoints)({
@@ -1213,7 +1211,6 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       Layer.mock(Ft3BoardDelegationService)({}),
       Layer.mock(Ft3BoardSummaryHistoryService)({}),
       Layer.mock(Ft3PlanService)({}),
-      Layer.mock(Ft3ArchitectService)({}),
       Layer.mock(Ft3CommitHistoryService)({}),
       Layer.mock(Ft3PolicyChangeTracker)({}),
       Layer.mock(DirectEndpoints.DirectEndpoints)({

@@ -64,22 +64,6 @@ const mailTask = Schema.decodeSync(MailContracts.MailTask)({
   closedAt: null,
 });
 
-const planRecord = {
-  cardId,
-  required: true,
-  requiredBy: "human" as const,
-  requiredReason: null,
-  state: "accepted" as const,
-  planDocId: "plan-doc",
-  plannerMemberId: null,
-  plannerThreadId: null,
-  reviewRounds: 0,
-  acceptedSha256: "0".repeat(64),
-  acceptedRevision: 1,
-  acceptedAt: "2026-10-26T00:00:00.000Z",
-  updatedAt: "2026-10-26T00:00:00.000Z",
-};
-
 const piStatus = {
   instanceId: "pi",
   phase: "stopped" as const,
@@ -160,21 +144,6 @@ const stubs = {
   [FT3_WS_METHODS.boardStart]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardUpdate]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardDelete]: () => Effect.succeed({}),
-  [FT3_WS_METHODS.boardPlanGet]: () =>
-    Effect.succeed({
-      record: planRecord,
-      doc: { stableId: "plan", relPath: "corvis/plans/plan.md", name: "plan.md" },
-      liveSha256: null,
-      versions: [],
-    }),
-  [FT3_WS_METHODS.boardPlanSetRequired]: () => Effect.succeed(planRecord),
-  [FT3_WS_METHODS.boardPlanAccept]: () => Effect.succeed(planRecord),
-  [FT3_WS_METHODS.getCoordinatorArchitectSidebar]: () =>
-    Effect.succeed({ binding: null, reviews: [], publishable: [] }),
-  [FT3_WS_METHODS.getCoordinatorArchitectSidebarByArchitect]: () =>
-    Effect.succeed({ binding: null, reviews: [], publishable: [] }),
-  [FT3_WS_METHODS.publishArchitectPublication]: () =>
-    Effect.succeed({ reviewId: "review", status: "published" as const }),
   [FT3_WS_METHODS.vcsListCommitHistory]: () =>
     Effect.succeed({ commits: [], isRepo: false, nextCursor: null }),
   [FT3_WS_METHODS.vcsResolveCommitMentions]: () => Effect.succeed({ commits: [] }),
@@ -282,34 +251,6 @@ describe("FT3 RPC authorization", () => {
         cardId,
       });
       expect(yield* client[FT3_WS_METHODS.boardDelete]({ cardId })).toEqual({});
-      expect(yield* client[FT3_WS_METHODS.boardPlanGet]({ cardId })).toMatchObject({
-        liveSha256: null,
-        versions: [],
-      });
-      expect(
-        yield* client[FT3_WS_METHODS.boardPlanSetRequired]({ cardId, required: true }),
-      ).toMatchObject({ cardId });
-      expect(
-        yield* client[FT3_WS_METHODS.boardPlanAccept]({ cardId, sha256: "0".repeat(64) }),
-      ).toMatchObject({
-        cardId,
-      });
-      expect(
-        yield* client[FT3_WS_METHODS.getCoordinatorArchitectSidebar]({
-          coordinatorThreadId: ThreadId.make("c"),
-        }),
-      ).toEqual({ binding: null, reviews: [], publishable: [] });
-      expect(
-        yield* client[FT3_WS_METHODS.getCoordinatorArchitectSidebarByArchitect]({
-          architectThreadId: ThreadId.make("architect"),
-        }),
-      ).toEqual({ binding: null, reviews: [], publishable: [] });
-      expect(
-        yield* client[FT3_WS_METHODS.publishArchitectPublication]({
-          reviewId: "review",
-          idempotencyKey: "key",
-        }),
-      ).toEqual({ reviewId: "review", status: "published" });
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo", limit: 10 }),
       ).toEqual({ commits: [], isRepo: false, nextCursor: null });
@@ -450,22 +391,6 @@ describe("FT3 RPC authorization", () => {
           requiredPermission: operate,
         },
       );
-      expect(
-        yield* client[FT3_WS_METHODS.getCoordinatorArchitectSidebar]({
-          coordinatorThreadId: ThreadId.make("c"),
-        }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
-      expect(
-        yield* client[FT3_WS_METHODS.getCoordinatorArchitectSidebarByArchitect]({
-          architectThreadId: ThreadId.make("architect"),
-        }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
-      expect(
-        yield* client[FT3_WS_METHODS.publishArchitectPublication]({
-          reviewId: "review",
-          idempotencyKey: "key",
-        }).pipe(Effect.flip),
-      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: operate });
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });

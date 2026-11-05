@@ -105,64 +105,34 @@ stale, retry и fingerprint повторяют старый форк. `task_list
 отдают `summary`, `task_summary_history` — страницы записей. Правок upstream для
 этого не требуется, кроме уже перечисленных подключений пакета.
 
-`packages/ft3-architect` хранит связку координатор/архитектор и запрошенные
-архитектурные ревью отдельно от журнала событий V2. Таблицы
-`ft3_architect_binding` и `ft3_architect_review` повторяют итоговую схему
-legacy `coordinator_architect_binding`/`architecture_review` (миграции
-058–061, 063 старого форка) с V2-владением: `coordinator_thread_id` ссылается
-на `orchestration_v2_projection_threads` с каскадом, как отметка доски.
-**Связка — устаревший поток.** Текущая схема: один босс, lead; архитекторы
+`packages/ft3-architect` сведён к `./migrations`: сервис связки, MCP-инструменты
+(`get_lead_binding`, `architect_create_or_get`, замена/отзыв, ревью,
+публикация), RPC, reconciler и скилл `create-orchestrator-architect` выведены.
+Таблицы `ft3_architect_binding` и `ft3_architect_review` остаются read-only
+историей: схема повторяет итоговую схему legacy
+`coordinator_architect_binding`/`architecture_review` (миграции 058–061, 063
+старого форка) с V2-владением, `DeletedThreadPurge` их чистит. Связка —
+устаревший поток: текущая схема — один босс, lead; архитекторы
 (`architect`, `architect-*`) — консультанты, которых lead зовёт через
 `delegate_task` на один конкретный вопрос, без привязки; планы пишет роль
-`planner`. Инструменты связки (`get_lead_binding`, `architect_create_or_get`,
-замена/отзыв, ревью, публикация) остаются только для существующих связок и их
-данных и новых вызовов не требуют; скилл `create-orchestrator-architect`
-помечен retired. Срез 1–2 перенёс чтение (`get_lead_binding`,
-`list_architecture_reviews`); срез 4 — создание/замену/отзыв связки; срез 5 —
-цикл ревью (`architecture_review_request`, `architecture_review_answer`,
-`architecture_review_cancel`). Отметка оркестратора не дублируется — проверка
-при вызове читает `BoardRepository.listOrchestrators` из `ft3-board`. Права
-повторяют `ft3-board`: capability `orchestration`, живой тред, отказ
-делегированному исполнителю; доступ к данным — сам координатор (или человек
-на нём) либо связанный архитектор только к своей связке.
-
-Побудка архитектора доставляется штатным `message.dispatch` с
-детерминированным `commandId` (`arch:review-wake:<reviewId>`), отметка
-`request_wake_delivered_at` пишется после подтверждения (миграция
-`5_ArchitectReviewWake`); повторная доставка идемпотентна по receipt, а
-рестарт-гэп между вставкой ревью и побудкой закрывается той же отметкой.
-Ответ (`architecture_review_answer`) сохраняет ответ и не будит координатора,
-как в старом форке. Политика секретов `ft3-board/authorTextPolicy` применяется
-к `question`, `summary`, `reason` (запрос/ответ/отмена) и к `reason` в
-replace/detach. Срез 6 — публикация координатору: `prepare_lead_publication`
-(архитектор готовит advice-запись `origin='architect-advice'` со статусом
-`answered`, никогда не будит, повторная подготовка заменяет предыдущую) и
-`publish_to_lead` (единственная побудка координатора за ревью,
-детерминированный `commandId` `arch:publish-wake:<reviewId>`, отметка
-`publish_delivered_at`; повтор не будит). Advice-запись публикует только
-человек: серверный метод `publishHumanPublication` (`published_by='human'`,
-как в миграции 063), который позже вызовет UI; попытка архитектора
-опубликовать advice отклоняется как `human_publish_required`. Политика
-секретов применяется и к тексту публикации (question/summary).
+`planner`.
 
 ## RPC-модуль ft3 для web (срез S1)
 
 WS RPC в V2 закрыт для пакетов, поэтому ft3 держит собственную группу
-`@t3tools/ft3-host/rpc` (`RpcGroup.make(...boardRpcs, ...architectRpcs)` со своим
+`@t3tools/ft3-host/rpc` (`RpcGroup.make(...boardRpcs)` со своим
 middleware `Ft3RpcScopeAuthorization`) и сливает её в серверную группу одной
 строкой — `WsRpcGroup` и `RpcAuthorization.ts`/`clientRpcPermissions.ts` не
-правятся. Права повторяют старый форк: доска и архитектор read →
-`orchestration:read`, запись/публикация → `orchestration:operate`. Обработчики
-вызывают сервисы `ft3-board`/`ft3-architect`; человек в web действует от своего
-имени — отметка оркестратора и публикация человеком через
-`publishHumanPublication`. Контракты методов (payload/success) перенесены из
+правятся. Права повторяют старый форк: чтение доски →
+`orchestration:read`, запись → `orchestration:operate`. Обработчики
+вызывают сервисы `ft3-board`. Контракты методов (payload/success) перенесены из
 старого форка; `vcs.listCommitHistory` в этот срез не входит — см. «Граф
 коммитов (S2)».
 
 | Upstream-файл                | Правка                                                                                                            | Зачем                                                 |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `apps/server/src/ws.ts`      | `WsRpcGroup.merge(Ft3Rpc.group)`, spread `...Ft3Rpc.handlers`, `Ft3Rpc.authorizationLayer`, `Ft3Rpc.serviceLayer` | подключение группы, обработчиков, прав и сервисов ft3 |
-| `apps/server/src/ws.test.ts` | mock `BoardService`/`ArchitectService` в config-RPC слое                                                          | серверный RPC-слой теперь требует ft3-сервисы         |
+| `apps/server/src/ws.test.ts` | mock `BoardService` в config-RPC слое                                                                             | серверный RPC-слой теперь требует ft3-сервисы         |
 
 ## Граф коммитов (срез S2)
 
@@ -174,7 +144,7 @@ middleware `Ft3RpcScopeAuthorization`) и сливает её в серверн�
 внутренние checkpoint-рефы `refs/t3/checkpoints`, а `GitWorkflowService`-логика
 нерепозиторного cwd воспроизведена проверкой `rev-parse --is-inside-work-tree`.
 RPC-метод `vcs.listCommitHistory` (read → `orchestration:read`) добавляется в
-группу ft3 теми же строками, что доска и архитектор — `ft3-host` лишь
+группу ft3 теми же строками, что доска — `ft3-host` лишь
 импортирует `ft3-vcs/rpc` и сливает rpcs/handlers/scopes/serviceLayer. Права
 `ws.ts`/`RpcAuthorization.ts` не правятся. Парсер и пагинация (`--skip`/`-n`,
 локализация протухшего `offset` по `id`) покрыты тестами на моке `VcsProcess`.
@@ -303,6 +273,7 @@ additional upstream branches.
 | `apps/web/src/components/chat/RightPanelSurfaceContent.tsx` | import and `case "ft3"` delegation to `Ft3SurfaceContent`                                                                                                                          | mount the registry component with the panel's thread and visibility        |
 | `apps/web/src/components/ChatView.tsx`                      | pass the existing server `threadRef` to `ChatRightPanel`                                                                                                                           | scope launch actions to the actual panel, including remote environments    |
 | `apps/web/src/components/chat/TimelineUserMessageRow.tsx`   | import `BoardWakeNoticeRow`/`boardWakeNoticeOf`; one early return in `UserMessageRow`                                                                                              | render board wake/brief/nudge prompts as a compact collapsed system notice |
+| `apps/web/src/components/chat/ChatComposer.tsx`             | `ChatComposerFt3Actions` из `@t3tools/ft3-web/chat-composer`; один слот в ряду действий composer'а                                                                                 | run the Pi inference action from the composer                              |
 | `apps/web/src/reopenClosedView.ts`                          | `case "ft3"` delegates to `openFt3Surface`                                                                                                                                         | reopen the exact surface type                                              |
 | `apps/web/src/index.css`                                    | `@source "../../../packages/ft3-web/src"`                                                                                                                                          | include extension classes in Tailwind output                               |
 | `apps/web/package.json`                                     | `@t3tools/ft3-web: workspace:*`                                                                                                                                                    | resolve the extension package                                              |
@@ -313,7 +284,7 @@ additional upstream branches.
 
 Board wake detection reads the server-generated message id namespace (`ft3:board:wake|mark|start|brief:*`, `board:idle-nudge:*`) — existing metadata, so prompt text and the upstream message schema stay untouched.
 
-RPC definitions live in `ft3-board/rpc-contracts`, `ft3-architect/rpc-contracts`
+RPC definitions live in `ft3-board/rpc-contracts`
 and `ft3-host/rpc-contracts`. Server entries re-export those definitions and keep
 their handlers and authorization layers. Web must import the contract entry:
 the server `ft3-host/rpc` entry also loads repositories and services.
@@ -326,28 +297,6 @@ queries. Pinned cards use the original environment/thread storage keys and
 bounded `board.resolve` requests. Coordinator requests use V2's normal message
 dispatch. The old panel's delegated-summary history and commit graph are separate
 features and are not part of this Board surface.
-
-## Architect sidebar and human publication (S4)
-
-`packages/ft3-web/src/sidebar` owns the coordinator pin; `packages/ft3-web/src/architect`
-owns the human publish menu and its RPC state. The pin reads the binding snapshot
-for the coordinator row; the publish menu reads the snapshot for the Architect
-thread itself, so neither needs binding state from upstream. Only an active binding
-nests the Architect row, and only the bound Architect thread with unpublished
-records shows Publish.
-
-| Upstream file                                   | Connection                                                                                                                                                                                           | Reason                                                                     |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| `apps/web/src/components/Sidebar.tsx`           | call `useFt3SidebarRows`; keep the upstream `rowsOf` path when `hasFt3Rows` is false; use package row props/`afterRowByKey` for ft3 rows; intercept child actions only when the package handles them | preserve upstream rows and actions while adding forest and Architect seams |
-| `apps/web/src/components/chat/ChatComposer.tsx` | `ChatComposerFt3Actions` из `@t3tools/ft3-web/chat-composer`; один слот в ряду действий composer'а                                                                                                   | publish Architect advice from the composer                                 |
-| `pnpm-lock.yaml`                                | `@t3tools/ft3-architect` dependency of the `packages/ft3-web` importer                                                                                                                               | resolve the browser-safe architect contracts                               |
-
-`packages/ft3-architect/package.json` exports `./contracts` for those types; the
-web extension must not import the server `./rpc` entry. Publication idempotency
-keys are generated in `ft3-web`, while scope, binding and publication state stay
-server-authoritative. The old pin's provider picker is not transferred: Replace
-writes a reason-backed replace request into the coordinator's composer draft and
-lets the Coordinator apply it under the routing policy.
 
 ## Delegation secret boundary (S)
 
@@ -553,19 +502,18 @@ New fork-owned tests: `packages/ft3-web/src/usage/*.test.ts` (including
 `UsageModelTable.browser.test.tsx` and `usageProviders.test.ts`), not under
 `apps/web`.
 
-## Sidebar: лес делегирования, роль-бейджи и пин архитектора (порт старого форка)
+## Sidebar: лес делегирования и роль-бейджи (порт старого форка)
 
 `packages/ft3-web/src/sidebar` owns the fork-specific forest, family-root
-selection, Architect nesting, role badges, working indicators, and delegated
+selection, role badges, working indicators, and delegated
 child-thread actions. `useFt3SidebarRows` applies the forest transform
 (`forest.logic.ts`: `orderSidebarSectionForest`, `filterCollapsedSidebarForest`,
 `sidebarSubagentParentKey`/`sidebarForestParentKey`, and working/returned counts
 from V2 `latestRun`/`runtime`), builds the role badge and collapse decorations,
-provides the Architect row through `afterRowByKey`, and returns generic row props
+and returns generic row props
 and family roots. It also owns collapse state in localStorage, route-path expansion,
 and orphan-subagent filtering. `familyRoots.ts` deduplicates roots; upstream keeps
 only the generic `useThreadFamilies` mount hook in `state/threads.ts`.
-`architectBindingIndex.ts` and `ArchitectSidebarPin.tsx` own Architect nesting;
 `roleBadge.logic.ts`, `roleBadges.ts`, and `boardRoleIcons.tsx` own role badges
 (data from the primary environment through `boardEnvironment`: orchestrators list
 and cards by `executorThreadId`). `runFt3SidebarDelegatedAction` owns child archive,
@@ -578,18 +526,12 @@ Upstream-правки — только подключение (каждая по
 
 | Upstream-файл                                          | Правка                                                                                                                                                                                                                                           | Зачем                                                                                                                    |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `apps/web/src/components/Sidebar.tsx`                  | call `useFt3SidebarRows`; preserve the original list renderer unless ft3 rows apply; for ft3 rows consume row props and `afterRowByKey`; run package child-action handling before upstream archive/delete                                        | keep forest, role badges, Working, Architect nesting, and child actions in `ft3-web` while preserving upstream fallbacks |
+| `apps/web/src/components/Sidebar.tsx`                  | call `useFt3SidebarRows`; preserve the original list renderer unless ft3 rows apply; for ft3 rows consume row props and `afterRowByKey`; run package child-action handling before upstream archive/delete                                        | keep forest, role badges, Working, and child actions in `ft3-web` while preserving upstream fallbacks |
 | `apps/web/src/components/sidebar/SidebarThreadRow.tsx` | add generic `depth`, `decorations`, `leadingDecorations`, `metaDecorations`, `topRightDecorations`, and `statusOverride` props; mark the native status span with `data-ft3-status-override` so ft3 content in the time slot hides it through CSS | upstream status JSX stays verbatim; the row only gains slots and markers                                                 |
 | `apps/web/src/state/threads.ts`                        | keep generic `useThreadFamilies` mount; use `ThreadFamilyRoot` from `ft3-web`                                                                                                                                                                    | family root selection lives with the sidebar transform                                                                   |
 | `apps/web/vite.config.ts`                              | keep upstream `new URL(...).pathname` alias for paths without spaces; use `NodeURL.fileURLToPath` only when the checkout path contains spaces                                                                                                    | paths with spaces resolve without rewriting the upstream default                                                         |
 
-`packages/ft3-web/src/sidebar/ArchitectSidebarPin.tsx` (пакет ft3-web,
-не upstream): пин репортит активную связку в `architectBindingIndex` (лес
-вкладывает реальный тред архитектора под координатора), принимает `depth`,
-прячет Open/Replace при `architectShell.deletedAt != null` (показывает
-«Deleted») и обновляет снапшот по сигнатуре списка тредов + updatedAt/deletedAt
-архитектора, а не только по updatedAt координатора. Тесты порта —
-`packages/ft3-web/src/sidebar/forest.logic.test.ts` и
+Тесты порта — `packages/ft3-web/src/sidebar/forest.logic.test.ts` и
 `packages/ft3-web/src/sidebar/familyRoots.test.ts`.
 
 ## Board automation (retention, nudge, deleted-thread purge)
@@ -612,7 +554,7 @@ in General settings.
 | `packages/contracts/src/settings.ts`                  | add the generic `ft3` record to `ServerSettings` and `ServerSettingsPatch` (plus the fork's client `archiveThreadChildren` key) | keep one extension point in the existing settings service instead of a parallel store |
 | `apps/web/src/components/settings/SettingsPanels.tsx` | import and render `Ft3GeneralSettingsSections` in General                                                                       | the only upstream mount for the ft3 settings UI                                       |
 | `apps/web/src/components/settings/settingsSearch.ts`  | spread `FT3_SETTINGS_SEARCH_ITEMS` from `@t3tools/ft3-web/settings-search`                                                      | settings search must find the ft3 rows without touching core settings                 |
-| `packages/ft3-host/src/server.ts`                     | merge `@t3tools/ft3-board/automation` into `reactorLayer()`                                                                     | start the three reactors beside the board, architect, and orchestration workers       |
+| `packages/ft3-host/src/server.ts`                     | merge `@t3tools/ft3-board/automation` into `reactorLayer()`                                                                     | start the three reactors beside the board and orchestration workers                   |
 
 New fork-owned tests: `packages/ft3-board/src/BoardRetentionReactor.test.ts`,
 `CoordinatorBoardNudgeReactor.test.ts`, `DeletedThreadPurge.test.ts`, and

@@ -276,11 +276,6 @@ export const reactorLayer = () =>
       ),
     ),
     Layer.unwrap(
-      Effect.promise(() => import("@t3tools/ft3-architect/reactor")).pipe(
-        Effect.map((module) => module.layerWorker()),
-      ),
-    ),
-    Layer.unwrap(
       Effect.promise(() => import("@t3tools/ft3-orchestration/reactor")).pipe(
         Effect.map((module) => module.layerWorker()),
       ),
@@ -352,11 +347,6 @@ export const mcpToolkits = [
   ),
   Layer.unwrap(
     Effect.promise(() => import("@t3tools/ft3-board/server")).pipe(
-      Effect.map((module) => module.layer),
-    ),
-  ),
-  Layer.unwrap(
-    Effect.promise(() => import("@t3tools/ft3-architect/server")).pipe(
       Effect.map((module) => module.layer),
     ),
   ),
