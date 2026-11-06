@@ -391,7 +391,11 @@ describe("FT3 RPC authorization", () => {
         entries: [],
       });
       expect(
-        yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"], lettersPerTask: 10 }),
+        yield* client[FT3_WS_METHODS.mailTasks]({
+          cardIds: ["card-1"],
+          lettersPerTask: 10,
+          threadId: "thread:lead",
+        }),
       ).toEqual({
         tasks: [mailTask],
         letters: { "task:timeline": [] },
@@ -572,7 +576,10 @@ describe("FT3 RPC authorization", () => {
         yield* client[FT3_WS_METHODS.mailTimeline]({ taskId: "task:timeline" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
-        yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"] }).pipe(Effect.flip),
+        yield* client[FT3_WS_METHODS.mailTasks]({
+          cardIds: ["card-1"],
+          threadId: "thread:lead",
+        }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
         yield* client[FT3_WS_METHODS.mailLetter]({

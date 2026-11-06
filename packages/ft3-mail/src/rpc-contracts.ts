@@ -28,6 +28,11 @@ export const MailTimelineRpcInput = Schema.Struct({
   taskId: Schema.String.check(Schema.isMinLength(1)),
   beforeSequence: Schema.optional(Schema.Number),
   limit: Schema.optional(Schema.Number),
+  /**
+   * The lead thread reading the timeline; when set, only a task created by
+   * that thread is returned, like mail.letter enforces for a single letter.
+   */
+  threadId: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
 });
 export type MailTimelineRpcInput = typeof MailTimelineRpcInput.Type;
 
@@ -47,12 +52,15 @@ export const MailTasksRpcInput = Schema.Struct({
    */
   lettersPerTask: Schema.optional(Schema.Number),
   /**
-   * Also return the calling lead's open tasks that have no card. Requires
-   * threadId: the repository only returns tasks created by that lead thread.
+   * Also return the calling lead's open tasks that have no card.
    */
   withoutCard: Schema.optional(Schema.Boolean),
-  /** The calling lead thread; required when withoutCard is set. */
-  threadId: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
+  /**
+   * The calling lead thread. Only tasks created by this thread are returned —
+   * card tasks and cardless tasks alike — so one lead never sees another
+   * lead's mail. Mirrors the mail.letter ownership check.
+   */
+  threadId: Schema.String.check(Schema.isMinLength(1)),
 });
 export type MailTasksRpcInput = typeof MailTasksRpcInput.Type;
 

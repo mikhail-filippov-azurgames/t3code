@@ -68,6 +68,14 @@ export const mailRpcHandlers = {
         message: `Mail task "${input.taskId}" was not found.`,
       });
     }
+    // Scoped reads come from a lead's Mail tab: only that task's lead may
+    // read it here, the same ownership mail.letter enforces.
+    if (input.threadId !== undefined && task.createdByThreadId !== input.threadId) {
+      return yield* new MailMcpFailure({
+        code: "capability_denied",
+        message: `Mail task "${input.taskId}" is not readable from thread "${input.threadId}".`,
+      });
+    }
     const service = yield* MailService;
     const entries = yield* service
       .listTimeline({
@@ -107,24 +115,17 @@ export const mailRpcHandlers = {
     }
     const repository = yield* MailRepository;
     let tasks = yield* repository
-      .listTasksByCardIds({ cardIds: input.cardIds, limit })
+      .listTasksByCardIds({ cardIds: input.cardIds, createdByThreadId: input.threadId, limit })
       .pipe(
         Effect.mapError(
           (error) => new MailMcpFailure({ code: "internal", message: error.message }),
         ),
       );
     if (input.withoutCard === true) {
-      const threadId = input.threadId;
-      if (threadId === undefined) {
-        return yield* new MailMcpFailure({
-          code: "invalid_request",
-          message: "withoutCard requires the calling lead's threadId.",
-        });
-      }
       tasks = [
         ...tasks,
         ...(yield* repository
-          .listOpenCardlessTasks({ createdByThreadId: threadId, limit })
+          .listOpenCardlessTasks({ createdByThreadId: input.threadId, limit })
           .pipe(
             Effect.mapError(
               (error) => new MailMcpFailure({ code: "internal", message: error.message }),

@@ -713,6 +713,13 @@ upstream — один слот в `ThreadDetailsPanel` после блока Lin
 рендеры родителя сбрасывали интервал и список задач залипал со старым
 статусом «open».
 
+Фильтрация почты по ведущему — на сервере, как у History: `mail.tasks`
+(`packages/ft3-mail`) требует `threadId` и возвращает только задачи с
+`task.createdByThreadId` равным этому треду — задачи своих карточек и свои
+задачи без карточки; `mail.timeline` с `threadId` отказывает чужому треду
+`capability_denied`, как уже делает `mail.letter`. Веб-вкладка по-прежнему
+присылает cardIds всей доски — отсев чужих задач делает репозиторий.
+
 История читает существующий сервис `task_summary_history`
 (`packages/ft3-orchestration`) через новый метод ft3-RPC-группы
 `board.delegatedTaskSummaryHistory` (read → `orchestration:read`): вход

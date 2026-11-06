@@ -669,23 +669,50 @@ it.effect("lists mail tasks for board cards newest first and caps the page", () 
       }),
     );
 
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:card-a-other-lead",
+        title: "Another lead's card task",
+        cardId: "card-a",
+        createdByThreadId: "thread:other",
+        clientRequestId: "request:card-a-other-lead",
+        requestFingerprint: "fingerprint:card-a-other-lead",
+        createdAt: "2026-01-01T00:00:03.000Z",
+      }),
+    );
+
     assert.deepStrictEqual(
-      (yield* repository.listTasksByCardIds({ cardIds: ["card-a"], limit: 10 })).map(
-        (task) => task.taskId,
-      ),
+      (yield* repository.listTasksByCardIds({
+        cardIds: ["card-a"],
+        createdByThreadId: "thread:lead",
+        limit: 10,
+      })).map((task) => task.taskId),
       ["task:card-a-newer", "task:card-a-older"],
     );
     // Tasks without a card and cards with no tasks stay out of the page.
     assert.deepStrictEqual(
-      yield* repository.listTasksByCardIds({ cardIds: ["card-b"], limit: 10 }),
+      yield* repository.listTasksByCardIds({
+        cardIds: ["card-b"],
+        createdByThreadId: "thread:lead",
+        limit: 10,
+      }),
       [],
     );
     assert.deepStrictEqual(
-      (yield* repository.listTasksByCardIds({ cardIds: ["card-a"], limit: 1 })).map(
-        (task) => task.taskId,
-      ),
+      (yield* repository.listTasksByCardIds({
+        cardIds: ["card-a"],
+        createdByThreadId: "thread:lead",
+        limit: 1,
+      })).map((task) => task.taskId),
       ["task:card-a-newer"],
     );
-    assert.deepStrictEqual(yield* repository.listTasksByCardIds({ cardIds: [], limit: 10 }), []);
+    assert.deepStrictEqual(
+      yield* repository.listTasksByCardIds({
+        cardIds: [],
+        createdByThreadId: "thread:lead",
+        limit: 10,
+      }),
+      [],
+    );
   }).pipe(Effect.provide(testLayer)),
 );

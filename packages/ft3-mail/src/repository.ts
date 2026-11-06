@@ -556,6 +556,7 @@ export class MailRepository extends Context.Service<
     /** Mail tasks bound to any of the given cards, newest first; empty input gives []. */
     readonly listTasksByCardIds: (input: {
       readonly cardIds: ReadonlyArray<string>;
+      readonly createdByThreadId: string;
       readonly limit: number;
     }) => Effect.Effect<ReadonlyArray<MailTask>, MailRepositoryError>;
     /** The lead's open tasks with no card, newest first; the card-less Mail tab group. */
@@ -769,10 +770,12 @@ const make = Effect.gen(function* () {
 
   const findTasksByCardIds = (input: {
     readonly cardIds: ReadonlyArray<string>;
+    readonly createdByThreadId: string;
     readonly limit: number;
   }) =>
     sql<TaskRow>`SELECT ${sql.literal(TASK_COLUMNS)} FROM ft3_mail_tasks
       WHERE card_id IN ${sql.in(input.cardIds)}
+        AND created_by_thread_id = ${input.createdByThreadId}
       ORDER BY created_at DESC, task_id DESC
       LIMIT ${input.limit}`.pipe(Effect.map((rows) => rows.map(toTask)));
 
@@ -933,7 +936,11 @@ const make = Effect.gen(function* () {
         mapError("getTaskByRequestKey")(findTaskByKey(input)),
     ),
     listTasksByCardIds: Effect.fn("MailRepository.listTasksByCardIds")(
-      (input: { readonly cardIds: ReadonlyArray<string>; readonly limit: number }) =>
+      (input: {
+        readonly cardIds: ReadonlyArray<string>;
+        readonly createdByThreadId: string;
+        readonly limit: number;
+      }) =>
         mapError("listTasksByCardIds")(
           input.cardIds.length === 0 ? Effect.succeed([]) : findTasksByCardIds(input),
         ),

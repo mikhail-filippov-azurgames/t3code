@@ -7,6 +7,7 @@ import * as Migrator from "effect/sql/Migrator";
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
 import type { CreateTaskInput, AppendLetterInput } from "./repository.ts";
 import { FT3_MAIL_WS_METHODS, mailRpcHandlers } from "./rpc.ts";
+import { MailService } from "./service.ts";
 import { migrations } from "./migrations.ts";
 
 const run = Migrator.make({});
@@ -15,6 +16,28 @@ const migrate = run({ loader, table: "ft3_migrations" });
 
 const testLayer = mailRepositoryLayer.pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
+);
+
+// mail.timeline asks MailService after the ownership check; the scoping tests
+// never reach it, only the service type has to exist.
+const unusedMailService = (() => Effect.die("unused mail service method")) as never;
+const mailServiceStubLayer = Layer.succeed(
+  MailService,
+  MailService.of({
+    createTask: unusedMailService,
+    setMemberModel: unusedMailService,
+    sendLetter: unusedMailService,
+    setLetterKind: unusedMailService,
+    openRound: unusedMailService,
+    closeRound: unusedMailService,
+    readLetter: unusedMailService,
+    readTask: unusedMailService,
+    listTimeline: () => Effect.succeed([]),
+    timeoutOverdueDeliveries: unusedMailService,
+    closeTask: unusedMailService,
+    settleMember: unusedMailService,
+    purgeFinishedTasks: unusedMailService,
+  }),
 );
 
 const taskInput = (overrides: Partial<CreateTaskInput> = {}): CreateTaskInput => ({
@@ -85,6 +108,7 @@ it.effect("lists board tasks with their recent letters in one call", () =>
 
     const withoutLetters = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a"],
+      threadId: "thread:lead",
     });
     assert.deepStrictEqual(
       withoutLetters.tasks.map((task) => task.taskId),
@@ -95,6 +119,7 @@ it.effect("lists board tasks with their recent letters in one call", () =>
     const withLetters = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a"],
       lettersPerTask: 10,
+      threadId: "thread:lead",
     });
     assert.deepStrictEqual(Object.keys(withLetters.letters ?? {}).toSorted(), [
       "task:one",
@@ -106,9 +131,67 @@ it.effect("lists board tasks with their recent letters in one call", () =>
     const refused = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a"],
       lettersPerTask: 0,
+      threadId: "thread:lead",
     }).pipe(Effect.flip);
     assert.equal((refused as { code: string }).code, "invalid_request");
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("scopes card tasks to the calling lead thread", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.appendLetter(letterInput());
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:other-card",
+        cardId: "card-b",
+        createdByThreadId: "thread:other",
+        clientRequestId: "request:other-card",
+        requestFingerprint: "fingerprint:other-card",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:other-same-card",
+        cardId: "card-a",
+        createdByThreadId: "thread:other",
+        clientRequestId: "request:other-same-card",
+        requestFingerprint: "fingerprint:other-same-card",
+        createdAt: "2026-01-01T00:00:02.000Z",
+      }),
+    );
+
+    // The web tab asks with the whole board's card ids; the server must drop
+    // the tasks of cards this lead does not own.
+    const own = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
+      cardIds: ["card-a", "card-b"],
+      lettersPerTask: 10,
+      threadId: "thread:lead",
+    });
+    assert.deepStrictEqual(
+      own.tasks.map((task) => task.taskId),
+      ["task:one"],
+    );
+    assert.deepStrictEqual(Object.keys(own.letters ?? {}), ["task:one"]);
+
+    const other = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
+      cardIds: ["card-a", "card-b"],
+      threadId: "thread:other",
+    });
+    assert.deepStrictEqual(other.tasks.map((task) => task.taskId).toSorted(), [
+      "task:other-card",
+      "task:other-same-card",
+    ]);
+
+    const foreignTimeline = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTimeline]({
+      taskId: "task:one",
+      threadId: "thread:other",
+    }).pipe(Effect.flip);
+    assert.equal((foreignTimeline as { code: string }).code, "capability_denied");
+  }).pipe(Effect.provide(Layer.provideMerge(testLayer, mailServiceStubLayer))),
 );
 
 it.effect("lists only the calling lead's open card-less tasks when withoutCard is set", () =>
@@ -169,12 +252,6 @@ it.effect("lists only the calling lead's open card-less tasks when withoutCard i
       withCards.tasks.map((task) => task.taskId),
       ["task:with-card", "task:own-open"],
     );
-
-    const refused = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
-      cardIds: [],
-      withoutCard: true,
-    }).pipe(Effect.flip);
-    assert.equal((refused as { code: string }).code, "invalid_request");
   }).pipe(Effect.provide(testLayer)),
 );
 
