@@ -42,7 +42,7 @@ export function PlanViewerDialog(props: {
   const readDocQuery = useEnvironmentQuery(
     doc === null
       ? null
-      : planningEnvironment.readDoc({ environmentId, input: { ref: doc.stableId } }),
+      : planningEnvironment.readDoc({ environmentId, input: { ref: `oc://doc/${doc.stableId}` } }),
   );
   const acceptCommand = useAtomCommand(planningEnvironment.planAccept, { reportFailure: false });
   const [busy, setBusy] = useState(false);
