@@ -47,14 +47,14 @@ fingerprint возвращает `MailIdempotencyConflict`.
 Сервер проверяет её при каждой отправке. Код — `mailKindAllowed` в `src/service.ts`; при
 расхождении верен код, таблица описывает его.
 
-| Отправитель                  | Адресат                                                         | Допустимые виды                                   | Отказ                                                                            |
-| ---------------------------- | --------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------- |
-| lead                         | `human`                                                         | любой                                             | —                                                                                |
-| lead                         | `role:<роль>[/<специализация>]` объявленного в задаче участника | request, answer, question, info                   | `address_denied` (нет участника), `kind_denied` (другой вид)                     |
-| lead                         | `lead`, `role:lead`, роль без объявленного участника            | —                                                 | `address_denied`, `invalid_role`                                                 |
-| участник (кроме `architect`) | `lead`                                                          | answer, question, blocked, info                   | `kind_denied` (request, approve, changes); `address_denied` (любой другой адрес) |
-| участник `architect`         | `lead`                                                          | answer, question, blocked, info, approve, changes | `address_denied` (любой другой адрес)                                            |
-| system                       | `lead`                                                          | blocked, info                                     | отправляет задача 22                                                             |
+| Отправитель                             | Адресат                                                         | Допустимые виды                                   | Отказ                                                                            |
+| --------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------- |
+| lead                                    | `human`                                                         | любой                                             | —                                                                                |
+| lead                                    | `role:<роль>[/<специализация>]` объявленного в задаче участника | request, answer, question, info                   | `address_denied` (нет участника), `kind_denied` (другой вид)                     |
+| lead                                    | `lead`, `role:lead`, роль без объявленного участника            | —                                                 | `address_denied`, `invalid_role`                                                 |
+| участник (кроме `architect` и `review`) | `lead`                                                          | answer, question, blocked, info                   | `kind_denied` (request, approve, changes); `address_denied` (любой другой адрес) |
+| участник `architect` или `review`       | `lead`                                                          | answer, question, blocked, info, approve, changes | `address_denied` (любой другой адрес)                                            |
+| system                                  | `lead`                                                          | blocked, info                                     | отправляет задача 22                                                             |
 
 `request` шлёт только lead: участник не диспетчеризует работу. `approve` и `changes` — ответы
-консультанта на ревью, поэтому только роль `architect`.
+консультанта на ревью, поэтому только роли `architect` и `review`.
