@@ -50,7 +50,7 @@ export function PlanViewerDialog(props: {
   const [accepted, setAccepted] = useState<PlanRecord | null>(null);
 
   const state = accepted?.state ?? record?.state ?? null;
-  const shownSha256 = readDocQuery.data?.sha256 ?? null;
+  const shownSha256 = readDocQuery.data?.status === "found" ? readDocQuery.data.sha256 : null;
   const canAccept = planAcceptAvailable(state) && shownSha256 !== null && !busy;
 
   const accept = async () => {
