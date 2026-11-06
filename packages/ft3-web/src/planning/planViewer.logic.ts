@@ -1,5 +1,8 @@
 import { BoardMcpFailure } from "@t3tools/ft3-board/contracts";
+import * as Schema from "effect/Schema";
 import type { PlanState } from "@t3tools/ft3-board/planning-contracts";
+
+const isBoardMcpFailure = Schema.is(BoardMcpFailure);
 
 export const PLAN_STATE_LABELS: Readonly<Record<PlanState, string>> = {
   required: "Required",
@@ -22,7 +25,7 @@ export interface PlanFailureView {
 }
 
 export function planFailureView(error: unknown): PlanFailureView {
-  if (error instanceof BoardMcpFailure) {
+  if (isBoardMcpFailure(error)) {
     return { text: error.message, changed: error.code === "plan_changed" };
   }
   return {
