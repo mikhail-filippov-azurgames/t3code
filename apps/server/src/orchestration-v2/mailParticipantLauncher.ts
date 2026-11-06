@@ -190,7 +190,12 @@ const make = Effect.gen(function* () {
         threadId: childThreadId,
         title,
       })
-      .pipe(Effect.mapError((cause) => new MailLaunchError({ reason: describe(cause) })));
+      .pipe(
+        // The participant already runs; a missed retitle must not fail its launch.
+        Effect.catch((cause) =>
+          Effect.logWarning("Mail participant retitle failed", { childThreadId, cause }),
+        ),
+      );
     const childRunEvent = result.storedEvents.find(
       (stored) => stored.event.type === "run.created" && stored.event.threadId === childThreadId,
     );
