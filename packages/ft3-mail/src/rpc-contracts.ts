@@ -46,6 +46,13 @@ export const MailTasksRpcInput = Schema.Struct({
    * for the whole page instead of one timeline request per task.
    */
   lettersPerTask: Schema.optional(Schema.Number),
+  /**
+   * Also return the calling lead's open tasks that have no card. Requires
+   * threadId: the repository only returns tasks created by that lead thread.
+   */
+  withoutCard: Schema.optional(Schema.Boolean),
+  /** The calling lead thread; required when withoutCard is set. */
+  threadId: Schema.optional(Schema.String.check(Schema.isMinLength(1))),
 });
 export type MailTasksRpcInput = typeof MailTasksRpcInput.Type;
 

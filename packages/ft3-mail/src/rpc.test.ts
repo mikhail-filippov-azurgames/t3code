@@ -111,6 +111,73 @@ it.effect("lists board tasks with their recent letters in one call", () =>
   }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect("lists only the calling lead's open card-less tasks when withoutCard is set", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(
+      taskInput({ taskId: "task:own-open", cardId: null, clientRequestId: "request:own-open" }),
+    );
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:own-closed",
+        cardId: null,
+        clientRequestId: "request:own-closed",
+        createdAt: "2026-01-01T00:00:01.000Z",
+      }),
+    );
+    yield* repository.closeTask({
+      taskId: "task:own-closed",
+      outcome: "cancelled",
+      summary: "No longer needed.",
+      closedAt: "2026-01-01T00:00:02.000Z",
+    });
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:other-lead",
+        cardId: null,
+        createdByThreadId: "thread:other",
+        clientRequestId: "request:other-lead",
+        requestFingerprint: "fingerprint:other-lead",
+      }),
+    );
+    yield* repository.createTask(
+      taskInput({
+        taskId: "task:with-card",
+        clientRequestId: "request:with-card",
+        requestFingerprint: "fingerprint:with-card",
+      }),
+    );
+
+    const result = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
+      cardIds: [],
+      withoutCard: true,
+      threadId: "thread:lead",
+    });
+    assert.deepStrictEqual(
+      result.tasks.map((task) => task.taskId),
+      ["task:own-open"],
+    );
+
+    const withCards = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
+      cardIds: ["card-a"],
+      withoutCard: true,
+      threadId: "thread:lead",
+      lettersPerTask: 10,
+    });
+    assert.deepStrictEqual(
+      withCards.tasks.map((task) => task.taskId),
+      ["task:with-card", "task:own-open"],
+    );
+
+    const refused = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
+      cardIds: [],
+      withoutCard: true,
+    }).pipe(Effect.flip);
+    assert.equal((refused as { code: string }).code, "invalid_request");
+  }).pipe(Effect.provide(testLayer)),
+);
+
 it.effect("reads a letter by id only from the lead thread of its task", () =>
   Effect.gen(function* () {
     yield* migrate;

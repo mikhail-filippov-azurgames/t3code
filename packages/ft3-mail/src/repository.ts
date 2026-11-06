@@ -558,6 +558,11 @@ export class MailRepository extends Context.Service<
       readonly cardIds: ReadonlyArray<string>;
       readonly limit: number;
     }) => Effect.Effect<ReadonlyArray<MailTask>, MailRepositoryError>;
+    /** The lead's open tasks with no card, newest first; the card-less Mail tab group. */
+    readonly listOpenCardlessTasks: (input: {
+      readonly createdByThreadId: string;
+      readonly limit: number;
+    }) => Effect.Effect<ReadonlyArray<MailTask>, MailRepositoryError>;
     readonly closeTask: (input: {
       readonly taskId: string;
       readonly outcome: MailOutcome;
@@ -771,6 +776,16 @@ const make = Effect.gen(function* () {
       ORDER BY created_at DESC, task_id DESC
       LIMIT ${input.limit}`.pipe(Effect.map((rows) => rows.map(toTask)));
 
+  const findOpenCardlessTasks = (input: {
+    readonly createdByThreadId: string;
+    readonly limit: number;
+  }) =>
+    sql<TaskRow>`SELECT ${sql.literal(TASK_COLUMNS)} FROM ft3_mail_tasks
+      WHERE card_id IS NULL AND created_by_thread_id = ${input.createdByThreadId}
+        AND status = 'open'
+      ORDER BY created_at DESC, task_id DESC
+      LIMIT ${input.limit}`.pipe(Effect.map((rows) => rows.map(toTask)));
+
   const findLetter = (letterId: string) =>
     sql<LetterRow>`SELECT ${sql.literal(LETTER_COLUMNS)} FROM ft3_mail_letters
       WHERE letter_id = ${letterId}`.pipe(
@@ -922,6 +937,10 @@ const make = Effect.gen(function* () {
         mapError("listTasksByCardIds")(
           input.cardIds.length === 0 ? Effect.succeed([]) : findTasksByCardIds(input),
         ),
+    ),
+    listOpenCardlessTasks: Effect.fn("MailRepository.listOpenCardlessTasks")(
+      (input: { readonly createdByThreadId: string; readonly limit: number }) =>
+        mapError("listOpenCardlessTasks")(findOpenCardlessTasks(input)),
     ),
     closeTask: Effect.fn("MailRepository.closeTask")((input) =>
       mapError("closeTask")(

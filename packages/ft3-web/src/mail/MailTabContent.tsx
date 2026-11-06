@@ -42,7 +42,7 @@ export function BoardMailTab(props: {
 }) {
   const { environmentId } = props.threadRef;
   const { refreshCards } = props;
-  const tasksQuery = useBoardMailTasks(environmentId, props.cardIds);
+  const tasksQuery = useBoardMailTasks(environmentId, props.cardIds, props.threadRef.threadId);
   const refresh = useCallback(() => {
     refreshCards?.();
     void tasksQuery.refresh();
@@ -81,7 +81,15 @@ export function BoardMailTab(props: {
   if (tasks.length === 0) {
     return <p className="text-xs text-muted-foreground">No mail tasks for this board yet.</p>;
   }
-  const groups = mailTaskGroups(tasks, tasksQuery.data?.letters ?? {});
+  const letters = tasksQuery.data?.letters ?? {};
+  const cardGroups = mailTaskGroups(
+    tasks.filter((task) => task.cardId !== null),
+    letters,
+  );
+  const cardlessGroups = mailTaskGroups(
+    tasks.filter((task) => task.cardId === null),
+    letters,
+  );
   return (
     <div className="space-y-3">
       {mailEnabled ? null : (
@@ -93,13 +101,14 @@ export function BoardMailTab(props: {
           .
         </p>
       )}
-      {tasks.length >= MAIL_TASKS_PAGE_LIMIT ? (
+      {cardGroups.length >= MAIL_TASKS_PAGE_LIMIT ||
+      cardlessGroups.length >= MAIL_TASKS_PAGE_LIMIT ? (
         <p className="text-[10px] text-muted-foreground">
           Showing the latest {MAIL_TASKS_PAGE_LIMIT} mail tasks.
         </p>
       ) : null}
       <ol className="space-y-3">
-        {groups.map((group) => (
+        {cardGroups.map((group) => (
           <MailTaskGroupItem
             key={group.task.taskId}
             environmentId={environmentId}
@@ -108,6 +117,21 @@ export function BoardMailTab(props: {
           />
         ))}
       </ol>
+      {cardlessGroups.length > 0 ? (
+        <section>
+          <h2 className="text-xs font-semibold text-muted-foreground">Without a card</h2>
+          <ol className="mt-2 space-y-3">
+            {cardlessGroups.map((group) => (
+              <MailTaskGroupItem
+                key={group.task.taskId}
+                environmentId={environmentId}
+                threadRef={props.threadRef}
+                group={group}
+              />
+            ))}
+          </ol>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -123,14 +147,21 @@ export function useBoardMailLetter(
 }
 
 /** The tab's single query; the panel subscribes to the same atom for content and refresh. */
-export function useBoardMailTasks(environmentId: EnvironmentId, cardIds: ReadonlyArray<string>) {
+export function useBoardMailTasks(
+  environmentId: EnvironmentId,
+  cardIds: ReadonlyArray<string>,
+  threadId: string,
+) {
   return useEnvironmentQuery(
-    cardIds.length > 0
-      ? mailEnvironment.tasks({
-          environmentId,
-          input: { cardIds, lettersPerTask: MAIL_TIMELINE_PAGE_LIMIT },
-        })
-      : null,
+    mailEnvironment.tasks({
+      environmentId,
+      input: {
+        cardIds,
+        lettersPerTask: MAIL_TIMELINE_PAGE_LIMIT,
+        withoutCard: true,
+        threadId,
+      },
+    }),
   );
 }
 

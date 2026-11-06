@@ -137,7 +137,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
     () => (boardList.data?.cards ?? []).map((card) => String(card.cardId)),
     [boardList.data],
   );
-  const mailTasks = useBoardMailTasks(environmentId, boardCardIds);
+  const mailTasks = useBoardMailTasks(environmentId, boardCardIds, threadId);
   const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
   const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
   const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {

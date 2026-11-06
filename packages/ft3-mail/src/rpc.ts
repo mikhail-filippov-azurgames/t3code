@@ -106,13 +106,32 @@ export const mailRpcHandlers = {
       lettersPerTask = input.lettersPerTask;
     }
     const repository = yield* MailRepository;
-    const tasks = yield* repository
+    let tasks = yield* repository
       .listTasksByCardIds({ cardIds: input.cardIds, limit })
       .pipe(
         Effect.mapError(
           (error) => new MailMcpFailure({ code: "internal", message: error.message }),
         ),
       );
+    if (input.withoutCard === true) {
+      const threadId = input.threadId;
+      if (threadId === undefined) {
+        return yield* new MailMcpFailure({
+          code: "invalid_request",
+          message: "withoutCard requires the calling lead's threadId.",
+        });
+      }
+      tasks = [
+        ...tasks,
+        ...(yield* repository
+          .listOpenCardlessTasks({ createdByThreadId: threadId, limit })
+          .pipe(
+            Effect.mapError(
+              (error) => new MailMcpFailure({ code: "internal", message: error.message }),
+            ),
+          )),
+      ];
+    }
     const letters =
       lettersPerTask === null
         ? undefined

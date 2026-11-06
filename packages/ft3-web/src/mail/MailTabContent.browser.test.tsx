@@ -262,6 +262,45 @@ describe("BoardMailTab", () => {
     expect(refreshCards).toHaveBeenCalledTimes(2);
   });
 
+  it("shows card-less tasks in a Without a card group alongside card tasks", async () => {
+    using state = setup({
+      tasks: [
+        task({ taskId: "task:card", title: "Card task" }),
+        task({ taskId: "task:free", title: "Free task", cardId: null }),
+      ],
+      letters: {
+        "task:card": [entry()],
+        "task:free": [
+          entry({
+            letter: letter({ taskId: "task:free", body: "Unbound work." }),
+          }),
+        ],
+      },
+    });
+    await using screen = await renderTab(state);
+
+    await expect.element(screen.getByRole("heading", { name: "Without a card" })).toBeVisible();
+    const section = screen.container.querySelector("section")!;
+    expect(section.querySelector('[data-mail-task-id="task:free"]')).not.toBeNull();
+    expect(section.textContent).toContain("Unbound work.");
+    // The card group still renders above, and the empty note stays hidden.
+    await expect.element(screen.getByRole("heading", { name: "Card task" })).toBeVisible();
+    expect(screen.container.textContent).not.toContain("No mail tasks for this board yet.");
+  });
+
+  it("asks for the lead's card-less tasks even when the board has no cards", async () => {
+    using state = setup({
+      tasks: [task({ taskId: "task:free", title: "Free task", cardId: null })],
+    });
+    await using screen = await renderTab(state, []);
+
+    await expect.element(screen.getByRole("heading", { name: "Without a card" })).toBeVisible();
+    expect(screen.container.textContent).not.toContain("No mail tasks for this board yet.");
+    const target = mocks.tasks.mock.calls[0]?.[0] as { input: Record<string, unknown> };
+    expect(target.input.withoutCard).toBe(true);
+    expect(target.input.threadId).toBe("browser-coordinator");
+  });
+
   it("shows an empty note when the board has no mail tasks", async () => {
     using state = setup({ tasks: [] });
     await using screen = await renderTab(state, []);
