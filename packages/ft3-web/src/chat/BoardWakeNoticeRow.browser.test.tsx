@@ -76,6 +76,8 @@ describe("BoardWakeNoticeRow", () => {
       'New answer letter from implementation in mail task "Refactor":',
       "",
       "The module is split and the tests pass.",
+      "",
+      'Reply with mail_send: taskId "task-1", to "lead", kind "answer".',
     ].join("\n");
     await using screen = await render(
       <BoardWakeNoticeRow message={{ id: "mail:wake:delivery:letter-1", text }} />,
@@ -83,12 +85,15 @@ describe("BoardWakeNoticeRow", () => {
     );
 
     const line = screen.getByRole("button");
-    expect(line.element().textContent).toContain("⚙ Mail: answer from implementation · Refactor");
+    expect(line.element().textContent).toContain(
+      "✉ Mail answer letter from implementation: Refactor",
+    );
     expect(screen.container.textContent).not.toContain("The module is split");
 
     await userEvent.click(line);
     expect(line.element().getAttribute("aria-expanded")).toBe("true");
     expect(screen.container.textContent).toContain("The module is split and the tests pass.");
+    expect(screen.container.textContent).not.toContain("Reply with mail_send");
     // The expanded body is the letter itself, without the server header line.
     const body = screen.container.querySelector("[data-ft3-board-wake-notice-body]");
     expect(body?.textContent).not.toContain("New answer letter");

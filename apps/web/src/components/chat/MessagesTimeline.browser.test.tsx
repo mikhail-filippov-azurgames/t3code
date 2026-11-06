@@ -262,6 +262,43 @@ describe("MessagesTimeline work rows", () => {
     });
   });
 
+  it("hides a mail wake message beside its mail notification chip", async () => {
+    setup();
+    const senderThreadId = ThreadId.make("thread-sender");
+    const summary = 'Mail answer letter from implementation/contracts in "Refactor"';
+    const source = {
+      kind: "delegated_task",
+      taskIds: [],
+      childThreadId: senderThreadId,
+      mail: { taskId: "task-1", letterId: "letter-1", preview: "The module is split." },
+    };
+    const notification = work("mail-notification", {
+      label: summary,
+      tone: "info",
+      itemType: "notification",
+      structuredPayload: { type: "notification", source, outcome: "updated", summary },
+      projectedItem: v2Item("notification", {
+        id: "mail-notification",
+        source,
+        outcome: "updated",
+        summary,
+      }),
+    });
+    const wake = message(
+      'New answer letter from implementation/contracts in mail task "Refactor":\n\nThe module is split and the tests pass.',
+      {},
+      "mail:wake:delivery:letter-1",
+    );
+
+    await using screen = await renderTimeline([notification, wake]);
+
+    expect(
+      screen.buttons("✉ Mail answer letter from implementation/contracts: Refactor"),
+    ).toHaveLength(1);
+    expect(screen.text()).not.toContain("New answer letter");
+    expect(screen.text()).not.toContain("The module is split");
+  });
+
   it.each(["delegated", "legacy", "missing"] as const)(
     "uses the reported task for %s completion notifications",
     async (source) => {

@@ -42,7 +42,7 @@ const NUDGE_CARD_LINE = /^Card:\s*(.+)$/m;
 
 /** The reactor writes `New <kind> letter[ from <sender>] in mail task "<title>":\n\n<body>`. */
 const MAIL_WAKE_TEXT_PATTERN =
-  /^New (\S+) letter(?: from (\S+))? in mail task "([^"]+)":\n\n([\s\S]*)$/;
+  /^New (\S+) letter(?: from (.+?))? in mail task "([^"]+)":\n\n([\s\S]*)$/;
 const MAIL_WAKE_KINDS = new Set([
   "request",
   "approve",
@@ -88,12 +88,47 @@ function mailWakeNotice(text: string): BoardWakeNotice {
       kind: match[1] as MailLetterKind,
       sender: match[2] ?? null,
       task: match[3]!,
-      body: match[4]!,
+      body: mailLetterBody(match[4]!),
     };
-    const from = mail.sender === null ? "" : ` from ${mail.sender}`;
-    return { kind: "mail", text, detail: `${mail.kind}${from} · ${mail.task}`, mail };
+    return { kind: "mail", text, detail: mailWakeNoticeDetail(mail), mail };
   }
   return { kind: "mail", text, detail: firstNonEmptyLine(text) };
+}
+
+function mailLetterBody(body: string): string {
+  const replyInstruction = body.lastIndexOf("\n\nReply with mail_send: taskId ");
+  return replyInstruction === -1 ? body : body.slice(0, replyInstruction);
+}
+
+function mailWakeNoticeDetail(mail: Pick<MailWakeDetail, "kind" | "sender" | "task">): string {
+  return `${mail.kind} letter from ${mail.sender ?? "unknown sender"}: ${mail.task}`;
+}
+
+/** Parses the matching notification summary so the display row can share the wake chip label. */
+export function mailWakeNotificationHeader(
+  summary: string,
+): Pick<MailWakeDetail, "kind" | "sender" | "task"> | null {
+  const match = /^Mail (\S+) letter(?: from (.+?))? in "([\s\S]*)"$/.exec(summary);
+  if (match === null || !MAIL_WAKE_KINDS.has(match[1]!)) return null;
+  return {
+    kind: match[1] as MailLetterKind,
+    sender: match[2] ?? null,
+    task: match[3]!,
+  };
+}
+
+/** Tests whether a mail wake and its separate timeline notification describe the same letter. */
+export function mailWakeMatchesNotification(
+  mail: Pick<MailWakeDetail, "kind" | "sender" | "task">,
+  summary: string,
+): boolean {
+  const header = mailWakeNotificationHeader(summary);
+  return (
+    header !== null &&
+    header.kind === mail.kind &&
+    header.sender === mail.sender &&
+    header.task === mail.task
+  );
 }
 
 /** Returns the notice for a server force-work message, or null for every other message. */
@@ -125,6 +160,9 @@ export function boardWakeNoticeLabel(kind: BoardWakeNoticeKind): string {
 
 /** The single collapsed line, e.g. `⚙ Lead woken: Executor finished its turn.` */
 export function boardWakeNoticeLine(notice: BoardWakeNotice): string {
+  if (notice.kind === "mail" && notice.mail !== undefined) {
+    return `✉ Mail ${mailWakeNoticeDetail(notice.mail)}`;
+  }
   const label = `⚙ ${boardWakeNoticeLabel(notice.kind)}`;
   return notice.detail === null ? label : `${label}: ${notice.detail}`;
 }

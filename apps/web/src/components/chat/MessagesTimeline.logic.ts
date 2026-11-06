@@ -77,6 +77,7 @@ import {
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
 import { isWindowsAbsolutePath } from "@t3tools/shared/path";
+import { boardWakeNoticeOf, mailWakeMatchesNotification } from "@t3tools/ft3-web/board-wake-notice";
 
 function timelineEntryRunId(entry: TimelineEntry): RunId | null {
   if (entry.kind === "message") {
@@ -1805,6 +1806,26 @@ export function deriveMessagesTimelineRows(input: {
     const timelineEntry = timelineEntries[index];
     if (!timelineEntry) {
       continue;
+    }
+
+    if (timelineEntry.kind === "message" && timelineEntry.message.role === "user") {
+      const mail = boardWakeNoticeOf(timelineEntry.message)?.mail;
+      if (
+        mail !== undefined &&
+        [timelineEntries[index - 1], timelineEntries[index + 1]].some((neighbor) => {
+          if (neighbor?.kind !== "work") return false;
+          const item = neighbor.entry.structuredPayload;
+          return (
+            item?.type === "notification" &&
+            item.source.kind === "delegated_task" &&
+            item.source.mail !== undefined &&
+            neighbor.createdAt === timelineEntry.createdAt &&
+            mailWakeMatchesNotification(mail, item.summary)
+          );
+        })
+      ) {
+        continue;
+      }
     }
 
     if (input.isWorking && index === activeTurnHeaderIndex) {

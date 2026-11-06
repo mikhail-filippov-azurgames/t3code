@@ -9,6 +9,7 @@ import { TimelineRowCtx, type TimelineWorkEntry } from "~/components/chat/timeli
 import { MailNotificationRow } from "./MailNotificationRow.tsx";
 
 const SUMMARY = 'Mail answer letter from implementation/contracts in "Refactor"';
+const CHIP_LABEL = "✉ Mail answer letter from implementation/contracts: Refactor";
 const CREATED_AT = "2026-03-17T19:12:28.000Z";
 const SENDER_THREAD = ThreadId.make("thread-sender");
 const LEAD_THREAD = ThreadId.make("thread-lead");
@@ -119,16 +120,19 @@ const mailRow = (onOpenThread: (threadId: ThreadId) => void) => (
 );
 
 describe("MailNotificationRow", () => {
-  it("shows the preview without fetching, then expands to the letter body", async () => {
+  it("stays collapsed without fetching, then expands to the letter body", async () => {
     setup("ready");
     await using screen = await renderRow(mailRow(() => {}));
 
     expect(letterQuery.input).toBeNull();
-    expect(screen.container.textContent).toContain(SUMMARY);
-    expect(screen.container.textContent).toContain("The module is split.");
+    expect(screen.container.textContent).toContain(CHIP_LABEL);
+    expect(screen.container.textContent).not.toContain("The module is split.");
     expect(screen.container.textContent).not.toContain("tests pass");
+    expect(screen.container.querySelectorAll('[data-ft3-board-wake-notice="mail"]')).toHaveLength(
+      1,
+    );
 
-    const row = screen.getByRole("button", { name: new RegExp(SUMMARY) });
+    const row = screen.getByRole("button", { name: CHIP_LABEL });
     expect(row.element().getAttribute("aria-expanded")).toBe("false");
     await userEvent.click(row);
     expect(letterQuery.input).toEqual({ letterId: "letter-1", threadId: LEAD_THREAD });
@@ -144,7 +148,7 @@ describe("MailNotificationRow", () => {
     setup("pending");
     await using screen = await renderRow(mailRow(() => {}));
 
-    await userEvent.click(screen.getByRole("button", { name: new RegExp(SUMMARY) }));
+    await userEvent.click(screen.getByRole("button", { name: CHIP_LABEL }));
     expect(screen.container.textContent).toContain("Loading letter…");
 
     letterQuery.state = "error";

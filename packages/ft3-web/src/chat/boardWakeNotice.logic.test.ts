@@ -4,6 +4,8 @@ import {
   boardWakeNoticeKind,
   boardWakeNoticeLine,
   boardWakeNoticeOf,
+  mailWakeMatchesNotification,
+  mailWakeNotificationHeader,
 } from "./boardWakeNotice.logic.ts";
 
 const wakeText = [
@@ -98,7 +100,7 @@ describe("mail wake notices", () => {
     expect(notice).toEqual({
       kind: "mail",
       text: mailText,
-      detail: "answer from implementation · Refactor",
+      detail: "answer letter from implementation: Refactor",
       mail: {
         kind: "answer",
         sender: "implementation",
@@ -106,7 +108,7 @@ describe("mail wake notices", () => {
         body: "The module is split and the tests pass.",
       },
     });
-    expect(boardWakeNoticeLine(notice!)).toBe("⚙ Mail: answer from implementation · Refactor");
+    expect(boardWakeNoticeLine(notice!)).toBe("✉ Mail answer letter from implementation: Refactor");
   });
 
   it("accepts a wake without a resolved sender", () => {
@@ -114,9 +116,31 @@ describe("mail wake notices", () => {
       id: "mail:wake:delivery:letter-2",
       text: 'New info letter in mail task "Refactor":\n\nHeads up.',
     });
-    expect(notice?.detail).toBe("info · Refactor");
+    expect(notice?.detail).toBe("info letter from unknown sender: Refactor");
     expect(notice?.mail?.sender).toBeNull();
     expect(notice?.mail?.body).toBe("Heads up.");
+  });
+
+  it("matches a mail wake to its notification summary", () => {
+    const summary = 'Mail answer letter from implementation/contracts in "Refactor"';
+    const header = mailWakeNotificationHeader(summary);
+    expect(header).toEqual({
+      kind: "answer",
+      sender: "implementation/contracts",
+      task: "Refactor",
+    });
+    expect(
+      mailWakeMatchesNotification(
+        { kind: "answer", sender: "implementation/contracts", task: "Refactor" },
+        summary,
+      ),
+    ).toBe(true);
+    expect(
+      mailWakeMatchesNotification(
+        { kind: "answer", sender: "implementation", task: "Refactor" },
+        summary,
+      ),
+    ).toBe(false);
   });
 
   it("falls back to the first line when the text is not the expected shape", () => {
