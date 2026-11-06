@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   readError: null as string | null,
   pendingError: null as string | null,
   policySettings: null as unknown,
+  projects: [] as Array<{ id: string; title: string; environmentId: string }>,
+  projectSnapshots: {} as Record<string, unknown>,
+  snapshotInputs: [] as Array<{ projectId?: string }>,
+  liveRefreshKeys: [] as string[],
   calls: [] as Array<{ label: string; input: unknown }>,
   refreshes: [] as string[],
   queries: [] as unknown[],
@@ -44,12 +48,16 @@ vi.mock("~/state/query", () => ({
     };
     if (atom === null) return { ...view, data: null, refresh: () => {} };
     const query = (atom as { __query: string }).__query;
+    const input = (atom as { target: { input: { projectId?: string } } }).target.input;
+    if (query === "snapshot") mocks.snapshotInputs.push(input);
     if (query === "store-documents") {
-      mocks.queries.push((atom as { target: { input: unknown } }).target.input);
+      mocks.queries.push(input);
     }
     const data =
       query === "snapshot"
-        ? mocks.snapshot
+        ? input.projectId === undefined
+          ? mocks.snapshot
+          : (mocks.projectSnapshots[input.projectId] ?? mocks.snapshot)
         : query === "read"
           ? mocks.read
           : query === "pending"
@@ -79,6 +87,17 @@ vi.mock("~/state/use-atom-command", () => ({
 
 vi.mock("~/state/environments", () => ({
   usePrimaryEnvironmentId: () => "env-1",
+}));
+
+vi.mock("~/state/entities", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/state/entities")>()),
+  useProjects: () => mocks.projects,
+}));
+
+vi.mock("~/hooks/useLiveRefresh", () => ({
+  useLiveRefresh: (_refresh: unknown, options: { key?: string }) => {
+    if (options.key !== undefined) mocks.liveRefreshKeys.push(options.key);
+  },
 }));
 
 vi.mock("~/components/settings/SettingsScopeContext", () => ({
@@ -137,6 +156,7 @@ const snapshotFixture = {
   warnings: [],
   needsAttention: false,
   features: featureStatesOf(),
+  featureSources: Object.fromEntries(FEATURE_IDS.map((id) => [id, "default"])),
   requirements: {},
   documents: [
     {
@@ -215,6 +235,10 @@ function setup() {
   mocks.calls = [];
   mocks.refreshes = [];
   mocks.queries = [];
+  mocks.projects = [];
+  mocks.projectSnapshots = {};
+  mocks.snapshotInputs = [];
+  mocks.liveRefreshKeys = [];
   mocks.commandResult = null;
   mocks.readError = null;
   mocks.pendingError = null;
@@ -427,6 +451,93 @@ describe("policies settings panel", () => {
     await vi.waitFor(() => {
       expect(mocks.calls.filter((entry) => entry.label === "policies.setFeature")).toHaveLength(2);
     });
+  });
+
+  it("selects a project snapshot and keys live refresh by that project", async () => {
+    setup();
+    mocks.projects = [{ id: "project-alpha", title: "Alpha", environmentId: "env-1" }];
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    const picker = screen.getByRole("combobox", { name: "Feature toggles project" });
+    expect(screen.container.textContent).toContain("All projects (default)");
+
+    await userEvent.click(picker);
+    await userEvent.click(screen.getByRole("option", { name: "Alpha" }));
+
+    expect(screen.container.textContent).toContain("Alpha");
+    expect(mocks.snapshotInputs).toContainEqual({ projectId: "project-alpha" });
+    expect(mocks.liveRefreshKeys.at(-1)).toBe("ft3-policies:env-1:project-alpha");
+  });
+
+  it("shows inherited and environment-only feature values from the selected snapshot", async () => {
+    setup();
+    mocks.projects = [{ id: "project-alpha", title: "Alpha", environmentId: "env-1" }];
+    mocks.snapshot = {
+      ...snapshotFixture,
+      features: featureStatesOf({
+        documents: { requestedEnabled: true, effectiveEnabled: true },
+      }),
+    };
+    mocks.projectSnapshots["project-alpha"] = {
+      ...snapshotFixture,
+      features: featureStatesOf({
+        board: {
+          requestedEnabled: true,
+          effectiveEnabled: false,
+          offReason: { code: "feature_dependency_off", dependency: "documents" },
+        },
+        documents: { requestedEnabled: false, effectiveEnabled: false },
+      }),
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("combobox", { name: "Feature toggles project" }));
+    await userEvent.click(screen.getByRole("option", { name: "Alpha" }));
+
+    expect(screen.container.textContent).toContain("Inherited: on");
+    expect(screen.container.textContent).toContain("Effective: off");
+    expect(screen.container.textContent).toContain("Environment value: on");
+    expect(screen.container.textContent).toContain(
+      "Off: it needs the documents feature, which is off.",
+    );
+    expect(screen.container.textContent).toContain("On");
+    expect(
+      screen.container.querySelector('[role="switch"][aria-label="Enable documents"]'),
+    ).toBeNull();
+  });
+
+  it("resets an overridden project feature with enabled null", async () => {
+    setup();
+    mocks.projects = [{ id: "project-beta", title: "Beta", environmentId: "env-1" }];
+    mocks.projectSnapshots["project-beta"] = {
+      ...snapshotFixture,
+      features: featureStatesOf({ board: { requestedEnabled: false, effectiveEnabled: false } }),
+      featureSources: { ...snapshotFixture.featureSources, board: "project" },
+    };
+    const resetSnapshot = {
+      ...snapshotFixture,
+      configVersion: 2,
+      features: featureStatesOf({
+        board: {
+          requestedEnabled: DEFAULT_POLICY_SETTINGS.features.board,
+          effectiveEnabled: DEFAULT_POLICY_SETTINGS.features.board,
+        },
+      }),
+      featureSources: { ...snapshotFixture.featureSources, board: "default" },
+    };
+    mocks.commandResult = { value: { snapshot: resetSnapshot } };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("combobox", { name: "Feature toggles project" }));
+    await userEvent.click(screen.getByRole("option", { name: "Beta" }));
+    expect(screen.container.textContent).toContain("Overridden");
+
+    await userEvent.click(screen.getByRole("button", { name: "Reset board override" }));
+
+    await vi.waitFor(() => {
+      expect(mocks.calls.find((entry) => entry.label === "policies.setFeature")).toEqual({
+        label: "policies.setFeature",
+        input: { projectId: "project-beta", feature: "board", enabled: null },
+      });
+    });
+    expect(screen.container.textContent).toContain("Inherited:");
   });
 
   it("saves a child SKILL.md with its manifest-relative file", async () => {

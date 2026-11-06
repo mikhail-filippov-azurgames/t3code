@@ -33,7 +33,6 @@ import { Input } from "~/components/ui/input";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
 import { useOptionalSettingsScope } from "~/components/settings/SettingsScopeContext";
-import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -41,9 +40,18 @@ import {
   SettingsUnavailableGroup,
 } from "~/components/settings/settingsLayout";
 import { useScopedSettings } from "~/components/settings/useScopedSettings";
+import { useProjects } from "~/state/entities";
 import { usePrimaryEnvironmentId } from "~/state/environments";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useLiveRefresh } from "~/hooks/useLiveRefresh";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import {
   POLICY_DOCUMENT_BADGE_LABELS,
   POLICY_DOCUMENT_BADGE_VARIANTS,
@@ -74,15 +82,34 @@ export function PoliciesSettingsPanel() {
   const environmentId = scope?.environment?.environmentId ?? primaryEnvironmentId;
   const settings = useScopedSettings();
   const policySettings = readPolicySettings(settings.ft3);
+  const projects = useProjects()
+    .filter((project) => project.environmentId === environmentId)
+    .toSorted((left, right) => left.title.localeCompare(right.title));
 
   const snapshotQuery = useEnvironmentQuery(
     environmentId === null ? null : policiesEnvironment.snapshot({ environmentId, input: {} }),
   );
-  // The snapshot atom caches for minutes after the panel closes, so reopening the
-  // tab would serve the stale snapshot; this re-reads on open and on window focus.
-  useLiveRefresh(environmentId === null ? null : snapshotQuery.refresh, {
-    key: `policies-settings:${environmentId ?? "none"}`,
-  });
+  const [selectedProjectKey, setSelectedProjectKey] = useState<string | null>(null);
+  const selectedProjectId = projects.some((project) => project.id === selectedProjectKey)
+    ? selectedProjectKey
+    : null;
+  const projectSnapshotQuery = useEnvironmentQuery(
+    environmentId === null || selectedProjectId === null
+      ? null
+      : policiesEnvironment.snapshot({ environmentId, input: { projectId: selectedProjectId } }),
+  );
+  useLiveRefresh(
+    environmentId === null
+      ? null
+      : () => {
+          snapshotQuery.refresh();
+          if (selectedProjectId !== null) projectSnapshotQuery.refresh();
+        },
+    {
+      enabled: environmentId !== null,
+      key: `ft3-policies:${environmentId ?? "none"}:${selectedProjectId ?? "all"}`,
+    },
+  );
   const setApplyExternalEdits = useAtomCommand(policiesEnvironment.setApplyExternalEdits, {
     reportFailure: false,
   });
@@ -91,51 +118,116 @@ export function PoliciesSettingsPanel() {
 
   const [selectedKey, setSelectedKey] = useState<PolicyDocumentKey | null>(null);
   // Command results carry the freshest snapshot; a newer query result wins once its refresh lands.
-  const [commandResult, setCommandResult] = useState<PoliciesGetSnapshotResult | null>(null);
+  const [commandResult, setCommandResult] = useState<{
+    readonly projectId: string | null;
+    readonly snapshot: PoliciesGetSnapshotResult;
+  } | null>(null);
   const [applyEditsEnabled, setApplyEditsEnabled] = useState(policySettings.applyExternalEdits);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [togglePending, setTogglePending] = useState(false);
-  const [featureOverrides, setFeatureOverrides] = useState<Partial<Record<FeatureId, boolean>>>({});
-  const [featureError, setFeatureError] = useState<string | null>(null);
+  const [featureOverridesByScope, setFeatureOverridesByScope] = useState<
+    Record<string, Partial<Record<FeatureId, boolean>>>
+  >({});
+  const [featureErrorsByScope, setFeatureErrorsByScope] = useState<Record<string, string>>({});
+  const [featurePendingByScope, setFeaturePendingByScope] = useState<Record<string, boolean>>({});
+  const featureScopeKey = selectedProjectId ?? "all-projects";
+  const featureOverrides = featureOverridesByScope[featureScopeKey] ?? {};
+  const featureError = featureErrorsByScope[featureScopeKey] ?? null;
+  const featurePending = featurePendingByScope[featureScopeKey] ?? false;
 
   // The snapshot configVersion is monotonic, so it orders a command result against a query refresh.
+  const environmentCommandSnapshot =
+    commandResult?.projectId === null ? commandResult.snapshot : null;
   const snapshot =
-    commandResult !== null &&
-    (snapshotQuery.data === null || commandResult.configVersion >= snapshotQuery.data.configVersion)
-      ? commandResult
+    environmentCommandSnapshot !== null &&
+    (snapshotQuery.data === null ||
+      environmentCommandSnapshot.configVersion >= snapshotQuery.data.configVersion)
+      ? environmentCommandSnapshot
       : snapshotQuery.data;
+  const projectCommandSnapshot =
+    selectedProjectId !== null && commandResult?.projectId === selectedProjectId
+      ? commandResult.snapshot
+      : null;
+  const toggleSnapshot =
+    selectedProjectId === null
+      ? snapshot
+      : projectCommandSnapshot !== null &&
+          (projectSnapshotQuery.data === null ||
+            projectCommandSnapshot.configVersion >= projectSnapshotQuery.data.configVersion)
+        ? projectCommandSnapshot
+        : projectSnapshotQuery.data;
   const selected = snapshot?.documents.find((document) => document.key === selectedKey) ?? null;
   const attentionCauses = snapshot === null ? [] : policyAttentionCauses(snapshot);
+  const requestedFeatureDefaults: PoliciesSettings["features"] =
+    selectedProjectId === null || toggleSnapshot === null
+      ? policySettings.features
+      : (Object.fromEntries(
+          FEATURE_IDS.map((feature) => [
+            feature,
+            toggleSnapshot.features[feature].requestedEnabled,
+          ]),
+        ) as PoliciesSettings["features"]);
   const requestedFeatures: PoliciesSettings["features"] = {
-    ...policySettings.features,
+    ...requestedFeatureDefaults,
     ...featureOverrides,
   };
   // The server computes effective features from the applied documents; only an
   // in-flight toggle re-resolves locally so the switch flips before the answer.
   const featureStates =
-    snapshot === null
+    toggleSnapshot === null
       ? null
       : Object.keys(featureOverrides).length === 0
-        ? snapshot.features
+        ? toggleSnapshot.features
         : resolveFeatureStates({
             requested: requestedFeatures,
-            requirements: snapshot.requirements,
+            requirements: toggleSnapshot.requirements,
           });
 
-  const changeFeature = async (feature: FeatureId, enabled: boolean) => {
-    if (environmentId === null) return;
+  const changeFeature = async (feature: FeatureId, enabled: boolean | null) => {
+    if (
+      environmentId === null ||
+      featurePending ||
+      (selectedProjectId !== null && feature === "documents")
+    )
+      return;
     const previous = requestedFeatures[feature];
-    setFeatureOverrides((current) => ({ ...current, [feature]: enabled }));
-    setFeatureError(null);
-    const result = await setFeature({ environmentId, input: { feature, enabled } });
+    const nextEnabled =
+      enabled ?? snapshot?.features[feature].requestedEnabled ?? policySettings.features[feature];
+    const scopeKey = featureScopeKey;
+    setFeatureOverridesByScope((current) => ({
+      ...current,
+      [scopeKey]: { ...current[scopeKey], [feature]: nextEnabled },
+    }));
+    setFeatureErrorsByScope((current) => {
+      const next = { ...current };
+      delete next[scopeKey];
+      return next;
+    });
+    setFeaturePendingByScope((current) => ({ ...current, [scopeKey]: true }));
+    const projectId = selectedProjectId;
+    const result = await setFeature({
+      environmentId,
+      input: { ...(projectId === null ? {} : { projectId }), feature, enabled },
+    });
+    setFeaturePendingByScope((current) => ({ ...current, [scopeKey]: false }));
     if (AsyncResult.isFailure(result)) {
-      setFeatureOverrides((current) => ({ ...current, [feature]: previous }));
+      setFeatureOverridesByScope((current) => ({
+        ...current,
+        [scopeKey]: { ...current[scopeKey], [feature]: previous },
+      }));
       const cause = squashAtomCommandFailure(result);
-      setFeatureError(cause instanceof Error ? cause.message : "Could not save the feature.");
+      setFeatureErrorsByScope((current) => ({
+        ...current,
+        [scopeKey]: cause instanceof Error ? cause.message : "Could not save the feature.",
+      }));
       return;
     }
-    setFeatureOverrides({});
-    onSnapshot(result.value.snapshot);
+    setFeatureOverridesByScope((current) => {
+      const next = { ...current };
+      delete next[scopeKey];
+      return next;
+    });
+    onSnapshot(result.value.snapshot, projectId);
   };
 
   const changeDocumentSource = async (
@@ -152,9 +244,10 @@ export function PoliciesSettingsPanel() {
     return null;
   };
 
-  const onSnapshot = (fresh: PoliciesGetSnapshotResult) => {
-    setCommandResult(fresh);
-    snapshotQuery.refresh();
+  const onSnapshot = (fresh: PoliciesGetSnapshotResult, projectId: string | null = null) => {
+    setCommandResult({ projectId, snapshot: fresh });
+    if (projectId === null) snapshotQuery.refresh();
+    else projectSnapshotQuery.refresh();
   };
 
   /** A banner cause selects its document row, or scrolls to the feature's toggle row. */
@@ -264,32 +357,111 @@ export function PoliciesSettingsPanel() {
         </SettingsSection>
       ) : null}
 
-      {snapshot !== null && featureStates !== null && environmentId !== null ? (
+      {snapshot !== null && environmentId !== null ? (
         <SettingsSection id="ft3-policies-features" title="Feature toggles">
+          <div className="flex flex-wrap items-center gap-2 px-3 py-2 sm:px-4">
+            <span className="text-xs text-muted-foreground">Project</span>
+            <Select
+              value={selectedProjectId ?? "all"}
+              onValueChange={(value) => setSelectedProjectKey(value === "all" ? null : value)}
+            >
+              <SelectTrigger aria-label="Feature toggles project" className="min-w-48" size="sm">
+                <SelectValue>
+                  {projects.find((project) => project.id === selectedProjectId)?.title ??
+                    "All projects (default)"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                <SelectItem value="all">All projects (default)</SelectItem>
+                {projects.map((project) => (
+                  <SelectItem key={project.id} value={project.id}>
+                    {project.title}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </div>
           <p className="px-3 text-xs text-muted-foreground sm:px-4">
             A feature runs when it is on and its dependencies and policy documents are valid.
             Changes apply without a restart. Runtime gates check board, mail, planning and documents
             today.
           </p>
-          {FEATURE_IDS.map((feature) => {
-            const state = featureStates[feature];
-            const reason = state.requestedEnabled ? featureOffReasonText(state.offReason) : null;
-            return (
-              <SettingsRow
-                key={feature}
-                id={policyFeatureRowId(feature)}
-                title={feature}
-                description={reason ?? undefined}
-                control={
-                  <Switch
-                    aria-label={`Enable ${feature}`}
-                    checked={requestedFeatures[feature]}
-                    onCheckedChange={(checked) => void changeFeature(feature, Boolean(checked))}
+          {selectedProjectId !== null &&
+          projectSnapshotQuery.error !== null &&
+          toggleSnapshot === null ? (
+            <p className="px-3 py-2 text-sm text-destructive sm:px-4">
+              Could not load project feature settings: {projectSnapshotQuery.error}
+            </p>
+          ) : toggleSnapshot === null || featureStates === null ? (
+            <p className="px-3 py-2 text-sm text-muted-foreground sm:px-4">
+              Loading feature settings…
+            </p>
+          ) : null}
+          {toggleSnapshot !== null && featureStates !== null
+            ? FEATURE_IDS.map((feature) => {
+                const state =
+                  selectedProjectId !== null && feature === "documents"
+                    ? snapshot.features.documents
+                    : featureStates[feature];
+                const reason = state.requestedEnabled
+                  ? featureOffReasonText(state.offReason)
+                  : null;
+                const featureSource = toggleSnapshot.featureSources[feature] ?? "default";
+                const sourceDescription =
+                  selectedProjectId === null
+                    ? null
+                    : feature === "documents"
+                      ? `Environment value: ${state.requestedEnabled ? "on" : "off"}`
+                      : featureSource === "project"
+                        ? "Overridden"
+                        : `Inherited: ${state.requestedEnabled ? "on" : "off"}`;
+                const effectiveDescription =
+                  selectedProjectId === null
+                    ? null
+                    : `Effective: ${state.effectiveEnabled ? "on" : "off"}`;
+                const description =
+                  [sourceDescription, effectiveDescription, reason].filter(Boolean).join(" · ") ||
+                  undefined;
+                const environmentOnly = selectedProjectId !== null && feature === "documents";
+                return (
+                  <SettingsRow
+                    key={feature}
+                    id={policyFeatureRowId(feature)}
+                    title={feature}
+                    description={description}
+                    control={
+                      environmentOnly ? (
+                        <span className="px-3 text-sm text-muted-foreground">
+                          {state.requestedEnabled ? "On" : "Off"}
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <Switch
+                            aria-label={`Enable ${feature}`}
+                            checked={requestedFeatures[feature]}
+                            disabled={featurePending}
+                            onCheckedChange={(checked) =>
+                              void changeFeature(feature, Boolean(checked))
+                            }
+                          />
+                          {selectedProjectId !== null && featureSource === "project" ? (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              disabled={featurePending}
+                              aria-label={`Reset ${feature} override`}
+                              onClick={() => void changeFeature(feature, null)}
+                            >
+                              Reset
+                            </Button>
+                          ) : null}
+                        </div>
+                      )
+                    }
                   />
-                }
-              />
-            );
-          })}
+                );
+              })
+            : null}
           {featureError !== null ? (
             <p className="px-3 py-2 text-sm text-destructive sm:px-4">{featureError}</p>
           ) : null}
