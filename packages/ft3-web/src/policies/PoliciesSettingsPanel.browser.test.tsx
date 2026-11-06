@@ -657,4 +657,38 @@ describe("policies settings panel", () => {
       },
     ]);
   });
+
+  it("requests a fresh snapshot when the policies tab is opened again", async () => {
+    setup();
+    // Fixed far-future epoch: the hook floors refreshes at 10s and skips an idle
+    // window (6min), so the test steps the clock by minutes between mounts.
+    const openedAt = 100_000_000_000_000;
+    using clock = vi.spyOn(Date, "now").mockReturnValue(openedAt);
+    {
+      await using first = await render(<PoliciesSettingsPanel />, { router: false });
+      await expect.element(first.getByText("Routing policy")).toBeInTheDocument();
+    }
+    const refreshesAfterClose = mocks.refreshes.length;
+    clock.mockReturnValue(openedAt + 120_000);
+    await using _second = await render(<PoliciesSettingsPanel />, { router: false });
+    await vi.waitFor(() => {
+      expect(mocks.refreshes.length).toBeGreaterThan(refreshesAfterClose);
+    });
+    expect(mocks.refreshes.at(-1)).toBe("snapshot");
+  });
+
+  it("requests a fresh snapshot when the window regains focus on the policies tab", async () => {
+    setup();
+    const openedAt = 100_000_000_000_000;
+    using clock = vi.spyOn(Date, "now").mockReturnValue(openedAt);
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await expect.element(screen.getByText("Routing policy")).toBeInTheDocument();
+    const refreshesOnOpen = mocks.refreshes.length;
+    clock.mockReturnValue(openedAt + 180_000);
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => {
+      expect(mocks.refreshes.length).toBeGreaterThan(refreshesOnOpen);
+    });
+    expect(mocks.refreshes.at(-1)).toBe("snapshot");
+  });
 });

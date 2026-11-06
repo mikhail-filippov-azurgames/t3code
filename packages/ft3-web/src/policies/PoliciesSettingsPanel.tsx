@@ -33,6 +33,7 @@ import { Input } from "~/components/ui/input";
 import { Switch } from "~/components/ui/switch";
 import { Textarea } from "~/components/ui/textarea";
 import { useOptionalSettingsScope } from "~/components/settings/SettingsScopeContext";
+import { useLiveRefresh } from "~/hooks/useLiveRefresh";
 import {
   SettingsPageContainer,
   SettingsRow,
@@ -77,6 +78,11 @@ export function PoliciesSettingsPanel() {
   const snapshotQuery = useEnvironmentQuery(
     environmentId === null ? null : policiesEnvironment.snapshot({ environmentId, input: {} }),
   );
+  // The snapshot atom caches for minutes after the panel closes, so reopening the
+  // tab would serve the stale snapshot; this re-reads on open and on window focus.
+  useLiveRefresh(environmentId === null ? null : snapshotQuery.refresh, {
+    key: `policies-settings:${environmentId ?? "none"}`,
+  });
   const setApplyExternalEdits = useAtomCommand(policiesEnvironment.setApplyExternalEdits, {
     reportFailure: false,
   });
