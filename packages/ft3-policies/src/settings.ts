@@ -9,6 +9,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
+  FEATURE_IDS,
   type FeatureId,
   PolicyDocumentKey,
   type PolicyDocumentSource,
@@ -130,27 +131,22 @@ export function decodeProjectPolicyDocumentOverrideValue(
 }
 
 /**
- * Per-project feature toggle override: any subset of toggles, stored as
- * `projectSettingsOverrides[projectId].ft3FeatureToggles`. Absent keys inherit
- * the environment default.
+ * Per-project toggle override under `projectSettingsOverrides[projectId].ft3FeatureToggles`;
+ * absent keys inherit the environment default. Built from FEATURE_IDS so a new
+ * toggle joins without an edit. `documents` is environment-only (D2): a stored
+ * `documents` key decodes like an unknown key and is dropped.
  */
-export const ProjectFeatureTogglesOverride = Schema.Struct({
-  documents: Schema.optionalKey(Schema.Boolean),
-  roles: Schema.optionalKey(Schema.Boolean),
-  board: Schema.optionalKey(Schema.Boolean),
-  mail: Schema.optionalKey(Schema.Boolean),
-  planning: Schema.optionalKey(Schema.Boolean),
-  delegation: Schema.optionalKey(Schema.Boolean),
-  orchestration: Schema.optionalKey(Schema.Boolean),
-  boardAutomation: Schema.optionalKey(Schema.Boolean),
-  sidebarForest: Schema.optionalKey(Schema.Boolean),
-  chatExtensions: Schema.optionalKey(Schema.Boolean),
-  vcs: Schema.optionalKey(Schema.Boolean),
-  pi: Schema.optionalKey(Schema.Boolean),
-  kimi: Schema.optionalKey(Schema.Boolean),
-  usage: Schema.optionalKey(Schema.Boolean),
-  files: Schema.optionalKey(Schema.Boolean),
-});
+type ProjectFeatureToggleId = Exclude<FeatureId, "documents">;
+
+const PROJECT_FEATURE_TOGGLE_IDS = FEATURE_IDS.filter(
+  (id): id is ProjectFeatureToggleId => id !== "documents",
+);
+
+const projectFeatureToggleFields = Object.fromEntries(
+  PROJECT_FEATURE_TOGGLE_IDS.map((id) => [id, Schema.optionalKey(Schema.Boolean)]),
+) as { [K in ProjectFeatureToggleId]: Schema.optionalKey<typeof Schema.Boolean> };
+
+export const ProjectFeatureTogglesOverride = Schema.Struct(projectFeatureToggleFields);
 export type ProjectFeatureTogglesOverride = typeof ProjectFeatureTogglesOverride.Type;
 
 const decodeProjectFeatureTogglesOverride = Schema.decodeUnknownOption(

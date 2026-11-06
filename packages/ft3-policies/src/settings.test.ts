@@ -224,6 +224,14 @@ describe("project feature toggles override", () => {
     expect(decoded.value).toEqual({ mail: true });
   });
 
+  it("drops the environment-only documents toggle like an unknown key", () => {
+    const decoded = decodeProjectFeatureTogglesOverrideValue({ documents: false, mail: true });
+
+    expect(Option.isSome(decoded)).toBe(true);
+    if (Option.isNone(decoded)) return;
+    expect(decoded.value).toEqual({ mail: true });
+  });
+
   it("corrupt override decodes to no override", () => {
     expect(Option.isNone(decodeProjectFeatureTogglesOverrideValue({ mail: "yes" }))).toBe(true);
     expect(Option.isNone(decodeProjectFeatureTogglesOverrideValue("not-an-object"))).toBe(true);
