@@ -36,7 +36,10 @@ it.effect("builds the participant prompt from the role line and the letter", () 
     });
     assert.include(prompt, "You implement.");
     assert.include(prompt, "Build it.");
-    assert.include(prompt, "Reply with mail_send taskId=task:one replyToLetterId=letter:one.");
+    assert.include(
+      prompt,
+      'Reply with mail_send: taskId "task:one", to "lead", kind "answer", replyToLetterId "letter:one"',
+    );
   }),
 );
 
@@ -44,8 +47,9 @@ it.effect("keeps the reply line past the parsed header shape", () =>
   Effect.sync(() => {
     const line = participantReplyLine({ taskId: "task:one", letterId: "letter:one" });
     assert.isFalse(line.includes("\n\n"));
-    assert.include(line, "taskId=task:one");
-    assert.include(line, "replyToLetterId=letter:one");
+    assert.include(line, 'taskId "task:one"');
+    assert.include(line, 'to "lead"');
+    assert.include(line, 'replyToLetterId "letter:one"');
   }),
 );
 

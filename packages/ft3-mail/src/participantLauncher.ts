@@ -87,7 +87,8 @@ export const decodeParticipantModelSelection = (
 export const participantReplyLine = (input: {
   readonly taskId: string;
   readonly letterId: string;
-}) => `Reply with mail_send taskId=${input.taskId} replyToLetterId=${input.letterId}.`;
+}) =>
+  `Reply with mail_send: taskId "${input.taskId}", to "lead", kind "answer", replyToLetterId "${input.letterId}", a new clientRequestId. Address the lead as "lead", never by thread id.`;
 
 /** The participant's first prompt: the applied role line, then the lead's letter. */
 export const participantLaunchPrompt = (input: {

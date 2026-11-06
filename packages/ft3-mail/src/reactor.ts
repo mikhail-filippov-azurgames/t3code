@@ -3,6 +3,7 @@ import {
   MessageId,
   ThreadId,
   type ModelSelection,
+  type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
 } from "@t3tools/contracts";
 import { FeatureGate } from "@t3tools/ft3-policies/server";
@@ -20,9 +21,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../../../apps/server/src/serverActivation.ts";
-import { decodeParticipantModelSelection } from "./participantLauncher.ts";
+import { decodeParticipantModelSelection, participantReplyLine } from "./participantLauncher.ts";
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
-import { MailService } from "./service.ts";
+import { MAIL_URGENT_LETTER_WAKE_REASON, MailService } from "./service.ts";
 
 export class MailReactorError extends Schema.TaggedError<MailReactorError>()("MailReactorError", {
   operation: Schema.String,
@@ -53,6 +54,29 @@ const parseWakeDeliveryId = (key: string): string | null =>
 
 const failure = (operation: string) => (cause: unknown) =>
   new MailReactorError({ operation, cause });
+
+type MailWakeDispatchMode = Extract<
+  OrchestrationV2ServerCommand,
+  { readonly type: "message.dispatch" }
+>["dispatchMode"];
+
+/**
+ * The server's answer for a turn that ended with a lead letter unanswered:
+ * the terminal status as the reason, then the participant's last words.
+ * Overlong turns keep their end, with a marker saying what was cut.
+ */
+const SERVER_ANSWER_TAIL_CHARS = 2000;
+
+const serverAnswerBody = (input: {
+  readonly status: string;
+  readonly result: string | null;
+}): string => {
+  const head = `Written by the server: the participant's turn ended (${input.status}) without a mail_send answer.`;
+  const words = input.result === null || input.result.trim() === "" ? null : input.result;
+  if (words === null) return `${head}\n\n(the participant left no message)`;
+  if (words.length <= SERVER_ANSWER_TAIL_CHARS) return `${head}\n\n${words}`;
+  return `${head}\n\n(showing the last ${SERVER_ANSWER_TAIL_CHARS} of ${words.length} characters)\n\n${words.slice(-SERVER_ANSWER_TAIL_CHARS)}`;
+};
 
 /** A participant is named by role and specialization, e.g. `review/contracts`. */
 const participantLabel = (member: {
@@ -108,6 +132,8 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     readonly key: string;
     readonly text: string;
     readonly summary: string;
+    /** An urgent wake steers the active run instead of queueing behind it. */
+    readonly urgent: boolean;
     /** The participant that wrote the letter; the notice opens its thread. */
     readonly senderThreadId?: ThreadId;
     /** Points the lead chat at the letter: its task, id and a bounded preview. */
@@ -125,30 +151,47 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     const delegatedTaskId = records.runs
       .filter((run) => run.delegatedTaskId !== null && run.delegatedTaskId !== undefined)
       .toSorted((left, right) => right.ordinal - left.ordinal)[0]?.delegatedTaskId;
-    yield* threads
-      .dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`mail:wake:${input.key}`),
-        threadId: input.threadId,
-        messageId: MessageId.make(`mail:wake:${input.key}`),
-        text: input.text,
-        attachments: [],
-        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-        dispatchMode: { type: "queue_after_active" },
-        notification: {
-          source: {
-            kind: "delegated_task",
-            taskIds: delegatedTaskId === undefined ? [] : [delegatedTaskId],
-            ...(input.senderThreadId === undefined ? {} : { childThreadId: input.senderThreadId }),
-            ...(input.mail === undefined ? {} : { mail: input.mail }),
+    let dispatchMode: MailWakeDispatchMode = { type: "queue_after_active" };
+    if (input.urgent) {
+      const active = ThreadManagement.latestActiveRun(records);
+      dispatchMode =
+        active === undefined
+          ? { type: "start_immediately" }
+          : { type: "steer_active", targetRunId: active.id };
+    }
+    // The fallback gets its own command id: the refused steer already claimed the first one.
+    const send = (mode: MailWakeDispatchMode, suffix = "") =>
+      threads
+        .dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`mail:wake:${input.key}${suffix}`),
+          threadId: input.threadId,
+          messageId: MessageId.make(`mail:wake:${input.key}${suffix}`),
+          text: input.text,
+          attachments: [],
+          ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+          dispatchMode: mode,
+          notification: {
+            source: {
+              kind: "delegated_task",
+              taskIds: delegatedTaskId === undefined ? [] : [delegatedTaskId],
+              ...(input.senderThreadId === undefined
+                ? {}
+                : { childThreadId: input.senderThreadId }),
+              ...(input.mail === undefined ? {} : { mail: input.mail }),
+            },
+            outcome: "updated",
+            summary: input.summary,
           },
-          outcome: "updated",
-          summary: input.summary,
-        },
-        createdBy: "agent",
-        creationSource: "server",
-      })
-      .pipe(Effect.mapError(failure("dispatch a mail wake")));
+          createdBy: "agent",
+          creationSource: "server",
+        })
+        .pipe(Effect.mapError(failure("dispatch a mail wake")));
+    // A run that ended after the lookup refuses the steer; the letter still
+    // goes out behind the turn instead of being dropped.
+    yield* input.urgent
+      ? send(dispatchMode).pipe(Effect.catch(() => send({ type: "queue_after_active" }, ":queued")))
+      : send(dispatchMode);
   });
 
   const deliver = Effect.fn("MailDeliveryReactor.deliver")(function* (input: {
@@ -157,6 +200,8 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     readonly key: string;
     /** The wake row this delivery drains; marked handled on every dead end. */
     readonly wakeId: string;
+    /** Urgent letters steer the recipient; the catch-up path never knows, so it queues. */
+    readonly urgent: boolean;
   }) {
     const at = DateTime.formatIso(yield* DateTime.now);
     const dead = Effect.fn("MailDeliveryReactor.dead")(function* () {
@@ -223,14 +268,24 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         senderParticipantThreadId = ThreadId.make(letter.senderThreadId);
       }
     }
-    // The lead reads this header in the wake; legacy user-message notices parse
-    // it too. Keep `New <kind> letter[ from <sender>] in mail task "<title>":` stable.
+    // The header is model-facing and parsed by legacy notices; keep `New <kind>
+    // letter[ from <sender>] in mail task "<title>":` stable. A participant wake
+    // trails the ids its reply needs, past the parsed header.
     const from = sender === null ? "" : ` from ${sender}`;
+    const replyLine =
+      member === null
+        ? ""
+        : `
+
+${participantReplyLine({ taskId: task.taskId, letterId: letter.letterId })}`;
     yield* wake({
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
-      text: `New ${letter.kind} letter${from} in mail task "${task.title}":\n\n${letter.body}`,
+      text: `New ${letter.kind} letter${from} in mail task "${task.title}":
+
+${letter.body}${replyLine}`,
       summary: `Mail ${letter.kind} letter${from} in "${task.title}"`,
+      urgent: input.urgent,
       ...(input.participantThreadId === task.createdByThreadId
         ? {
             mail: {
@@ -249,6 +304,16 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     yield* repository.markDeliveryDelivered({ deliveryId: delivery.deliveryId, at });
   });
 
+  const isolated =
+    (wakeId: string) =>
+    <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      effect.pipe(
+        Effect.asVoid,
+        Effect.catch((cause) =>
+          Effect.logWarning("Mail wake failed; retrying it on the next tick", { wakeId, cause }),
+        ),
+      );
+
   const drain = Effect.fn("MailDeliveryReactor.drain")(function* () {
     const wakes = yield* repository.listUndeliveredWakes({ limit: 100 });
     for (const queued of wakes) {
@@ -262,12 +327,14 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         continue;
       }
       // One stable key per delivery: a retried dispatch reuses the same command id.
+      // A failing wake is retried on the next tick but never blocks the wakes behind it.
       yield* deliver({
         deliveryId,
         participantThreadId: queued.targetThreadId,
         key: `delivery:${deliveryId}`,
         wakeId: queued.wakeId,
-      });
+        urgent: queued.reason === MAIL_URGENT_LETTER_WAKE_REASON,
+      }).pipe(isolated(queued.wakeId));
     }
     const pending = yield* repository.listUndeliveredDeliveries({ limit: 100 });
     for (const { delivery, participantThreadId } of pending) {
@@ -276,7 +343,8 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         participantThreadId,
         key: `delivery:${delivery.deliveryId}`,
         wakeId: `mail:wake:${delivery.deliveryId}`,
-      });
+        urgent: false,
+      }).pipe(isolated(`mail:wake:${delivery.deliveryId}`));
     }
   });
 
@@ -284,7 +352,6 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     stored: OrchestrationV2StoredEvent,
   ) {
     const { event } = stored;
-    const at = DateTime.formatIso(event.occurredAt);
     if (event.type === "subagent.updated") {
       const task = event.payload;
       if (task.childThreadId === null || !terminal(task.status)) return;
@@ -292,11 +359,25 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       if (found === null || found.member.status !== "active" || found.taskStatus !== "open") {
         return;
       }
-      yield* mail.settleMember({
-        memberId: found.member.memberId,
-        settledAs: task.status,
-        at,
-      });
+      // No settle: the member stays active. An unanswered lead letter gets
+      // one server answer from the member, which marks the delivery answered
+      // and wakes the lead; a later participant answer still counts.
+      const unanswered = yield* repository.listUnansweredMemberDeliveries(found.member.memberId);
+      for (const delivery of unanswered) {
+        const open = yield* repository.getLetter(delivery.letterId);
+        if (open === null) continue;
+        yield* mail
+          .sendLetter({
+            callerThreadId: task.childThreadId,
+            taskId: found.member.taskId,
+            to: "lead",
+            kind: "answer",
+            body: serverAnswerBody({ status: task.status, result: task.result }),
+            replyToLetterId: open.letterId,
+            clientRequestId: `mail:server-answer:${delivery.deliveryId}`,
+          })
+          .pipe(Effect.mapError(failure("report an unanswered participant turn")));
+      }
       return;
     }
     if (event.type !== "runtime-request.updated") return;

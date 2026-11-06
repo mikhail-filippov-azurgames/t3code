@@ -520,7 +520,7 @@ it.effect("drains a recorded wake and marks the delivery on the next tick", () =
     assert.include(wake.text, 'New request letter from lead in mail task "Refactor":');
     assert.include(
       wake.text,
-      `Reply with mail_send taskId=${created.task.taskId} replyToLetterId=${sent.letter.letterId}.`,
+      `Reply with mail_send: taskId "${created.task.taskId}", to "lead", kind "answer", replyToLetterId "${sent.letter.letterId}"`,
     );
     const repository = yield* MailRepository;
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
@@ -807,6 +807,8 @@ it.effect("queues the letter when the steer is refused", () => {
     assert.equal(harness.dispatched[0]!.threadId, childId);
     assert.deepStrictEqual(harness.dispatched[0]!.dispatchMode, { type: "queue_after_active" });
     assert.include(harness.dispatched[0]!.text, "Now.");
+    // The orchestrator remembers a rejected command id forever, so the fallback needs its own.
+    assert.isTrue(String(harness.dispatched[0]!.commandId).endsWith(":queued"));
   }).pipe(Effect.provide(harness.layer));
 });
 
