@@ -593,14 +593,14 @@ describe("resolveSidebarRoleBadge", () => {
   it("marks orchestrator rows even without a card role", () => {
     expect(resolveSidebarRoleBadge({ role: null, isOrchestrator: true })).toEqual({
       kind: "orchestrator",
-      label: "Coordinator",
+      label: "Lead",
     });
   });
 
   it("lets the orchestrator mark win over a card role", () => {
     expect(resolveSidebarRoleBadge({ role: "implementation", isOrchestrator: true })).toEqual({
       kind: "orchestrator",
-      label: "Coordinator",
+      label: "Lead",
     });
   });
 

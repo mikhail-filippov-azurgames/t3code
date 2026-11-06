@@ -124,7 +124,7 @@ export function AddOrchestratorDialog({
 
   const markExisting = async () => {
     if (selectedThreadId === null) {
-      setError("Choose a chat to mark as a Coordinator.");
+      setError("Choose a chat to mark as a lead.");
       return;
     }
     setSubmitting(true);
@@ -135,7 +135,7 @@ export function AddOrchestratorDialog({
         input: { threadId: selectedThreadId },
       });
       if (result._tag === "Failure") {
-        throw new Error("The board server could not add this Coordinator.");
+        throw new Error("The board server could not add this lead.");
       }
       onAdded(selectedThreadId);
       onClose();
@@ -148,15 +148,15 @@ export function AddOrchestratorDialog({
 
   const createAndMark = async () => {
     if (project === null) {
-      setError("Choose a project for the new Coordinator chat.");
+      setError("Choose a project for the new lead chat.");
       return;
     }
     if (modelSelection === null) {
-      setError("Choose a model for the new Coordinator chat.");
+      setError("Choose a model for the new lead chat.");
       return;
     }
     if (prompt.trim().length === 0) {
-      setError("Enter the Coordinator's starting prompt.");
+      setError("Enter the lead's starting prompt.");
       return;
     }
     setSubmitting(true);
@@ -172,7 +172,7 @@ export function AddOrchestratorDialog({
         input: {
           threadId,
           projectId: project.id,
-          title: "Coordinator",
+          title: "Lead",
           modelSelection,
           runtimeMode,
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -182,7 +182,7 @@ export function AddOrchestratorDialog({
         },
       });
       if (created._tag === "Failure") {
-        throw new Error("The server could not create the Coordinator chat.");
+        throw new Error("The server could not create the lead chat.");
       }
       const started = await startTurn({
         environmentId,
@@ -201,16 +201,16 @@ export function AddOrchestratorDialog({
         },
       });
       if (started._tag === "Failure") {
-        throw new Error("The Coordinator chat was created, but its first turn did not start.");
+        throw new Error("The lead chat was created, but its first turn did not start.");
       }
       const marked = await addOrchestrator({ environmentId, input: { threadId } });
       if (marked._tag === "Failure") {
-        throw new Error("The chat was created, but marking it as a Coordinator failed.");
+        throw new Error("The chat was created, but marking it as a lead failed.");
       }
       onAdded(threadId);
       onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not create the Coordinator.");
+      setError(cause instanceof Error ? cause.message : "Could not create the lead.");
     } finally {
       setSubmitting(false);
     }
@@ -225,9 +225,9 @@ export function AddOrchestratorDialog({
     >
       <DialogPopup className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Add Coordinator</DialogTitle>
+          <DialogTitle>Add Lead</DialogTitle>
           <DialogDescription>
-            A Coordinator is an ordinary chat you add to the board. Its cards live on the board.
+            A lead is an ordinary chat you add to the board. Its cards live on the board.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex flex-col gap-4 text-base sm:text-sm">

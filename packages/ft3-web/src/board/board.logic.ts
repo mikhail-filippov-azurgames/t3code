@@ -17,7 +17,7 @@ export const BOARD_COLUMNS: ReadonlyArray<{
 }> = [
   { status: "backlog", label: "Backlog" },
   { status: "todo", label: "To do" },
-  { status: "orchestrator", label: "Coordinator" },
+  { status: "orchestrator", label: "Lead" },
   { status: "in_progress", label: "In progress" },
   { status: "review", label: "Review" },
   { status: "done", label: "Done" },
@@ -30,7 +30,7 @@ export type BoardReadinessFilter = "all" | Exclude<BoardCardReadiness, "ready">;
 const STATUS_LABELS: Readonly<Record<BoardCardStatus, string>> = {
   backlog: "Backlog",
   todo: "To do",
-  orchestrator: "Coordinator",
+  orchestrator: "Lead",
   in_progress: "In progress",
   review: "Review",
   done: "Done",

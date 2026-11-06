@@ -59,12 +59,12 @@ vi.mock("~/components/settings/ScopedSwitch", () => ({
 
 import { CoordinatorBoardNudgeSection } from "./CoordinatorBoardNudgeSettings.tsx";
 
-const SWITCH = "Nudge idle coordinators toward board cards";
-const INTERVAL = "Minutes between coordinator board checks";
+const SWITCH = "Nudge idle leads toward board cards";
+const INTERVAL = "Minutes between lead board checks";
 const THRESHOLD = "Active child tasks that count as busy";
 
 describe("coordinator board nudge settings", () => {
-  it("shows an off switch and says enabling lets coordinators take cards", async () => {
+  it("shows an off switch and says enabling lets leads take cards", async () => {
     mocks.settings = {};
     await using screen = await render(<CoordinatorBoardNudgeSection />, { router: false });
     expect((screen.getByLabelText(SWITCH).element() as HTMLInputElement).checked).toBe(false);

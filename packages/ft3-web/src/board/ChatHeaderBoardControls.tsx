@@ -6,7 +6,7 @@ import { usePrimaryEnvironmentId } from "~/state/environments";
 import { BoardThreadActionsControl } from "./BoardThreadActionsControl";
 import { resolveBoardThreadActionsControlModel } from "./boardThreadActions.logic";
 import { OrchestratorIcon, ORCHESTRATOR_ICON_CLASS } from "./boardRoleIcons";
-import { useBoardOrchestratorThreadKeys, useBoardRolesConfigured } from "./useBoardBackend";
+import { useBoardOrchestratorThreadKeys } from "./useBoardBackend";
 import { useBoardThreadActions } from "./useBoardThreadActions";
 
 export interface CoordinatorBadgeProps {
@@ -14,15 +14,14 @@ export interface CoordinatorBadgeProps {
   readonly isServerThread: boolean;
 }
 
-/** Coordinator marker next to the thread title, as in the old fork. */
+/** Lead marker next to the thread title, as in the old fork. */
 export function CoordinatorBadge({ activeThreadId, isServerThread }: CoordinatorBadgeProps) {
   const orchestratorThreadKeys = useBoardOrchestratorThreadKeys();
-  const rolesConfigured = useBoardRolesConfigured();
   if (!isServerThread || !orchestratorThreadKeys.has(activeThreadId)) return null;
   return (
     <Badge variant="secondary" size="sm" className="ml-1 shrink-0 gap-1">
       <OrchestratorIcon aria-hidden className={`size-3 ${ORCHESTRATOR_ICON_CLASS}`} />
-      {rolesConfigured ? "Coordinator · lead" : "Coordinator"}
+      Lead
     </Badge>
   );
 }
@@ -35,7 +34,7 @@ export interface ChatHeaderBoardActionsProps {
   readonly hasDelegationParent: boolean;
 }
 
-/** Coordinator actions control in the chat header; hidden where no action applies. */
+/** Lead actions control in the chat header; hidden where no action applies. */
 export function ChatHeaderBoardActions({
   activeThreadId,
   environmentId,

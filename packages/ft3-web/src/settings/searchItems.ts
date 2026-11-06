@@ -4,17 +4,17 @@ import type { SettingsSearchItem } from "~/components/settings/settingsSearch";
 export const FT3_SETTINGS_SEARCH_ITEMS = [
   {
     id: "coordinator-board-nudge",
-    title: "Nudge idle coordinators toward board cards",
+    title: "Nudge idle leads toward board cards",
     to: "/settings/general",
-    searchTerms: ["coordinator board cards automatically idle take work autonomous"],
+    searchTerms: ["lead coordinator board cards automatically idle take work autonomous"],
     scope: "environment-defaults",
   },
   {
     id: "coordinator-board-nudge-interval",
-    title: "Minutes between coordinator board checks",
+    title: "Minutes between lead board checks",
     to: "/settings/general",
     targetId: "coordinator-board-nudge",
-    searchTerms: ["coordinator board nudge interval frequency"],
+    searchTerms: ["lead coordinator board nudge interval frequency"],
     scope: "environment-defaults",
   },
   {
@@ -22,14 +22,14 @@ export const FT3_SETTINGS_SEARCH_ITEMS = [
     title: "Active child tasks that count as busy",
     to: "/settings/general",
     targetId: "coordinator-board-nudge",
-    searchTerms: ["coordinator board nudge threshold child tasks busy"],
+    searchTerms: ["lead coordinator board nudge threshold child tasks busy"],
     scope: "environment-defaults",
   },
   {
     id: "board-retention",
     title: "Archive finished board cards automatically",
     to: "/settings/general",
-    searchTerms: ["coordinator board archive retention delete finished done history"],
+    searchTerms: ["lead coordinator board archive retention delete finished done history"],
     scope: "environment-defaults",
   },
   {
@@ -37,7 +37,7 @@ export const FT3_SETTINGS_SEARCH_ITEMS = [
     title: "Days before a finished card is archived",
     to: "/settings/general",
     targetId: "board-retention",
-    searchTerms: ["coordinator board archive days finished automatic"],
+    searchTerms: ["lead coordinator board archive days finished automatic"],
     scope: "environment-defaults",
   },
   {
@@ -45,7 +45,7 @@ export const FT3_SETTINGS_SEARCH_ITEMS = [
     title: "Days before an archived finished card is deleted",
     to: "/settings/general",
     targetId: "board-retention",
-    searchTerms: ["coordinator board delete retention archived days history permanent"],
+    searchTerms: ["lead coordinator board delete retention archived days history permanent"],
     scope: "environment-defaults",
   },
   {

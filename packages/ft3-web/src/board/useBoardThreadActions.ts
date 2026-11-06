@@ -46,7 +46,7 @@ export function useBoardThreadActions(): (
     const api = readLocalApi();
     if (!api) return false;
     const confirmed = await settlePromise(() =>
-      api.dialogs.confirm("Remove this Coordinator? Its cards and delegated chats are deleted.", {
+      api.dialogs.confirm("Remove this lead? Its cards and delegated chats are deleted.", {
         variant: "destructive",
       }),
     );

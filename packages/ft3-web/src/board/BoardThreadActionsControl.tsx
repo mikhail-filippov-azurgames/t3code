@@ -28,7 +28,7 @@ export function BoardThreadActionsControl({ model, onSelect }: BoardThreadAction
                   size="xs"
                   variant="outline"
                   className="w-7 px-0 sm:w-6 @3xl/header-actions:w-auto! @3xl/header-actions:px-[calc(--spacing(2)-1px)]"
-                  aria-label="Coordinator actions"
+                  aria-label="Lead actions"
                   // The tooltip wrapper replaces data-slot="button", so themed
                   // toolbar styling needs its own hook.
                   data-toolbar-control=""
@@ -39,11 +39,11 @@ export function BoardThreadActionsControl({ model, onSelect }: BoardThreadAction
         >
           <OrchestratorIcon aria-hidden className={`size-3.5 ${ORCHESTRATOR_ICON_CLASS}`} />
           <span className="sr-only @3xl/header-actions:not-sr-only @3xl/header-actions:ml-0.5">
-            Coordinator
+            Lead
           </span>
           <ChevronDownIcon className="hidden size-3.5 opacity-70 @3xl/header-actions:block" />
         </TooltipTrigger>
-        <TooltipPopup side="top">Coordinator actions</TooltipPopup>
+        <TooltipPopup side="top">Lead actions</TooltipPopup>
       </Tooltip>
       <MenuPopup align="end">
         {model.topItems.map((item) => (

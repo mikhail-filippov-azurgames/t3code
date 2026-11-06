@@ -164,21 +164,20 @@ export function BoardCardDetailDialog({
                 Start
               </Button>
               <p className="text-[11px] text-muted-foreground">
-                Starting hands this task to the Coordinator. After that the card is read-only for
-                you.
+                Starting hands this task to the lead. After that the card is read-only for you.
               </p>
             </div>
           ) : (
             <section className="flex min-w-0 flex-col gap-2">
-              <h3 className="text-sm font-medium">Request the Coordinator</h3>
+              <h3 className="text-sm font-medium">Request the lead</h3>
               <p className="text-[11px] text-muted-foreground">
-                You cannot stop, reassign, change status, or delete a started card. Ask the
-                Coordinator instead.
+                You cannot stop, reassign, change status, or delete a started card. Ask the lead
+                instead.
               </p>
               <div className="flex min-w-0 items-center gap-1.5">
                 <Input
                   nativeInput
-                  aria-label="Request to the Coordinator"
+                  aria-label="Request to the lead"
                   value={requestText}
                   placeholder="Reassign this to a cheaper model"
                   onChange={(event) => setRequestText(event.target.value)}

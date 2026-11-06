@@ -902,7 +902,7 @@ function PinnedCard(props: {
   );
 }
 
-/** Mounts the coordinator board panel next to the chat timeline; null without a server thread. */
+/** Mounts the lead board panel next to the chat timeline; null without a server thread. */
 export function useFt3BoardChatPanel(threadRef: ScopedThreadRef | null): ReactNode {
   if (threadRef === null) return null;
   return (

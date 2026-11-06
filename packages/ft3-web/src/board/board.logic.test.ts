@@ -37,16 +37,16 @@ import {
 const ORCHESTRATOR = ThreadId.make("thread-orchestrator");
 
 describe("Phase 1 board status compatibility", () => {
-  it("keeps the orchestrator status value while presenting it as Coordinator", () => {
+  it("keeps the orchestrator status value while presenting it as Lead", () => {
     assert.deepEqual(
       BOARD_COLUMNS.map(({ status }) => status),
       ["backlog", "todo", "orchestrator", "in_progress", "review", "done"],
     );
     assert.strictEqual(
       BOARD_COLUMNS.find(({ status }) => status === "orchestrator")?.label,
-      "Coordinator",
+      "Lead",
     );
-    assert.strictEqual(boardStatusLabel("orchestrator"), "Coordinator");
+    assert.strictEqual(boardStatusLabel("orchestrator"), "Lead");
     assert.strictEqual(boardStatusLabel("backlog"), "Backlog");
   });
 

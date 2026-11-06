@@ -18,7 +18,7 @@ export type { SidebarRoleBadge };
 /**
  * Role badge per visible sidebar row, keyed by scoped thread key. Board data
  * lives on the primary environment (matching the board page): its
- * orchestrators list marks Coordinator rows, and cards map their executor
+ * orchestrators list marks Lead rows, and cards map their executor
  * thread to the board role. Orchestrator wins over a card role.
  */
 export function useSidebarRoleBadges(
@@ -101,7 +101,6 @@ export function useSidebarRoleBadges(
         role:
           delegatedRoleByKey.get(threadKey) ?? cardRoleByThreadId.get(thread.id as string) ?? null,
         isOrchestrator: orchestratorThreadIds.has(thread.id as string),
-        rolesConfigured: orchestrators.data?.rolesConfigured === true,
       });
       if (badge !== null) {
         badges.set(threadKey, badge);

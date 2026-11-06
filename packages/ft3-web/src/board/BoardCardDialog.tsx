@@ -113,7 +113,7 @@ export function BoardCardDialog({ environmentId, onClose, onCreate }: BoardCardD
           <DialogHeader>
             <DialogTitle>New task</DialogTitle>
             <DialogDescription>
-              A task starts in To do. Starting it hands it to the Coordinator.
+              A task starts in To do. Starting it hands it to the lead.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="flex flex-col gap-4 text-base sm:text-sm">

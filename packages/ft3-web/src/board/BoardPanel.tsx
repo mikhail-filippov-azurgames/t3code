@@ -165,7 +165,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
   const requestCoordinator = (card: BoardCard, text: string) => {
     const shell = shells.find((entry) => entry.id === card.orchestratorThreadId);
     if (!shell) {
-      setActionError("Coordinator chat unavailable. Reconnect and try again.");
+      setActionError("Lead chat unavailable. Reconnect and try again.");
       return;
     }
     void runAction(() =>
@@ -212,7 +212,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
               )
             }
           >
-            Mark this thread as Coordinator
+            Mark this thread as lead
           </Button>
         ) : null}
         <Button
@@ -233,11 +233,11 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
             }
           }}
         >
-          <SelectTrigger aria-label="Coordinator">
+          <SelectTrigger aria-label="Lead">
             <SelectValue />
           </SelectTrigger>
           <SelectPopup>
-            <SelectItem value="all">All coordinators</SelectItem>
+            <SelectItem value="all">All leads</SelectItem>
             {!currentRegistered ? (
               <SelectItem value={threadRef.threadId}>{title(threadRef.threadId)}</SelectItem>
             ) : null}
@@ -322,14 +322,14 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
               disabled={busy}
               onClick={() => setConfirmRemove(true)}
             >
-              Remove Coordinator
+              Remove Lead
             </Button>
           </>
         ) : null}
       </div>
       {confirmRemove ? (
         <div className="flex flex-wrap items-center gap-2 border-b p-3" role="alert">
-          <p>Remove this Coordinator and its board cards?</p>
+          <p>Remove this lead and its board cards?</p>
           <Button
             size="xs"
             variant="destructive"

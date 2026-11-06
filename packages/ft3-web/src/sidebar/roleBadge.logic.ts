@@ -1,7 +1,7 @@
 import { BOARD_EXECUTOR_ROLES, boardExecutorRoleLabel } from "../board/board.logic.ts";
 import type { ExecutorRole as BoardExecutorRole } from "@t3tools/ft3-board/contracts";
 
-/** Row decoration role badge: Coordinator mark or board role glyph. */
+/** Row decoration role badge: Lead mark or board role glyph. */
 export type SidebarRoleBadge =
   | {
       readonly kind: "orchestrator";
@@ -16,13 +16,11 @@ export type SidebarRoleBadge =
 export function resolveSidebarRoleBadge(input: {
   readonly role: string | null;
   readonly isOrchestrator: boolean;
-  /** Role instructions directory from the board list; empty while roles are off. */
-  readonly rolesConfigured?: boolean;
 }): SidebarRoleBadge | null {
   if (input.isOrchestrator)
     return {
       kind: "orchestrator",
-      label: input.rolesConfigured === true ? "Coordinator · lead" : "Coordinator",
+      label: "Lead",
     };
   if (input.role === "design") {
     return { kind: "role", role: "architecture", label: "Design" };

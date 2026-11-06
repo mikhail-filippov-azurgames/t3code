@@ -36,7 +36,7 @@ describe("sidebar row decorations", () => {
     ).toBeTruthy();
   });
 
-  it("renders the role glyph and the coordinator mark", async () => {
+  it("renders the role glyph and the lead mark", async () => {
     await using screen = await render(
       <TooltipProvider>
         <SidebarRoleBadgeMarker model={model} />
@@ -49,12 +49,12 @@ describe("sidebar row decorations", () => {
         <SidebarRoleBadgeMarker
           model={{
             ...model,
-            roleBadge: { kind: "orchestrator", label: "Coordinator" },
+            roleBadge: { kind: "orchestrator", label: "Lead" },
           }}
         />
       </TooltipProvider>,
     );
-    expect(screen.getByLabelText("Coordinator")).toBeTruthy();
+    expect(screen.getByLabelText("Lead")).toBeTruthy();
   });
 
   it("renders a generic child arrow in the top-right time slot", async () => {

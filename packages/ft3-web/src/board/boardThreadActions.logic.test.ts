@@ -77,7 +77,7 @@ describe("resolveBoardThreadMenuInput", () => {
 });
 
 describe("buildBoardThreadContextMenuItems", () => {
-  it("offers Make Coordinator to a root thread that is not a Coordinator", () => {
+  it("offers Make lead to a root thread that is not a lead", () => {
     expect(
       buildBoardThreadContextMenuItems({
         isBoardEligible: true,
@@ -85,12 +85,12 @@ describe("buildBoardThreadContextMenuItems", () => {
         hasDelegationParent: false,
       }),
     ).toEqual({
-      topItems: [{ id: "board-make-orchestrator", label: "Make Coordinator" }],
+      topItems: [{ id: "board-make-orchestrator", label: "Make lead" }],
       destructiveItems: [],
     });
   });
 
-  it("offers the Coordinator actions and a destructive removal", () => {
+  it("offers the lead actions and a destructive removal", () => {
     expect(
       buildBoardThreadContextMenuItems({
         isBoardEligible: true,
@@ -100,10 +100,10 @@ describe("buildBoardThreadContextMenuItems", () => {
     ).toEqual({
       topItems: [
         { id: "board-create-task", label: "Create task" },
-        { id: "board-resend-brief", label: "Resend Coordinator brief" },
+        { id: "board-resend-brief", label: "Resend lead brief" },
       ],
       destructiveItems: [
-        { id: "board-unmark-orchestrator", label: "Remove Coordinator", destructive: true },
+        { id: "board-unmark-orchestrator", label: "Remove lead", destructive: true },
       ],
     });
   });
@@ -139,7 +139,7 @@ describe("resolveBoardThreadActionsControlModel", () => {
   it("renders a menu for a root thread", () => {
     expect(resolveBoardThreadActionsControlModel(shape({}))).toEqual({
       kind: "menu",
-      topItems: [{ id: "board-make-orchestrator", label: "Make Coordinator" }],
+      topItems: [{ id: "board-make-orchestrator", label: "Make lead" }],
       destructiveItems: [],
     });
   });
@@ -210,7 +210,7 @@ describe("toolbar and sidebar item-set parity", () => {
 });
 
 describe("runBoardThreadAction", () => {
-  it("marks the Coordinator and reports failures with the sidebar's toast copy", async () => {
+  it("marks the lead and reports failures with the sidebar's toast copy", async () => {
     const added = makePorts();
     await run(BoardThreadAction.makeCoordinator, added);
     expect(added.addCoordinator).toHaveBeenCalledWith({
@@ -223,7 +223,7 @@ describe("runBoardThreadAction", () => {
     await run(BoardThreadAction.makeCoordinator, failing);
     expect(failing.notify).toHaveBeenCalledWith({
       type: "error",
-      title: "Could not mark the Coordinator",
+      title: "Could not mark the lead",
       description: "nope",
     });
 
@@ -256,15 +256,15 @@ describe("runBoardThreadAction", () => {
     await run(BoardThreadAction.resendBrief, successPorts);
     expect(successPorts.notify).toHaveBeenCalledWith({
       type: "success",
-      title: "Coordinator brief resent",
-      description: "The Coordinator will see it in its thread.",
+      title: "Lead brief resent",
+      description: "The lead will see it in its thread.",
     });
 
     const failing = makePorts({ resendCoordinatorBrief: vi.fn(async () => failure("offline")) });
     await run(BoardThreadAction.resendBrief, failing);
     expect(failing.notify).toHaveBeenCalledWith({
       type: "error",
-      title: "Could not resend the Coordinator brief",
+      title: "Could not resend the lead brief",
       description: "offline",
     });
   });
@@ -288,7 +288,7 @@ describe("runBoardThreadAction", () => {
     await run(BoardThreadAction.removeCoordinator, failing);
     expect(failing.notify).toHaveBeenCalledWith({
       type: "error",
-      title: "Could not remove the Coordinator",
+      title: "Could not remove the lead",
       description: "locked",
     });
   });

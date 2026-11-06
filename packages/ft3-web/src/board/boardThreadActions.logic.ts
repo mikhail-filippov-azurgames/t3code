@@ -63,13 +63,13 @@ export function buildBoardThreadContextMenuItems(input: {
   const topItems: ContextMenuItem<BoardThreadActionId>[] = input.isCoordinator
     ? [
         { id: BoardThreadAction.createTask, label: "Create task" },
-        { id: BoardThreadAction.resendBrief, label: "Resend Coordinator brief" },
+        { id: BoardThreadAction.resendBrief, label: "Resend lead brief" },
       ]
     : input.hasDelegationParent
       ? []
-      : [{ id: BoardThreadAction.makeCoordinator, label: "Make Coordinator" }];
+      : [{ id: BoardThreadAction.makeCoordinator, label: "Make lead" }];
   const destructiveItems: ContextMenuItem<BoardThreadActionId>[] = input.isCoordinator
-    ? [{ id: BoardThreadAction.removeCoordinator, label: "Remove Coordinator", destructive: true }]
+    ? [{ id: BoardThreadAction.removeCoordinator, label: "Remove lead", destructive: true }]
     : [];
 
   return { topItems, destructiveItems };
@@ -131,7 +131,7 @@ function failureDescription(result: Parameters<typeof squashAtomCommandFailure>[
 /**
  * The sidebar and the toolbar both route their board action ids here. Failures
  * toast and report the same titles as the sidebar always did; a cancelled
- * confirmation aborts the removal without touching the Coordinator.
+ * confirmation aborts the removal without touching the lead.
  */
 export async function runBoardThreadAction(input: {
   readonly actionId: BoardThreadActionId;
@@ -149,7 +149,7 @@ export async function runBoardThreadAction(input: {
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         ports.notify({
           type: "error",
-          title: "Could not mark the Coordinator",
+          title: "Could not mark the lead",
           description: failureDescription(result),
         });
       }
@@ -165,15 +165,15 @@ export async function runBoardThreadAction(input: {
       if (result._tag === "Success") {
         ports.notify({
           type: "success",
-          title: "Coordinator brief resent",
-          description: "The Coordinator will see it in its thread.",
+          title: "Lead brief resent",
+          description: "The lead will see it in its thread.",
         });
         return;
       }
       if (!isAtomCommandInterrupted(result)) {
         ports.notify({
           type: "error",
-          title: "Could not resend the Coordinator brief",
+          title: "Could not resend the lead brief",
           description: failureDescription(result),
         });
       }
@@ -186,7 +186,7 @@ export async function runBoardThreadAction(input: {
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         ports.notify({
           type: "error",
-          title: "Could not remove the Coordinator",
+          title: "Could not remove the lead",
           description: failureDescription(result),
         });
       }
