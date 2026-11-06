@@ -10,6 +10,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { ThreadId, type ProjectId } from "@t3tools/contracts";
+import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import {
   type FeatureId,
@@ -72,6 +74,27 @@ export class FeatureGate extends Context.Service<
     ) => Effect.Effect<void, FeatureDisabledError>;
   }
 >()("@t3tools/ft3-policies/FeatureGate") {}
+
+export const projectIdOfThread = Effect.fn("FeatureGate.projectIdOfThread")(function* (
+  threadId: string,
+) {
+  const threads = yield* Effect.serviceOption(ThreadManagement.ThreadManagementService);
+  if (Option.isNone(threads)) {
+    yield* Effect.logDebug("Feature project lookup has no thread service", { threadId });
+    return Option.none<ProjectId>();
+  }
+  const shell = yield* threads.value.getThreadShell(ThreadId.make(threadId)).pipe(
+    Effect.tapError((cause) =>
+      Effect.logDebug("Feature project lookup failed", { threadId, cause: String(cause) }),
+    ),
+    Effect.orElseSucceed(() => null),
+  );
+  if (shell === null) {
+    yield* Effect.logDebug("Feature project lookup found no thread shell", { threadId });
+    return Option.none<ProjectId>();
+  }
+  return Option.some(shell.projectId);
+});
 
 const disabledError = (
   feature: FeatureId,

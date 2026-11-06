@@ -33,6 +33,7 @@ import {
 } from "./service.ts";
 
 const LEAD = "thread:lead";
+const OTHER_LEAD = "thread:other-lead";
 const WORKER = "thread:worker";
 const CONSULTANT = "thread:consultant";
 
@@ -285,6 +286,93 @@ it.effect("refuses mail work while the mail feature is off", () => {
     yield* migrateMail;
     assert.equal(yield* refusal(teamOf([{ role: "implementation" }])), "mail_disabled");
     assert.equal(yield* refusal(sendAs(LEAD, "task:none", "human", "info")), "mail_disabled");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("guards mail sends by the task project and falls back to the environment", () => {
+  const harness = mailHarness({
+    threadProjects: {
+      [LEAD]: "project:alpha",
+      [OTHER_LEAD]: "project:beta",
+    },
+  });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const createFor = (callerThreadId: string, clientRequestId: string) =>
+      mail.createTask({
+        callerThreadId,
+        clientRequestId,
+        title: "Refactor",
+        brief: "Split the module.",
+        level: "medium",
+        members: [{ role: "implementation" }],
+      });
+    const alpha = yield* createFor(LEAD, "request:alpha");
+    const beta = yield* createFor(OTHER_LEAD, "request:beta");
+    harness.setProjectFeature("project:alpha", "mail", false);
+
+    assert.equal(yield* refusal(sendAs(LEAD, alpha.task.taskId, "human", "info")), "mail_disabled");
+    assert.isTrue(
+      (yield* mail.sendLetter({
+        callerThreadId: OTHER_LEAD,
+        taskId: beta.task.taskId,
+        to: "human",
+        kind: "info",
+        body: "Allowed in beta.",
+        clientRequestId: "request:beta-letter",
+      })).created,
+    );
+
+    // An unresolved creator thread has no project override. It uses the
+    // environment value even while another project's mail toggle is off.
+    const unresolvedThread = "thread:unresolved";
+    const unresolved = yield* createFor(unresolvedThread, "request:unresolved");
+    assert.isTrue(
+      (yield* mail.sendLetter({
+        callerThreadId: unresolvedThread,
+        taskId: unresolved.task.taskId,
+        to: "human",
+        kind: "info",
+        body: "Environment enabled.",
+        clientRequestId: "request:unresolved-on",
+      })).created,
+    );
+    harness.setEnvironmentEnabled(false);
+    assert.equal(
+      yield* refusal(
+        mail.sendLetter({
+          callerThreadId: unresolvedThread,
+          taskId: unresolved.task.taskId,
+          to: "human",
+          kind: "info",
+          body: "Environment disabled.",
+          clientRequestId: "request:unresolved-off",
+        }),
+      ),
+      "mail_disabled",
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("does not mark a mail delivery read in a disabled caller project", () => {
+  const threadProjects: Record<string, string> = { [LEAD]: "project:alpha" };
+  const harness = mailHarness({ threadProjects });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "implementation" }]);
+    const sent = yield* sendAs(LEAD, created.task.taskId, "role:implementation", "request");
+    const participantThreadId = sent.launched[0]!.participantThreadId;
+    threadProjects[participantThreadId] = "project:alpha";
+    harness.setProjectFeature("project:alpha", "mail", false);
+
+    const mail = yield* MailService;
+    const read = yield* mail.readLetter({
+      callerThreadId: participantThreadId,
+      letterId: sent.letter.letterId,
+    });
+    assert.equal(read.letter.body, "Start.");
+    assert.equal(read.deliveries[0]!.state, "delivered");
   }).pipe(Effect.provide(harness.layer));
 });
 

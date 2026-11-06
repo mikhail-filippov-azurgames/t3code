@@ -11,7 +11,10 @@ export type DelegationLaunch =
 export class DelegationLaunchPolicy extends Context.Service<
   DelegationLaunchPolicy,
   {
-    readonly launchFor: (role: string | undefined) => Effect.Effect<DelegationLaunch>;
+    readonly launchFor: (
+      role: string | undefined,
+      callerThreadId?: string,
+    ) => Effect.Effect<DelegationLaunch>;
   }
 >()("@t3tools/ft3-delegation/delegationLaunch/DelegationLaunchPolicy") {}
 

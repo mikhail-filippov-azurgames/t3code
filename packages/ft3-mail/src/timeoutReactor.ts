@@ -1,4 +1,3 @@
-import { FeatureGate } from "@t3tools/ft3-policies/server";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -26,8 +25,8 @@ export class MailTimeoutReactorError extends Schema.TaggedError<MailTimeoutReact
 /**
  * Fails pending deliveries older than the member budget (or the task default).
  * Members stay active; the lead gets one system letter per task and resends
- * anything the participant still needs. Runs on a minute tick and never
- * while the mail feature is off.
+ * anything the participant still needs. Runs on a minute tick and skips tasks
+ * whose project has mail disabled.
  */
 export class MailTimeoutReactor extends Context.Service<
   MailTimeoutReactor,
@@ -46,12 +45,8 @@ const failure = (operation: string) => (cause: unknown) =>
 
 export const make = Effect.fn("MailTimeoutReactor.make")(function* () {
   const mail = yield* MailService;
-  const gate = yield* FeatureGate;
 
   const scan = Effect.fn("MailTimeoutReactor.scan")(function* (now: string) {
-    if (!(yield* gate.isEffective("mail").pipe(Effect.orElseSucceed(() => false)))) {
-      return { failed: [], letters: [] } satisfies TimeoutOverdueDeliveriesResult;
-    }
     return yield* mail
       .timeoutOverdueDeliveries({ now })
       .pipe(Effect.mapError(failure("scan overdue deliveries")));

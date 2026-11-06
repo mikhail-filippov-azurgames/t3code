@@ -19,4 +19,4 @@ export {
 export type { ResolvedRole, RoleAssignment } from "./roleResolver.ts";
 export * from "./routing.ts";
 export * from "./settings.ts";
-export { FeatureDisabledError, FeatureGate, layer } from "./FeatureGate.ts";
+export { FeatureDisabledError, FeatureGate, layer, projectIdOfThread } from "./FeatureGate.ts";

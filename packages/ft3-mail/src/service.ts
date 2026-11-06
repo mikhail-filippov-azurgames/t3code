@@ -15,12 +15,13 @@ import {
   type RoutingLevel,
   type RoutingRoleId,
 } from "@t3tools/ft3-policies/routingPolicy";
-import { FeatureGate } from "@t3tools/ft3-policies/server";
+import { FeatureGate, projectIdOfThread } from "@t3tools/ft3-policies/server";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { ModelSelection } from "@t3tools/contracts";
@@ -41,6 +42,7 @@ import type {
 } from "./contracts.ts";
 import { applyClassification, effectiveLetterKind, MailKindClassifier } from "./classifier.ts";
 import { MailSettingsService } from "./settings.ts";
+import { projectIdOfMailTask } from "./projectContext.ts";
 import {
   MailRepository,
   type MailIdempotencyConflict,
@@ -494,13 +496,40 @@ const make = Effect.gen(function* () {
   const normalService = yield* NormalServicePolicy;
   const planGate = yield* PlanGate;
 
-  const requirePlanning = gate
-    .require("planning")
-    .pipe(
-      Effect.mapError(
-        (error) => new MailServiceError({ code: "planning_disabled", reason: error.message }),
-      ),
-    );
+  const requireMailForTask = Effect.fn("MailService.requireMailForTask")(function* (
+    task: Pick<MailTask, "createdByThreadId" | "cardId">,
+  ) {
+    const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(task));
+    return yield* gate
+      .require("mail", projectId)
+      .pipe(
+        Effect.mapError(
+          (error) => new MailServiceError({ code: "mail_disabled", reason: error.message }),
+        ),
+      );
+  });
+
+  const requireMailForEnvironment = Effect.logDebug(
+    "Mail feature check has no project context; using environment setting",
+  ).pipe(
+    Effect.andThen(gate.require("mail")),
+    Effect.mapError(
+      (error) => new MailServiceError({ code: "mail_disabled", reason: error.message }),
+    ),
+  );
+
+  const requirePlanningForTask = Effect.fn("MailService.requirePlanningForTask")(function* (
+    task: Pick<MailTask, "createdByThreadId" | "cardId">,
+  ) {
+    const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(task));
+    return yield* gate
+      .require("planning", projectId)
+      .pipe(
+        Effect.mapError(
+          (error) => new MailServiceError({ code: "planning_disabled", reason: error.message }),
+        ),
+      );
+  });
 
   const planFailure = (failure: PlanGateError | PlanError): MailServiceError => {
     if (failure._tag === "PlanGateError") {
@@ -526,13 +555,6 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const requireMail = gate
-    .require("mail")
-    .pipe(
-      Effect.mapError(
-        (error) => new MailServiceError({ code: "mail_disabled", reason: error.message }),
-      ),
-    );
   const newId = crypto.randomUUIDv4().pipe(Effect.orDie);
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const fingerprintOf = (value: unknown) =>
@@ -544,6 +566,16 @@ const make = Effect.gen(function* () {
     const task = yield* repository.getTask(taskId);
     if (task === null)
       return yield* refuse("task_not_found", `Mail task "${taskId}" was not found.`);
+    return task;
+  });
+
+  const requireMailTask = Effect.fn("MailService.requireMailTask")(function* (taskId: string) {
+    const task = yield* repository.getTask(taskId);
+    if (task === null) {
+      yield* requireMailForEnvironment;
+      return yield* refuse("task_not_found", `Mail task "${taskId}" was not found.`);
+    }
+    yield* requireMailForTask(task);
     return task;
   });
 
@@ -724,7 +756,10 @@ const make = Effect.gen(function* () {
   });
 
   const createTask = Effect.fn("MailService.createTask")(function* (input: CreateMailTaskInput) {
-    yield* requireMail;
+    yield* requireMailForTask({
+      createdByThreadId: input.callerThreadId,
+      cardId: input.cardId ?? null,
+    });
     const title = input.title.trim();
     if (title === "") return yield* refuse("invalid_request", "A mail task needs a title.");
     const members = yield* normalizeMembers(input.members);
@@ -882,8 +917,7 @@ const make = Effect.gen(function* () {
   });
 
   const sendLetter = Effect.fn("MailService.sendLetter")(function* (input: SendMailLetterInput) {
-    yield* requireMail;
-    const task = yield* requireTask(input.taskId);
+    const task = yield* requireMailTask(input.taskId);
     if (task.status === "closed") {
       return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
     }
@@ -922,7 +956,7 @@ const make = Effect.gen(function* () {
     }
     const plan = input.plan ?? undefined;
     if (plan !== undefined) {
-      yield* requirePlanning;
+      yield* requirePlanningForTask(task);
       if (task.cardId === null) {
         return yield* refuse(
           "invalid_request",
@@ -1289,15 +1323,15 @@ const make = Effect.gen(function* () {
   const setLetterKind = Effect.fn("MailService.setLetterKind")(function* (
     input: SetLetterKindInput,
   ) {
-    yield* requireMail;
     if (input.clientRequestId.trim() === "") {
       return yield* refuse("invalid_request", "A letter kind decision needs a client request id.");
     }
     const letter = yield* repository.getLetter(input.letterId);
     if (letter === null) {
+      yield* requireMailForEnvironment;
       return yield* refuse("letter_not_found", `Letter "${input.letterId}" was not found.`);
     }
-    const task = yield* requireTask(letter.taskId);
+    const task = yield* requireMailTask(letter.taskId);
     if (task.status === "closed") {
       return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
     }
@@ -1382,8 +1416,7 @@ const make = Effect.gen(function* () {
   });
 
   const openRound = Effect.fn("MailService.openRound")(function* (input: OpenMailRoundInput) {
-    yield* requireMail;
-    const task = yield* requireTask(input.taskId);
+    const task = yield* requireMailTask(input.taskId);
     if (task.status === "closed") {
       return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
     }
@@ -1403,12 +1436,12 @@ const make = Effect.gen(function* () {
   });
 
   const closeRound = Effect.fn("MailService.closeRound")(function* (input: CloseMailRoundInput) {
-    yield* requireMail;
     const round = yield* repository.getRound(input.roundId);
     if (round === null) {
+      yield* requireMailForEnvironment;
       return yield* refuse("invalid_request", `Round "${input.roundId}" was not found.`);
     }
-    const task = yield* requireTask(round.taskId);
+    const task = yield* requireMailTask(round.taskId);
     if (task.status === "closed") {
       return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
     }
@@ -1442,7 +1475,11 @@ const make = Effect.gen(function* () {
       );
     }
     // Marking a delivery read is a write, so only an enabled mail feature does it.
-    if (task.status === "open" && (yield* gate.isEffective("mail"))) {
+    const projectId = Option.getOrUndefined(yield* projectIdOfThread(input.callerThreadId));
+    if (
+      task.status === "open" &&
+      (yield* gate.isEffective("mail", projectId).pipe(Effect.orElseSucceed(() => false)))
+    ) {
       const pending = yield* repository.listLetterDeliveries(letter.letterId);
       for (const delivery of pending) {
         if (
@@ -1514,7 +1551,6 @@ const make = Effect.gen(function* () {
   const timeoutOverdueDeliveries = Effect.fn("MailService.timeoutOverdueDeliveries")(function* (
     input: TimeoutOverdueDeliveriesInput,
   ) {
-    yield* requireMail;
     const nowMs = Date.parse(input.now);
     if (Number.isNaN(nowMs)) {
       return yield* refuse("invalid_request", "The timeout scan needs an ISO timestamp.");
@@ -1526,31 +1562,36 @@ const make = Effect.gen(function* () {
       (candidate) =>
         Date.parse(candidate.delivery.createdAt) + candidate.budgetSeconds * 1000 < nowMs,
     );
-    const failed = overdue.map((candidate) => ({
-      deliveryId: candidate.delivery.deliveryId,
-      reason:
-        `The ${candidate.roleId ?? "participant"} did not answer within ` +
-        `${candidate.budgetSeconds} seconds.`,
-    }));
-    const failedByTask = new Map<string, Array<{ role: string; letterId: string }>>();
+    const overdueByTask = new Map<string, Array<(typeof overdue)[number]>>();
     for (const candidate of overdue) {
-      const timedOut = failedByTask.get(candidate.delivery.taskId) ?? [];
-      timedOut.push({
-        role: candidate.roleId ?? "participant",
-        letterId: candidate.delivery.letterId,
-      });
-      failedByTask.set(candidate.delivery.taskId, timedOut);
+      const candidatesForTask = overdueByTask.get(candidate.delivery.taskId) ?? [];
+      candidatesForTask.push(candidate);
+      overdueByTask.set(candidate.delivery.taskId, candidatesForTask);
     }
     // The plan is reads only; one repository transaction applies every write, so
     // a crash anywhere retries from scratch with no partial rows.
+    const failed: Array<{ readonly deliveryId: string; readonly reason: string }> = [];
     const letters: TimeoutNoticeLetter[] = [];
-    for (const [taskId, timedOut] of failedByTask) {
+    for (const [taskId, timedOut] of overdueByTask) {
       const task = yield* repository.getTask(taskId);
       if (task === null || task.status !== "open") continue;
-      const lines = timedOut.map(
-        (entry) => `- ${entry.role}: 1 unanswered letter (${entry.letterId})`,
+      const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(task));
+      if (!(yield* gate.isEffective("mail", projectId).pipe(Effect.orElseSucceed(() => false)))) {
+        continue;
+      }
+      failed.push(
+        ...timedOut.map((candidate) => ({
+          deliveryId: candidate.delivery.deliveryId,
+          reason:
+            `The ${candidate.roleId ?? "participant"} did not answer within ` +
+            `${candidate.budgetSeconds} seconds.`,
+        })),
       );
-      const letterIds = timedOut.map((entry) => entry.letterId).toSorted();
+      const lines = timedOut.map(
+        (candidate) =>
+          `- ${candidate.roleId ?? "participant"}: 1 unanswered letter (${candidate.delivery.letterId})`,
+      );
+      const letterIds = timedOut.map((candidate) => candidate.delivery.letterId).toSorted();
       const deliveryId = yield* newId;
       letters.push({
         letterId: yield* newId,
@@ -1578,8 +1619,7 @@ const make = Effect.gen(function* () {
   });
 
   const closeTask = Effect.fn("MailService.closeTask")(function* (input: CloseMailTaskInput) {
-    yield* requireMail;
-    const task = yield* requireTask(input.taskId);
+    const task = yield* requireMailTask(input.taskId);
     if (task.createdByThreadId !== input.callerThreadId) {
       return yield* refuse("capability_denied", "Only the lead can close a mail task.");
     }
@@ -1650,11 +1690,10 @@ const make = Effect.gen(function* () {
   const setMemberModel = Effect.fn("MailService.setMemberModel")(function* (
     input: SetMemberModelInput,
   ) {
-    yield* requireMail;
     if (input.clientRequestId.trim() === "") {
       return yield* refuse("invalid_request", "A model override needs a client request id.");
     }
-    const task = yield* requireTask(input.taskId);
+    const task = yield* requireMailTask(input.taskId);
     if (task.status === "closed") {
       return yield* refuse("task_closed", `Mail task "${task.taskId}" is closed.`);
     }

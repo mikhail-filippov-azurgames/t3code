@@ -2440,7 +2440,7 @@ const make = Effect.gen(function* () {
       }
       const delegatedRole =
         roleAssignment._tag === "assigned" ? (input.role ?? DEFAULT_DELEGATED_ROLE) : input.role;
-      const launch = yield* launchPolicy.launchFor(delegatedRole);
+      const launch = yield* launchPolicy.launchFor(delegatedRole, parent.thread.id);
       if (launch._tag === "mail_required") {
         return yield* failure(
           "mail_required",

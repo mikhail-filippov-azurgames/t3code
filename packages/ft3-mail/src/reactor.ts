@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
@@ -26,6 +27,7 @@ import {
   participantLabel,
   participantReplyLine,
 } from "./participantLauncher.ts";
+import { projectIdOfMailTask } from "./projectContext.ts";
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
 import { MAIL_URGENT_LETTER_WAKE_REASON, MailService } from "./service.ts";
 
@@ -216,6 +218,11 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       yield* dead();
       return;
     }
+    const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(task));
+    if (!(yield* gate.isEffective("mail", projectId).pipe(Effect.orElseSucceed(() => false)))) {
+      // Keep the delivery queued so a later enablement can drain it.
+      return;
+    }
     // A closed member never gets another dispatch, and a corrupt override never
     // blocks the letter. A shell deleted without settle closes the member
     // instead of leaving its deliveries pending forever.
@@ -351,10 +358,16 @@ ${letter.body}${replyLine}`,
   ) {
     const { event } = stored;
     if (event.type === "subagent.updated") {
-      const task = event.payload;
-      if (task.childThreadId === null || !terminal(task.status)) return;
-      const found = yield* repository.findParticipantByThread(task.childThreadId);
+      const subagentEvent = event.payload;
+      if (subagentEvent.childThreadId === null || !terminal(subagentEvent.status)) return;
+      const found = yield* repository.findParticipantByThread(subagentEvent.childThreadId);
       if (found === null || found.member.status !== "active" || found.taskStatus !== "open") {
+        return;
+      }
+      const mailTask = yield* repository.getTask(found.member.taskId);
+      if (mailTask === null) return;
+      const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(mailTask));
+      if (!(yield* gate.isEffective("mail", projectId).pipe(Effect.orElseSucceed(() => false)))) {
         return;
       }
       // No settle: the member stays active. An unanswered lead letter gets
@@ -366,11 +379,11 @@ ${letter.body}${replyLine}`,
         if (open === null) continue;
         yield* mail
           .sendLetter({
-            callerThreadId: task.childThreadId,
+            callerThreadId: subagentEvent.childThreadId,
             taskId: found.member.taskId,
             to: "lead",
             kind: "answer",
-            body: serverAnswerBody({ status: task.status, result: task.result }),
+            body: serverAnswerBody({ status: subagentEvent.status, result: subagentEvent.result }),
             replyToLetterId: open.letterId,
             clientRequestId: `mail:server-answer:${delivery.deliveryId}`,
           })
@@ -382,6 +395,11 @@ ${letter.body}${replyLine}`,
     if (event.payload.kind !== "user_input" || event.payload.status !== "pending") return;
     const found = yield* repository.findParticipantByThread(event.threadId);
     if (found === null || found.member.status !== "active" || found.taskStatus !== "open") return;
+    const task = yield* repository.getTask(found.member.taskId);
+    if (task === null) return;
+    const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(task));
+    if (!(yield* gate.isEffective("mail", projectId).pipe(Effect.orElseSucceed(() => false))))
+      return;
     yield* mail
       .sendLetter({
         callerThreadId: event.threadId,
@@ -401,7 +419,6 @@ ${letter.body}${replyLine}`,
 
   const process = Effect.fn("MailDeliveryReactor.process")(
     function* (stored: OrchestrationV2StoredEvent) {
-      if (!(yield* gate.isEffective("mail").pipe(Effect.orElseSucceed(() => false)))) return;
       yield* sql.withTransaction(
         Effect.gen(function* () {
           if (stored.sequence <= (yield* cursor())) return;
@@ -416,7 +433,6 @@ ${letter.body}${replyLine}`,
   );
 
   const recover = Effect.gen(function* () {
-    if (!(yield* gate.isEffective("mail").pipe(Effect.orElseSucceed(() => false)))) return;
     const afterSequence = yield* cursor();
     const throughSequence = yield* sink.latestSequence();
     if (throughSequence > afterSequence) {

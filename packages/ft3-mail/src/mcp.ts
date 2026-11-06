@@ -1,6 +1,7 @@
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { toolkitRegistration } from "../../../apps/server/src/mcp/McpHttpServer.ts";
@@ -65,21 +66,25 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
   Layer.unwrap(
     Effect.gen(function* () {
       const gateService = yield* FeatureGate.FeatureGate;
-      const requireMail = gateService.isEffective("mail").pipe(
-        Effect.flatMap((effective) =>
-          effective
-            ? Effect.void
-            : new MailMcpFailure({
-                code: "mail_disabled_notice",
-                message: "Mail is off for this environment, so no mail tool can run.",
-              }),
-        ),
-      );
+      const requireMailForCaller = Effect.fn("MailMcp.requireMailForCaller")(function* (
+        threadId: string,
+      ) {
+        const projectId = Option.getOrUndefined(yield* FeatureGate.projectIdOfThread(threadId));
+        yield* gateService
+          .require("mail", projectId)
+          .pipe(
+            Effect.mapError(
+              (error) =>
+                new MailMcpFailure({ code: "mail_disabled_notice", message: error.message }),
+            ),
+          );
+      });
 
       const handlers = McpToolAccess.toLayer(toolkit, {
         mail_task_create: McpToolAccess.actsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
+            const threadId = yield* callerThreadId;
+            yield* requireMailForCaller(threadId);
             const service = yield* MailService;
             return yield* service
               .createTask({
@@ -88,7 +93,7 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
                 level: input.level,
                 members: input.members.map(toMemberRequest),
                 clientRequestId: input.clientRequestId,
-                callerThreadId: yield* callerThreadId,
+                callerThreadId: threadId,
                 ...(input.responseBudgetSeconds === undefined
                   ? {}
                   : { responseBudgetSeconds: input.responseBudgetSeconds }),
@@ -104,7 +109,8 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
         ),
         mail_send: McpToolAccess.actsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
+            const threadId = yield* callerThreadId;
+            yield* requireMailForCaller(threadId);
             const service = yield* MailService;
             return yield* service
               .sendLetter({
@@ -113,7 +119,7 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
                 kind: input.kind,
                 body: input.body,
                 clientRequestId: input.clientRequestId,
-                callerThreadId: yield* callerThreadId,
+                callerThreadId: threadId,
                 ...(input.replyToLetterId === undefined
                   ? {}
                   : { replyToLetterId: input.replyToLetterId }),
@@ -125,19 +131,21 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
         ),
         mail_read: McpToolAccess.readsAsCaller((input) =>
           Effect.gen(function* () {
+            const threadId = yield* callerThreadId;
             const service = yield* MailService;
             return yield* service
-              .readLetter({ letterId: input.letterId, callerThreadId: yield* callerThreadId })
+              .readLetter({ letterId: input.letterId, callerThreadId: threadId })
               .pipe(Effect.mapError(toMcpFailure));
           }),
         ),
         mail_task_read: McpToolAccess.readsAsCaller((input) =>
           Effect.gen(function* () {
+            const threadId = yield* callerThreadId;
             const service = yield* MailService;
             return yield* service
               .readTask({
                 taskId: input.taskId,
-                callerThreadId: yield* callerThreadId,
+                callerThreadId: threadId,
                 ...(input.beforeLetterId === undefined
                   ? {}
                   : { beforeLetterId: input.beforeLetterId }),
@@ -148,7 +156,8 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
         ),
         mail_member_set_model: McpToolAccess.actsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
+            const threadId = yield* callerThreadId;
+            yield* requireMailForCaller(threadId);
             const service = yield* MailService;
             return yield* service
               .setMemberModel({
@@ -157,35 +166,37 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
                 modelSelection: input.modelSelection,
                 humanInstruction: input.humanInstruction,
                 clientRequestId: input.clientRequestId,
-                callerThreadId: yield* callerThreadId,
+                callerThreadId: threadId,
               })
               .pipe(Effect.mapError(toMcpFailure));
           }),
         ),
         mail_letter_set_kind: McpToolAccess.actsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
+            const threadId = yield* callerThreadId;
+            yield* requireMailForCaller(threadId);
             const service = yield* MailService;
             return yield* service
               .setLetterKind({
                 letterId: input.letterId,
                 kind: input.kind,
                 clientRequestId: input.clientRequestId,
-                callerThreadId: yield* callerThreadId,
+                callerThreadId: threadId,
               })
               .pipe(Effect.mapError(toMcpFailure));
           }),
         ),
         mail_task_close: McpToolAccess.actsAsCaller((input) =>
           Effect.gen(function* () {
-            yield* requireMail;
+            const threadId = yield* callerThreadId;
+            yield* requireMailForCaller(threadId);
             const service = yield* MailService;
             return yield* service
               .closeTask({
                 taskId: input.taskId,
                 outcome: input.outcome,
                 summary: input.summary,
-                callerThreadId: yield* callerThreadId,
+                callerThreadId: threadId,
               })
               .pipe(Effect.mapError(toMcpFailure));
           }),

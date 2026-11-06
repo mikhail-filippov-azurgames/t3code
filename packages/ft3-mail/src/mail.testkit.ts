@@ -1,3 +1,5 @@
+import { ProjectId } from "@t3tools/contracts";
+import type { FeatureId } from "@t3tools/ft3-policies/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   normalServicePolicyLayer,
@@ -21,6 +23,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
 
+import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import { MailKindClassifier, type MailClassification } from "./classifier.ts";
 import { migrations } from "./migrations.ts";
 import {
@@ -64,19 +68,37 @@ export const databaseLayer = mailRepositoryLayer.pipe(
   Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
 );
 
-export const gateLayer = (enabled: boolean, planning = true) =>
+type FeatureOverrides = Record<string, Partial<Record<FeatureId, boolean>>>;
+type GateState = {
+  enabled: boolean;
+  planning: boolean;
+  projectOverrides: FeatureOverrides;
+};
+
+const gateLayerFromState = (state: GateState) =>
   Layer.succeed(
     FeatureGate,
     FeatureGate.of({
       states: Effect.die("unused"),
       state: () => Effect.die("unused"),
-      isEffective: () => Effect.succeed(enabled),
-      require: (feature) =>
-        enabled && (feature !== "planning" || planning)
+      isEffective: (feature, projectId) =>
+        Effect.succeed(
+          state.projectOverrides[projectId ?? ""]?.[feature] ??
+            (state.enabled && (feature !== "planning" || state.planning)),
+        ),
+      require: (feature, projectId) =>
+        (state.projectOverrides[projectId ?? ""]?.[feature] ??
+        (state.enabled && (feature !== "planning" || state.planning)))
           ? Effect.void
           : Effect.fail(new FeatureDisabledError({ feature, code: "feature_disabled" })),
     }),
   );
+
+export const gateLayer = (
+  enabled: boolean,
+  planning = true,
+  projectOverrides: FeatureOverrides = {},
+) => gateLayerFromState({ enabled, planning, projectOverrides });
 
 const candidateAt = (level: RoutingLevel): RoutingResolvedCandidate => ({
   alias: "fast",
@@ -258,8 +280,26 @@ export const mailHarness = (
     readonly planRecordsFail?: boolean;
     readonly planBindsFail?: boolean;
     readonly cardOwners?: Readonly<Record<string, string>>;
+    readonly threadProjects?: Readonly<Record<string, string>>;
+    readonly projectOverrides?: FeatureOverrides;
   } = {},
 ) => {
+  const gateState: GateState = {
+    enabled: options.enabled ?? true,
+    planning: options.planning ?? true,
+    projectOverrides: { ...options.projectOverrides },
+  };
+  const threadProjects = options.threadProjects ?? {};
+  const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
+    getThreadShell: (threadId) => {
+      const projectId = threadProjects[String(threadId)];
+      return Effect.succeed(
+        projectId === undefined
+          ? null
+          : { ...liveThreadShell(threadId), projectId: ProjectId.make(projectId) },
+      );
+    },
+  });
   const routing = routingFake(options);
   const evidence = policyEvidenceFake(options.cardOwners);
   const launcher = launcherFake(options.launchFail);
@@ -273,7 +313,7 @@ export const mailHarness = (
     Layer.provide(
       Layer.mergeAll(
         routing.layer,
-        gateLayer(options.enabled ?? true, options.planning ?? true),
+        gateLayerFromState(gateState),
         cryptoLayer,
         evidence.layer,
         launcher.layer,
@@ -285,10 +325,12 @@ export const mailHarness = (
           : settingsLayer({ classifierThreshold: options.classifierThreshold }),
       ),
     ),
+    Layer.provideMerge(threads),
     Layer.provideMerge(databaseLayer),
   );
   return {
     layer,
+    threadLayer: threads,
     selects: routing.selects,
     cardSnapshots: evidence.cardSnapshots,
     launches: launcher.launches,
@@ -299,5 +341,14 @@ export const mailHarness = (
     planFailRecords: gate.failRecords,
     planFailBinds: gate.failBinds,
     planBoundThread: () => gate.planner.thread,
+    setEnvironmentEnabled: (enabled: boolean) => {
+      gateState.enabled = enabled;
+    },
+    setProjectFeature: (projectId: string, feature: FeatureId, enabled: boolean) => {
+      gateState.projectOverrides[projectId] = {
+        ...gateState.projectOverrides[projectId],
+        [feature]: enabled,
+      };
+    },
   };
 };

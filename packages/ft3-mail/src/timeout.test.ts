@@ -62,13 +62,16 @@ const sendRequest = (taskId: string, clientRequestId: string) =>
   });
 
 it.effect("fails deliveries past the member budget and tells the lead once", () => {
-  const harness = mailHarness();
+  const launchFailures = new Set<string>();
+  const harness = mailHarness({ launchFail: launchFailures });
   return Effect.gen(function* () {
     yield* migrateMail;
     const created = yield* teamWithBudget(60);
+    const repository = yield* MailRepository;
+    const member = (yield* repository.listMembers(created.task.taskId))[0]!;
+    launchFailures.add(member.memberId);
     const sent = yield* sendRequest(created.task.taskId, "request:letter");
     const mail = yield* MailService;
-    const repository = yield* MailRepository;
 
     const early = yield* mail.timeoutOverdueDeliveries({ now: afterSeconds(30) });
     assert.deepStrictEqual(early.failed, []);
@@ -92,7 +95,8 @@ it.effect("fails deliveries past the member budget and tells the lead once", () 
 });
 
 it.effect("falls back to the task default budget", () => {
-  const harness = mailHarness();
+  const launchFailures = new Set<string>();
+  const harness = mailHarness({ launchFail: launchFailures });
   return Effect.gen(function* () {
     yield* migrateMail;
     const mail = yield* MailService;
@@ -104,6 +108,8 @@ it.effect("falls back to the task default budget", () => {
       level: "medium",
       members: [{ role: "implementation" }],
     });
+    const repository = yield* MailRepository;
+    launchFailures.add((yield* repository.listMembers(created.task.taskId))[0]!.memberId);
     yield* sendRequest(created.task.taskId, "request:letter");
 
     // The member budget defaults to 1800 seconds; just under it nothing fails.
@@ -115,7 +121,7 @@ it.effect("falls back to the task default budget", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("refuses a scan without a timestamp and stays quiet while mail is off", () => {
+it.effect("refuses a scan without a timestamp", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {
     yield* migrateMail;
@@ -129,15 +135,40 @@ it.effect("refuses a scan without a timestamp and stays quiet while mail is off"
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("stays quiet while mail is off", () => {
+it.effect("stays quiet while mail is off when no enabled task has an overdue delivery", () => {
   const harness = mailHarness({ enabled: false });
   return Effect.gen(function* () {
     yield* migrateMail;
     const mail = yield* MailService;
-    assert.equal(
-      yield* refusal(mail.timeoutOverdueDeliveries({ now: afterSeconds(3600) })),
-      "mail_disabled",
-    );
+    const result = yield* mail.timeoutOverdueDeliveries({ now: afterSeconds(59 * 60 + 59) });
+    assert.deepStrictEqual(result.failed, []);
+    assert.deepStrictEqual(result.letters, []);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("times out deliveries only while mail is enabled for the task project", () => {
+  const launchFailures = new Set<string>();
+  const harness = mailHarness({
+    launchFail: launchFailures,
+    threadProjects: { [LEAD]: "project:timeouts" },
+  });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamWithBudget(60);
+    const repository = yield* MailRepository;
+    launchFailures.add((yield* repository.listMembers(created.task.taskId))[0]!.memberId);
+    yield* sendRequest(created.task.taskId, "request:letter");
+    const mail = yield* MailService;
+
+    harness.setProjectFeature("project:timeouts", "mail", false);
+    const off = yield* mail.timeoutOverdueDeliveries({ now: afterSeconds(61) });
+    assert.deepStrictEqual(off.failed, []);
+    assert.deepStrictEqual(off.letters, []);
+
+    harness.setProjectFeature("project:timeouts", "mail", true);
+    const on = yield* mail.timeoutOverdueDeliveries({ now: afterSeconds(61) });
+    assert.equal(on.failed.length, 1);
+    assert.equal(on.letters.length, 1);
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -167,6 +198,7 @@ const faultHarness = (fault: FaultFlag) => {
       Layer.succeed(SqlClient.SqlClient, proxied(Context.get(context, SqlClient.SqlClient))),
     ),
   );
+  const launchFailures = new Set<string>();
   const layer = mailServiceLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -174,7 +206,7 @@ const faultHarness = (fault: FaultFlag) => {
         gateLayer(true),
         cryptoLayer,
         policyEvidenceFake().layer,
-        launcherFake().layer,
+        launcherFake(launchFailures).layer,
         classifierFake().layer,
         normalServicePolicyLayer,
         settingsLayer(),
@@ -183,7 +215,7 @@ const faultHarness = (fault: FaultFlag) => {
     ),
     Layer.provideMerge(mailRepositoryLayer.pipe(Layer.provideMerge(sqlite))),
   );
-  return { layer };
+  return { layer, launchFailures };
 };
 
 it.effect("restarts the timeout scan from every write boundary", () => {
@@ -202,9 +234,10 @@ it.effect("restarts the timeout scan from every write boundary", () => {
         yield* migrateMail;
         const created = yield* teamWithBudget(60);
         const taskId = created.task.taskId;
-        const sent = yield* sendRequest(taskId, "request:letter");
         const mail = yield* MailService;
         const repository = yield* MailRepository;
+        harness.launchFailures.add((yield* repository.listMembers(taskId))[0]!.memberId);
+        const sent = yield* sendRequest(taskId, "request:letter");
 
         fault.predicate = boundary.match;
         const exit = yield* Effect.exit(mail.timeoutOverdueDeliveries({ now: afterSeconds(61) }));
@@ -273,10 +306,11 @@ it.effect("settles a member from every write boundary without partial state", ()
         yield* migrateMail;
         const created = yield* teamWithBudget(60);
         const taskId = created.task.taskId;
-        const sent = yield* sendRequest(taskId, "request:letter");
         const mail = yield* MailService;
         const repository = yield* MailRepository;
         const memberId = (yield* repository.listMembers(taskId))[0]!.memberId;
+        harness.launchFailures.add(memberId);
+        const sent = yield* sendRequest(taskId, "request:letter");
         const settle = { memberId, settledAs: "completed", at: afterSeconds(61) };
 
         fault.predicate = boundary.match;
@@ -330,11 +364,12 @@ it.effect("gives a later settle batch its own notice, delivery and wake", () => 
     yield* migrateMail;
     const created = yield* teamWithBudget(60);
     const taskId = created.task.taskId;
+    const repository = yield* MailRepository;
+    const memberId = (yield* repository.listMembers(taskId))[0]!.memberId;
+    harness.launchFailures.add(memberId);
     yield* sendRequest(taskId, "request:first");
     const mail = yield* MailService;
-    const repository = yield* MailRepository;
     const sql = yield* SqlClient.SqlClient;
-    const memberId = (yield* repository.listMembers(taskId))[0]!.memberId;
     yield* mail.settleMember({ memberId, settledAs: "completed", at: afterSeconds(61) });
 
     // A member that comes back and strands a newer letter settles into a second notice.

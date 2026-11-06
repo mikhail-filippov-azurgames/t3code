@@ -49,6 +49,7 @@ import {
   settingsLayer,
 } from "./mail.testkit.ts";
 import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
+import type { FeatureId } from "@t3tools/ft3-policies/contracts";
 import { layer as mailServiceLayer } from "./service.ts";
 import { MailDeliveryReactor, layer as mailReactorLayer } from "./reactor.ts";
 
@@ -144,7 +145,12 @@ const infrastructure = EventSink.layer.pipe(
   ),
 );
 
-function fixture(enabled = true, failParticipantLookup = false, failSteer = false) {
+function fixture(
+  enabled = true,
+  failParticipantLookup = false,
+  failSteer = false,
+  projectOverrides: Record<string, Partial<Record<FeatureId, boolean>>> = {},
+) {
   const dispatched: Array<Dispatch> = [];
   const routing = routingFake({});
   const evidence = policyEvidenceFake();
@@ -222,7 +228,7 @@ function fixture(enabled = true, failParticipantLookup = false, failSteer = fals
     Layer.provideMerge(managedThreads),
     Layer.provideMerge(serviceLayer),
     Layer.provideMerge(repositoryLayer),
-    Layer.provideMerge(gateLayer(enabled)),
+    Layer.provideMerge(gateLayer(enabled, true, projectOverrides)),
     Layer.provideMerge(infrastructure),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provideMerge(ServerSettings.layerTest()),
@@ -251,7 +257,17 @@ function fixture(enabled = true, failParticipantLookup = false, failSteer = fals
     });
     return created;
   });
-  return { layer, seed, emit, team, dispatched, launcher };
+  return {
+    layer,
+    seed,
+    emit,
+    team,
+    dispatched,
+    launcher,
+    setProjectFeature: (projectId: string, feature: FeatureId, value: boolean) => {
+      projectOverrides[projectId] = { ...projectOverrides[projectId], [feature]: value };
+    },
+  };
 }
 
 const memberOf = (taskId: string) =>
@@ -526,6 +542,41 @@ it.effect("drains a recorded wake and marks the delivery on the next tick", () =
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "delivered");
     assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("holds queued mail while its task project is off and drains it when re-enabled", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: leadId,
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:project-wake",
+    });
+    const reactor = yield* MailDeliveryReactor;
+    const repository = yield* MailRepository;
+    harness.setProjectFeature("project:mcp-test", "mail", false);
+
+    yield* reactor.recover;
+    assert.deepStrictEqual(harness.dispatched, []);
+    assert.equal((yield* repository.getDelivery(sent.deliveries[0]!.deliveryId))?.state, "pending");
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 1);
+
+    harness.setProjectFeature("project:mcp-test", "mail", true);
+    yield* reactor.recover;
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(
+      (yield* repository.getDelivery(sent.deliveries[0]!.deliveryId))?.state,
+      "delivered",
+    );
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -812,7 +863,7 @@ it.effect("queues the letter when the steer is refused", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("stays quiet while mail is off", () => {
+it.effect("advances unrelated events without dispatching while mail is off", () => {
   const harness = fixture(false);
   return Effect.gen(function* () {
     yield* harness.seed;
@@ -821,7 +872,7 @@ it.effect("stays quiet while mail is off", () => {
     const sql = yield* SqlClient.SqlClient;
     const cursor = yield* sql<{ readonly sequence: number }>`
       SELECT sequence FROM ft3_mail_reactor_cursor WHERE id = 1`;
-    assert.equal(cursor[0]?.sequence, 0);
+    assert.equal(cursor[0]?.sequence, 2);
     assert.equal(harness.dispatched.length, 0);
   }).pipe(Effect.provide(harness.layer));
 });
