@@ -693,15 +693,14 @@ upstream's masker. The duplicate body split and offset remapping were removed.
 Fork-owned tests: `packages/ft3-web/src/files/markdownFrontmatter.test.ts`
 and `packages/ft3-web/src/files/MarkdownFrontmatterBlock.browser.test.tsx`.
 
-## Поверхность Board chat и координаторские действия
+## Поверхности ведущего Cards, History, Mail
 
-`packages/ft3-web/src/board/LeadBoardSurface.tsx` показывает Cards, History и Mail как
-вкладки отдельной поверхности `Board chat` в списке «Open a surface». Реестр находится в
-`panels.tsx`; `useFt3SurfaceActions` читает список ведущих в environment текущего треда,
-поэтому действие и клавиша `C` доступны только для зарегистрированного lead thread. Сам
-компонент повторно проверяет регистрацию перед показом содержимого, в том числе для ранее
-сохранённой поверхности после снятия отметки lead. Активная вкладка монтируется отдельно:
-Mail polling выключен, пока Mail или вся поверхность не видны.
+`packages/ft3-web/src/board/LeadBoardSurface.tsx` даёт три отдельные поверхности в списке
+«Open a surface»: Cards (`C`), History (`H`) и Mail (`E`). Реестр находится в `panels.tsx`;
+`useFt3SurfaceActions` читает список ведущих в environment текущего треда, поэтому они
+доступны только для зарегистрированного lead thread. Компонент повторно проверяет
+регистрацию перед показом содержимого, в том числе для ранее сохранённой поверхности.
+Mail polling выключен, пока поверхность Mail не видна.
 
 Cards сохраняет закреплённые карточки с действиями (старт/архив/просьба оркестратору), а
 History — постраничную историю выжимок с `IntersectionObserver`-sentinel'ем. Mail

@@ -1,5 +1,5 @@
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { GitBranch, LayoutDashboard, MessagesSquare, PanelsTopLeft } from "lucide-react";
+import { GitBranch, History, LayoutDashboard, Mail, PanelsTopLeft, StickyNote } from "lucide-react";
 import { lazy, Suspense, useMemo, type ComponentType } from "react";
 import { useEnvironmentQuery } from "~/state/query";
 import { boardEnvironment } from "./board/state.ts";
@@ -36,7 +36,15 @@ export const ft3Surface = (surfaceType: string): Ft3Surface => ({
 });
 
 const BoardPanel = lazy(() => import("./board/BoardPanel.tsx"));
-const LeadBoardSurface = lazy(() => import("./board/LeadBoardSurface.tsx"));
+const LeadBoardCards = lazy(() =>
+  import("./board/LeadBoardSurface.tsx").then((m) => ({ default: m.LeadBoardCardsSurface })),
+);
+const LeadBoardHistory = lazy(() =>
+  import("./board/LeadBoardSurface.tsx").then((m) => ({ default: m.LeadBoardHistorySurface })),
+);
+const LeadBoardMail = lazy(() =>
+  import("./board/LeadBoardSurface.tsx").then((m) => ({ default: m.LeadBoardMailSurface })),
+);
 const CommitsPanel = lazy(() => import("./commits/CommitsPanel.tsx"));
 
 export const ft3SurfaceRegistry: Readonly<Record<string, Ft3SurfaceDefinition>> = {
@@ -49,15 +57,35 @@ export const ft3SurfaceRegistry: Readonly<Record<string, Ft3SurfaceDefinition>> 
     available: (ref) => ref !== null,
     open: (ref, openSurface) => openSurface(ref, ft3Surface("board")),
   },
-  "lead-board": {
-    component: LeadBoardSurface,
-    icon: MessagesSquare,
-    title: "Board chat",
+  "lead-cards": {
+    component: LeadBoardCards,
+    icon: StickyNote,
+    title: "Cards",
     shortcut: "C",
     disabledReason: "Available in a lead thread.",
     availableWhenLead: true,
     available: (ref) => ref !== null,
-    open: (ref, openSurface) => openSurface(ref, ft3Surface("lead-board")),
+    open: (ref, openSurface) => openSurface(ref, ft3Surface("lead-cards")),
+  },
+  "lead-history": {
+    component: LeadBoardHistory,
+    icon: History,
+    title: "History",
+    shortcut: "H",
+    disabledReason: "Available in a lead thread.",
+    availableWhenLead: true,
+    available: (ref) => ref !== null,
+    open: (ref, openSurface) => openSurface(ref, ft3Surface("lead-history")),
+  },
+  "lead-mail": {
+    component: LeadBoardMail,
+    icon: Mail,
+    title: "Mail",
+    shortcut: "E",
+    disabledReason: "Available in a lead thread.",
+    availableWhenLead: true,
+    available: (ref) => ref !== null,
+    open: (ref, openSurface) => openSurface(ref, ft3Surface("lead-mail")),
   },
   commits: {
     component: CommitsPanel,

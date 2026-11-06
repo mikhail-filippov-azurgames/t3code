@@ -2,10 +2,9 @@ import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contract
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../../apps/web/test/render";
-import LeadBoardSurface from "./LeadBoardSurface.tsx";
+import { LeadBoardSurface, type LeadBoardSection } from "./LeadBoardSurface.tsx";
 import type { CoordinatorSummaryHistoryEntry } from "./coordinatorSummaryHistory";
 
 const mocks = vi.hoisted(() => ({
@@ -97,10 +96,10 @@ function setup(options: {
   return { registry, [Symbol.dispose]: () => registry.dispose() };
 }
 
-const renderSurface = (state: ReturnType<typeof setup>) =>
+const renderSurface = (state: ReturnType<typeof setup>, section: LeadBoardSection = "cards") =>
   render(
     <RegistryContext.Provider value={state.registry}>
-      <LeadBoardSurface threadRef={threadRef} visible />
+      <LeadBoardSurface threadRef={threadRef} visible section={section} />
     </RegistryContext.Provider>,
   );
 
@@ -110,35 +109,29 @@ describe("LeadBoardSurface", () => {
     await using screen = await renderSurface(state);
 
     await expect.element(screen.getByRole("status")).toHaveTextContent("Panel unavailable.");
-    expect(screen.container.querySelector('[role="tablist"]')).toBeNull();
   });
 
-  it("shows the three tabs when the lead board has no content", async () => {
+  it("says so when the lead has no pinned cards or summaries", async () => {
     using state = setup({});
-    await using screen = await renderSurface(state);
-
-    await expect.element(screen.getByRole("tab", { name: "Cards" })).toBeVisible();
-    await expect.element(screen.getByRole("tab", { name: "History" })).toBeVisible();
-    await expect.element(screen.getByRole("tab", { name: "Mail" })).toBeVisible();
-    expect(screen.container.querySelector("#ft3-board-cards-heading")).toBeNull();
+    await using cards = await renderSurface(state, "cards");
+    await expect.element(cards.getByText("No pinned cards.")).toBeVisible();
   });
 
-  it("mounts the empty Mail tab so it can poll for new tasks", async () => {
+  it("mounts the empty Mail surface so it can poll for new tasks", async () => {
     using state = setup({});
-    await using screen = await renderSurface(state);
+    await using screen = await renderSurface(state, "mail");
 
-    await userEvent.click(screen.getByRole("tab", { name: "Mail" }));
     await expect.element(screen.getByRole("heading", { name: "Mail" })).toBeVisible();
     expect(screen.container.querySelector("[data-mail-tab-stub]")).not.toBeNull();
   });
 
-  it("shows pinned cards and mounts Mail only after selecting its tab", async () => {
+  it("shows pinned cards on the Cards surface without mounting Mail", async () => {
     using state = setup({ mailTaskCount: 1 });
     window.localStorage.setItem(
       `t3code:board-card-pins:v1:${environmentId}:${threadId}`,
       JSON.stringify([cardId]),
     );
-    await using screen = await renderSurface(state);
+    await using screen = await renderSurface(state, "cards");
 
     await expect.element(screen.getByRole("heading", { name: "Cards" })).toBeVisible();
     expect(screen.container.querySelector("[data-mail-tab-stub]")).toBeNull();
@@ -146,19 +139,13 @@ describe("LeadBoardSurface", () => {
     await expect
       .element(screen.getByRole("button", { name: `Unpin card ${cardId}` }))
       .toBeVisible();
-    await userEvent.click(screen.getByRole("tab", { name: "Mail" }));
-    await expect.element(screen.getByRole("heading", { name: "Mail" })).toBeVisible();
-    expect(screen.container.querySelector("[data-mail-tab-stub]")).not.toBeNull();
-    expect(screen.container.querySelector("#ft3-board-cards-heading")).toBeNull();
   });
 
-  it("shows the History section when summaries exist", async () => {
+  it("shows summaries on the History surface", async () => {
     using state = setup({ historyEntries: [historyEntry()] });
-    await using screen = await renderSurface(state);
+    await using screen = await renderSurface(state, "history");
 
-    await userEvent.click(screen.getByRole("tab", { name: "History" }));
     await expect.element(screen.getByRole("heading", { name: "History" })).toBeVisible();
     await expect.element(screen.getByText("Fix the bug · turn 1")).toBeVisible();
-    expect(screen.container.querySelector("#ft3-board-cards-heading")).toBeNull();
   });
 });

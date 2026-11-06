@@ -48,23 +48,23 @@ describe("FT3 panel registry", () => {
     expect(ft3SurfaceTitle("commits")).toBe("Commit graph");
   });
 
-  it("offers Board chat only for a registered lead thread", () => {
+  it("offers the lead Cards surface only for a registered lead thread", () => {
     const open = vi.fn();
     const lead = ft3SurfaceActions(ref, open, new Set([String(ref.threadId)])).find(
-      (entry) => entry.label === "Board chat",
+      (entry) => entry.label === "Cards",
     )!;
     expect(lead.available).toBe(true);
     expect(lead.shortcut).toBe("C");
     lead.onClick();
     expect(open).toHaveBeenCalledWith(ref, {
-      id: "ft3:lead-board",
+      id: "ft3:lead-cards",
       kind: "ft3",
-      surfaceType: "lead-board",
+      surfaceType: "lead-cards",
     });
 
     const otherThread = { ...ref, threadId: "ordinary-thread" as typeof ref.threadId };
     const unavailable = ft3SurfaceActions(otherThread, open).find(
-      (entry) => entry.label === "Board chat",
+      (entry) => entry.label === "Cards",
     )!;
     expect(unavailable.available).toBe(false);
     open.mockClear();

@@ -95,7 +95,7 @@ snapshot и документов политики — `orchestration:read`; их
 ### Web: реестры и швы
 
 - Правая панель: `ft3-web/src/panels.tsx` — `Ft3Surface`, `ft3SurfaceRegistry`
-  (`board`, `lead-board`, `commits`), `normalizeFt3Surface`, `Ft3SurfaceContent`. Upstream хранит только
+  (`board`, `lead-cards`, `lead-history`, `lead-mail`, `commits`), `normalizeFt3Surface`, `Ft3SurfaceContent`. Upstream хранит только
   ветку union `ft3` и действие открытия.
 - Sidebar: `ft3-web/src/sidebar` — `useFt3SidebarRows`, лес делегирования, role badges,
   пин архитектора, действия дочерних тредов.

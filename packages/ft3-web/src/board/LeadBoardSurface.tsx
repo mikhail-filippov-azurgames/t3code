@@ -74,11 +74,19 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
   };
 }
 
-const LEAD_BOARD_TABS = ["Cards", "History", "Mail"] as const;
-type LeadBoardTab = (typeof LEAD_BOARD_TABS)[number];
+export type LeadBoardSection = "cards" | "history" | "mail";
 
-export default function LeadBoardSurface({ threadRef, visible }: Ft3PanelProps) {
-  const [activeTab, setActiveTab] = useState<LeadBoardTab>("Cards");
+const SECTION_LABELS: Record<LeadBoardSection, string> = {
+  cards: "Cards",
+  history: "History",
+  mail: "Mail",
+};
+
+export function LeadBoardSurface({
+  threadRef,
+  visible,
+  section,
+}: Ft3PanelProps & { readonly section: LeadBoardSection }) {
   const leads = useEnvironmentQuery(
     boardEnvironment.orchestratorsList({ environmentId: threadRef.environmentId, input: {} }),
   );
@@ -100,34 +108,32 @@ export default function LeadBoardSurface({ threadRef, visible }: Ft3PanelProps) 
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" aria-label="Board chat">
-      <div role="tablist" aria-label="Board chat" className="mb-3 flex gap-1 border-b">
-        {LEAD_BOARD_TABS.map((tab) => (
-          <button
-            key={tab}
-            id={`lead-board-tab-${tab.toLowerCase()}`}
-            type="button"
-            role="tab"
-            aria-selected={activeTab === tab}
-            aria-controls="lead-board-tab-panel"
-            className="rounded-t-md px-3 py-2 text-sm text-muted-foreground aria-selected:border-b-2 aria-selected:border-primary aria-selected:text-foreground"
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab}
-          </button>
-        ))}
-      </div>
-      <div
-        id="lead-board-tab-panel"
-        role="tabpanel"
-        aria-labelledby={`lead-board-tab-${activeTab.toLowerCase()}`}
-        className="min-h-0 flex-1"
-      >
-        {activeTab === "Cards" ? <BoardCardsSection threadRef={threadRef} /> : null}
-        {activeTab === "History" ? <BoardHistorySection threadRef={threadRef} /> : null}
-        {activeTab === "Mail" ? <BoardMailSection threadRef={threadRef} visible={visible} /> : null}
-      </div>
+    <div
+      className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3"
+      aria-label={SECTION_LABELS[section]}
+    >
+      {section === "cards" ? <BoardCardsSection threadRef={threadRef} /> : null}
+      {section === "history" ? <BoardHistorySection threadRef={threadRef} /> : null}
+      {section === "mail" ? <BoardMailSection threadRef={threadRef} visible={visible} /> : null}
     </div>
+  );
+}
+
+export const LeadBoardCardsSurface = (props: Ft3PanelProps) => (
+  <LeadBoardSurface {...props} section="cards" />
+);
+export const LeadBoardHistorySurface = (props: Ft3PanelProps) => (
+  <LeadBoardSurface {...props} section="history" />
+);
+export const LeadBoardMailSurface = (props: Ft3PanelProps) => (
+  <LeadBoardSurface {...props} section="mail" />
+);
+
+function EmptySection(props: { readonly text: string }) {
+  return (
+    <p role="status" className="p-1 text-sm text-muted-foreground">
+      {props.text}
+    </p>
   );
 }
 
@@ -260,7 +266,7 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
     [environmentId, requestOrchestrator],
   );
 
-  if (pins.length === 0) return null;
+  if (pins.length === 0) return <EmptySection text="No pinned cards." />;
 
   return (
     <ThreadDetailsSection
@@ -412,7 +418,9 @@ function BoardHistorySection(props: { readonly threadRef: ScopedThreadRef }) {
   }, [canLoadMoreHistory, historySentinel, loadMoreHistory]);
 
   const hasContent = currentHistoryState.entries.length > 0 || currentHistoryState.error;
-  if (!hasContent) return null;
+  if (!hasContent) {
+    return currentHistoryState.loading ? null : <EmptySection text="No summaries yet." />;
+  }
 
   return (
     <ThreadDetailsSection
@@ -426,7 +434,7 @@ function BoardHistorySection(props: { readonly threadRef: ScopedThreadRef }) {
         />
       }
     >
-      <div className="max-h-[min(28rem,55dvh)] overflow-y-auto px-2.5">
+      <div className="px-2.5">
         {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
           <p role="status" className="text-xs text-muted-foreground">
             Loading summaries…
@@ -514,7 +522,7 @@ function BoardMailSection(props: {
         />
       }
     >
-      <div className="max-h-[min(28rem,55dvh)] overflow-y-auto px-2.5">
+      <div className="px-2.5">
         <BoardMailTab
           threadRef={props.threadRef}
           cardIds={boardCardIds}
