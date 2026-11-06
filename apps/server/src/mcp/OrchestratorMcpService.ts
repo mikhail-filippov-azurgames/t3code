@@ -73,7 +73,7 @@ import {
   delegationTextDecision,
   projectDerivedText,
 } from "@t3tools/ft3-delegation/server";
-import { mailDelegationLaunchLayer } from "@t3tools/ft3-mail/delegationLaunch";
+import { mailDelegationLaunchLayer, mailMemberAliasHint } from "@t3tools/ft3-mail/delegationLaunch";
 import {
   DEFAULT_DELEGATED_ROLE,
   layer as featureGateLayer,
@@ -2444,7 +2444,7 @@ const make = Effect.gen(function* () {
       if (launch._tag === "mail_required") {
         return yield* failure(
           "mail_required",
-          `Role "${launch.role}" takes part in a mail task; start it with mail_task_create instead of delegate_task.`,
+          `Role "${launch.role}" takes part in a mail task; start it with mail_task_create (${mailMemberAliasHint(launch.role)}) instead of delegate_task.`,
         );
       }
       const providers = yield* loadProviders;
