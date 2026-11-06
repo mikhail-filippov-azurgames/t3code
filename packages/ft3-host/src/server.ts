@@ -266,12 +266,22 @@ const layerAppliedPolicies = Layer.unwrap(
       roleResolverLayer,
     ).pipe(
       Layer.tap((context) =>
-        policies.refreshAppliedPolicies.pipe(
-          Effect.provide(context),
-          Effect.catchCause((cause) =>
-            Effect.logWarning(`Applied policies were not refreshed at startup: ${cause}`),
-          ),
-        ),
+        Effect.gen(function* () {
+          yield* policies.refreshAppliedPolicies.pipe(
+            Effect.provide(context),
+            Effect.catchCause((cause) =>
+              Effect.logWarning(`Applied policies were not refreshed at startup: ${cause}`),
+            ),
+          );
+          // Project scopes restore next, so a restart never serves such a
+          // project "off until Policies opened" (plan P3).
+          yield* policies.refreshAppliedProjectPolicies.pipe(
+            Effect.provide(context),
+            Effect.catchCause((cause) =>
+              Effect.logWarning(`Project policy scopes were not refreshed at startup: ${cause}`),
+            ),
+          );
+        }),
       ),
     );
   }),

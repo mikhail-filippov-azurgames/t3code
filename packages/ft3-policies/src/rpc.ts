@@ -23,7 +23,10 @@ import { PolicyPickers } from "./policyPickers.ts";
 import {
   readPolicySettings,
   resolvePolicyDocumentSources,
+  decodeProjectFeatureTogglesOverrideValue,
   decodeProjectPolicyDocumentOverrideValue,
+  type ProjectFeatureTogglesOverride,
+  resolveRequestedFeatures,
   withPolicySettings,
 } from "./settings.ts";
 import {
@@ -117,6 +120,22 @@ const projectOverrideOf = (
   return decoded._tag === "Some" ? decoded.value : null;
 };
 
+/** The project's `ft3FeatureToggles` override, when it decodes; null means inherit. */
+const projectTogglesOverrideOf = (
+  settings: {
+    readonly projectSettingsOverrides: Readonly<
+      Record<string, { readonly ft3FeatureToggles?: unknown } | undefined>
+    >;
+  },
+  projectId: string | undefined,
+): ProjectFeatureTogglesOverride | null => {
+  if (projectId === undefined) return null;
+  const raw = settings.projectSettingsOverrides[projectId]?.ft3FeatureToggles;
+  if (raw === undefined) return null;
+  const decoded = decodeProjectFeatureTogglesOverrideValue(raw);
+  return decoded._tag === "Some" ? decoded.value : null;
+};
+
 /** Settings, the ticked documents and the one-time env migration, in one place. */
 const prepared = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
@@ -159,6 +178,43 @@ export const refreshAppliedPolicies: Effect.Effect<
   });
   yield* Effect.forEach(warnings, (issue) => Effect.logWarning(issue.message), { discard: true });
 }).pipe(Effect.withSpan("PoliciesRpc.refreshAppliedPolicies"));
+
+/**
+ * Startup restore for the project scopes (plan P3): refresh every scope whose
+ * project overrides a policy document, right after the environment refresh, so
+ * a restart never leaves such a project "off until Policies opened". Toggle
+ * values persist in settings; only the per-scope requirements need restoring.
+ */
+export const refreshAppliedProjectPolicies: Effect.Effect<
+  void,
+  never,
+  PolicyChangeTracker | ServerSettingsService | DocsService
+> = Effect.gen(function* () {
+  const { settings, policies } = yield* prepared;
+  const tracker = yield* PolicyChangeTracker;
+  yield* Effect.forEach(
+    Object.keys(settings.projectSettingsOverrides),
+    (projectId) => {
+      const override = projectOverrideOf(settings, projectId);
+      if (override === null) return Effect.void;
+      // A project scope only exists for a document override (the scopeFor rule);
+      // its toggles still resolve per project for the loader's feature request.
+      const requested = resolveRequestedFeatures(
+        policies,
+        projectTogglesOverrideOf(settings, projectId),
+      );
+      return tracker
+        .refresh({
+          sources: resolvePolicyDocumentSources(policies, override),
+          features: { board: requested.board, planning: requested.planning },
+          applyExternalEdits: policies.applyExternalEdits,
+          scope: projectId,
+        })
+        .pipe(Effect.asVoid);
+    },
+    { discard: true },
+  );
+}).pipe(Effect.withSpan("PoliciesRpc.refreshAppliedProjectPolicies"));
 
 /** The tracker scope a refresh runs in: a project override is per-project state. */
 const scopeFor = (

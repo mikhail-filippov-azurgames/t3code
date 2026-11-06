@@ -22,11 +22,14 @@ import * as Context from "effect/Context";
 
 const rolesDirEnv = "T3CODE_FT3_ROLES_DIR";
 
-const hostLayer = (env: Record<string, string>) =>
+const hostLayer = (
+  env: Record<string, string>,
+  settings: Parameters<typeof ServerSettings.layerTest>[0] = {},
+) =>
   layer.pipe(
     Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
-    Layer.provide(ServerSettings.layerTest()),
+    Layer.provide(ServerSettings.layerTest(settings)),
     Layer.provide(
       Layer.succeed(
         Crypto.Crypto,
@@ -55,8 +58,99 @@ const hostLayer = (env: Record<string, string>) =>
     ),
   );
 
-const buildHostLayer = (env: Record<string, string>) =>
-  Layer.build(hostLayer(env)).pipe(Effect.scoped);
+const buildHostLayer = (
+  env: Record<string, string>,
+  settings: Parameters<typeof ServerSettings.layerTest>[0] = {},
+) => Layer.build(hostLayer(env, settings)).pipe(Effect.scoped);
+
+/** Writes a minimal configured policy document set a `path` source can read. */
+const writePolicyFixtures = (dir: string) => {
+  const write = (relPath: string, content: string) => {
+    const path = NodePath.join(dir, ...relPath.split("/"));
+    NodeFS.mkdirSync(NodePath.dirname(path), { recursive: true });
+    NodeFS.writeFileSync(path, content, "utf8");
+  };
+  write(
+    "routing-policy.md",
+    [
+      "---",
+      "revision: 1",
+      "---",
+      "",
+      "| Role | low | medium | high | very-high |",
+      "|---|---|---|---|---|",
+      "| `architect` | A1 | A1 | A1 | A1 |",
+      "| `planner` | A1 | A1 | A1 | A1 |",
+      "| `implementation` | A1 | A1 | A1 | A1 |",
+      "| `review-*` | A1 | A1 | A1 | A1 |",
+      "| `test` | A1 | A1 | A1 | A1 |",
+      "| `research` | A1 | A1 | A1 | A1 |",
+      "| `general` | A1 | A1 | A1 | A1 |",
+      "",
+      "### Alpha (`alpha / acp`)",
+      "| Alias | model | low | medium | high | very-high |",
+      "|---|---|---|---|---|---|",
+      "| A1 | `alpha-one` | — | — | — | — |",
+      "",
+    ].join("\n"),
+  );
+  write(
+    "roles/roles.json",
+    JSON.stringify({
+      schema: "corvis-role-map-v1",
+      revision: 1,
+      configured: true,
+      roles: [
+        { id: "lead", roleId: "lead", file: "lead.md" },
+        { id: "planner", roleId: "planner", file: "planner.md" },
+        { id: "architect", roleId: "architect", file: "architect.md" },
+      ],
+    }),
+  );
+  for (const roleId of ["lead", "planner", "architect"]) {
+    write(
+      `roles/${roleId}.md`,
+      [
+        "---",
+        "schema: corvis-role-v1",
+        `roleId: ${roleId}`,
+        "revision: 1",
+        "configured: true",
+        "---",
+        "",
+        `# ${roleId}`,
+        "",
+      ].join("\n"),
+    );
+  }
+  write(
+    "lead-skills/lead-skills.json",
+    JSON.stringify({
+      schema: "corvis-lead-skills-v1",
+      revision: 1,
+      configured: true,
+      skills: [
+        { id: "t3-orchestrator", file: "t3-orchestrator/SKILL.md" },
+        { id: "board-orchestrator", file: "board-orchestrator/SKILL.md" },
+        { id: "plan-orchestrator", file: "plan-orchestrator/SKILL.md" },
+      ],
+    }),
+  );
+  for (const skillId of ["t3-orchestrator", "board-orchestrator", "plan-orchestrator"]) {
+    write(
+      `lead-skills/${skillId}/SKILL.md`,
+      [
+        "---",
+        `name: ${skillId}`,
+        'description: "Test fixture skill."',
+        "---",
+        "",
+        `# ${skillId}`,
+        "",
+      ].join("\n"),
+    );
+  }
+};
 
 describe("ft3 host startup", () => {
   it.effect("composes the feature gate with the default toggles", () =>
@@ -66,6 +160,46 @@ describe("ft3 host startup", () => {
       assert.isTrue(yield* gate.isEffective("board"));
       assert.isFalse(yield* gate.isEffective("mail"));
     }),
+  );
+
+  it.effect(
+    "restores a project's document scope at startup, so planning passes for it without an RPC",
+    () =>
+      Effect.gen(function* () {
+        const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ft3-host-policies-"));
+        writePolicyFixtures(dir);
+        const context = yield* buildHostLayer({}, {
+          ft3: {
+            policies: {
+              features: { mail: true, planning: true },
+              documents: {
+                routingPolicy: { kind: "path", path: `${dir}/routing-policy.md` },
+                roles: { kind: "builtin" },
+                leadSkills: { kind: "path", path: `${dir}/lead-skills/lead-skills.json` },
+              },
+            },
+          },
+          projectSettingsOverrides: {
+            "project-alpha": {
+              ft3PolicyDocuments: {
+                key: "roles",
+                source: { kind: "path", path: `${dir}/roles/roles.json` },
+              },
+            },
+          },
+        } as Parameters<typeof ServerSettings.layerTest>[0]);
+        const gate = Context.get(context, FeatureGate.FeatureGate);
+
+        // The environment's builtin roles template stays unconfigured, so
+        // planning stays off there; only the restored project scope turns it on.
+        const envPlanning = yield* gate.state("planning").pipe(Effect.provide(context));
+        assert.isFalse(envPlanning.effectiveEnabled);
+
+        yield* gate.require("planning", "project-alpha").pipe(Effect.provide(context));
+        assert.isTrue(
+          yield* gate.isEffective("planning", "project-alpha").pipe(Effect.provide(context)),
+        );
+      }),
   );
 
   it.effect("builds without a roles directory", () =>
