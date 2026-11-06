@@ -2,13 +2,18 @@
  * Live `MailParticipantLauncher`: dispatches with `completionWake: "none"`.
  * Stays in `apps/server`: `ft3-mail` must not import `ThreadManagementService`.
  */
-import { ThreadId, type OrchestrationV2ThreadLaunchWorkspaceStrategy } from "@t3tools/contracts";
+import {
+  CommandId,
+  ThreadId,
+  type OrchestrationV2ThreadLaunchWorkspaceStrategy,
+} from "@t3tools/contracts";
 import {
   MailLaunchError,
   MailParticipantLauncher,
   decodeParticipantModelSelection,
   participantLaunchCommandId,
   participantLaunchPrompt,
+  participantThreadTitle,
   participantUpstreamRole,
   type MailParticipantLaunchInput,
 } from "@t3tools/ft3-mail/launcher";
@@ -140,6 +145,11 @@ const make = Effect.gen(function* () {
     }
 
     const upstreamRole = participantUpstreamRole(input.roleId);
+    const title = participantThreadTitle({
+      roleId: input.roleId,
+      specialization: input.specialization,
+      taskTitle: input.taskTitle,
+    });
     const result = yield* threads
       .dispatch({
         type: "delegated_task.request",
@@ -151,7 +161,7 @@ const make = Effect.gen(function* () {
         parentNodeId: parentRun.rootNodeId,
         task: prompt,
         ...(upstreamRole === undefined ? {} : { role: upstreamRole }),
-        title: input.taskTitle,
+        title,
         modelSelection,
         runtimeMode: parent.thread.runtimeMode,
         interactionMode: parent.thread.interactionMode,
@@ -171,6 +181,16 @@ const make = Effect.gen(function* () {
       return yield* fail("the orchestrator did not start a participant thread.");
     }
     const childThreadId = taskEvent.event.payload.childThreadId;
+    // A repeat launch replays the stable command's receipt and keeps the first
+    // task's title; retitle the reused thread for the task at hand.
+    yield* threads
+      .dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make(`mail-participant-title:${input.memberId}:${input.letterId}`),
+        threadId: childThreadId,
+        title,
+      })
+      .pipe(Effect.mapError((cause) => new MailLaunchError({ reason: describe(cause) })));
     const childRunEvent = result.storedEvents.find(
       (stored) => stored.event.type === "run.created" && stored.event.threadId === childThreadId,
     );

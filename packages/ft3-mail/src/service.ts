@@ -1167,6 +1167,7 @@ const make = Effect.gen(function* () {
           taskTitle: task.title,
           memberId: current.memberId,
           roleId: current.roleId,
+          specialization: current.specialization,
           modelSelectionJson,
           letterId: appended.letter.letterId,
           letterBody: input.body,

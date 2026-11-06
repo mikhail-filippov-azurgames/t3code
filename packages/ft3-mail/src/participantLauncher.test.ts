@@ -6,6 +6,7 @@ import {
   participantLaunchCommandId,
   participantLaunchPrompt,
   participantReplyLine,
+  participantThreadTitle,
   participantUpstreamRole,
 } from "./participantLauncher.ts";
 
@@ -50,6 +51,32 @@ it.effect("keeps the reply line past the parsed header shape", () =>
     assert.include(line, 'taskId "task:one"');
     assert.include(line, 'to "lead"');
     assert.include(line, 'replyToLetterId "letter:one"');
+  }),
+);
+
+it.effect("titles the participant thread with the role and specialization", () =>
+  Effect.sync(() => {
+    assert.equal(
+      participantThreadTitle({
+        roleId: "review",
+        specialization: "contracts",
+        taskTitle: "Review: mail_task_create cardId",
+      }),
+      "review/contracts: Review: mail_task_create cardId",
+    );
+  }),
+);
+
+it.effect("titles the participant thread with the bare role when there is no specialization", () =>
+  Effect.sync(() => {
+    assert.equal(
+      participantThreadTitle({
+        roleId: "implementation",
+        specialization: null,
+        taskTitle: "Fix the bug",
+      }),
+      "implementation: Fix the bug",
+    );
   }),
 );
 

@@ -29,6 +29,7 @@ export interface MailParticipantLaunchInput {
   readonly taskTitle: string;
   readonly memberId: string;
   readonly roleId: string;
+  readonly specialization: string | null;
   readonly modelSelectionJson: string;
   readonly letterId: string;
   readonly letterBody: string;
@@ -46,6 +47,19 @@ export class MailParticipantLauncher extends Context.Service<
 /** The same member launches once; a repeat reuses the stable launch command. */
 export const participantLaunchCommandId = (memberId: string): CommandId =>
   CommandId.make(`mail-participant-launch:${memberId}`);
+
+/** A participant is named by role and specialization, e.g. `review/contracts`. */
+export const participantLabel = (member: {
+  readonly roleId: string;
+  readonly specialization: string | null;
+}): string => (member.specialization ? `${member.roleId}/${member.specialization}` : member.roleId);
+
+/** The participant thread title leads with the role label: same-title tasks stay distinguishable. */
+export const participantThreadTitle = (input: {
+  readonly roleId: string;
+  readonly specialization: string | null;
+  readonly taskTitle: string;
+}): string => `${participantLabel(input)}: ${input.taskTitle}`;
 
 /**
  * Upstream role names. The planner is reached by mail only, but `planner` is

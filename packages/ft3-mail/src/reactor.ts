@@ -21,7 +21,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { forkParked } from "../../../apps/server/src/serverActivation.ts";
-import { decodeParticipantModelSelection, participantReplyLine } from "./participantLauncher.ts";
+import {
+  decodeParticipantModelSelection,
+  participantLabel,
+  participantReplyLine,
+} from "./participantLauncher.ts";
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
 import { MAIL_URGENT_LETTER_WAKE_REASON, MailService } from "./service.ts";
 
@@ -77,12 +81,6 @@ const serverAnswerBody = (input: {
   if (words.length <= SERVER_ANSWER_TAIL_CHARS) return `${head}\n\n${words}`;
   return `${head}\n\n(showing the last ${SERVER_ANSWER_TAIL_CHARS} of ${words.length} characters)\n\n${words.slice(-SERVER_ANSWER_TAIL_CHARS)}`;
 };
-
-/** A participant is named by role and specialization, e.g. `review/contracts`. */
-const participantLabel = (member: {
-  readonly roleId: string;
-  readonly specialization: string | null;
-}): string => (member.specialization ? `${member.roleId}/${member.specialization}` : member.roleId);
 
 const PREVIEW_MAX_LENGTH = 200;
 
