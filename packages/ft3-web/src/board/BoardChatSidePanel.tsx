@@ -351,7 +351,7 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
       <Button
         type="button"
         variant="outline"
-        className="absolute left-2 top-2 z-30 shadow-lg"
+        className="absolute left-2 top-2 z-50 shadow-lg"
         aria-label="Expand chat panel"
         onClick={() => setCollapsed(false)}
       >
@@ -594,7 +594,7 @@ function ChatSidePanelShell(props: {
   return (
     <aside
       aria-label="Chat panel"
-      className="absolute left-2 top-2 z-30 flex max-h-[calc(100dvh-1rem)] max-w-[calc(100%-1rem)] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
+      className="absolute left-2 top-2 z-50 flex max-h-[calc(100dvh-1rem)] max-w-[calc(100%-1rem)] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
       style={{ width: size.width, height: size.height }}
       data-board-card-panel="true"
       data-chat-side-panel="true"
