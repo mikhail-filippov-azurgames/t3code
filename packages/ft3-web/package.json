@@ -12,7 +12,7 @@
     "./settings": "./src/settings/index.ts",
     "./settings-search": "./src/settings/searchItems.ts",
     "./board": "./src/board/index.ts",
-    "./board-chat": "./src/board/BoardChatSidePanel.tsx",
+    "./board-chat": "./src/board/BoardChatRightSections.tsx",
     "./board-header": "./src/board/boardHeader.ts",
     "./pi": "./src/pi/index.ts",
     "./sidebar": "./src/sidebar/index.ts",

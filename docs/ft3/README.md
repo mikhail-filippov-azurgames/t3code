@@ -102,7 +102,8 @@ snapshot и документов политики — `orchestration:read`; их
 - Чат: `ft3-web/src/chat` — `useFt3ChatTextExtensions`, чипы карточек/коммитов/документов,
   фильтры копирования; `ComposerFt3Actions` — слот действий composer'а.
 - Доска: `ft3-web/src/board` — страница `/board`, `BoardPanel` для правой панели,
-  `BoardChatSidePanel`, действия координатора в шапке.
+  `BoardChatRightSections` (секции Cards/History/Mail в правой панели треда ведущего),
+  действия координатора в шапке.
 - Делегирование: `ft3-web/src/delegation` — меню треда, смена провайдера, каскад archive/delete,
   диалоги.
 - Policies: `ft3-web/src/policies` — вкладка `/settings/policies`: редактор документов политики,

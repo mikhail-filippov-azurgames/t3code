@@ -692,16 +692,26 @@ upstream's masker. The duplicate body split and offset remapping were removed.
 Fork-owned tests: `packages/ft3-web/src/files/markdownFrontmatter.test.ts`
 and `packages/ft3-web/src/files/MarkdownFrontmatterBlock.browser.test.tsx`.
 
-## Панель «Карточки/История» в чате и координаторская кнопка в шапке
+## Секции «Карточки/История/Mail» в правой панели и координаторская кнопка в шапке
 
-`packages/ft3-web/src/board/BoardChatSidePanel.tsx` — порт плавающей панели
+`packages/ft3-web/src/board/BoardChatRightSections.tsx` — порт панели
 чата из старого форка (`apps/web/src/components/board-chat/BoardCardPinnedPanel.tsx`
-ветки `feat/ocl-cross-provider-delegation`): вкладки «Карточки» и «История»
+ветки `feat/ocl-cross-provider-delegation`) в правую панель треда: три
+секции — «Cards», «History» и «Mail» — вместо плавающей панели с вкладками
 (вкладка «Коммиты» намеренно не переносится — граф коммитов остаётся в
-поверхности правой панели), ресайз и сворачивание панели, закреплённые
-карточки с действиями (старт/архив/просьба оркестратору) и постраничная
-история выжимок с `IntersectionObserver`-sentinel'ем. Монтируется через хук
-`useFt3BoardChatPanel(threadRef)` — null без server-треда.
+поверхности правой панели). Секции повторяют язык правой панели
+(`ThreadDetailsSection`, как Servers/Automations/Lineage) и показываются
+только при наличии контента, поэтому видны только в треде ведущего. Внутри:
+закреплённые карточки с действиями (старт/архив/просьба оркестратору) и
+постраничная история выжимок с `IntersectionObserver`-sentinel'ем. Монтируется
+через хук `useFt3BoardChatSections(threadRef)` — null без server-треда; шов в
+upstream — один слот в `ThreadDetailsPanel` после блока Lineage. Плавающая
+панель и её кнопка раскрытия удалены из `ChatView`. Вкладка Mail
+(`packages/ft3-web/src/mail/MailTabContent.tsx`) живёт своим поллингом
+(15 секунд только пока секция смонтирована и страница видима); колбэк
+поллинга держит только стабильные зависимости (`tasksQuery.refresh`), иначе
+рендеры родителя сбрасывали интервал и список задач залипал со старым
+статусом «open».
 
 История читает существующий сервис `task_summary_history`
 (`packages/ft3-orchestration`) через новый метод ft3-RPC-группы
@@ -724,14 +734,15 @@ actions» (Make Coordinator / Create task / Resend brief / Remove) и бейдж
 Coordinator с иконкой оркестратора. В контекстное меню треда старый форк
 эти действия не добавлял — здесь тоже нет.
 
-| Upstream file                                 | Connection                                                                                                                                           | Reason                                               |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `apps/web/src/components/ChatView.tsx`        | импорт `useFt3BoardChatPanel`; вызов хука и рендер рядом с таймлайном; проп `hasDelegationParent` (`parentSubagentThreadId !== null`) в `ChatHeader` | панель в чате и данные для меню координатора         |
-| `apps/web/src/components/chat/ChatHeader.tsx` | импорт из `@t3tools/ft3-web/board-header`; два слота: `<CoordinatorBadge>` в хлебной крошке и `<ChatHeaderBoardActions>` в конце шапки               | координаторские действия в шапке, как в старом форке |
-| `apps/web/src/state/use-atom-command.ts`      | upstream command runner retained unchanged; ft3 consumers own any stable callback they require                                                       | keep the shared upstream hook byte-for-byte          |
-| `apps/web/src/state/use-atom-query-runner.ts` | upstream query runner retained unchanged; ft3 consumers own any stable callback they require                                                         | keep the shared upstream hook byte-for-byte          |
-| `apps/server/src/ws.test.ts`                  | mock `BoardSummaryHistoryService` в обоих config-RPC слоях                                                                                           | RPC-слой требует новый ft3-сервис                    |
-| `packages/ft3-web/package.json`               | экспорты `./board-chat` и `./board-header`                                                                                                           | точки подключения панели и кнопок из upstream        |
+| Upstream file                                         | Connection                                                                                                                               | Reason                                               |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `apps/web/src/components/chat/ThreadDetailsPanel.tsx` | импорт `useFt3BoardChatSections`; вызов хука с `threadRef` только для server-треда и один слот `{boardChatSections}` после блока Lineage | секции доски в правой панели без знания о доске      |
+| `apps/web/src/components/ChatView.tsx`                | проп `hasDelegationParent` (`parentSubagentThreadId !== null`) в `ChatHeader`                                                            | данные для меню координатора                         |
+| `apps/web/src/components/chat/ChatHeader.tsx`         | импорт из `@t3tools/ft3-web/board-header`; два слота: `<CoordinatorBadge>` в хлебной крошке и `<ChatHeaderBoardActions>` в конце шапки   | координаторские действия в шапке, как в старом форке |
+| `apps/web/src/state/use-atom-command.ts`              | upstream command runner retained unchanged; ft3 consumers own any stable callback they require                                           | keep the shared upstream hook byte-for-byte          |
+| `apps/web/src/state/use-atom-query-runner.ts`         | upstream query runner retained unchanged; ft3 consumers own any stable callback they require                                             | keep the shared upstream hook byte-for-byte          |
+| `apps/server/src/ws.test.ts`                          | mock `BoardSummaryHistoryService` в обоих config-RPC слоях                                                                               | RPC-слой требует новый ft3-сервис                    |
+| `packages/ft3-web/package.json`                       | экспорты `./board-chat` и `./board-header`                                                                                               | точки подключения панели и кнопок из upstream        |
 
 ## Меню треда: делегирование, смена провайдера и каскад потомков
 

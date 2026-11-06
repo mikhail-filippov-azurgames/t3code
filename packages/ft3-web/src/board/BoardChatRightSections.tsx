@@ -10,22 +10,13 @@ import {
   CircleAlertIcon,
   MessageCircleIcon,
   OctagonAlertIcon,
-  PanelLeftOpenIcon,
   PlayIcon,
   RotateCwIcon,
   SendIcon,
   XIcon,
 } from "lucide-react";
 import * as Schema from "effect/Schema";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import {
@@ -38,6 +29,7 @@ import {
 } from "./board.logic";
 import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
+import { ThreadDetailsSection } from "~/components/chat/ThreadDetailsSection";
 import { readThreadShell } from "~/state/entities";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useEnvironmentQuery } from "~/state/query";
@@ -55,8 +47,6 @@ import { useCoordinatorSummaryHistoryLoader } from "./useCoordinatorSummaryHisto
 import { clearBoardCardMentionCache } from "../chat/boardCardMentions";
 import { boardEnvironment } from "./state";
 import { BoardMailTab, useBoardMailTasks } from "../mail/MailTabContent.tsx";
-
-type ChatPanelTab = "cards" | "history" | "mail";
 
 type SummaryHistoryLoadState = {
   readonly threadId: ThreadId;
@@ -83,9 +73,51 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
   };
 }
 
-const CHAT_PANEL_TAB_SCHEMA = Schema.Literals(["cards", "history", "mail"]);
+/**
+ * The lead thread's board digests as right-panel sections. Each section shows
+ * only with content, so the panel stays upstream-shaped everywhere else.
+ */
+export function BoardChatRightSections(props: { readonly threadRef: ScopedThreadRef }) {
+  return (
+    <>
+      <BoardCardsSection threadRef={props.threadRef} />
+      <BoardHistorySection threadRef={props.threadRef} />
+      <BoardMailSection threadRef={props.threadRef} />
+    </>
+  );
+}
 
-export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef }) {
+/** Mounts the lead board sections in the thread details panel; null without a server thread. */
+export function useFt3BoardChatSections(threadRef: ScopedThreadRef | null): ReactNode {
+  if (threadRef === null) return null;
+  return (
+    <BoardChatRightSections
+      key={`${threadRef.environmentId}:${threadRef.threadId}`}
+      threadRef={threadRef}
+    />
+  );
+}
+
+function SectionRefreshButton(props: {
+  readonly label: string;
+  readonly refreshing: boolean;
+  readonly onRefresh: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label={props.label}
+      disabled={props.refreshing}
+      onClick={props.onRefresh}
+    >
+      <RotateCwIcon className="size-4" aria-hidden="true" />
+    </Button>
+  );
+}
+
+function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = props.threadRef;
   const navigate = useNavigate();
   const pins = useBoardCardPins(props.threadRef);
@@ -101,15 +133,141 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
   );
   const loading = pinned.isPending;
   const loadError = pinned.error !== null;
-  const refresh = pinned.refresh;
+  const pinnedRefresh = pinned.refresh;
+  const refresh = useCallback(() => pinnedRefresh(), [pinnedRefresh]);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
-  const [collapsed, setCollapsed] = useLocalStorage(
-    `t3code:chat-side-panel-collapsed:${environmentId}:${threadId}`,
-    false,
-    Schema.Boolean,
-  );
   const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
+  const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
+  const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
+  const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
+    reportFailure: false,
+  });
+
+  const toggleCardCollapsed = useCallback((cardId: string) => {
+    setCollapsedCardIds((current) => {
+      const next = new Set(current);
+      if (!next.delete(cardId)) next.add(cardId);
+      return next;
+    });
+  }, []);
+
+  const openThread = useCallback(
+    (targetThreadId: ThreadId) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: { environmentId, threadId: targetThreadId },
+      });
+    },
+    [environmentId, navigate],
+  );
+
+  const start = useCallback(
+    async (card: BoardCard) => {
+      setBusyCardId(String(card.cardId));
+      setActionError(null);
+      const result = await startCard({ environmentId, input: { cardId: card.cardId } });
+      setBusyCardId(null);
+      if (!AsyncResult.isSuccess(result)) {
+        setActionError(boardFailureText(result.cause));
+        return;
+      }
+      clearBoardCardMentionCache(String(environmentId));
+      refresh();
+    },
+    [environmentId, refresh, startCard],
+  );
+
+  const toggleArchive = useCallback(
+    async (card: BoardCard) => {
+      setBusyCardId(String(card.cardId));
+      setActionError(null);
+      const result = await updateCard({
+        environmentId,
+        input: { cardId: card.cardId, archived: !card.archived },
+      });
+      setBusyCardId(null);
+      if (!AsyncResult.isSuccess(result)) {
+        setActionError(boardFailureText(result.cause));
+        return;
+      }
+      clearBoardCardMentionCache(String(environmentId));
+      refresh();
+    },
+    [environmentId, refresh, updateCard],
+  );
+
+  const request = useCallback(
+    async (card: BoardCard, text: string) => {
+      const ownerRef = scopeThreadRef(environmentId, card.orchestratorThreadId);
+      const ownerShell = readThreadShell(ownerRef);
+      if (!ownerShell) {
+        setActionError("The orchestrator chat is unavailable. Check the connection and try again.");
+        return;
+      }
+      setBusyCardId(String(card.cardId));
+      setActionError(null);
+      const result = await requestOrchestrator({
+        environmentId,
+        input: {
+          threadId: card.orchestratorThreadId,
+          text,
+          modelSelection: ownerShell.modelSelection,
+          runtimeMode: ownerShell.runtimeMode,
+          interactionMode: ownerShell.interactionMode,
+        },
+      });
+      setBusyCardId(null);
+      if (!AsyncResult.isSuccess(result)) {
+        setActionError(boardFailureText(result.cause));
+        return;
+      }
+      setActionError("Request sent to the orchestrator.");
+    },
+    [environmentId, requestOrchestrator],
+  );
+
+  if (pins.length === 0) return null;
+
+  return (
+    <ThreadDetailsSection
+      headingId="ft3-board-cards-heading"
+      title="Cards"
+      actions={
+        <SectionRefreshButton label="Reload cards" refreshing={loading} onRefresh={refresh} />
+      }
+    >
+      <div className="space-y-3 px-2.5">
+        {pins.map((cardId) => {
+          const detail = details.get(cardId);
+          return (
+            <PinnedCard
+              key={cardId}
+              environmentId={environmentId}
+              cardId={cardId}
+              detail={detail}
+              loading={loading}
+              loadError={loadError}
+              busy={busyCardId === cardId}
+              collapsed={collapsedCardIds.has(cardId)}
+              onToggleCollapsed={() => toggleCardCollapsed(cardId)}
+              actionError={actionError}
+              onRetry={refresh}
+              onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
+              onOpenThread={openThread}
+              onStart={start}
+              onToggleArchive={toggleArchive}
+              onRequest={request}
+            />
+          );
+        })}
+      </div>
+    </ThreadDetailsSection>
+  );
+}
+
+function BoardHistorySection(props: { readonly threadRef: ScopedThreadRef }) {
+  const { environmentId, threadId } = props.threadRef;
   const [expandHistoryByDefault] = useExpandCoordinatorHistoryByDefault();
   const [historyEntryOverrides, setHistoryEntryOverrides] = useLocalStorage<
     Record<string, boolean>,
@@ -122,46 +280,12 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
   const [historyState, setHistoryState] = useState<SummaryHistoryLoadState>(() =>
     emptyHistoryState(threadId),
   );
-  const [activeTab, setActiveTab] = useLocalStorage<ChatPanelTab, ChatPanelTab>(
-    `t3code:chat-side-panel-tab:${environmentId}:${threadId}`,
-    pins.length > 0 ? "cards" : "history",
-    CHAT_PANEL_TAB_SCHEMA,
-  );
   const loadHistory = useCoordinatorSummaryHistoryLoader(props.threadRef);
   const historyLoadSequence = useRef(0);
   const historyLoadingMore = useRef(false);
-  const boardList = useEnvironmentQuery(
-    boardEnvironment.listForChatPanel({ environmentId, input: { includeArchived: true } }),
-  );
-  const boardCardIds = useMemo(
-    () => (boardList.data?.cards ?? []).map((card) => String(card.cardId)),
-    [boardList.data],
-  );
-  const mailTasks = useBoardMailTasks(environmentId, boardCardIds, threadId);
-  const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
-  const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
-  const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
-    reportFailure: false,
-  });
 
   const currentHistoryState =
     historyState.threadId === threadId ? historyState : emptyHistoryState(threadId);
-  // Failed coordinator history and failed mail task listing remain panel
-  // content so their errors can be retried.
-  const hasMailContent = mailTasks.error !== null || (mailTasks.data?.tasks.length ?? 0) > 0;
-  const hasPanelContent =
-    pins.length > 0 ||
-    currentHistoryState.entries.length > 0 ||
-    currentHistoryState.error ||
-    hasMailContent;
-
-  const toggleCardCollapsed = useCallback((cardId: string) => {
-    setCollapsedCardIds((current) => {
-      const next = new Set(current);
-      if (!next.delete(cardId)) next.add(cardId);
-      return next;
-    });
-  }, []);
 
   const toggleHistoryEntry = useCallback(
     (entryId: string, expanded: boolean) => {
@@ -254,230 +378,118 @@ export function BoardChatSidePanel(props: { readonly threadRef: ScopedThreadRef 
     return () => observer.disconnect();
   }, [canLoadMoreHistory, historySentinel, loadMoreHistory]);
 
-  const openThread = useCallback(
-    (targetThreadId: ThreadId) => {
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: { environmentId, threadId: targetThreadId },
-      });
-    },
-    [environmentId, navigate],
-  );
-
-  const start = useCallback(
-    async (card: BoardCard) => {
-      setBusyCardId(String(card.cardId));
-      setActionError(null);
-      const result = await startCard({ environmentId, input: { cardId: card.cardId } });
-      setBusyCardId(null);
-      if (!AsyncResult.isSuccess(result)) {
-        setActionError(boardFailureText(result.cause));
-        return;
-      }
-      clearBoardCardMentionCache(String(environmentId));
-      await refresh();
-    },
-    [environmentId, refresh, startCard],
-  );
-
-  const toggleArchive = useCallback(
-    async (card: BoardCard) => {
-      setBusyCardId(String(card.cardId));
-      setActionError(null);
-      const result = await updateCard({
-        environmentId,
-        input: { cardId: card.cardId, archived: !card.archived },
-      });
-      setBusyCardId(null);
-      if (!AsyncResult.isSuccess(result)) {
-        setActionError(boardFailureText(result.cause));
-        return;
-      }
-      clearBoardCardMentionCache(String(environmentId));
-      await refresh();
-    },
-    [environmentId, refresh, updateCard],
-  );
-
-  const request = useCallback(
-    async (card: BoardCard, text: string) => {
-      const ownerRef = scopeThreadRef(environmentId, card.orchestratorThreadId);
-      const ownerShell = readThreadShell(ownerRef);
-      if (!ownerShell) {
-        setActionError("The orchestrator chat is unavailable. Check the connection and try again.");
-        return;
-      }
-      setBusyCardId(String(card.cardId));
-      setActionError(null);
-      const result = await requestOrchestrator({
-        environmentId,
-        input: {
-          threadId: card.orchestratorThreadId,
-          text,
-          modelSelection: ownerShell.modelSelection,
-          runtimeMode: ownerShell.runtimeMode,
-          interactionMode: ownerShell.interactionMode,
-        },
-      });
-      setBusyCardId(null);
-      if (!AsyncResult.isSuccess(result)) {
-        setActionError(boardFailureText(result.cause));
-        return;
-      }
-      setActionError("Request sent to the orchestrator.");
-    },
-    [environmentId, requestOrchestrator],
-  );
-
-  const refreshBoardCards = useCallback(() => void boardList.refresh(), [boardList]);
-  const refreshMail = useCallback(() => {
-    refreshBoardCards();
-    void mailTasks.refresh();
-  }, [refreshBoardCards, mailTasks]);
-
-  const refreshActiveTab =
-    activeTab === "cards" ? refresh : activeTab === "history" ? refreshHistory : refreshMail;
-  const refreshingActiveTab =
-    activeTab === "cards"
-      ? loading
-      : activeTab === "history"
-        ? currentHistoryState.loading
-        : mailTasks.isPending && mailTasks.data !== null;
-
-  if (!hasPanelContent) return null;
-
-  if (collapsed) {
-    return (
-      <Button
-        type="button"
-        variant="outline"
-        className="absolute left-2 top-2 z-50 shadow-lg"
-        aria-label="Expand chat panel"
-        onClick={() => setCollapsed(false)}
-      >
-        <PanelLeftOpenIcon className="size-4" aria-hidden="true" />
-        Chat panel
-      </Button>
-    );
-  }
+  const hasContent = currentHistoryState.entries.length > 0 || currentHistoryState.error;
+  if (!hasContent) return null;
 
   return (
-    <ChatSidePanelShell
-      activeTab={activeTab}
-      onSelectTab={setActiveTab}
-      onCollapse={() => setCollapsed(true)}
-      refreshButtonLabel={
-        activeTab === "cards"
-          ? "Reload cards"
-          : activeTab === "history"
-            ? "Refresh history"
-            : "Refresh mail"
+    <ThreadDetailsSection
+      headingId="ft3-board-history-heading"
+      title="History"
+      actions={
+        <SectionRefreshButton
+          label="Refresh history"
+          refreshing={currentHistoryState.loading}
+          onRefresh={() => void refreshHistory()}
+        />
       }
-      onRefresh={refreshActiveTab}
-      refreshing={refreshingActiveTab}
     >
-      {activeTab === "cards" ? (
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
-          {pins.map((cardId) => {
-            const detail = details.get(cardId);
-            return (
-              <PinnedCard
-                key={cardId}
-                environmentId={environmentId}
-                cardId={cardId}
-                detail={detail}
-                loading={loading}
-                loadError={loadError}
-                busy={busyCardId === cardId}
-                collapsed={collapsedCardIds.has(cardId)}
-                onToggleCollapsed={() => toggleCardCollapsed(cardId)}
-                actionError={actionError}
-                onRetry={() => void refresh()}
-                onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
-                onOpenThread={openThread}
-                onStart={start}
-                onToggleArchive={toggleArchive}
-                onRequest={request}
-              />
-            );
-          })}
-          {pins.length === 0 ? (
-            <p className="text-xs text-muted-foreground">No pinned cards yet.</p>
-          ) : null}
-        </div>
-      ) : activeTab === "mail" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          <BoardMailTab
-            threadRef={props.threadRef}
-            cardIds={boardCardIds}
-            refreshCards={refreshBoardCards}
-          />
-        </div>
-      ) : (
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
-          {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
-            <p role="status" className="text-xs text-muted-foreground">
-              Loading summaries…
-            </p>
-          ) : currentHistoryState.error ? (
-            <div role="alert" className="space-y-2 text-xs">
-              <p>Could not load summary history.</p>
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => void refreshHistory()}
-              >
-                Retry
-              </Button>
-            </div>
-          ) : currentHistoryState.entries.length === 0 ? (
-            <p className="text-xs text-muted-foreground">
-              No summaries yet: no delegated task in this chat has finished a turn. This is not an
-              error.
-            </p>
-          ) : (
-            <>
-              <ol className="space-y-3">
-                {currentHistoryState.entries.map((entry) => (
-                  <HistoryEntry
-                    key={entry.id}
-                    entry={entry}
-                    expanded={historyEntryOverrides[entry.id] ?? expandHistoryByDefault}
-                    onToggle={toggleHistoryEntry}
-                  />
-                ))}
-              </ol>
-              {currentHistoryState.loadingMore ? (
-                <p role="status" className="mt-3 text-xs text-muted-foreground">
-                  Loading summaries…
-                </p>
-              ) : null}
-              {currentHistoryState.loadMoreError ? (
-                <div role="alert" className="mt-3 space-y-2 text-xs">
-                  <p>Could not load the next summaries.</p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void loadMoreHistory()}
-                  >
-                    Retry
-                  </Button>
-                </div>
-              ) : null}
-              {canLoadMoreHistory ? (
-                <div
-                  ref={setHistorySentinel}
-                  data-history-load-more-sentinel="true"
-                  aria-hidden="true"
+      <div className="max-h-[min(28rem,55dvh)] overflow-y-auto px-2.5">
+        {currentHistoryState.loading && currentHistoryState.entries.length === 0 ? (
+          <p role="status" className="text-xs text-muted-foreground">
+            Loading summaries…
+          </p>
+        ) : currentHistoryState.error ? (
+          <div role="alert" className="space-y-2 text-xs">
+            <p>Could not load summary history.</p>
+            <Button type="button" size="sm" variant="outline" onClick={() => void refreshHistory()}>
+              Retry
+            </Button>
+          </div>
+        ) : (
+          <>
+            <ol className="space-y-3">
+              {currentHistoryState.entries.map((entry) => (
+                <HistoryEntry
+                  key={entry.id}
+                  entry={entry}
+                  expanded={historyEntryOverrides[entry.id] ?? expandHistoryByDefault}
+                  onToggle={toggleHistoryEntry}
                 />
-              ) : null}
-            </>
-          )}
-        </div>
-      )}
-    </ChatSidePanelShell>
+              ))}
+            </ol>
+            {currentHistoryState.loadingMore ? (
+              <p role="status" className="mt-3 text-xs text-muted-foreground">
+                Loading summaries…
+              </p>
+            ) : null}
+            {currentHistoryState.loadMoreError ? (
+              <div role="alert" className="mt-3 space-y-2 text-xs">
+                <p>Could not load the next summaries.</p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void loadMoreHistory()}
+                >
+                  Retry
+                </Button>
+              </div>
+            ) : null}
+            {canLoadMoreHistory ? (
+              <div
+                ref={setHistorySentinel}
+                data-history-load-more-sentinel="true"
+                aria-hidden="true"
+              />
+            ) : null}
+          </>
+        )}
+      </div>
+    </ThreadDetailsSection>
+  );
+}
+
+function BoardMailSection(props: { readonly threadRef: ScopedThreadRef }) {
+  const { environmentId, threadId } = props.threadRef;
+  const boardList = useEnvironmentQuery(
+    boardEnvironment.listForChatPanel({ environmentId, input: { includeArchived: true } }),
+  );
+  const boardCardIds = useMemo(
+    () => (boardList.data?.cards ?? []).map((card) => String(card.cardId)),
+    [boardList.data],
+  );
+  const mailTasks = useBoardMailTasks(environmentId, boardCardIds, threadId);
+  const boardListRefresh = boardList.refresh;
+  const mailTasksRefresh = mailTasks.refresh;
+  const refreshCards = useCallback(() => boardListRefresh(), [boardListRefresh]);
+  const refresh = useCallback(() => {
+    refreshCards();
+    mailTasksRefresh();
+  }, [refreshCards, mailTasksRefresh]);
+  // Failed task listing stays so the error can be retried.
+  const hasContent = mailTasks.error !== null || (mailTasks.data?.tasks.length ?? 0) > 0;
+  if (!hasContent) return null;
+
+  return (
+    <ThreadDetailsSection
+      headingId="ft3-board-mail-heading"
+      title="Mail"
+      actions={
+        <SectionRefreshButton
+          label="Refresh mail"
+          refreshing={mailTasks.isPending && mailTasks.data !== null}
+          onRefresh={refresh}
+        />
+      }
+    >
+      <div className="max-h-[min(28rem,55dvh)] overflow-y-auto px-2.5">
+        <BoardMailTab
+          threadRef={props.threadRef}
+          cardIds={boardCardIds}
+          refreshCards={refreshCards}
+        />
+      </div>
+    </ThreadDetailsSection>
   );
 }
 
@@ -543,137 +555,6 @@ function HistoryEntry(props: {
         </>
       ) : null}
     </li>
-  );
-}
-
-function ChatSidePanelShell(props: {
-  readonly activeTab: ChatPanelTab;
-  readonly onSelectTab: (tab: ChatPanelTab) => void;
-  readonly onCollapse: () => void;
-  readonly refreshButtonLabel: string;
-  readonly onRefresh: () => void | Promise<void>;
-  readonly refreshing: boolean;
-  readonly children: ReactNode;
-}) {
-  const viewportWidth =
-    typeof window !== "undefined" && Number.isFinite(window.innerWidth) ? window.innerWidth : 1280;
-  const viewportHeight =
-    typeof window !== "undefined" && Number.isFinite(window.innerHeight) ? window.innerHeight : 720;
-  const [size, setSize] = useState(() => ({
-    width: Math.min(352, Math.max(280, viewportWidth - 32)),
-    height: Math.min(672, Math.max(240, viewportHeight - 16)),
-  }));
-  const resizeStartRef = useRef<{ x: number; y: number; width: number; height: number } | null>(
-    null,
-  );
-  const resizePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const panel = event.currentTarget.parentElement;
-    if (!panel) return;
-    const rect = panel.getBoundingClientRect();
-    resizeStartRef.current = {
-      x: event.clientX,
-      y: event.clientY,
-      width: rect.width,
-      height: rect.height,
-    };
-    event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
-  };
-  const resizePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const start = resizeStartRef.current;
-    if (!start) return;
-    setSize({
-      width: Math.min(viewportWidth - 16, Math.max(280, start.width + event.clientX - start.x)),
-      height: Math.min(viewportHeight - 16, Math.max(240, start.height + event.clientY - start.y)),
-    });
-  };
-  const resizeEnd = () => {
-    resizeStartRef.current = null;
-  };
-
-  return (
-    <aside
-      aria-label="Chat panel"
-      className="absolute left-2 top-2 z-50 flex max-h-[calc(100dvh-1rem)] max-w-[calc(100%-1rem)] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-background/98 shadow-xl backdrop-blur"
-      style={{ width: size.width, height: size.height }}
-      data-board-card-panel="true"
-      data-chat-side-panel="true"
-    >
-      <div
-        role="separator"
-        aria-label="Resize chat panel"
-        aria-orientation="vertical"
-        className="absolute bottom-0 right-0 z-40 size-5 cursor-nwse-resize touch-none"
-        data-chat-side-panel-resize="true"
-        onPointerCancel={resizeEnd}
-        onPointerDown={resizePointerDown}
-        onPointerMove={resizePointerMove}
-        onPointerUp={resizeEnd}
-      >
-        <span
-          aria-hidden
-          className="absolute bottom-1 right-1 size-2 border-b border-r border-muted-foreground/60"
-        />
-      </div>
-      <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-2">
-        <div role="tablist" aria-label="Chat panel sections" className="flex min-w-0 flex-1 gap-1">
-          {(
-            [
-              ["cards", "Cards"],
-              ["history", "History"],
-              ["mail", "Mail"],
-            ] as const
-          ).map(([tab, label]) => (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              aria-selected={props.activeTab === tab}
-              aria-controls="chat-side-panel-content"
-              id={`chat-side-panel-tab-${tab}`}
-              className={cn(
-                "min-w-0 rounded-md px-3 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                props.activeTab === tab
-                  ? "bg-secondary font-medium text-foreground"
-                  : "text-muted-foreground hover:bg-muted hover:text-foreground",
-              )}
-              onClick={() => props.onSelectTab(tab)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={props.refreshButtonLabel}
-            disabled={props.refreshing}
-            onClick={() => void props.onRefresh()}
-          >
-            <RotateCwIcon className="size-4" aria-hidden="true" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Collapse chat panel"
-            onClick={props.onCollapse}
-          >
-            <ChevronDownIcon className="size-4" aria-hidden="true" />
-          </Button>
-        </div>
-      </div>
-      <div
-        id="chat-side-panel-content"
-        role="tabpanel"
-        aria-labelledby={`chat-side-panel-tab-${props.activeTab}`}
-        className="flex min-h-0 flex-1 flex-col"
-      >
-        {props.children}
-      </div>
-    </aside>
   );
 }
 
@@ -899,16 +780,5 @@ function PinnedCard(props: {
         </>
       )}
     </article>
-  );
-}
-
-/** Mounts the lead board panel next to the chat timeline; null without a server thread. */
-export function useFt3BoardChatPanel(threadRef: ScopedThreadRef | null): ReactNode {
-  if (threadRef === null) return null;
-  return (
-    <BoardChatSidePanel
-      key={`${threadRef.environmentId}:${threadRef.threadId}`}
-      threadRef={threadRef}
-    />
   );
 }
