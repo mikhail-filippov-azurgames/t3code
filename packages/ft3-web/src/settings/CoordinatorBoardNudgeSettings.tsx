@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   DEFAULT_BOARD_AUTOMATION_SETTINGS,
   MAX_COORDINATOR_BOARD_NUDGE_ACTIVE_CHILD_THRESHOLD,
@@ -39,9 +39,11 @@ export function BoundedIntegerInput({
   // Local draft so the field can be emptied mid-edit; the setting only moves
   // on valid input and snaps back to the persisted value on blur.
   const [draft, setDraft] = useState(String(value));
-  useEffect(() => {
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue) {
+    setLastValue(value);
     setDraft(String(value));
-  }, [value]);
+  }
 
   return (
     <Input
@@ -77,16 +79,16 @@ export function CoordinatorBoardNudgeSection() {
     threshold !== defaults.coordinatorBoardNudgeActiveChildThreshold;
 
   return (
-    <SettingsSection id="coordinators" title="Coordinators">
+    <SettingsSection id="coordinators" title="Leads">
       <SettingsRow
         serverScoped
         settingKeys={["ft3"]}
         {...ft3SearchableSetting("coordinator-board-nudge")}
-        description="Off by default. When on, the server periodically checks each coordinator, and one that is not busy enough is sent a message to take a card from the board. The coordinator then starts new work on its own, without anyone asking it to."
+        description="Off by default. When on, the server periodically checks each lead, and one that is not busy enough is sent a message to take a card from the board. The lead then starts new work on its own, without anyone asking it to."
         resetAction={
           isDirty ? (
             <SettingResetButton
-              label="coordinator board nudge"
+              label="lead board nudge"
               onClick={() =>
                 updateSettings({
                   ft3: {
@@ -113,7 +115,7 @@ export function CoordinatorBoardNudgeSection() {
                 },
               })
             }
-            aria-label="Nudge idle coordinators toward board cards"
+            aria-label="Nudge idle leads toward board cards"
           />
         }
       />
@@ -132,7 +134,7 @@ export function CoordinatorBoardNudgeSection() {
                 onCommit={(minutes) =>
                   updateSettings({ ft3: { coordinatorBoardNudgeIntervalMinutes: minutes } })
                 }
-                ariaLabel="Minutes between coordinator board checks"
+                ariaLabel="Minutes between lead board checks"
               />
             }
           />
@@ -140,7 +142,7 @@ export function CoordinatorBoardNudgeSection() {
             serverScoped
             settingKeys={["ft3"]}
             title={ft3SearchableSetting("coordinator-board-nudge-threshold").title}
-            description="A coordinator with fewer active child tasks than this is nudged. 1 nudges only a coordinator with no child tasks."
+            description="A lead with fewer active child tasks than this is nudged. 1 nudges only a lead with no child tasks."
             control={
               <BoundedIntegerInput
                 value={threshold}
