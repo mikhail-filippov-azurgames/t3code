@@ -1,8 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type ProjectSettingsOverrides,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as Crypto from "effect/Crypto";
@@ -76,10 +78,24 @@ function fixture(
   features: Readonly<Record<string, boolean>> = {},
   planService: Layer.Layer<PlanService.PlanService> = Layer.mock(PlanService.PlanService)({
     get: () => Effect.succeed(null),
+    requirePlanningEnabled: () => Effect.void,
   }),
+  options: {
+    readonly threadProjects?: Readonly<Record<string, string>>;
+    readonly projectSettingsOverrides?: Readonly<Record<string, ProjectSettingsOverrides>>;
+  } = {},
 ) {
   const shells = new Map<ThreadId, OrchestrationV2ThreadShell>(
-    [parentId, otherId, childId, architectId].map((id) => [id, liveThreadShell(id)]),
+    [parentId, otherId, childId, architectId].map((id) => {
+      const shell = liveThreadShell(id);
+      return [
+        id,
+        {
+          ...shell,
+          projectId: ProjectId.make(options.threadProjects?.[String(id)] ?? shell.projectId),
+        },
+      ];
+    }),
   );
   const child = shells.get(childId)!;
   shells.set(childId, {
@@ -113,7 +129,12 @@ function fixture(
     Layer.provide(planningFakes),
     Layer.provide(providerRegistry),
     Layer.provide(crypto),
-    Layer.provide(ServerSettings.layerTest(configuredLeadPolicySettings(features))),
+    Layer.provide(
+      ServerSettings.layerTest({
+        ...configuredLeadPolicySettings(features),
+        projectSettingsOverrides: options.projectSettingsOverrides ?? {},
+      }),
+    ),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-" })),
     Layer.provideMerge(NodeServices.layer),
     Layer.provide(launcherFake().layer),
@@ -263,6 +284,44 @@ describe("ft3 board toolkit through ft3-host", () => {
         }),
       );
       assert.equal(refusedCreate.code, "feature_disabled");
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("checks board tools against the calling thread project", () => {
+    const f = fixture({ board: true }, undefined, {
+      threadProjects: {
+        [parentId]: "project:board-off",
+        [otherId]: "project:board-on",
+      },
+      projectSettingsOverrides: {
+        "project:board-off": { ft3FeatureToggles: { board: false } },
+      },
+    });
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark(parentId);
+      yield* mark(otherId);
+
+      assert.equal(
+        failure(
+          yield* call("board_create_card", {
+            title: "Disabled project",
+            body: "Blocked by the caller project.",
+            executorRole: "general",
+          }),
+        ).code,
+        "feature_disabled",
+      );
+      const allowed = yield* call(
+        "board_create_card",
+        {
+          title: "Enabled project",
+          body: "Allowed by the caller project.",
+          executorRole: "general",
+        },
+        asThread(otherId),
+      );
+      assert.isFalse(allowed.isError);
     }).pipe(Effect.provide(f.layer));
   });
 
@@ -695,6 +754,7 @@ describe("ft3 board toolkit through ft3-host", () => {
       updatedAt: "2026-10-26T00:00:00.000Z",
     });
     const plans = Layer.mock(PlanService.PlanService)({
+      requirePlanningEnabled: () => Effect.void,
       readDetail: (input) =>
         Effect.succeed({
           record: recordOf(input.cardId),
@@ -742,6 +802,29 @@ describe("ft3 board toolkit through ft3-host", () => {
         ).code,
         "task_not_found",
       );
+    }).pipe(Effect.provide(f.layer));
+  });
+
+  it.effect("checks planning before reading a plan through MCP", () => {
+    const plans = Layer.mock(PlanService.PlanService)({
+      requirePlanningEnabled: (cardId) =>
+        Effect.fail(
+          new PlanService.PlanError({
+            code: "planning_disabled",
+            cardId,
+            reason: "planning is off for this card project.",
+          }),
+        ),
+      readDetail: () => Effect.die("a disabled plan must not be read"),
+    });
+    const f = fixture({}, plans);
+    return Effect.gen(function* () {
+      yield* seedThreads;
+      yield* mark();
+      const card = yield* create();
+      const refused = failure(yield* call("plan_read", { cardId: card.cardId }));
+      assert.equal(refused.code, "feature_disabled");
+      assert.equal(refused.message, "planning is off for this card project.");
     }).pipe(Effect.provide(f.layer));
   });
 });

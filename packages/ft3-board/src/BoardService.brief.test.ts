@@ -11,6 +11,7 @@ import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.test
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as FeatureGate from "../../ft3-policies/src/FeatureGate.ts";
 import { layerMemory as policyAppliedStoreLayer } from "../../ft3-policies/src/policyAppliedStore.ts";
 import {
   PolicyChangeTracker,
@@ -81,6 +82,7 @@ const wake = <A>(
             Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(options.applied))),
             Layer.provide(policyAppliedStoreLayer),
           );
+    const featureGate = Layer.mock(FeatureGate.FeatureGate)({ require: () => Effect.void });
     const layer = Layer.mergeAll(
       BoardService.layer.pipe(
         Layer.provideMerge(BoardRepository.layer),
@@ -88,6 +90,7 @@ const wake = <A>(
         Layer.provide(threads),
         Layer.provide(cryptoLayer),
         Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(featureGate),
         Layer.provide(
           Layer.mergeAll(
             Layer.succeed(PlanGate.PlanGate, {

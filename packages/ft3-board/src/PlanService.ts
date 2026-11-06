@@ -171,6 +171,10 @@ export class PlanService extends Context.Service<
       readonly requiredBy: PlanningContracts.PlanRequiredBy;
       readonly reason?: PlanningContracts.PlanReason;
     }) => Effect.Effect<PlanningContracts.PlanRecord, PlanError>;
+    /** Checks the planning toggle using the card lead's project; unresolved leads inherit environment. */
+    readonly requirePlanningEnabled: (
+      cardId: Contracts.BoardCardId,
+    ) => Effect.Effect<void, PlanError>;
     readonly beginDraft: (
       cardId: Contracts.BoardCardId,
     ) => Effect.Effect<PlanningContracts.PlanRecord, PlanError>;
@@ -527,22 +531,53 @@ const make = Effect.fn("PlanService.make")(function* () {
     return written.stableId;
   });
 
-  const requirePlan = Effect.fn("PlanService.require")(function* (input: {
-    readonly cardId: Contracts.BoardCardId;
-    readonly requiredBy: PlanningContracts.PlanRequiredBy;
-    readonly reason?: PlanningContracts.PlanReason;
-  }) {
-    yield* gate.require("planning").pipe(
+  const requirePlanningEnabled = Effect.fn("PlanService.requirePlanningEnabled")(function* (
+    cardId: Contracts.BoardCardId,
+  ) {
+    const rows = yield* sql<{ readonly orchestrator_thread_id: string }>`
+      SELECT orchestrator_thread_id FROM ft3_board_cards WHERE card_id = ${cardId}
+    `.pipe(
+      Effect.tapError((cause) =>
+        Effect.logDebug("Plan feature lookup failed; using environment setting", {
+          cardId,
+          cause: String(cause),
+        }),
+      ),
+      Effect.orElseSucceed(() => []),
+    );
+    const leadThreadId = rows[0]?.orchestrator_thread_id;
+    if (leadThreadId === undefined) {
+      yield* Effect.logDebug("Plan feature lookup found no card lead; using environment setting", {
+        cardId,
+      });
+    }
+    const projectId =
+      leadThreadId === undefined
+        ? undefined
+        : Option.getOrUndefined(
+            yield* FeatureGate.projectIdOfThread(leadThreadId).pipe(
+              Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+            ),
+          );
+    yield* gate.require("planning", projectId).pipe(
       Effect.mapError(
         (error) =>
           new PlanError({
             code: "planning_disabled",
-            cardId: input.cardId,
+            cardId,
             reason: error.message,
             cause: error,
           }),
       ),
     );
+  });
+
+  const requirePlan = Effect.fn("PlanService.require")(function* (input: {
+    readonly cardId: Contracts.BoardCardId;
+    readonly requiredBy: PlanningContracts.PlanRequiredBy;
+    readonly reason?: PlanningContracts.PlanReason;
+  }) {
+    yield* requirePlanningEnabled(input.cardId);
     const existing = yield* selectRecord(input.cardId);
     if (existing !== null && existing.required) return existing;
     const at = yield* nowIso;
@@ -1030,6 +1065,7 @@ const make = Effect.fn("PlanService.make")(function* () {
   return PlanService.of({
     get: Effect.fn("PlanService.get")((cardId) => selectRecord(cardId)),
     require: requirePlan,
+    requirePlanningEnabled,
     beginDraft,
     recordDraft,
     openReviewRound,

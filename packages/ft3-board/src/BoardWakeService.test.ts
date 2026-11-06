@@ -1,15 +1,18 @@
 import { assert, describe, it } from "@effect/vitest";
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
+import type { FeatureId } from "@t3tools/ft3-policies/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 import * as BoardWakeService from "./BoardWakeService.ts";
 
 const leadId = ThreadId.make("board:parent");
+const otherLeadId = ThreadId.make("board:other-parent");
 
 interface Sent {
   readonly commandId: string;
@@ -22,10 +25,24 @@ const harness = <A>(
   action: (
     service: BoardWakeService.BoardWakeService["Service"],
   ) => Effect.Effect<A, BoardWakeService.BoardWakeFailure>,
+  projectOverrides: Readonly<Record<string, Partial<Record<FeatureId, boolean>>>> = {},
 ) =>
   Effect.gen(function* () {
     const sent = yield* Ref.make<ReadonlyArray<Sent>>([]);
     const threads = Layer.mock(ThreadManagement.ThreadManagementService)({
+      getThreadShell: (threadId) => {
+        const projectId =
+          threadId === leadId
+            ? "project:board-off"
+            : threadId === otherLeadId
+              ? "project:board-on"
+              : undefined;
+        return Effect.succeed(
+          projectId === undefined
+            ? null
+            : { ...liveThreadShell(threadId), projectId: ProjectId.make(projectId) },
+        );
+      },
       dispatch: (command) =>
         command.type === "message.dispatch"
           ? Ref.update(sent, (entries) => [
@@ -40,7 +57,17 @@ const harness = <A>(
     });
     const layer = BoardWakeService.layer.pipe(
       Layer.provide(threads),
-      Layer.provide(ServerSettings.layerTest({ ft3: { policies: { features } } })),
+      Layer.provide(
+        ServerSettings.layerTest({
+          ft3: { policies: { features } },
+          projectSettingsOverrides: Object.fromEntries(
+            Object.entries(projectOverrides).map(([projectId, ft3FeatureToggles]) => [
+              ProjectId.make(projectId),
+              { ft3FeatureToggles },
+            ]),
+          ),
+        }),
+      ),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     );
     return yield* Effect.gen(function* () {
@@ -92,6 +119,46 @@ describe("ft3 board wake service", () => {
       );
       assert.equal(result.outcome, "skipped");
       assert.deepStrictEqual(result.sent, []);
+    }),
+  );
+
+  it.effect("uses the lead project for wakes and the environment for unknown threads", () =>
+    Effect.gen(function* () {
+      const disabled = yield* harness(
+        { board: true },
+        (service) =>
+          service.wake({
+            reason: "marked",
+            key: String(leadId),
+            threadId: leadId,
+            context: "Board disabled in this project.",
+          }),
+        { "project:board-off": { board: false } },
+      );
+      assert.equal(disabled.outcome, "skipped");
+      assert.deepStrictEqual(disabled.sent, []);
+
+      const enabled = yield* harness({ board: true }, (service) =>
+        service.wake({
+          reason: "marked",
+          key: String(otherLeadId),
+          threadId: otherLeadId,
+          context: "Board enabled in this project.",
+        }),
+      );
+      assert.equal(enabled.outcome, "sent");
+      assert.lengthOf(enabled.sent, 1);
+
+      const unresolved = yield* harness({ board: true }, (service) =>
+        service.wake({
+          reason: "marked",
+          key: "board:unresolved",
+          threadId: ThreadId.make("board:unresolved"),
+          context: "Uses the environment setting.",
+        }),
+      );
+      assert.equal(unresolved.outcome, "sent");
+      assert.lengthOf(unresolved.sent, 1);
     }),
   );
 

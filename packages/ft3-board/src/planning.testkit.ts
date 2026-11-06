@@ -13,6 +13,7 @@ import { docLinkOf } from "@t3tools/ft3-docs/contracts";
 import { DEFAULT_PLANS_FOLDER } from "@t3tools/ft3-docs/root";
 import * as DocsServer from "@t3tools/ft3-docs/server";
 import { migrations as docsMigrations } from "@t3tools/ft3-docs/migrations";
+import type { FeatureId } from "@t3tools/ft3-policies/contracts";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
@@ -28,6 +29,8 @@ import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/Projec
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
 import * as BoardMailFacts from "./boardMailFacts.ts";
+import * as BoardRepository from "./BoardRepository.ts";
+import * as BoardService from "./BoardService.ts";
 import * as Contracts from "./contracts.ts";
 import { migrations as boardMigrations } from "./migrations.ts";
 import * as PlanGate from "./PlanGate.ts";
@@ -41,6 +44,10 @@ const PROJECT_ID = ProjectId.make("project:corvis");
 
 export interface PlanTestOptions {
   readonly planning?: boolean;
+  readonly planningProjectOverrides?: Readonly<Record<string, boolean>>;
+  readonly projectFeatureOverrides?: Readonly<Record<string, Partial<Record<FeatureId, boolean>>>>;
+  readonly threadProjects?: Readonly<Record<string, string>>;
+  readonly unresolvedThreads?: ReadonlySet<string>;
   /** Makes the lead thread a child, so its plan document writes are denied. */
   readonly childLead?: boolean;
   /** The project title for the plan folder; null when the project row is gone. */
@@ -63,6 +70,8 @@ export class PlanDocsReads extends Context.Service<PlanDocsReads, Ref.Ref<number
 
 export type PlanTestServices =
   | PlanService.PlanService
+  | BoardService.BoardService
+  | BoardRepository.BoardRepository
   | PlanGate.PlanGate
   | DocsServer.DocsService
   | DocsServer.DocumentsWriteFactsPort
@@ -80,11 +89,12 @@ const cryptoLayer = Layer.succeed(
 const threadsLayer = (options: PlanTestOptions) =>
   Layer.mock(ThreadManagement.ThreadManagementService)({
     getThreadShell: (threadId) => {
+      if (options.unresolvedThreads?.has(String(threadId)) === true) return Effect.succeed(null);
       const parent =
         options.childLead === true && threadId === LEAD_THREAD_ID ? PARENT_THREAD_ID : null;
       return Effect.succeed({
         ...liveThreadShell(threadId),
-        projectId: PROJECT_ID,
+        projectId: ProjectId.make(options.threadProjects?.[String(threadId)] ?? PROJECT_ID),
         lineage: {
           rootThreadId: parent ?? threadId,
           parentThreadId: parent,
@@ -120,12 +130,18 @@ const projectsLayer = (options: PlanTestOptions) =>
     },
   });
 
-const featureGateLayer = (planning: boolean) =>
+const featureGateLayer = (options: PlanTestOptions) =>
   Layer.mock(FeatureGate.FeatureGate)({
-    require: (feature) =>
-      planning || feature !== "planning"
+    require: (feature, projectId) => {
+      const enabled =
+        options.projectFeatureOverrides?.[projectId ?? ""]?.[feature] ??
+        (feature === "planning"
+          ? (options.planningProjectOverrides?.[projectId ?? ""] ?? options.planning ?? true)
+          : true);
+      return enabled
         ? Effect.void
-        : Effect.fail(new FeatureGate.FeatureDisabledError({ feature, code: "feature_disabled" })),
+        : Effect.fail(new FeatureGate.FeatureDisabledError({ feature, code: "feature_disabled" }));
+    },
   });
 
 const makeRoot = () =>
@@ -160,12 +176,14 @@ const settingsLayer = (options: PlanTestOptions) =>
 
 const testLayer = (root: string, options: PlanTestOptions) => {
   const sql = NodeSqliteClient.layer({ filename: ":memory:" });
+  const threads = threadsLayer(options);
+  const featureGate = featureGateLayer(options);
   const base = Layer.mergeAll(
     sql,
     cryptoLayer,
-    threadsLayer(options),
+    threads,
     projectsLayer(options),
-    featureGateLayer(options.planning ?? true),
+    featureGate,
     settingsLayer(options),
   );
   const docsInner = DocsServer.docsServiceLayer({ root }).pipe(
@@ -193,7 +211,22 @@ const testLayer = (root: string, options: PlanTestOptions) => {
   );
   const gate = PlanGate.planGateLayer.pipe(Layer.provide(Layer.mergeAll(plans, docs)));
   const facts = PlanService.planningDocumentsWriteFacts.pipe(Layer.provide(plans));
-  return Layer.mergeAll(sql, docs, plans, gate, facts, docsReads);
+  const repository = BoardRepository.layer.pipe(Layer.provide(sql));
+  const board = BoardService.layer.pipe(
+    Layer.provide(Layer.mergeAll(base, plans, gate, repository)),
+  );
+  return Layer.mergeAll(
+    sql,
+    docs,
+    plans,
+    gate,
+    facts,
+    docsReads,
+    repository,
+    threads,
+    featureGate,
+    board,
+  );
 };
 
 /** Runs `use` against a fresh schema, document store and planning services. */
@@ -217,12 +250,16 @@ export const restartAcceptDelivery = (options: PlanTestOptions) =>
   );
 
 /** Inserts the lead thread, its board orchestrator and one card; the card is the plan's card. */
-export const seedCard = (title = "Storage plan", id = CARD_ID) =>
+export const seedCard = (
+  title = "Storage plan",
+  id = CARD_ID,
+  orchestratorThreadId = LEAD_THREAD_ID,
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_threads (thread_id) VALUES (${LEAD_THREAD_ID})`;
-    yield* sql`INSERT OR IGNORE INTO ft3_board_orchestrators (thread_id, created_by, created_at) VALUES (${LEAD_THREAD_ID}, 'human', '2026-10-26T00:00:00.000Z')`;
-    yield* sql`INSERT INTO ft3_board_cards (card_id, orchestrator_thread_id, title, body, status, created_by, executor_role, failure_streak, order_index, archived, created_at, updated_at) VALUES (${id}, ${LEAD_THREAD_ID}, ${title}, 'Body', 'todo', 'human', 'implementation', 0, 0, 0, '2026-10-26T00:00:00.000Z', '2026-10-26T00:00:00.000Z')`;
+    yield* sql`INSERT OR IGNORE INTO orchestration_v2_projection_threads (thread_id) VALUES (${orchestratorThreadId})`;
+    yield* sql`INSERT OR IGNORE INTO ft3_board_orchestrators (thread_id, created_by, created_at) VALUES (${orchestratorThreadId}, 'human', '2026-10-26T00:00:00.000Z')`;
+    yield* sql`INSERT INTO ft3_board_cards (card_id, orchestrator_thread_id, title, body, status, created_by, executor_role, failure_streak, order_index, archived, created_at, updated_at) VALUES (${id}, ${orchestratorThreadId}, ${title}, 'Body', 'todo', 'human', 'implementation', 0, 0, 0, '2026-10-26T00:00:00.000Z', '2026-10-26T00:00:00.000Z')`;
   });
 
 /** A plan the strict check accepts; the stable id line keeps the store from rewriting the file. */

@@ -8,11 +8,13 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
+import * as FeatureGate from "@t3tools/ft3-policies/server";
 import { RoleResolver, roleResolverLayer } from "@t3tools/ft3-policies/server";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardWakeService from "./BoardWakeService.ts";
 import * as Contracts from "./contracts.ts";
+import { requireBoardForThreadWith, requireBoardWith } from "./featureGuard.ts";
 import * as PlanGate from "./PlanGate.ts";
 import * as PlanService from "./PlanService.ts";
 import { boardCardIdLine, cardStateWords, wakeActorLabel } from "./boardWakePrompt.ts";
@@ -21,6 +23,10 @@ type Scope = McpInvocationContext.McpInvocationScope;
 export class BoardService extends Context.Service<
   BoardService,
   {
+    readonly requireFeature: (input: {
+      readonly cardId?: Contracts.BoardCardId;
+      readonly threadId?: ThreadId;
+    }) => Effect.Effect<void, Contracts.BoardMcpFailure>;
     readonly create: (
       scope: Scope,
       input: Contracts.BoardCreateCardInput,
@@ -115,6 +121,7 @@ const make = Effect.gen(function* () {
   const wake = yield* BoardWakeService.BoardWakeService;
   const crypto = yield* Crypto.Crypto;
   const roles = yield* RoleResolver;
+  const featureGate = yield* FeatureGate.FeatureGate;
   const gate = yield* PlanGate.PlanGate;
   const plans = yield* PlanService.PlanService;
 
@@ -228,7 +235,44 @@ const make = Effect.gen(function* () {
     yield* wake.wake({ reason, key, threadId, context }).pipe(Effect.mapError(() => unavailable()));
   });
 
+  const requireFeature = Effect.fn("Ft3BoardService.requireFeature")(function* (input: {
+    readonly cardId?: Contracts.BoardCardId;
+    readonly threadId?: ThreadId;
+  }) {
+    if (input.threadId !== undefined) {
+      return yield* requireBoardForThreadWith(featureGate, String(input.threadId)).pipe(
+        Effect.provideService(ThreadManagement.ThreadManagementService, threads),
+      );
+    }
+    if (input.cardId !== undefined) {
+      const card = yield* repo.getCard(input.cardId).pipe(
+        Effect.tapError((cause) =>
+          Effect.logDebug("Board feature card lookup failed; using environment setting", {
+            cardId: input.cardId,
+            cause: String(cause),
+          }),
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+      if (card !== null) {
+        return yield* requireBoardForThreadWith(
+          featureGate,
+          String(card.orchestratorThreadId),
+        ).pipe(Effect.provideService(ThreadManagement.ThreadManagementService, threads));
+      }
+      yield* Effect.logDebug("Board feature check has no card lead; using environment setting", {
+        cardId: input.cardId,
+      });
+    } else {
+      yield* Effect.logDebug(
+        "Board RPC feature check has no card context; using environment setting",
+      );
+    }
+    return yield* requireBoardWith(featureGate);
+  });
+
   return BoardService.of({
+    requireFeature,
     create: Effect.fn("Ft3BoardService.create")(function* (scope, input) {
       const threadId = yield* requireOrchestrator(scope, true);
       const at = DateTime.formatIso(yield* DateTime.now);

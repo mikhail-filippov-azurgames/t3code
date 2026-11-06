@@ -6,7 +6,7 @@ import * as McpToolAccess from "../../../apps/server/src/mcp/McpToolAccess.ts";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import * as BoardRepository from "./BoardRepository.ts";
 import * as BoardService from "./BoardService.ts";
-import { requireBoardWith } from "./featureGuard.ts";
+import { requireBoardForThreadWith } from "./featureGuard.ts";
 import { planFailureCode } from "./rpc.ts";
 import * as PlanService from "./PlanService.ts";
 import * as Contracts from "./contracts.ts";
@@ -28,7 +28,10 @@ const unavailable = () =>
 export const layer = Layer.unwrap(
   Effect.gen(function* () {
     const gate = yield* FeatureGate.FeatureGate;
-    const requireBoard = requireBoardWith(gate);
+    const requireBoard = Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      yield* requireBoardForThreadWith(gate, scope.thread?.threadId);
+    });
 
     const handlers = McpToolAccess.toLayer(toolkit, {
       board_create_card: McpToolAccess.writes((input) =>
@@ -74,6 +77,7 @@ export const layer = Layer.unwrap(
             return yield* taskNotFound();
           }
           const plans = yield* PlanService.PlanService;
+          yield* plans.requirePlanningEnabled(input.cardId).pipe(Effect.mapError(planFailure));
           const detail = yield* plans
             .readDetail({ cardId: input.cardId, version: input.version ?? "current" })
             .pipe(Effect.mapError(planFailure));
@@ -98,6 +102,7 @@ export const layer = Layer.unwrap(
             return yield* taskNotFound();
           }
           const plans = yield* PlanService.PlanService;
+          yield* plans.requirePlanningEnabled(input.cardId).pipe(Effect.mapError(planFailure));
           return yield* plans.submitForDiscussion(input.cardId).pipe(Effect.mapError(planFailure));
         }),
       ),

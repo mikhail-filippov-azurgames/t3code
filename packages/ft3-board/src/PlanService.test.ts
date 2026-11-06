@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import { ThreadId } from "@t3tools/contracts";
 import { docLinkOf } from "@t3tools/ft3-docs/contracts";
 import * as DocsServer from "@t3tools/ft3-docs/server";
 import * as Context from "effect/Context";
@@ -12,6 +13,7 @@ import { vi } from "vite-plus/test";
 import * as BoardMailFacts from "./boardMailFacts.ts";
 import * as Contracts from "./contracts.ts";
 import * as PlanService from "./PlanService.ts";
+import { boardRpcHandlers, FT3_BOARD_WS_METHODS } from "./rpc.ts";
 import * as Testkit from "./planning.testkit.ts";
 
 // The bundled server ships no assets/ directory, so the plan template must never be read from disk.
@@ -56,6 +58,64 @@ const versionPhases = Effect.gen(function* () {
 });
 
 describe("PlanService", () => {
+  it.effect("gates plan RPCs by the card lead project and falls back for unresolved leads", () => {
+    const otherCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000002");
+    const unresolvedCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000003");
+    const boardOffCardId = Contracts.BoardCardId.make("3f0c1a2e-0000-4000-8000-000000000004");
+    const otherLeadId = ThreadId.make("thread:other-lead");
+    const unresolvedLeadId = ThreadId.make("thread:unresolved-lead");
+    const boardOffLeadId = ThreadId.make("thread:board-off-lead");
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard("Disabled project", cardId);
+        yield* Testkit.seedCard("Enabled project", otherCardId, otherLeadId);
+        yield* Testkit.seedCard("Unresolved lead", unresolvedCardId, unresolvedLeadId);
+        yield* Testkit.seedCard("Board disabled", boardOffCardId, boardOffLeadId);
+        const service = yield* plans;
+
+        const disabled = yield* boardRpcHandlers[FT3_BOARD_WS_METHODS.boardPlanGet]({
+          cardId,
+        }).pipe(Effect.flip);
+        assert.equal(disabled.code, "feature_disabled");
+        const boardDisabled = yield* boardRpcHandlers[FT3_BOARD_WS_METHODS.boardStart]({
+          cardId: boardOffCardId,
+        }).pipe(Effect.flip);
+        assert.equal(boardDisabled.code, "feature_disabled");
+
+        const enabledPlan = yield* service.require({ cardId: otherCardId, requiredBy: "human" });
+        const enabled = yield* boardRpcHandlers[FT3_BOARD_WS_METHODS.boardPlanGet]({
+          cardId: otherCardId,
+        });
+        assert.equal(enabled.record.planDocId, enabledPlan.planDocId);
+
+        const resetDisabled = yield* boardRpcHandlers[FT3_BOARD_WS_METHODS.boardPlanSetRequired]({
+          cardId,
+          required: false,
+        }).pipe(Effect.flip);
+        assert.equal(resetDisabled.code, "feature_disabled");
+        const acceptDisabled = yield* boardRpcHandlers[FT3_BOARD_WS_METHODS.boardPlanAccept]({
+          cardId,
+          sha256: "0".repeat(64),
+        }).pipe(Effect.flip);
+        assert.equal(acceptDisabled.code, "feature_disabled");
+
+        yield* service.requirePlanningEnabled(unresolvedCardId);
+      }),
+      {
+        threadProjects: {
+          [Testkit.LEAD_THREAD_ID]: "project:planning-off",
+          [otherLeadId]: "project:planning-on",
+          [boardOffLeadId]: "project:board-off",
+        },
+        projectFeatureOverrides: {
+          "project:planning-off": { planning: false },
+          "project:board-off": { board: false },
+        },
+        unresolvedThreads: new Set([String(unresolvedLeadId)]),
+      },
+    );
+  });
+
   it.effect("flags the card and writes its plan document at the plan path", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {
