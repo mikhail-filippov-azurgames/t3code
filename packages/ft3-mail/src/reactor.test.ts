@@ -1,14 +1,17 @@
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
+  MessageId,
   NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSessionId,
+  RunId,
   RuntimeRequestId,
   ThreadId,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ServerCommand,
   type OrchestrationV2Subagent,
@@ -31,6 +34,7 @@ import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.
 import * as EventStore from "../../../apps/server/src/orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../../../apps/server/src/orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
+import { OrchestratorCommandRejectedError } from "../../../apps/server/src/orchestration-v2/Orchestrator.ts";
 import { MailRepository, MailRepositoryError, layer as mailRepositoryLayer } from "./repository.ts";
 import { MailService } from "./service.ts";
 import {
@@ -74,6 +78,7 @@ const appThread = (id: ThreadId): OrchestrationV2AppThread => ({
 const subagent = (
   status: OrchestrationV2Subagent["status"],
   childThreadId: ThreadId | null,
+  result: string | null = null,
 ): OrchestrationV2Subagent => ({
   id: NodeId.make("task:participant"),
   threadId: leadId,
@@ -90,13 +95,30 @@ const subagent = (
   title: "Participant",
   model: "test",
   status,
-  result: null,
+  result,
   startedAt: epoch,
   completedAt: terminal(status) ? now : null,
   updatedAt: now,
 });
 const terminal = (status: string) =>
   ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
+const runOn = (threadId: ThreadId, status: "running" | "completed"): OrchestrationV2Run => ({
+  id: RunId.make(`run:${String(threadId)}`),
+  threadId,
+  ordinal: 1,
+  providerInstanceId: modelSelection.instanceId,
+  modelSelection,
+  providerThreadId: null,
+  userMessageId: MessageId.make(`message:run:${String(threadId)}`),
+  rootNodeId: NodeId.make(`node:run:${String(threadId)}`),
+  activeAttemptId: null,
+  status,
+  requestedAt: epoch,
+  startedAt: epoch,
+  completedAt: status === "running" ? null : now,
+  checkpointId: null,
+  contextHandoffId: null,
+});
 const request = (id: string, live: boolean): OrchestrationV2RuntimeRequest => ({
   id: RuntimeRequestId.make(id),
   nodeId: NodeId.make(`node:${id}`),
@@ -122,7 +144,7 @@ const infrastructure = EventSink.layer.pipe(
   ),
 );
 
-function fixture(enabled = true, failParticipantLookup = false) {
+function fixture(enabled = true, failParticipantLookup = false, failSteer = false) {
   const dispatched: Array<Dispatch> = [];
   const routing = routingFake({});
   const evidence = policyEvidenceFake();
@@ -158,6 +180,14 @@ function fixture(enabled = true, failParticipantLookup = false) {
       ) {
         assert.equal(command.type, "message.dispatch");
         if (command.type !== "message.dispatch") return yield* Effect.die("Unexpected command");
+        // A run that ends after the lookup refuses the steer, like the
+        // orchestrator does; the reactor must fall back to the queue.
+        if (failSteer && command.dispatchMode.type === "steer_active") {
+          return yield* new OrchestratorCommandRejectedError({
+            commandId: command.commandId,
+            commandType: command.type,
+          });
+        }
         dispatched.push(command);
         return { sequence: dispatched.length, storedEvents: [] };
       });
@@ -240,24 +270,198 @@ const bindChild = (memberId: string) =>
     });
   });
 
-it.effect("closes a member when its participant thread settles", () => {
+it.effect("writes a server answer when a turn ends with an unanswered letter", () => {
   const harness = fixture();
   return Effect.gen(function* () {
     yield* harness.seed;
     const created = yield* harness.team;
     const member = yield* memberOf(created.task.taskId);
     yield* bindChild(member.memberId);
-    const reactor = yield* MailDeliveryReactor;
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    assert.isTrue(sent.created);
+
+    // The terminal event fires after the wake was drained: the delivery the
+    // server answers is delivered, not still pending.
+    yield* (yield* MailDeliveryReactor).recover;
+    const stored = yield* harness.emit({
+      ...base(leadId),
+      type: "subagent.updated",
+      payload: subagent("completed", childId, "Partial work."),
+    });
+    yield* (yield* MailDeliveryReactor).process(stored);
+
+    const repository = yield* MailRepository;
+    // The member stays active; the open delivery is answered by the server.
+    assert.equal((yield* repository.listMembers(created.task.taskId))[0]?.status, "active");
+    assert.equal(
+      (yield* repository.getDelivery(sent.deliveries[0]!.deliveryId))?.state,
+      "answered",
+    );
+    const timeline = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
+    const answers = timeline
+      .map((entry) => entry.letter)
+      .filter(
+        (letter) => letter.kind === "answer" && letter.senderThreadId === "mail-reactor:child",
+      );
+    assert.equal(answers.length, 1);
+    assert.equal(answers[0]?.recipient, "lead");
+    assert.equal(answers[0]?.replyToLetterId, sent.letter.letterId);
+    assert.include(
+      answers[0]?.body ?? "",
+      "the participant's turn ended (completed) without a mail_send answer.",
+    );
+    assert.include(answers[0]?.body ?? "", "Partial work.");
+
+    // The drain in the same pass wakes the lead with the server answer; the
+    // participant's own wake goes out once.
+    const woken = harness.dispatched.map((wake) => wake.threadId);
+    assert.includeMembers(woken, [leadId, childId]);
+    const leadWake = harness.dispatched.find((wake) => wake.threadId === leadId)!;
+    assert.include(leadWake.text, "Partial work.");
+
+    // A repeated terminal event writes nothing more: one letter per delivery.
+    const repeated = yield* harness.emit({
+      ...base(leadId),
+      type: "subagent.updated",
+      payload: subagent("completed", childId, "Partial work."),
+    });
+    yield* (yield* MailDeliveryReactor).process(repeated);
+    const again = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
+    assert.equal(
+      again.map((entry) => entry.letter).filter((letter) => letter.kind === "answer").length,
+      1,
+    );
+    assert.equal(harness.dispatched.length, 2);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("names the interruption when a turn ends interrupted", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+
+    yield* (yield* MailDeliveryReactor).recover;
+    const stored = yield* harness.emit({
+      ...base(leadId),
+      type: "subagent.updated",
+      payload: subagent("interrupted", childId, null),
+    });
+    yield* (yield* MailDeliveryReactor).process(stored);
+
+    const repository = yield* MailRepository;
+    const timeline = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
+    const answers = timeline
+      .map((entry) => entry.letter)
+      .filter((letter) => letter.kind === "answer");
+    assert.equal(answers.length, 1);
+    assert.include(
+      answers[0]?.body ?? "",
+      "the participant's turn ended (interrupted) without a mail_send answer.",
+    );
+    assert.include(answers[0]?.body ?? "", "(the participant left no message)");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("writes no server answer when the participant already answered", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: "Done.",
+      clientRequestId: "request:answer",
+      replyToLetterId: sent.letter.letterId,
+    });
 
     const stored = yield* harness.emit({
       ...base(leadId),
       type: "subagent.updated",
-      payload: subagent("completed", childId),
+      payload: subagent("completed", childId, "Done."),
     });
-    yield* reactor.process(stored);
+    yield* (yield* MailDeliveryReactor).process(stored);
 
     const repository = yield* MailRepository;
-    assert.equal((yield* repository.listMembers(created.task.taskId))[0]?.status, "closed");
+    const timeline = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
+    const answers = timeline
+      .map((entry) => entry.letter)
+      .filter((letter) => letter.kind === "answer");
+    assert.equal(answers.length, 1);
+    assert.equal(answers[0]?.body, "Done.");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps the end of a long last message in the server answer", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+
+    const words = `end-${"x".repeat(2500)}`;
+    yield* (yield* MailDeliveryReactor).recover;
+    const stored = yield* harness.emit({
+      ...base(leadId),
+      type: "subagent.updated",
+      payload: subagent("failed", childId, words),
+    });
+    yield* (yield* MailDeliveryReactor).process(stored);
+
+    const repository = yield* MailRepository;
+    const timeline = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
+    const answers = timeline
+      .map((entry) => entry.letter)
+      .filter((letter) => letter.kind === "answer");
+    assert.equal(answers.length, 1);
+    const body = answers[0]?.body ?? "";
+    assert.include(body, "the participant's turn ended (failed) without a mail_send answer.");
+    assert.include(body, "(showing the last 2000 of 2504 characters)");
+    assert.isTrue(body.endsWith(words.slice(-2000)));
+    assert.isFalse(body.includes(words.slice(0, 100)));
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -313,6 +517,10 @@ it.effect("drains a recorded wake and marks the delivery on the next tick", () =
     assert.deepStrictEqual(wake.dispatchMode, { type: "queue_after_active" });
     assert.include(wake.text, "Start.");
     assert.include(wake.text, 'New request letter from lead in mail task "Refactor":');
+    assert.include(
+      wake.text,
+      `Reply with mail_send taskId=${created.task.taskId} replyToLetterId=${sent.letter.letterId}.`,
+    );
     const repository = yield* MailRepository;
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "delivered");
@@ -379,12 +587,11 @@ it.effect("delivers exactly one wake when the sender lookup fails", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("catches up a pending delivery after restart without relaunching", () => {
+it.effect("marks a launched member's delivery delivered without a wake", () => {
   const harness = fixture();
   return Effect.gen(function* () {
     yield* harness.seed;
     const created = yield* harness.team;
-    const member = yield* memberOf(created.task.taskId);
     const mail = yield* MailService;
     const sent = yield* mail.sendLetter({
       callerThreadId: ThreadId.make("mail-reactor:lead"),
@@ -394,25 +601,143 @@ it.effect("catches up a pending delivery after restart without relaunching", () 
       body: "Start.",
       clientRequestId: "request:letter",
     });
+    // The member already got the letter in its first prompt, so there is no
+    // wake to drain: one launch, one delivered delivery, no dispatch.
     assert.equal(harness.launcher.launches.length, 1);
-    const launched = ThreadId.make(`thread:participant:${member.memberId}`);
-    yield* harness.emit({
-      ...base(launched),
-      type: "thread.created",
-      payload: appThread(launched),
+    assert.deepStrictEqual(
+      sent.deliveries.map((delivery) => delivery.state),
+      ["delivered"],
+    );
+    const repository = yield* MailRepository;
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+    yield* (yield* MailDeliveryReactor).recover;
+    assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.dispatched.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("catches up a pending delivery after restart without relaunching", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
     });
+    assert.equal(harness.launcher.launches.length, 0);
     // A crash between recording the delivery and draining its wake leaves no wake row.
     const sql = yield* SqlClient.SqlClient;
     yield* sql`DELETE FROM ft3_mail_wakes WHERE wake_id = ${`mail:wake:${sent.deliveries[0]!.deliveryId}`}`;
     yield* (yield* MailDeliveryReactor).recover;
 
-    assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.launcher.launches.length, 0);
     assert.equal(harness.dispatched.length, 1);
-    assert.equal(harness.dispatched[0]!.threadId, launched);
+    assert.equal(harness.dispatched[0]!.threadId, childId);
+    assert.deepStrictEqual(harness.dispatched[0]!.dispatchMode, { type: "queue_after_active" });
     assert.include(harness.dispatched[0]!.text, "Start.");
     const repository = yield* MailRepository;
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "delivered");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("steers an urgent letter into the participant's active run", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    yield* harness.emit({
+      ...base(childId),
+      type: "run.created",
+      payload: runOn(childId, "running"),
+    });
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Now.",
+      clientRequestId: "request:urgent",
+      urgent: true,
+    });
+    assert.isTrue(sent.created);
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(harness.dispatched[0]!.threadId, childId);
+    assert.deepStrictEqual(harness.dispatched[0]!.dispatchMode, {
+      type: "steer_active",
+      targetRunId: runOn(childId, "running").id,
+    });
+    assert.include(harness.dispatched[0]!.text, "Now.");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("starts an urgent letter immediately when the participant is idle", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Now.",
+      clientRequestId: "request:urgent",
+      urgent: true,
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(harness.dispatched[0]!.threadId, childId);
+    assert.deepStrictEqual(harness.dispatched[0]!.dispatchMode, { type: "start_immediately" });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("queues the letter when the steer is refused", () => {
+  const harness = fixture(true, false, true);
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    yield* harness.emit({
+      ...base(childId),
+      type: "run.created",
+      payload: runOn(childId, "running"),
+    });
+    const mail = yield* MailService;
+    yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Now.",
+      clientRequestId: "request:urgent",
+      urgent: true,
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    // The refused steer never dispatches; the letter goes out behind the turn.
+    assert.equal(harness.dispatched.length, 1);
+    assert.equal(harness.dispatched[0]!.threadId, childId);
+    assert.deepStrictEqual(harness.dispatched[0]!.dispatchMode, { type: "queue_after_active" });
+    assert.include(harness.dispatched[0]!.text, "Now.");
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -430,7 +755,7 @@ it.effect("stays quiet while mail is off", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("settles a member with stranded mail: fails deliveries and tells the lead once", () => {
+it.effect("wakes the same thread after its turn ends without settling", () => {
   const harness = fixture();
   return Effect.gen(function* () {
     yield* harness.seed;
@@ -438,7 +763,7 @@ it.effect("settles a member with stranded mail: fails deliveries and tells the l
     const member = yield* memberOf(created.task.taskId);
     yield* bindChild(member.memberId);
     const mail = yield* MailService;
-    const sent = yield* mail.sendLetter({
+    yield* mail.sendLetter({
       callerThreadId: ThreadId.make("mail-reactor:lead"),
       taskId: created.task.taskId,
       to: "role:implementation",
@@ -446,45 +771,35 @@ it.effect("settles a member with stranded mail: fails deliveries and tells the l
       body: "Start.",
       clientRequestId: "request:letter",
     });
-    assert.isTrue(sent.created);
 
     const stored = yield* harness.emit({
       ...base(leadId),
       type: "subagent.updated",
-      payload: subagent("completed", childId),
+      payload: subagent("completed", childId, "Partial work."),
     });
     yield* (yield* MailDeliveryReactor).process(stored);
 
-    const repository = yield* MailRepository;
-    assert.equal((yield* repository.listMembers(created.task.taskId))[0]?.status, "closed");
-    const stranded = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
-    assert.equal(stranded?.state, "failed");
-    assert.include(stranded?.failureReason ?? "", "implementation");
-
-    const timeline = yield* repository.listTimeline({ taskId: created.task.taskId, limit: 10 });
-    const notice = timeline
-      .map((entry) => entry.letter)
-      .find((letter) => letter.senderThreadId === "system");
-    assert.equal(notice?.recipient, "lead");
-    assert.equal(notice?.kind, "info");
-    assert.include(notice?.body ?? "", sent.letter.letterId);
-    const noticeDeliveries =
-      timeline.find((entry) => entry.letter.letterId === notice?.letterId)?.deliveries ?? [];
-    assert.deepStrictEqual(
-      noticeDeliveries.map((delivery) => [delivery.recipient, delivery.state]),
-      [["lead", "delivered"]],
-    );
-
-    // The lead got the only dispatch; the settled participant never did.
-    assert.equal(harness.dispatched.length, 1);
-    const wake = harness.dispatched[0]!;
-    assert.equal(wake.threadId, leadId);
-    assert.include(wake.text, sent.letter.letterId);
-
-    // A second pass stays quiet: the dead wake was marked, not retried.
+    // A new letter wakes the same participant thread; the member never closed.
+    const next = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Continue.",
+      clientRequestId: "request:next",
+    });
+    assert.isTrue(next.created);
     yield* (yield* MailDeliveryReactor).recover;
-    assert.equal(harness.dispatched.length, 1);
-    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+
+    const repository = yield* MailRepository;
+    assert.equal((yield* repository.listMembers(created.task.taskId))[0]?.status, "active");
+    const childWakes = harness.dispatched.filter((wake) => wake.threadId === childId);
+    assert.equal(childWakes.length, 2);
+    assert.include(childWakes[1]?.text ?? "", "Continue.");
+    assert.deepStrictEqual(
+      childWakes.map((wake) => wake.dispatchMode),
+      [{ type: "queue_after_active" }, { type: "queue_after_active" }],
+    );
   }).pipe(Effect.provide(harness.layer));
 });
 

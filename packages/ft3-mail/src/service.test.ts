@@ -308,9 +308,11 @@ it.effect("sends a lead letter to every member of the addressed role", () => {
       sent.deliveries.map((delivery) => delivery.memberId).toSorted(),
       idsOf(created, "implementation"),
     );
+    // Both members launch on this letter, so they read it in their first
+    // prompt and their deliveries are delivered, not pending.
     assert.deepStrictEqual(
       sent.deliveries.map((delivery) => delivery.state),
-      ["pending", "pending"],
+      ["delivered", "delivered"],
     );
     assert.deepStrictEqual(sent.noCandidate, []);
   }).pipe(Effect.provide(harness.layer));
@@ -405,14 +407,61 @@ it.effect("lets a participant write only to the lead, with its own kinds", () =>
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("lets only an architect answer with approve or changes", () => {
+it.effect("lets consultants answer with approve or changes", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {
     yield* migrateMail;
-    const created = yield* teamOf([{ role: "architect" }, { role: "implementation" }]);
+    const created = yield* teamOf([
+      { role: "architect" },
+      { role: "review" },
+      { role: "implementation" },
+    ]);
     const taskId = created.task.taskId;
+    const reviewer = idsOf(created, "review")[0] ?? "";
+    const worker = idsOf(created, "implementation")[0] ?? "";
     yield* bindParticipant(idsOf(created, "architect")[0] ?? "", CONSULTANT);
-    yield* bindParticipant(idsOf(created, "implementation")[0] ?? "", WORKER);
+    yield* bindParticipant(reviewer, "thread:reviewer");
+
+    const approved = yield* sendAs(CONSULTANT, taskId, "lead", "approve", "OK.", "request:ok");
+    assert.equal(approved.letter.kind, "approve");
+    const changed = yield* sendAs(CONSULTANT, taskId, "lead", "changes", "Quote.", "request:fix");
+    assert.equal(changed.letter.kind, "changes");
+    const reviewApproved = yield* sendAs(
+      "thread:reviewer",
+      taskId,
+      "lead",
+      "approve",
+      "OK.",
+      "request:wok",
+    );
+    assert.equal(reviewApproved.letter.kind, "approve");
+    const reviewChanged = yield* sendAs(
+      "thread:reviewer",
+      taskId,
+      "lead",
+      "changes",
+      "Quote.",
+      "request:wfx",
+    );
+    assert.equal(reviewChanged.letter.kind, "changes");
+    yield* bindParticipant(worker, WORKER);
+    assert.equal(
+      yield* refusal(sendAs(WORKER, taskId, "lead", "approve", "OK.", "request:worker")),
+      "kind_denied",
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("lets a review participant answer with approve or changes", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "review" }, { role: "implementation" }]);
+    const taskId = created.task.taskId;
+    const reviewer = idsOf(created, "review")[0] ?? "";
+    const worker = idsOf(created, "implementation")[0] ?? "";
+    yield* bindParticipant(reviewer, CONSULTANT);
+    yield* bindParticipant(worker, WORKER);
 
     const approved = yield* sendAs(CONSULTANT, taskId, "lead", "approve", "OK.", "request:ok");
     assert.equal(approved.letter.kind, "approve");
@@ -424,6 +473,68 @@ it.effect("lets only an architect answer with approve or changes", () => {
     );
   }).pipe(Effect.provide(harness.layer));
 });
+
+it.effect("refuses a letter to a member the lead closed", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "implementation" }]);
+    const taskId = created.task.taskId;
+    const member = idsOf(created, "implementation")[0] ?? "";
+    yield* bindParticipant(member, WORKER);
+
+    yield* finishMember(member);
+    assert.equal(
+      yield* refusal(sendAs(LEAD, taskId, "role:implementation", "request", "x", "request:late")),
+      "member_closed",
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect(
+  "records an urgent lead letter with an urgent wake, and refuses urgent from a participant",
+  () => {
+    const harness = mailHarness();
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const created = yield* teamOf([{ role: "implementation" }]);
+      const taskId = created.task.taskId;
+      const member = idsOf(created, "implementation")[0] ?? "";
+      yield* bindParticipant(member, WORKER);
+
+      const mail = yield* MailService;
+      assert.equal(
+        yield* refusal(
+          mail.sendLetter({
+            callerThreadId: WORKER,
+            taskId,
+            to: "lead",
+            kind: "answer",
+            body: "Now.",
+            clientRequestId: "request:worker-urgent",
+            urgent: true,
+          }),
+        ),
+        "capability_denied",
+      );
+      const sent = yield* mail.sendLetter({
+        callerThreadId: LEAD,
+        taskId,
+        to: "role:implementation",
+        kind: "request",
+        body: "Now.",
+        clientRequestId: "request:urgent",
+        urgent: true,
+      });
+      assert.isTrue(sent.created);
+      const repository = yield* MailRepository;
+      assert.deepStrictEqual(
+        (yield* repository.listUndeliveredWakes({ limit: 10 })).map((wake) => wake.reason),
+        ["mail-letter-urgent"],
+      );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect("refuses a sender outside the task, an unknown task and an unknown reply target", () => {
   const harness = mailHarness();
@@ -565,33 +676,31 @@ it.effect("keeps the delivery pending when the launch is refused and retries it"
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect(
-  "closes a task only for the lead, after its members finish, and then refuses letters",
-  () => {
-    const harness = mailHarness();
-    return Effect.gen(function* () {
-      yield* migrateMail;
-      const created = yield* teamOf([{ role: "implementation" }]);
-      const member = idsOf(created, "implementation")[0] ?? "";
-      yield* bindParticipant(member, WORKER);
+it.effect("closes a task for the lead with active members, and then refuses letters", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([{ role: "implementation" }]);
+    const member = idsOf(created, "implementation")[0] ?? "";
+    yield* bindParticipant(member, WORKER);
 
-      const close = (callerThreadId: string) => closeAs(callerThreadId, created.task);
-      assert.equal(yield* refusal(close(WORKER)), "capability_denied");
-      assert.equal(yield* refusal(close(LEAD)), "members_active");
+    const close = (callerThreadId: string) => closeAs(callerThreadId, created.task);
+    assert.equal(yield* refusal(close(WORKER)), "capability_denied");
 
-      yield* finishMember(member);
-      const closed = yield* close(LEAD);
-      assert.equal(closed.status, "closed");
-      assert.equal(closed.outcome, "succeeded");
+    // Closing the task closes its active members; they stay active otherwise.
+    const closed = yield* close(LEAD);
+    assert.equal(closed.status, "closed");
+    assert.equal(closed.outcome, "succeeded");
+    const repository = yield* MailRepository;
+    assert.equal((yield* repository.listMembers(created.task.taskId))[0]?.status, "closed");
 
-      assert.equal(yield* refusal(close(LEAD)), "task_closed");
-      assert.equal(
-        yield* refusal(sendAs(LEAD, created.task.taskId, "human", "info", "x", "request:late")),
-        "task_closed",
-      );
-    }).pipe(Effect.provide(harness.layer));
-  },
-);
+    assert.equal(yield* refusal(close(LEAD)), "task_closed");
+    assert.equal(
+      yield* refusal(sendAs(LEAD, created.task.taskId, "human", "info", "x", "request:late")),
+      "task_closed",
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
 
 it.effect("routes plan letters by phase and records the gate calls", () => {
   const harness = mailHarness();

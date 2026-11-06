@@ -9,6 +9,7 @@ import { MailService, MailServiceError } from "./service.ts";
 
 const LEAD = "thread:lead";
 const WORKER = "thread:worker";
+const TESTER = "thread:tester";
 const STRANGER = "thread:stranger";
 
 const isMailServiceError = Schema.is(MailServiceError);
@@ -96,8 +97,9 @@ it.effect("reads a letter and marks the caller's own delivered delivery read", (
       clientRequestId: "request:letter",
     });
 
-    // The launch fake starts a thread per member, so the delivery is pending
-    // until the reactor drains it; the lead reads the letter without deliveries.
+    // The launch fake starts a thread per member, so the launched member got
+    // the letter in its first prompt and its delivery is already delivered;
+    // the lead reads the letter without deliveries of its own.
     const asLead = yield* mail.readLetter({
       callerThreadId: LEAD,
       letterId: sent.letter.letterId,
@@ -106,7 +108,7 @@ it.effect("reads a letter and marks the caller's own delivered delivery read", (
     assert.equal(asLead.effectiveKind, "request");
     assert.deepStrictEqual(
       asLead.deliveries.map((delivery) => delivery.state),
-      ["pending"],
+      ["delivered"],
     );
     assert.equal(
       yield* refusal(mail.readLetter({ callerThreadId: STRANGER, letterId: sent.letter.letterId })),
@@ -141,6 +143,79 @@ it.effect("reads a letter and marks the caller's own delivered delivery read", (
     assert.deepStrictEqual(
       reread.deliveries.map((delivery) => delivery.state),
       ["read"],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("shows a participant only the letters it sent or was addressed", () => {
+  const harness = mailHarness();
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const mail = yield* MailService;
+    const created = yield* mail.createTask({
+      callerThreadId: LEAD,
+      clientRequestId: "request:team",
+      title: "Refactor",
+      brief: "Split the module.",
+      level: "medium",
+      members: [{ role: "implementation" }, { role: "test" }],
+    });
+    const taskId = created.task.taskId;
+    const impl = created.members.find((route) => route.member.roleId === "implementation")!.member;
+    const tester = created.members.find((route) => route.member.roleId === "test")!.member;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE ft3_mail_members SET participant_thread_id = ${WORKER} WHERE member_id = ${impl.memberId}`;
+    yield* sql`UPDATE ft3_mail_members SET participant_thread_id = ${TESTER} WHERE member_id = ${tester.memberId}`;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: LEAD,
+      taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+
+    // The other participant can neither read the letter nor see it in its view.
+    assert.equal(
+      yield* refusal(mail.readLetter({ callerThreadId: TESTER, letterId: sent.letter.letterId })),
+      "capability_denied",
+    );
+    const hidden = yield* mail.readTask({ callerThreadId: TESTER, taskId });
+    assert.deepStrictEqual(
+      hidden.entries.map((entry) => entry.letter.letterId),
+      [],
+    );
+    // The lead and the addressee see it.
+    const leadView = yield* mail.readTask({ callerThreadId: LEAD, taskId });
+    assert.deepStrictEqual(
+      leadView.entries.map((entry) => entry.letter.letterId),
+      [sent.letter.letterId],
+    );
+    const implView = yield* mail.readTask({ callerThreadId: WORKER, taskId });
+    assert.deepStrictEqual(
+      implView.entries.map((entry) => entry.letter.letterId),
+      [sent.letter.letterId],
+    );
+
+    // The tester's own answer to the lead stays visible to the tester and the
+    // lead, but not to the other participant.
+    const answer = yield* mail.sendLetter({
+      callerThreadId: TESTER,
+      taskId,
+      to: "lead",
+      kind: "answer",
+      body: "Testing.",
+      clientRequestId: "request:answer",
+    });
+    const testerView = yield* mail.readTask({ callerThreadId: TESTER, taskId });
+    assert.deepStrictEqual(
+      testerView.entries.map((entry) => entry.letter.letterId),
+      [answer.letter.letterId],
+    );
+    const implAfter = yield* mail.readTask({ callerThreadId: WORKER, taskId });
+    assert.deepStrictEqual(
+      implAfter.entries.map((entry) => entry.letter.letterId),
+      [sent.letter.letterId],
     );
   }).pipe(Effect.provide(harness.layer));
 });
