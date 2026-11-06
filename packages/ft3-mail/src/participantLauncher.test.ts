@@ -5,6 +5,7 @@ import {
   decodeParticipantModelSelection,
   participantLaunchCommandId,
   participantLaunchPrompt,
+  participantReplyLine,
   participantUpstreamRole,
 } from "./participantLauncher.ts";
 
@@ -30,9 +31,21 @@ it.effect("builds the participant prompt from the role line and the letter", () 
     const prompt = participantLaunchPrompt({
       roleLine: "You implement.",
       letterBody: "Build it.",
+      taskId: "task:one",
+      letterId: "letter:one",
     });
     assert.include(prompt, "You implement.");
     assert.include(prompt, "Build it.");
+    assert.include(prompt, "Reply with mail_send taskId=task:one replyToLetterId=letter:one.");
+  }),
+);
+
+it.effect("keeps the reply line past the parsed header shape", () =>
+  Effect.sync(() => {
+    const line = participantReplyLine({ taskId: "task:one", letterId: "letter:one" });
+    assert.isFalse(line.includes("\n\n"));
+    assert.include(line, "taskId=task:one");
+    assert.include(line, "replyToLetterId=letter:one");
   }),
 );
 

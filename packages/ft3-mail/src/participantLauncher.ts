@@ -25,10 +25,12 @@ export class MailLaunchError extends Schema.TaggedError<MailLaunchError>()("Mail
 
 export interface MailParticipantLaunchInput {
   readonly leadThreadId: string;
+  readonly taskId: string;
   readonly taskTitle: string;
   readonly memberId: string;
   readonly roleId: string;
   readonly modelSelectionJson: string;
+  readonly letterId: string;
   readonly letterBody: string;
   readonly isolation: MailIsolation | null;
 }
@@ -81,13 +83,23 @@ export const decodeParticipantModelSelection = (
     ),
   );
 
+/** Trailing line of every participant prompt and wake; the ids let the participant answer by letter. */
+export const participantReplyLine = (input: {
+  readonly taskId: string;
+  readonly letterId: string;
+}) => `Reply with mail_send taskId=${input.taskId} replyToLetterId=${input.letterId}.`;
+
 /** The participant's first prompt: the applied role line, then the lead's letter. */
 export const participantLaunchPrompt = (input: {
   readonly roleLine: string;
   readonly letterBody: string;
-}): string =>
-  delegatedTaskPrompt({
+  readonly taskId: string;
+  readonly letterId: string;
+}): string => {
+  const task = `${input.letterBody}\n\n${participantReplyLine(input)}`;
+  return delegatedTaskPrompt({
     roleLine: input.roleLine,
-    task: input.letterBody,
-    upstreamPrompt: input.letterBody,
+    task,
+    upstreamPrompt: task,
   });
+};
