@@ -1,4 +1,4 @@
-import { ft3SurfaceActions, ft3SurfaceTitle, Ft3SurfaceIcon } from "@t3tools/ft3-web/panels";
+import { useFt3SurfaceActions, ft3SurfaceTitle, Ft3SurfaceIcon } from "@t3tools/ft3-web/panels";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
@@ -317,7 +317,7 @@ function SurfaceMenuItem(props: {
 }
 
 function RightPanelEmptyState(props: {
-  ft3Actions: ReturnType<typeof ft3SurfaceActions>;
+  ft3Actions: ReturnType<typeof useFt3SurfaceActions>;
   onAddBrowser: () => void;
   onAddBrowserInProfile: (profileId: string) => void;
   browserProfiles: ReadonlyArray<{ readonly id: string; readonly name: string }>;
@@ -1035,7 +1035,7 @@ function RightPanelTab(
 export function RightPanelTabs(props: RightPanelTabsProps) {
   const focusedSurface = props.surfaces.find((surface) => surface.id === props.activeSurfaceId);
   const openFt3Surface = useRightPanelStore((state) => state.openFt3Surface);
-  const ft3Actions = ft3SurfaceActions(props.threadRef ?? null, openFt3Surface);
+  const ft3Actions = useFt3SurfaceActions(props.threadRef ?? null, openFt3Surface);
   const ownsDesktopTitleBar = isElectron && props.mode === "inline";
   const browserProfiles = useBrowserDefaults().profiles;
   const { resolvedTheme } = useTheme();

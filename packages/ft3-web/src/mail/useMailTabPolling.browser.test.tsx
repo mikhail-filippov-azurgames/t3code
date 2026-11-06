@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { fakeTimers, render } from "../../../../apps/web/test/render";
 import { useMailTabPolling } from "./useMailTabPolling.ts";
 
-function Probe(props: { readonly onPoll: () => void }) {
-  useMailTabPolling(props.onPoll);
+function Probe(props: { readonly onPoll: () => void; readonly enabled?: boolean }) {
+  useMailTabPolling(props.onPoll, undefined, props.enabled);
   return null;
 }
 
@@ -47,5 +47,15 @@ describe("useMailTabPolling", () => {
     await screen.unmount();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(onPoll).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not poll while its surface is hidden", async () => {
+    using _timers = fakeTimers();
+    setVisibility("visible");
+    const onPoll = vi.fn();
+    await using _screen = await render(<Probe onPoll={onPoll} enabled={false} />);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onPoll).not.toHaveBeenCalled();
   });
 });

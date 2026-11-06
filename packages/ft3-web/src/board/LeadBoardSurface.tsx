@@ -1,6 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { BoardCard, BoardCardLookupDetail } from "@t3tools/ft3-board/contracts";
+import type { Ft3PanelProps } from "../panels.tsx";
 import { AsyncResult } from "effect/reactivity";
 import {
   ArchiveIcon,
@@ -16,7 +17,7 @@ import {
   XIcon,
 } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import {
@@ -73,28 +74,60 @@ function emptyHistoryState(threadId: ThreadId): SummaryHistoryLoadState {
   };
 }
 
-/**
- * The lead thread's board digests as right-panel sections. Each section shows
- * only with content, so the panel stays upstream-shaped everywhere else.
- */
-export function BoardChatRightSections(props: { readonly threadRef: ScopedThreadRef }) {
-  return (
-    <>
-      <BoardCardsSection threadRef={props.threadRef} />
-      <BoardHistorySection threadRef={props.threadRef} />
-      <BoardMailSection threadRef={props.threadRef} />
-    </>
-  );
-}
+const LEAD_BOARD_TABS = ["Cards", "History", "Mail"] as const;
+type LeadBoardTab = (typeof LEAD_BOARD_TABS)[number];
 
-/** Mounts the lead board sections in the thread details panel; null without a server thread. */
-export function useFt3BoardChatSections(threadRef: ScopedThreadRef | null): ReactNode {
-  if (threadRef === null) return null;
+export default function LeadBoardSurface({ threadRef, visible }: Ft3PanelProps) {
+  const [activeTab, setActiveTab] = useState<LeadBoardTab>("Cards");
+  const leads = useEnvironmentQuery(
+    boardEnvironment.orchestratorsList({ environmentId: threadRef.environmentId, input: {} }),
+  );
+  const isLead = leads.data?.orchestrators.some((entry) => entry.threadId === threadRef.threadId);
+
+  if (leads.isPending) {
+    return (
+      <p role="status" className="p-4 text-sm text-muted-foreground">
+        Loading lead surface…
+      </p>
+    );
+  }
+  if (!isLead) {
+    return (
+      <p role="status" className="p-4 text-sm text-muted-foreground">
+        Panel unavailable.
+      </p>
+    );
+  }
+
   return (
-    <BoardChatRightSections
-      key={`${threadRef.environmentId}:${threadRef.threadId}`}
-      threadRef={threadRef}
-    />
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3" aria-label="Board chat">
+      <div role="tablist" aria-label="Board chat" className="mb-3 flex gap-1 border-b">
+        {LEAD_BOARD_TABS.map((tab) => (
+          <button
+            key={tab}
+            id={`lead-board-tab-${tab.toLowerCase()}`}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
+            aria-controls="lead-board-tab-panel"
+            className="rounded-t-md px-3 py-2 text-sm text-muted-foreground aria-selected:border-b-2 aria-selected:border-primary aria-selected:text-foreground"
+            onClick={() => setActiveTab(tab)}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+      <div
+        id="lead-board-tab-panel"
+        role="tabpanel"
+        aria-labelledby={`lead-board-tab-${activeTab.toLowerCase()}`}
+        className="min-h-0 flex-1"
+      >
+        {activeTab === "Cards" ? <BoardCardsSection threadRef={threadRef} /> : null}
+        {activeTab === "History" ? <BoardHistorySection threadRef={threadRef} /> : null}
+        {activeTab === "Mail" ? <BoardMailSection threadRef={threadRef} visible={visible} /> : null}
+      </div>
+    </div>
   );
 }
 
@@ -449,7 +482,10 @@ function BoardHistorySection(props: { readonly threadRef: ScopedThreadRef }) {
   );
 }
 
-function BoardMailSection(props: { readonly threadRef: ScopedThreadRef }) {
+function BoardMailSection(props: {
+  readonly threadRef: ScopedThreadRef;
+  readonly visible: boolean;
+}) {
   const { environmentId, threadId } = props.threadRef;
   const boardList = useEnvironmentQuery(
     boardEnvironment.listForChatPanel({ environmentId, input: { includeArchived: true } }),
@@ -466,10 +502,6 @@ function BoardMailSection(props: { readonly threadRef: ScopedThreadRef }) {
     refreshCards();
     mailTasksRefresh();
   }, [refreshCards, mailTasksRefresh]);
-  // Failed task listing stays so the error can be retried.
-  const hasContent = mailTasks.error !== null || (mailTasks.data?.tasks.length ?? 0) > 0;
-  if (!hasContent) return null;
-
   return (
     <ThreadDetailsSection
       headingId="ft3-board-mail-heading"
@@ -487,6 +519,7 @@ function BoardMailSection(props: { readonly threadRef: ScopedThreadRef }) {
           threadRef={props.threadRef}
           cardIds={boardCardIds}
           refreshCards={refreshCards}
+          pollingEnabled={props.visible}
         />
       </div>
     </ThreadDetailsSection>

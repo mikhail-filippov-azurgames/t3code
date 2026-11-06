@@ -2,13 +2,15 @@ import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contract
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../../apps/web/test/render";
-import { useFt3BoardChatSections } from "./BoardChatRightSections.tsx";
+import LeadBoardSurface from "./LeadBoardSurface.tsx";
 import type { CoordinatorSummaryHistoryEntry } from "./coordinatorSummaryHistory";
 
 const mocks = vi.hoisted(() => ({
   listForChatPanel: vi.fn(),
+  orchestratorsList: vi.fn(),
   resolve: vi.fn(),
   historyLoader: vi.fn(),
   mailTasks: vi.fn(),
@@ -17,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./state.ts", () => ({
   boardEnvironment: {
     listForChatPanel: (target: unknown) => mocks.listForChatPanel(target),
+    orchestratorsList: (target: unknown) => mocks.orchestratorsList(target),
     resolve: (target: unknown) => mocks.resolve(target),
     // Command atoms consumed by useAtomCommand in the Cards section; the render
     // tests never invoke them, only read their label.
@@ -41,10 +44,6 @@ const cardId = "11111111-1111-4111-8111-111111111111";
 
 const threadRef: ScopedThreadRef = { environmentId, threadId };
 
-function Probe(props: { readonly threadRef: ScopedThreadRef | null }) {
-  return <>{useFt3BoardChatSections(props.threadRef)}</>;
-}
-
 const historyEntry = (
   overrides: Partial<CoordinatorSummaryHistoryEntry> = {},
 ): CoordinatorSummaryHistoryEntry => ({
@@ -65,11 +64,20 @@ const historyEntry = (
 function setup(options: {
   readonly historyEntries?: ReadonlyArray<CoordinatorSummaryHistoryEntry>;
   readonly mailTaskCount?: number;
+  readonly isLead?: boolean;
 }) {
   vi.clearAllMocks();
   window.localStorage.clear();
   mocks.listForChatPanel.mockReturnValue(
     Atom.make(AsyncResult.success({ cards: [], orchestrators: [] })),
+  );
+  mocks.orchestratorsList.mockReturnValue(
+    Atom.make(
+      AsyncResult.success({
+        orchestrators:
+          options.isLead === false ? [] : [{ threadId, createdBy: "human", createdAt: "now" }],
+      }),
+    ),
   );
   mocks.resolve.mockReturnValue(Atom.make(AsyncResult.success({ matches: [], details: [] })));
   mocks.historyLoader.mockImplementation(async () => ({
@@ -89,54 +97,68 @@ function setup(options: {
   return { registry, [Symbol.dispose]: () => registry.dispose() };
 }
 
-const renderSections = (state: ReturnType<typeof setup>, ref: ScopedThreadRef | null) =>
+const renderSurface = (state: ReturnType<typeof setup>) =>
   render(
     <RegistryContext.Provider value={state.registry}>
-      <Probe threadRef={ref} />
+      <LeadBoardSurface threadRef={threadRef} visible />
     </RegistryContext.Provider>,
   );
 
-describe("useFt3BoardChatSections", () => {
-  it("renders nothing without a server thread", async () => {
-    using state = setup({});
-    await using screen = await renderSections(state, null);
+describe("LeadBoardSurface", () => {
+  it("declines a thread that is not registered as a lead", async () => {
+    using state = setup({ isLead: false });
+    await using screen = await renderSurface(state);
 
-    expect(screen.container.textContent).toBe("");
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Panel unavailable.");
+    expect(screen.container.querySelector('[role="tablist"]')).toBeNull();
   });
 
-  it("renders nothing when the lead thread has no board content", async () => {
+  it("shows the three tabs when the lead board has no content", async () => {
     using state = setup({});
-    await using screen = await renderSections(state, threadRef);
+    await using screen = await renderSurface(state);
 
-    expect(screen.container.textContent).toBe("");
+    await expect.element(screen.getByRole("tab", { name: "Cards" })).toBeVisible();
+    await expect.element(screen.getByRole("tab", { name: "History" })).toBeVisible();
+    await expect.element(screen.getByRole("tab", { name: "Mail" })).toBeVisible();
+    expect(screen.container.querySelector("#ft3-board-cards-heading")).toBeNull();
   });
 
-  it("shows the Cards section for pinned cards and the Mail section with tasks", async () => {
+  it("mounts the empty Mail tab so it can poll for new tasks", async () => {
+    using state = setup({});
+    await using screen = await renderSurface(state);
+
+    await userEvent.click(screen.getByRole("tab", { name: "Mail" }));
+    await expect.element(screen.getByRole("heading", { name: "Mail" })).toBeVisible();
+    expect(screen.container.querySelector("[data-mail-tab-stub]")).not.toBeNull();
+  });
+
+  it("shows pinned cards and mounts Mail only after selecting its tab", async () => {
     using state = setup({ mailTaskCount: 1 });
     window.localStorage.setItem(
       `t3code:board-card-pins:v1:${environmentId}:${threadId}`,
       JSON.stringify([cardId]),
     );
-    await using screen = await renderSections(state, threadRef);
+    await using screen = await renderSurface(state);
 
     await expect.element(screen.getByRole("heading", { name: "Cards" })).toBeVisible();
-    await expect.element(screen.getByRole("heading", { name: "Mail" })).toBeVisible();
-    expect(screen.container.querySelector("[data-mail-tab-stub]")).not.toBeNull();
+    expect(screen.container.querySelector("[data-mail-tab-stub]")).toBeNull();
     // A pin whose card lookup is empty still names itself and offers unpin.
     await expect
       .element(screen.getByRole("button", { name: `Unpin card ${cardId}` }))
       .toBeVisible();
-    // History has no entries and no error, so its section stays hidden.
-    expect(screen.container.querySelector("#ft3-board-history-heading")).toBeNull();
+    await userEvent.click(screen.getByRole("tab", { name: "Mail" }));
+    await expect.element(screen.getByRole("heading", { name: "Mail" })).toBeVisible();
+    expect(screen.container.querySelector("[data-mail-tab-stub]")).not.toBeNull();
+    expect(screen.container.querySelector("#ft3-board-cards-heading")).toBeNull();
   });
 
   it("shows the History section when summaries exist", async () => {
     using state = setup({ historyEntries: [historyEntry()] });
-    await using screen = await renderSections(state, threadRef);
+    await using screen = await renderSurface(state);
 
+    await userEvent.click(screen.getByRole("tab", { name: "History" }));
     await expect.element(screen.getByRole("heading", { name: "History" })).toBeVisible();
     await expect.element(screen.getByText("Fix the bug · turn 1")).toBeVisible();
     expect(screen.container.querySelector("#ft3-board-cards-heading")).toBeNull();
-    expect(screen.container.querySelector("#ft3-board-mail-heading")).toBeNull();
   });
 });

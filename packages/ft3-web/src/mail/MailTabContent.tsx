@@ -37,6 +37,7 @@ import { useMailTabPolling } from "./useMailTabPolling.ts";
 export function BoardMailTab(props: {
   readonly threadRef: ScopedThreadRef;
   readonly cardIds: ReadonlyArray<string>;
+  readonly pollingEnabled?: boolean;
   /** Re-reads the board's card list so cards created after mount join the mail page. */
   readonly refreshCards?: () => void;
 }) {
@@ -50,7 +51,7 @@ export function BoardMailTab(props: {
     refreshCards?.();
     tasksRefresh();
   }, [refreshCards, tasksRefresh]);
-  useMailTabPolling(refresh);
+  useMailTabPolling(refresh, undefined, props.pollingEnabled ?? true);
   const snapshotQuery = useEnvironmentQuery(
     policiesEnvironment.snapshot({ environmentId, input: {} }),
   );

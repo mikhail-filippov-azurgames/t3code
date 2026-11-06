@@ -40,7 +40,6 @@ import {
 } from "./threadDetailsPanelStyles";
 import { Menu, MenuPopup } from "../ui/menu";
 import { useFt3PinnedLineageRows } from "@t3tools/ft3-web/lineage";
-import { useFt3BoardChatSections } from "@t3tools/ft3-web/board-chat";
 
 const GitActionsControl = memo(BaseGitActionsControl);
 
@@ -91,9 +90,6 @@ interface ThreadDetailsPanelProps extends Pick<
 export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
   const visible = useClientSettings(resolveThreadDetailsVisibility);
   const pinnedLineageRows = useFt3PinnedLineageRows(props.environmentId);
-  const boardChatSections = useFt3BoardChatSections(
-    props.isServerThread ? { environmentId: props.environmentId, threadId: props.threadId } : null,
-  );
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
   const fileScripts = useT3ProjectFileScripts(
     props.environmentId,
@@ -264,8 +260,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                   pinnedLineageRows={pinnedLineageRows}
                 />
               ) : null}
-
-              {boardChatSections}
 
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 

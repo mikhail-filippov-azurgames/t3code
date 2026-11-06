@@ -5,8 +5,8 @@ Web-расширение форка. Пакет не является самос
 
 ## Экспорты
 
-- `./panels` — `Ft3Surface`, `ft3SurfaceRegistry` (`board`, `commits`), normalize, content;
-- `./board`, `./board-chat`, `./board-header` — страница `/board`, панель чата, действия в шапке;
+- `./panels` — `Ft3Surface`, `ft3SurfaceRegistry` (`board`, `lead-board`, `commits`), normalize, content;
+- `./board`, `./board-header` — страница `/board`, действия доски в шапке; Lead surface зарегистрирована через `./panels`;
 - `./architect`, `./sidebar` — публикация и пин архитектора, лес делегирования, role badges;
 - `./chat`, `./chat-composer`, `./chat-copy` — чипы карточек/коммитов/документов, слот composer'а,
   фильтры копирования;
