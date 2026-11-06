@@ -143,6 +143,8 @@ export const MailSendInput = Schema.Struct({
   replyToLetterId: Schema.optional(Schema.String),
   clientRequestId: MailClientRequestId,
   plan: Schema.optional(MailSendPlan),
+  /** Lead only: steer an active participant instead of waiting for its turn to end. */
+  urgent: Schema.optional(Schema.Boolean),
 });
 export type MailSendInput = typeof MailSendInput.Type;
 

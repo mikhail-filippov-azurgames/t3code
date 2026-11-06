@@ -118,6 +118,7 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
                   ? {}
                   : { replyToLetterId: input.replyToLetterId }),
                 ...(input.plan === undefined ? {} : { plan: input.plan }),
+                ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
               })
               .pipe(Effect.mapError(toMcpFailure));
           }),

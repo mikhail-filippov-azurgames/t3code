@@ -28,7 +28,7 @@ const mailTaskCreate = Tool.make("mail_task_create", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 const mailSend = Tool.make("mail_send", {
-  description: `Send a letter in a mail task. The lead starts threadless members on resend; a participant answers the lead. A plan letter carries plan.phase; implement needs a plan citation and a step. draft goes to the planner; review sends the plan to architect members for approve or changes, at most two rounds per card; prototype needs isolation worktree and runs before acceptance; implement runs only while the live document matches the accepted digest.${offNotice}`,
+  description: `Send a letter in a mail task. The lead starts threadless members on resend; a participant answers the lead. A plan letter carries plan.phase; implement needs a plan citation and a step. draft goes to the planner; review sends the plan to architect members for approve or changes, at most two rounds per card; prototype needs isolation worktree and runs before acceptance; implement runs only while the live document matches the accepted digest. Urgent (lead only) steers a busy participant instead of queueing behind its turn.${offNotice}`,
   parameters: Contracts.MailSendInput,
   success: Contracts.MailSendResult,
   failure: Contracts.MailMcpFailure,
