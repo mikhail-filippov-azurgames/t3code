@@ -162,6 +162,37 @@ describe("ft3 host startup", () => {
     }),
   );
 
+  it.effect("keeps project feature overrides identical after rebuilding host layers", () =>
+    Effect.gen(function* () {
+      const settings = {
+        ft3: { policies: { features: { board: true } } },
+        projectSettingsOverrides: {
+          "project-alpha": { ft3FeatureToggles: { board: false } },
+        },
+      } as Parameters<typeof ServerSettings.layerTest>[0];
+      const firstContext = yield* buildHostLayer({}, settings);
+      const inspectRequestedFeatures = (context: typeof firstContext) => {
+        const gate = Context.get(context, FeatureGate.FeatureGate);
+        const requested = (projectId?: string) =>
+          gate.state("board", projectId).pipe(
+            Effect.map((state) => state.requestedEnabled),
+            Effect.provide(context),
+          );
+        return Effect.all({
+          environment: requested(),
+          projectA: requested("project-alpha"),
+          projectB: requested("project-beta"),
+        });
+      };
+      const firstState = yield* inspectRequestedFeatures(firstContext);
+      assert.deepEqual(firstState, { environment: true, projectA: false, projectB: true });
+
+      const restartedContext = yield* buildHostLayer({}, settings);
+      const restartedState = yield* inspectRequestedFeatures(restartedContext);
+      assert.deepEqual(restartedState, firstState);
+    }),
+  );
+
   it.effect(
     "restores a project's document scope at startup, so planning passes for it without an RPC",
     () =>
