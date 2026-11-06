@@ -30,3 +30,25 @@ it("shows the plan state and opens the planner thread", async () => {
     expect(screen.router?.state.location.pathname).toBe("/browser-env/planner-thread"),
   );
 });
+
+it("keeps the accepted plan pinned until implementation starts", async () => {
+  const row: PinnedPlanRow = {
+    label: "accepted",
+    plan: {
+      cardId: BoardCardId.make("11111111-1111-4111-8111-111111111111"),
+      title: "Ship the board",
+      orchestratorThreadId: ThreadId.make("lead"),
+      plannerThreadId: ThreadId.make("planner-thread"),
+      state: "accepted",
+      implementStarted: false,
+    },
+  };
+  await using screen = await render(
+    <ul>
+      <PlanLineageRow environmentId={EnvironmentId.make("browser-env")} row={row} />
+    </ul>,
+  );
+
+  await expect.element(screen.getByText("accepted", { exact: true })).toBeVisible();
+  await expect.element(screen.getByRole("button", { name: /Plan: Ship the board/ })).toBeVisible();
+});

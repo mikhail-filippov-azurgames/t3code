@@ -1,9 +1,10 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { BoardCardId } from "@t3tools/ft3-board/contracts";
-import { useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { usePlanThreadSource } from "../lineage/usePlanThreadSource.ts";
+import { PlanViewerDialog } from "../planning/PlanViewerDialog.tsx";
 
 export function BoardCardPlanButton({
   environmentId,
@@ -14,22 +15,22 @@ export function BoardCardPlanButton({
   readonly cardId: BoardCardId;
   readonly size?: "xs" | "sm";
 }) {
-  const navigate = useNavigate();
+  const [viewerOpen, setViewerOpen] = useState(false);
   const plan = usePlanThreadSource(environmentId).forCard(cardId);
   if (plan === null) return null;
-  const plannerThreadId = plan.plannerThreadId;
   return (
-    <Button
-      size={size}
-      variant="outline"
-      onClick={() =>
-        void navigate({
-          to: "/$environmentId/$threadId",
-          params: { environmentId, threadId: plannerThreadId },
-        })
-      }
-    >
-      Plan
-    </Button>
+    <>
+      <Button size={size} variant="outline" onClick={() => setViewerOpen(true)}>
+        Plan
+      </Button>
+      {viewerOpen ? (
+        <PlanViewerDialog
+          environmentId={environmentId}
+          cardId={cardId}
+          title={plan.title}
+          onClose={() => setViewerOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }

@@ -22,6 +22,7 @@
     "./delegation-dialogs": "./src/delegation/dialogs.ts",
     "./policies": "./src/policies/index.ts",
     "./lineage": "./src/lineage/index.ts",
+    "./planning": "./src/planning/index.ts",
     "./mail": "./src/mail/index.ts"
   },
   "scripts": {

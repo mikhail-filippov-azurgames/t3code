@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   resend: vi.fn(),
   request: vi.fn(),
   planForCard: vi.fn(),
+  planGet: vi.fn(),
+  readDoc: vi.fn(),
 }));
 
 vi.mock("./state.ts", () => ({
@@ -39,6 +41,13 @@ vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) 
 vi.mock("./BoardCardDialog.tsx", () => ({ BoardCardDialog: () => null }));
 vi.mock("../lineage/usePlanThreadSource.ts", () => ({
   usePlanThreadSource: () => ({ forCard: mocks.planForCard, forOrchestratorThread: () => [] }),
+}));
+vi.mock("../planning/state.ts", () => ({
+  planningEnvironment: {
+    planGet: (target: unknown) => mocks.planGet(target),
+    readDoc: (target: unknown) => mocks.readDoc(target),
+    planAccept: { label: "board.planAccept" },
+  },
 }));
 
 const ref = {
@@ -79,6 +88,42 @@ function setup() {
   mocks.orchestrators.mockReturnValue(orchestrators);
   mocks.start.mockResolvedValue(
     AsyncResult.failure(Cause.fail(new Error("Waiting for human input."))),
+  );
+  mocks.planGet.mockReturnValue(
+    Atom.make(
+      AsyncResult.success({
+        record: {
+          cardId: card.cardId,
+          required: true,
+          requiredBy: "human",
+          requiredReason: "contracts",
+          state: "discussion",
+          planDocId: "doc-plan",
+          plannerMemberId: "member-planner",
+          plannerThreadId: "planner-thread",
+          reviewRounds: 0,
+          acceptedSha256: null,
+          acceptedRevision: 0,
+          acceptedAt: null,
+          updatedAt: card.createdAt,
+        },
+        doc: { stableId: "doc-plan", relPath: "corvis/plans/demo/card.md", name: "card.md" },
+        liveSha256: "f".repeat(64),
+        versions: [],
+      }),
+    ),
+  );
+  mocks.readDoc.mockReturnValue(
+    Atom.make(
+      AsyncResult.success({
+        status: "found",
+        stableId: "doc-plan",
+        relPath: "corvis/plans/demo/card.md",
+        name: "card.md",
+        sha256: "a".repeat(64),
+        content: "# Plan\n\nStep P1.",
+      }),
+    ),
   );
   const registry = AtomRegistry.make();
   return { registry, [Symbol.dispose]: () => registry.dispose() };
@@ -138,7 +183,7 @@ describe("Board registry rendering", () => {
       .not.toBeInTheDocument();
   });
 
-  it("opens the planner thread from the card's Plan button", async () => {
+  it("opens the plan viewer from the card's Plan button", async () => {
     using state = setup();
     mocks.planForCard.mockReturnValue({
       cardId: BoardCardId.make("11111111-1111-4111-8111-111111111111"),
@@ -154,9 +199,10 @@ describe("Board registry rendering", () => {
       </RegistryContext.Provider>,
     );
     await userEvent.click(screen.getByRole("button", { name: "Plan", exact: true }));
-    await vi.waitFor(() =>
-      expect(screen.router?.state.location.pathname).toBe(`/${ref.environmentId}/planner-thread`),
-    );
+    await expect
+      .element(screen.getByRole("heading", { name: "Plan: Ship the board" }))
+      .toBeVisible();
+    await expect.element(screen.getByText("Discussion", { exact: true })).toBeVisible();
   });
 
   it("shows a fallback for a removed surface", async () => {

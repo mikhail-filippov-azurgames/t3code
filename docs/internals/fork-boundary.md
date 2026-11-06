@@ -924,8 +924,11 @@ Fork-owned tests: `packages/ft3-web/src/policies/policies.logic.test.ts` and
 `packages/ft3-web/src/lineage` отдаёт закреплённые строки для секции Lineage правой панели
 треда: строка `Plan: <карточка>` над «Previous agents». Шов — опциональный проп
 `pinnedLineageRows` у `ThreadRelationshipsPanel`: функция по id треда возвращает строки и
-множество id тредов, которые из групп исключаются. Без пропа поведение upstream. Источник
-данных пока заглушка `usePlanThreadSource`; реальный источник приходит с planning RPC.
+множество id тредов, которые из групп исключаются. Без пропа поведение upstream. Источник —
+сводки планов из `board.list` (`usePlanThreadSource`). Кнопка «План» на карточке открывает
+план-просмотрщик из `packages/ft3-web/src/planning` (`board.planGet` + `docs.read`,
+«План принят» — `board.planAccept` с SHA показанной версии); после принятия команда
+обновляет списки доски, и строка показывает `accepted` (§11.3).
 
 | Upstream-файл                                                 | Правка                                                                                                                                       | Зачем                                         |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
@@ -933,8 +936,10 @@ Fork-owned tests: `packages/ft3-web/src/policies/policies.logic.test.ts` and
 | `apps/web/src/components/chat/ThreadDetailsPanel.tsx`         | вызов `useFt3PinnedLineageRows(environmentId)` из `@t3tools/ft3-web/lineage` и передача результата в `ThreadRelationshipsPanel`              | одна точка подключения ft3-хука               |
 
 Fork-owned tests: `packages/ft3-web/src/lineage/planLineage.logic.test.ts`,
-`packages/ft3-web/src/lineage/PlanLineageRow.browser.test.tsx` и случаи `Plan` в
-`packages/ft3-web/src/board/BoardPanel.browser.test.tsx`. Случаи закреплённых строк в
+`packages/ft3-web/src/lineage/PlanLineageRow.browser.test.tsx`, случаи `Plan` в
+`packages/ft3-web/src/board/BoardPanel.browser.test.tsx` и
+`packages/ft3-web/src/planning/planViewer.logic.test.ts` с
+`packages/ft3-web/src/planning/PlanViewerDialog.browser.test.tsx`. Случаи закреплённых строк в
 `apps/web/src/components/chat/ThreadRelationshipsControl.browser.test.tsx` входят в гейт.
 
 ## Документы, mobile и швы почты и планирования
