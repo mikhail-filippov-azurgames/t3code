@@ -1,30 +1,38 @@
 // @effect-diagnostics nodeBuiltinImport:off - the fake store hashes document content.
 import * as NodeCrypto from "node:crypto";
 
+import { ProjectId, type OrchestrationProjectShell } from "@t3tools/contracts";
 import { DocsService, DocsServiceError } from "@t3tools/ft3-docs/server";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 
+import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as FeatureGate from "./FeatureGate.ts";
 import {
   PolicyAppliedStore,
   type PolicyAppliedRecord,
   layerMemory as policyAppliedStoreLayer,
 } from "./policyAppliedStore.ts";
-import { layer as policyChangeTrackerLayer } from "./policyChangeTracker.ts";
+import { PolicyChangeTracker, layer as policyChangeTrackerLayer } from "./policyChangeTracker.ts";
 import {
   docsPolicyDocumentReadPort,
   layer as policyDocumentLoaderLayer,
 } from "./policyDocumentLoader.ts";
-import { policiesRpcHandlers } from "./rpc.ts";
+import { policiesRpcHandlers, refreshAppliedPolicies } from "./rpc.ts";
 import { FT3_POLICIES_WS_METHODS } from "./rpc-contracts.ts";
-import type { PoliciesSettings } from "./settings.ts";
+import { DEFAULT_POLICY_SETTINGS, type PoliciesSettings } from "./settings.ts";
 
 const ROUTING_POLICY_PATH = "policies/routing-policy.md";
 const ROLES_DIR = "policies/roles/";
 const ROLES_PATH = `${ROLES_DIR}roles.json`;
+const LEAD_SKILLS_PATH = "policies/lead-skills/lead-skills.json";
+const PLAN_SKILL_PATH = "policies/lead-skills/plan-orchestrator/SKILL.md";
+const T3_SKILL_PATH = "policies/lead-skills/t3-orchestrator/SKILL.md";
+const BOARD_SKILL_PATH = "policies/lead-skills/board-orchestrator/SKILL.md";
 
 // A live editor does not run inside a shell with the legacy settings.
 delete process.env.T3CODE_FT3_ROLES_DIR;
@@ -145,10 +153,16 @@ const docsOver = (files: Map<string, string>) =>
 const policySettings = (
   applyExternalEdits: boolean,
   documents?: PoliciesSettings["documents"],
+  featureOverrides: Partial<PoliciesSettings["features"]> = {},
 ) => ({
   documents: documents ?? routingPolicyDocuments(),
   applyExternalEdits,
-  features: { documents: true, board: false, planning: false },
+  features: {
+    ...DEFAULT_POLICY_SETTINGS.features,
+    board: false,
+    planning: false,
+    ...featureOverrides,
+  },
 });
 
 function routingPolicyDocuments(): PoliciesSettings["documents"] {
@@ -191,22 +205,93 @@ const leadRole = (revision: number): string =>
     "",
   ].join("\n");
 
+const roleDocument = (roleId: string): string =>
+  [
+    "---",
+    "schema: corvis-role-v1",
+    `roleId: ${roleId}`,
+    "revision: 1",
+    "configured: true",
+    "---",
+    "",
+    `# ${roleId}`,
+    "",
+  ].join("\n");
+
+const leadSkillDocument = (name: string): string =>
+  `---\nname: ${name}\ndescription: A short description.\n---\n\n# Skill\n`;
+
+const configuredPlanningDocuments: PoliciesSettings["documents"] = {
+  routingPolicy: {
+    kind: "doc",
+    address: { kind: "path", relPath: ROUTING_POLICY_PATH },
+  },
+  roles: { kind: "doc", address: { kind: "path", relPath: ROLES_PATH } },
+  leadSkills: { kind: "doc", address: { kind: "path", relPath: LEAD_SKILLS_PATH } },
+};
+
+const missingPlannerFiles = () =>
+  new Map([
+    [ROUTING_POLICY_PATH, routingPolicy(1)],
+    [
+      ROLES_PATH,
+      JSON.stringify({
+        schema: "corvis-role-map-v1",
+        revision: 1,
+        configured: true,
+        roles: [
+          { id: "lead", roleId: "lead", file: "lead.md" },
+          { id: "architect", roleId: "architect", file: "architect.md" },
+        ],
+      }),
+    ],
+    [`${ROLES_DIR}lead.md`, leadRole(1)],
+    [`${ROLES_DIR}architect.md`, roleDocument("architect")],
+    [
+      LEAD_SKILLS_PATH,
+      JSON.stringify({
+        schema: "corvis-lead-skills-v1",
+        revision: 1,
+        configured: true,
+        skills: [
+          { id: "t3-orchestrator", file: "t3-orchestrator/SKILL.md" },
+          { id: "board-orchestrator", file: "board-orchestrator/SKILL.md" },
+          { id: "plan-orchestrator", file: "plan-orchestrator/SKILL.md" },
+        ],
+      }),
+    ],
+    [T3_SKILL_PATH, leadSkillDocument("t3-orchestrator")],
+    [BOARD_SKILL_PATH, leadSkillDocument("board-orchestrator")],
+    [PLAN_SKILL_PATH, leadSkillDocument("plan-orchestrator")],
+  ]);
+
 const services = (
   files: Map<string, string>,
   applyExternalEdits: boolean,
   applied: Layer.Layer<PolicyAppliedStore> = policyAppliedStoreLayer,
   documents?: PoliciesSettings["documents"],
   projectSettingsOverrides?: Record<string, unknown>,
+  featureOverrides?: Partial<PoliciesSettings["features"]>,
+  projectExists: (projectId: string) => boolean = (projectId) => projectId.startsWith("proj-"),
 ) => {
   const docs = docsOver(files);
+  const projectStore = Layer.mock(ProjectStoreV2)({
+    getShell: (projectId) =>
+      Effect.succeed(
+        projectExists(String(projectId))
+          ? Option.some({ projectId } as unknown as OrchestrationProjectShell)
+          : Option.none(),
+      ),
+  });
   return Layer.mergeAll(
     policyChangeTrackerLayer.pipe(
       Layer.provide(policyDocumentLoaderLayer(docsPolicyDocumentReadPort(docs))),
       Layer.provide(applied),
     ),
     Layer.succeed(DocsService, docs),
+    projectStore,
     ServerSettings.layerTest({
-      ft3: { policies: policySettings(applyExternalEdits, documents) },
+      ft3: { policies: policySettings(applyExternalEdits, documents, featureOverrides) },
       ...(projectSettingsOverrides === undefined ? {} : { projectSettingsOverrides }),
     } as Parameters<typeof ServerSettings.layerTest>[0]),
   );
@@ -620,6 +705,87 @@ describe("per-project feature toggle RPC", () => {
     }).pipe(Effect.provide(toggleServices())),
   );
 
+  it.effect(
+    "keeps environment requirements stable when a project snapshot requests planning off",
+    () => {
+      const projectOverrides = { "proj-a": { ft3FeatureToggles: { planning: false } } };
+      const layer = FeatureGate.layer.pipe(
+        Layer.provideMerge(
+          services(
+            missingPlannerFiles(),
+            false,
+            undefined,
+            configuredPlanningDocuments,
+            projectOverrides,
+            { board: true, mail: true, planning: true },
+          ),
+        ),
+      );
+      return Effect.gen(function* () {
+        const tracker = yield* PolicyChangeTracker;
+        yield* getSnapshot({});
+        const before = yield* tracker.snapshot();
+        assert.isFalse(before.requirements.plannerRole);
+
+        yield* getSnapshot({ projectId: "proj-a" });
+        const after = yield* tracker.snapshot();
+        assert.deepStrictEqual(after.requirements, before.requirements);
+
+        const gate = yield* FeatureGate.FeatureGate;
+        const failure = yield* gate.require("planning", "proj-b").pipe(Effect.flip);
+        assert.equal(failure.feature, "planning");
+        assert.notEqual(failure.code, "feature_disabled");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
+  it.effect(
+    "loads project-enabled planning requirements at startup and after a project toggle",
+    () => {
+      const layer = FeatureGate.layer.pipe(
+        Layer.provideMerge(
+          services(
+            missingPlannerFiles(),
+            false,
+            undefined,
+            configuredPlanningDocuments,
+            { "proj-a": { ft3FeatureToggles: { planning: true } } },
+            { board: true, mail: true, planning: false },
+          ),
+        ),
+      );
+      return Effect.gen(function* () {
+        const tracker = yield* PolicyChangeTracker;
+        yield* refreshAppliedPolicies;
+        const startup = yield* tracker.snapshot();
+        assert.isFalse(startup.requirements.plannerRole);
+        assert.isTrue(startup.requirements.planOrchestratorSkill);
+
+        const gate = yield* FeatureGate.FeatureGate;
+        const startupFailure = yield* gate.require("planning", "proj-a").pipe(Effect.flip);
+        assert.equal(startupFailure.feature, "planning");
+        assert.notEqual(startupFailure.code, "feature_disabled");
+
+        yield* setFeature({ projectId: "proj-a", feature: "planning", enabled: false });
+        const changed = yield* setFeature({
+          projectId: "proj-a",
+          feature: "planning",
+          enabled: true,
+        });
+        assert.isFalse(changed.snapshot.requirements.plannerRole);
+        assert.isTrue(changed.snapshot.requirements.planOrchestratorSkill);
+        assert.isFalse(changed.snapshot.features.planning.effectiveEnabled);
+
+        const environment = yield* tracker.snapshot();
+        assert.isFalse(environment.requirements.plannerRole);
+        assert.isTrue(environment.requirements.planOrchestratorSkill);
+        const failure = yield* gate.require("planning", "proj-a").pipe(Effect.flip);
+        assert.equal(failure.feature, "planning");
+        assert.notEqual(failure.code, "feature_disabled");
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("resets a project override with enabled null", () =>
     Effect.gen(function* () {
       yield* setFeature({ projectId: "proj-1", feature: "mail", enabled: true });
@@ -638,6 +804,23 @@ describe("per-project feature toggle RPC", () => {
       if (error._tag !== "PoliciesSetFeatureError") return;
       assert.equal(error.code, "reset_requires_project");
     }).pipe(Effect.provide(toggleServices())),
+  );
+
+  it.effect("rejects a feature override for an unknown project", () =>
+    Effect.gen(function* () {
+      const error = yield* setFeature({
+        projectId: "missing-project",
+        feature: "board",
+        enabled: false,
+      }).pipe(Effect.flip);
+
+      assert.equal(error._tag, "PoliciesSetFeatureError");
+      if (error._tag !== "PoliciesSetFeatureError") return;
+      assert.equal(error.code, "project_not_found");
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const stored = yield* settings.getSettings;
+      assert.isUndefined(stored.projectSettingsOverrides[ProjectId.make("missing-project")]);
+    }).pipe(Effect.provide(services(new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]), false))),
   );
 
   it.effect("rejects a per-project override of the environment-only documents feature", () =>

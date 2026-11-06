@@ -23,11 +23,10 @@ import {
 } from "./contracts.ts";
 import { PolicyChangeTracker } from "./policyChangeTracker.ts";
 import {
-  decodeProjectFeatureTogglesOverrideValue,
-  decodeProjectPolicyDocumentOverrideValue,
-  type ProjectFeatureTogglesOverride,
-  type ProjectPolicyDocumentOverride,
   readPolicySettings,
+  projectDocumentOverrideOf,
+  projectTogglesOverrideOf,
+  policyScopeOf,
   resolveRequestedFeatures,
 } from "./settings.ts";
 
@@ -114,45 +113,13 @@ const disabledError = (
           requirement: reason.requirement,
         });
 
-/** The raw per-project override entries the gate reads out of the server settings. */
-type ProjectOverrideEntries = Readonly<
-  Record<
-    string,
-    { readonly ft3PolicyDocuments?: unknown; readonly ft3FeatureToggles?: unknown } | undefined
-  >
->;
-
-/** The project's document override, when it decodes; null otherwise (the same rule as PoliciesRpc). */
-const projectDocumentOverrideOf = (
-  overrides: ProjectOverrideEntries,
-  projectId: string | undefined,
-): ProjectPolicyDocumentOverride | null => {
-  if (projectId === undefined) return null;
-  const raw = overrides[projectId]?.ft3PolicyDocuments;
-  if (raw === undefined) return null;
-  const decoded = decodeProjectPolicyDocumentOverrideValue(raw);
-  return Option.isSome(decoded) ? decoded.value : null;
-};
-
-/** The project's toggle override, when it decodes; null means inherit (D3). */
-const projectTogglesOverrideOf = (
-  overrides: ProjectOverrideEntries,
-  projectId: string | undefined,
-): ProjectFeatureTogglesOverride | null => {
-  if (projectId === undefined) return null;
-  const raw = overrides[projectId]?.ft3FeatureToggles;
-  if (raw === undefined) return null;
-  const decoded = decodeProjectFeatureTogglesOverrideValue(raw);
-  return Option.isSome(decoded) ? decoded.value : null;
-};
-
 const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
 
   /**
    * Resolves every feature for one project: environment defaults plus the
    * project's toggle override, against the project scope's requirements when
-   * the project overrides a document (the `PoliciesRpc.scopeFor` rule), else
+   * the project overrides a document (the shared `policyScopeOf` rule), else
    * the environment scope. An unknown project resolves like the environment.
    */
   const statesFor = Effect.fn("FeatureGate.statesFor")(function* (projectId?: string) {
@@ -162,7 +129,7 @@ const make = Effect.gen(function* () {
       settings.projectSettingsOverrides,
       projectId,
     );
-    const scope = documentOverride !== null && projectId !== undefined ? projectId : undefined;
+    const scope = policyScopeOf(documentOverride, projectId);
     const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
     const requirements = Option.isNone(tracker)
       ? {}

@@ -101,6 +101,13 @@ const decodeProjectPolicyDocumentOverride = Schema.decodeUnknownOption(
   }),
 );
 
+export type ProjectSettingsOverrideEntries = Readonly<
+  Record<
+    string,
+    { readonly ft3PolicyDocuments?: unknown; readonly ft3FeatureToggles?: unknown } | undefined
+  >
+>;
+
 /** Strict decode of `ft3.policies`; unknown keys (including retired `architect`) are dropped. */
 export function decodePolicySettings(raw: unknown): Option.Option<PoliciesSettings> {
   return decodePoliciesSettings(raw);
@@ -130,6 +137,18 @@ export function decodeProjectPolicyDocumentOverrideValue(
   return decodeProjectPolicyDocumentOverride(raw);
 }
 
+/** The project's document override, when it decodes; null otherwise. */
+export function projectDocumentOverrideOf(
+  overrides: ProjectSettingsOverrideEntries,
+  projectId: string | undefined,
+): ProjectPolicyDocumentOverride | null {
+  if (projectId === undefined) return null;
+  const raw = overrides[projectId]?.ft3PolicyDocuments;
+  if (raw === undefined) return null;
+  const decoded = decodeProjectPolicyDocumentOverrideValue(raw);
+  return Option.isSome(decoded) ? decoded.value : null;
+}
+
 /**
  * Per-project toggle override under `projectSettingsOverrides[projectId].ft3FeatureToggles`;
  * absent keys inherit the environment default. Built from FEATURE_IDS so a new
@@ -152,6 +171,17 @@ export type ProjectFeatureTogglesOverride = typeof ProjectFeatureTogglesOverride
 const decodeProjectFeatureTogglesOverride = Schema.decodeUnknownOption(
   ProjectFeatureTogglesOverride,
 );
+const warnedCorruptProjectToggleOverrides = new Set<string>();
+
+const corruptProjectToggleOverrideKey = (raw: unknown): string => {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(raw) ?? String(raw);
+  } catch {
+    serialized = String(raw);
+  }
+  return `${typeof raw}:${serialized}`;
+};
 
 /**
  * A present but corrupt override decodes to no override instead of failing,
@@ -162,9 +192,33 @@ export function decodeProjectFeatureTogglesOverrideValue(
 ): Option.Option<ProjectFeatureTogglesOverride> {
   const decoded = decodeProjectFeatureTogglesOverride(raw);
   if (raw !== undefined && Option.isNone(decoded)) {
-    Effect.runFork(Effect.logWarning("Ignoring a corrupt ft3FeatureToggles project override"));
+    const warningKey = corruptProjectToggleOverrideKey(raw);
+    if (!warnedCorruptProjectToggleOverrides.has(warningKey)) {
+      warnedCorruptProjectToggleOverrides.add(warningKey);
+      Effect.runFork(Effect.logWarning("Ignoring a corrupt ft3FeatureToggles project override"));
+    }
   }
   return decoded;
+}
+
+/** The project's toggle override, when it decodes; null means inherit. */
+export function projectTogglesOverrideOf(
+  overrides: ProjectSettingsOverrideEntries,
+  projectId: string | undefined,
+): ProjectFeatureTogglesOverride | null {
+  if (projectId === undefined) return null;
+  const raw = overrides[projectId]?.ft3FeatureToggles;
+  if (raw === undefined) return null;
+  const decoded = decodeProjectFeatureTogglesOverrideValue(raw);
+  return Option.isSome(decoded) ? decoded.value : null;
+}
+
+/** A document override gives this project its own applied-policy tracker scope. */
+export function policyScopeOf(
+  documentOverride: ProjectPolicyDocumentOverride | null,
+  projectId: string | null | undefined,
+): string | undefined {
+  return documentOverride !== null && projectId != null ? projectId : undefined;
 }
 
 /** Requested toggles for one project: the environment defaults with the project's overrides applied. */
@@ -173,6 +227,24 @@ export function resolveRequestedFeatures(
   projectOverride?: ProjectFeatureTogglesOverride | null,
 ): Readonly<Record<FeatureId, boolean>> {
   return { ...settings.features, ...projectOverride };
+}
+
+/** Loads the environment documents needed by it and every project's overrides. */
+export function resolveEnvironmentPolicyLoaderFeatures(
+  settings: Pick<PoliciesSettings, "features">,
+  overrides: ProjectSettingsOverrideEntries,
+): Pick<PolicyFeatureSettings, "board" | "planning"> {
+  let board = settings.features.board;
+  let planning = settings.features.planning;
+  for (const projectId of Object.keys(overrides)) {
+    const requested = resolveRequestedFeatures(
+      settings,
+      projectTogglesOverrideOf(overrides, projectId),
+    );
+    board ||= requested.board;
+    planning ||= requested.planning;
+  }
+  return { board, planning };
 }
 
 /** Effective sources: the environment setting, with the project's one document replacing its key. */

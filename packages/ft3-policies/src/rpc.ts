@@ -2,9 +2,12 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
+import { ProjectId } from "@t3tools/contracts";
 import { DocsService } from "@t3tools/ft3-docs/server";
+import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerSettingsService } from "../../../apps/server/src/serverSettings.ts";
@@ -23,8 +26,11 @@ import { PolicyPickers } from "./policyPickers.ts";
 import {
   readPolicySettings,
   resolvePolicyDocumentSources,
+  projectDocumentOverrideOf,
+  projectTogglesOverrideOf,
+  policyScopeOf,
+  resolveEnvironmentPolicyLoaderFeatures,
   decodeProjectFeatureTogglesOverrideValue,
-  decodeProjectPolicyDocumentOverrideValue,
   type ProjectFeatureTogglesOverride,
   resolveRequestedFeatures,
   withPolicySettings,
@@ -112,38 +118,6 @@ const resultOf = (
 const statusOf = (snapshot: TrackerSnapshot, key: PolicyDocumentKey) =>
   snapshot.documents.find((document) => document.key === key) ?? null;
 
-/** The project's `ft3PolicyDocuments` override, when it decodes; null otherwise. */
-const projectOverrideOf = (
-  settings: {
-    readonly projectSettingsOverrides: Readonly<
-      Record<string, { readonly ft3PolicyDocuments?: unknown } | undefined>
-    >;
-  },
-  projectId: string | undefined,
-): { key: PolicyDocumentKey; source: PolicyDocumentSource } | null => {
-  if (projectId === undefined) return null;
-  const raw = settings.projectSettingsOverrides[projectId]?.ft3PolicyDocuments;
-  if (raw === undefined) return null;
-  const decoded = decodeProjectPolicyDocumentOverrideValue(raw);
-  return decoded._tag === "Some" ? decoded.value : null;
-};
-
-/** The project's `ft3FeatureToggles` override, when it decodes; null means inherit. */
-const projectTogglesOverrideOf = (
-  settings: {
-    readonly projectSettingsOverrides: Readonly<
-      Record<string, { readonly ft3FeatureToggles?: unknown } | undefined>
-    >;
-  },
-  projectId: string | undefined,
-): ProjectFeatureTogglesOverride | null => {
-  if (projectId === undefined) return null;
-  const raw = settings.projectSettingsOverrides[projectId]?.ft3FeatureToggles;
-  if (raw === undefined) return null;
-  const decoded = decodeProjectFeatureTogglesOverrideValue(raw);
-  return decoded._tag === "Some" ? decoded.value : null;
-};
-
 /** Settings, the ticked documents and the one-time env migration, in one place. */
 const prepared = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
@@ -174,14 +148,15 @@ export const refreshAppliedPolicies: Effect.Effect<
   never,
   PolicyChangeTracker | ServerSettingsService | DocsService
 > = Effect.gen(function* () {
-  const { policies, warnings } = yield* prepared;
+  const { settings, policies, warnings } = yield* prepared;
   const tracker = yield* PolicyChangeTracker;
+  const features = resolveEnvironmentPolicyLoaderFeatures(
+    policies,
+    settings.projectSettingsOverrides,
+  );
   yield* tracker.refresh({
     sources: resolvePolicyDocumentSources(policies, null),
-    features: {
-      board: policies.features.board,
-      planning: policies.features.planning,
-    },
+    features,
     applyExternalEdits: policies.applyExternalEdits,
   });
   yield* Effect.forEach(warnings, (issue) => Effect.logWarning(issue.message), { discard: true });
@@ -203,13 +178,13 @@ export const refreshAppliedProjectPolicies: Effect.Effect<
   yield* Effect.forEach(
     Object.keys(settings.projectSettingsOverrides),
     (projectId) => {
-      const override = projectOverrideOf(settings, projectId);
+      const override = projectDocumentOverrideOf(settings.projectSettingsOverrides, projectId);
       if (override === null) return Effect.void;
-      // A project scope only exists for a document override (the scopeFor rule);
+      // A project scope only exists for a document override (the policyScopeOf rule);
       // its toggles still resolve per project for the loader's feature request.
       const requested = resolveRequestedFeatures(
         policies,
-        projectTogglesOverrideOf(settings, projectId),
+        projectTogglesOverrideOf(settings.projectSettingsOverrides, projectId),
       );
       return tracker
         .refresh({
@@ -223,12 +198,6 @@ export const refreshAppliedProjectPolicies: Effect.Effect<
     { discard: true },
   );
 }).pipe(Effect.withSpan("PoliciesRpc.refreshAppliedProjectPolicies"));
-
-/** The tracker scope a refresh runs in: a project override is per-project state. */
-const scopeFor = (
-  override: { key: PolicyDocumentKey; source: PolicyDocumentSource } | null,
-  projectId: string | null | undefined,
-): string | undefined => (override !== null && projectId != null ? projectId : undefined);
 
 /** A source is project only for an explicitly overridden, project-scoped feature. */
 const featureSourcesOf = (
@@ -255,13 +224,19 @@ const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
   } = {},
 ) {
   const tracker = yield* PolicyChangeTracker;
+  const serverSettings = yield* ServerSettingsService;
+  const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
   const requested = extra.requested ?? policies.features;
+  const loaderFeatures =
+    scope === undefined
+      ? resolveEnvironmentPolicyLoaderFeatures(policies, settings.projectSettingsOverrides)
+      : resolveRequestedFeatures(
+          policies,
+          projectTogglesOverrideOf(settings.projectSettingsOverrides, scope),
+        );
   const snapshot = yield* tracker.refresh({
     sources: resolvePolicyDocumentSources(policies, override),
-    features: {
-      board: requested.board === true,
-      planning: requested.planning === true,
-    },
+    features: { board: loaderFeatures.board, planning: loaderFeatures.planning },
     applyExternalEdits: policies.applyExternalEdits,
     ...(scope === undefined ? {} : { scope }),
     ...(extra.forceApplyKeys === undefined ? {} : { forceApplyKeys: extra.forceApplyKeys }),
@@ -274,22 +249,31 @@ const getSnapshot = Effect.fn("PoliciesRpc.getSnapshot")(function* (
   input: PoliciesGetSnapshotInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  const override = projectOverrideOf(settings, input.projectId);
-  const togglesOverride = projectTogglesOverrideOf(settings, input.projectId);
-  return yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId), {
-    requested: resolveRequestedFeatures(policies, togglesOverride),
-    featureSources: featureSourcesOf(togglesOverride),
-  });
+  const override = projectDocumentOverrideOf(settings.projectSettingsOverrides, input.projectId);
+  const togglesOverride = projectTogglesOverrideOf(
+    settings.projectSettingsOverrides,
+    input.projectId,
+  );
+  return yield* refreshWith(
+    policies,
+    warnings,
+    override,
+    policyScopeOf(override, input.projectId),
+    {
+      requested: resolveRequestedFeatures(policies, togglesOverride),
+      featureSources: featureSourcesOf(togglesOverride),
+    },
+  );
 });
 
 const readDocument = Effect.fn("PoliciesRpc.readDocument")(function* (
   input: PoliciesReadDocumentInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  const override = projectOverrideOf(settings, input.projectId);
-  yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId));
+  const override = projectDocumentOverrideOf(settings.projectSettingsOverrides, input.projectId);
+  yield* refreshWith(policies, warnings, override, policyScopeOf(override, input.projectId));
   const tracker = yield* PolicyChangeTracker;
-  const live = yield* tracker.live(input.key, scopeFor(override, input.projectId));
+  const live = yield* tracker.live(input.key, policyScopeOf(override, input.projectId));
   if (live === null || live.files.length === 0) {
     return {
       status: "unavailable",
@@ -322,16 +306,16 @@ const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
   input: PoliciesSaveDocumentInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  const override = projectOverrideOf(settings, input.projectId);
+  const override = projectDocumentOverrideOf(settings.projectSettingsOverrides, input.projectId);
   const before = yield* refreshWith(
     policies,
     warnings,
     override,
-    scopeFor(override, input.projectId),
+    policyScopeOf(override, input.projectId),
   );
   const tracker = yield* PolicyChangeTracker;
   const docs = yield* DocsService;
-  const live = yield* tracker.live(input.key, scopeFor(override, input.projectId));
+  const live = yield* tracker.live(input.key, policyScopeOf(override, input.projectId));
   const file = live?.files.find((entry) => entry.file === (input.file ?? ""));
   if (
     live === null ||
@@ -370,7 +354,7 @@ const saveDocument = Effect.fn("PoliciesRpc.saveDocument")(function* (
     policies,
     warnings,
     override,
-    scopeFor(override, input.projectId),
+    policyScopeOf(override, input.projectId),
     {
       forceApplyKeys: [input.key],
       appliedBy: "human_tab",
@@ -395,10 +379,10 @@ const getPendingChange = Effect.fn("PoliciesRpc.getPendingChange")(function* (
   input: PoliciesGetPendingChangeInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  const override = projectOverrideOf(settings, input.projectId);
-  yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId));
+  const override = projectDocumentOverrideOf(settings.projectSettingsOverrides, input.projectId);
+  yield* refreshWith(policies, warnings, override, policyScopeOf(override, input.projectId));
   const tracker = yield* PolicyChangeTracker;
-  const change = yield* tracker.pendingChange(input.key, scopeFor(override, input.projectId));
+  const change = yield* tracker.pendingChange(input.key, policyScopeOf(override, input.projectId));
   return {
     key: input.key,
     pending: change !== null,
@@ -418,15 +402,15 @@ const applyPending = Effect.fn("PoliciesRpc.applyPending")(function* (
   input: PoliciesApplyPendingInput,
 ) {
   const { settings, policies, warnings } = yield* prepared;
-  const override = projectOverrideOf(settings, input.projectId);
+  const override = projectDocumentOverrideOf(settings.projectSettingsOverrides, input.projectId);
   const before = yield* refreshWith(
     policies,
     warnings,
     override,
-    scopeFor(override, input.projectId),
+    policyScopeOf(override, input.projectId),
   );
   const tracker = yield* PolicyChangeTracker;
-  const pending = yield* tracker.pendingChange(input.key, scopeFor(override, input.projectId));
+  const pending = yield* tracker.pendingChange(input.key, policyScopeOf(override, input.projectId));
   const beforeStatus = statusOf(
     { configVersion: before.configVersion, documents: before.documents, requirements: {} },
     input.key,
@@ -449,7 +433,7 @@ const applyPending = Effect.fn("PoliciesRpc.applyPending")(function* (
     policies,
     warnings,
     override,
-    scopeFor(override, input.projectId),
+    policyScopeOf(override, input.projectId),
     {
       forceApplyKeys: [input.key],
       appliedBy: "human_apply",
@@ -534,10 +518,16 @@ const setDocument = Effect.fn("PoliciesRpc.setDocument")(function* (
     policies = readPolicySettings(updated.ft3);
   }
 
-  const snapshot = yield* refreshWith(policies, [], override, scopeFor(override, input.projectId), {
-    forceApplyKeys: [input.key],
-    appliedBy: "human_apply",
-  });
+  const snapshot = yield* refreshWith(
+    policies,
+    [],
+    override,
+    policyScopeOf(override, input.projectId),
+    {
+      forceApplyKeys: [input.key],
+      appliedBy: "human_apply",
+    },
+  );
   return { snapshot } satisfies PoliciesSetDocumentResult;
 });
 
@@ -565,6 +555,12 @@ const setFeature = Effect.fn("PoliciesRpc.setFeature")(function* (input: Policie
     return { snapshot } satisfies PoliciesSetFeatureResult;
   }
 
+  const projects = yield* ProjectStoreV2;
+  const project = yield* projects.getShell(ProjectId.make(projectId)).pipe(Effect.orDie);
+  if (Option.isNone(project)) {
+    return yield* new PoliciesSetFeatureError({ code: "project_not_found" });
+  }
+
   // D2: `documents` gates startup layers and has no project scope.
   if (input.feature === "documents") {
     return yield* new PoliciesSetFeatureError({ code: "environment_only_feature" });
@@ -590,13 +586,16 @@ const setFeature = Effect.fn("PoliciesRpc.setFeature")(function* (input: Policie
     .updateSettings({ projectSettingsOverrides: { [projectId]: entry } })
     .pipe(Effect.orDie);
   const policies = readPolicySettings(updated.ft3);
-  const documentOverride = projectOverrideOf(updated, projectId);
-  const togglesOverride = projectTogglesOverrideOf(updated, projectId);
+  const documentOverride = projectDocumentOverrideOf(updated.projectSettingsOverrides, projectId);
+  const togglesOverride = projectTogglesOverrideOf(updated.projectSettingsOverrides, projectId);
+  if (documentOverride !== null) {
+    yield* refreshWith(policies, [], null, undefined);
+  }
   const snapshot = yield* refreshWith(
     policies,
     [],
     documentOverride,
-    scopeFor(documentOverride, projectId),
+    policyScopeOf(documentOverride, projectId),
     {
       requested: resolveRequestedFeatures(policies, togglesOverride),
       featureSources: featureSourcesOf(togglesOverride),

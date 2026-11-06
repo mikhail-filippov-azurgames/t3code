@@ -338,4 +338,38 @@ describe("FeatureGate per project", () => {
       ),
     ),
   );
+
+  it.effect("reports a missing planner role when planning is enabled for a project", () => {
+    const requirements = {
+      routingPolicy: true,
+      requestedRoles: true,
+      rolesManifest: true,
+      leadRole: true,
+      plannerRole: false,
+      architectRole: true,
+      leadSkills: true,
+      planOrchestratorSkill: true,
+    };
+    const layer = gateLayerWithProjects(
+      { roles: true, board: true, mail: true, planning: false, delegation: true },
+      { "proj-a": { ft3FeatureToggles: { planning: true } } },
+    ).pipe(Layer.provideMerge(trackerWithRequirementsByScope(() => requirements)));
+    return Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+      const environment = yield* gate.state("planning");
+      const project = yield* gate.state("planning", "proj-a");
+
+      assert.isFalse(environment.requestedEnabled);
+      assert.isTrue(project.requestedEnabled);
+      assert.isFalse(project.effectiveEnabled);
+      assert.deepStrictEqual(project.offReason, {
+        code: "feature_document_off",
+        requirement: "plannerRole",
+      });
+
+      const error = yield* gate.require("planning", "proj-a").pipe(Effect.flip);
+      assert.equal(error.code, "feature_document_off");
+      assert.equal(error.requirement, "plannerRole");
+    }).pipe(Effect.provide(layer));
+  });
 });

@@ -103,7 +103,9 @@ export const PoliciesGetSnapshotResult = Schema.Struct({
   /** Effective state of every feature, computed from the toggles and this snapshot's requirements. */
   features: Schema.Record(FeatureId, PolicyFeatureStateSchema),
   /** Where each feature's requested value came from: the environment default or a project override. */
-  featureSources: Schema.Record(FeatureId, Schema.Literals(["default", "project"])),
+  featureSources: Schema.optionalKey(
+    Schema.Record(FeatureId, Schema.Literals(["default", "project"])),
+  ),
   /** An enabled-but-ineffective feature, an active-policy warning or a pending change needs a look. */
   needsAttention: Schema.Boolean,
   /** Migration warnings, such as an unresolvable legacy policy reference. */
@@ -254,6 +256,7 @@ export type PoliciesSetDocumentResult = typeof PoliciesSetDocumentResult.Type;
 export const POLICIES_SET_FEATURE_ERROR_CODES = [
   "reset_requires_project",
   "environment_only_feature",
+  "project_not_found",
 ] as const;
 
 /** Invalid per-project feature toggle operations. */
@@ -262,9 +265,14 @@ export class PoliciesSetFeatureError extends Schema.TaggedError<PoliciesSetFeatu
   { code: Schema.Literals(POLICIES_SET_FEATURE_ERROR_CODES) },
 ) {
   override get message(): string {
-    return this.code === "reset_requires_project"
-      ? "enabled null resets a project override and requires projectId."
-      : "The documents feature is environment-only and cannot be overridden per project.";
+    switch (this.code) {
+      case "reset_requires_project":
+        return "enabled null resets a project override and requires projectId.";
+      case "environment_only_feature":
+        return "The documents feature is environment-only and cannot be overridden per project.";
+      case "project_not_found":
+        return "The project does not exist in this environment.";
+    }
   }
 }
 
