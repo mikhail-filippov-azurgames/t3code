@@ -1227,11 +1227,17 @@ export const ProjectSettingsOverrides = Schema.Struct({
    * decode live in `@t3tools/ft3-policies/settings`.
    */
   ft3PolicyDocuments: Schema.optionalKey(Schema.Unknown),
+  /**
+   * Fork-owned: per-project feature toggle overrides. Kept generic so
+   * `@t3tools/contracts` stays free of fork packages; the typed schema and
+   * decode live in `@t3tools/ft3-policies/settings`.
+   */
+  ft3FeatureToggles: Schema.optionalKey(Schema.Unknown),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
 } satisfies Record<
-  ProjectScopedServerSettingKey | "providerInstances" | "ft3PolicyDocuments",
+  ProjectScopedServerSettingKey | "providerInstances" | "ft3PolicyDocuments" | "ft3FeatureToggles",
   unknown
 >);
 export type ProjectSettingsOverrides = typeof ProjectSettingsOverrides.Type;

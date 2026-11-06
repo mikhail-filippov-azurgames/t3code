@@ -7,11 +7,13 @@ import { BUILTIN_POLICY_DOCUMENT_ASSETS, builtinPolicyDocumentAsset } from "./co
 import {
   DEFAULT_POLICY_SETTINGS,
   decodePolicySettings,
+  decodeProjectFeatureTogglesOverrideValue,
   decodeProjectPolicyDocumentOverrideValue,
   PolicyDocumentsSettings,
   type PoliciesSettings,
   readPolicySettings,
   resolvePolicyDocumentSources,
+  resolveRequestedFeatures,
 } from "./settings.ts";
 
 // The repository never carries real document ids; tests use the nil UUID.
@@ -181,5 +183,63 @@ describe("project policy document override", () => {
       key: "routingPolicy",
       source: { kind: "path", path: PROJECT_ROUTING_PATH },
     });
+  });
+});
+
+describe("project feature toggles override", () => {
+  const settings: PoliciesSettings = {
+    documents: {
+      routingPolicy: { kind: "builtin" },
+      roles: { kind: "builtin" },
+      leadSkills: { kind: "builtin" },
+    },
+    applyExternalEdits: false,
+    features: DEFAULT_POLICY_SETTINGS.features,
+  };
+
+  it("absent override inherits the environment defaults", () => {
+    expect(Option.isNone(decodeProjectFeatureTogglesOverrideValue(undefined))).toBe(true);
+    expect(resolveRequestedFeatures(settings)).toEqual(settings.features);
+    expect(resolveRequestedFeatures(settings, null)).toEqual(settings.features);
+  });
+
+  it("partial override changes only the listed toggles, both directions", () => {
+    const override = Option.getOrThrow(
+      decodeProjectFeatureTogglesOverrideValue({ mail: true, planning: false }),
+    );
+
+    const requested = resolveRequestedFeatures(settings, override);
+
+    expect(requested.mail).toBe(true);
+    expect(requested.planning).toBe(false);
+    expect(requested.board).toBe(settings.features.board);
+    expect(Object.keys(override)).toEqual(["mail", "planning"]);
+  });
+
+  it("drops unknown toggle keys instead of failing the override", () => {
+    const decoded = decodeProjectFeatureTogglesOverrideValue({ architect: true, mail: true });
+
+    expect(Option.isSome(decoded)).toBe(true);
+    if (Option.isNone(decoded)) return;
+    expect(decoded.value).toEqual({ mail: true });
+  });
+
+  it("corrupt override decodes to no override", () => {
+    expect(Option.isNone(decodeProjectFeatureTogglesOverrideValue({ mail: "yes" }))).toBe(true);
+    expect(Option.isNone(decodeProjectFeatureTogglesOverrideValue("not-an-object"))).toBe(true);
+
+    const requested = resolveRequestedFeatures(
+      settings,
+      Option.getOrElse(decodeProjectFeatureTogglesOverrideValue({ mail: "yes" }), () => null),
+    );
+    expect(requested).toEqual(settings.features);
+  });
+
+  it("is accepted by the upstream project-override seam without new scoping", () => {
+    const decoded = decodeProjectSettingsOverrides({
+      ft3FeatureToggles: { mail: true, planning: false },
+    });
+
+    expect(decoded.ft3FeatureToggles).toEqual({ mail: true, planning: false });
   });
 });

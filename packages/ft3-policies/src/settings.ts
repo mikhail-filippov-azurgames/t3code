@@ -1,8 +1,8 @@
 /**
  * Fork-owned policy settings under `ft3.policies`: document sources, feature
- * toggles and the typed per-project `ft3PolicyDocuments` override. Upstream
- * `ServerSettings` only carries the generic `ft3` namespace; schema and defaults
- * live here. Toggles and `applyExternalEdits` are environment wide.
+ * toggles and the typed per-project `ft3PolicyDocuments` and `ft3FeatureToggles`
+ * overrides. Upstream `ServerSettings` only carries the generic `ft3` namespace;
+ * schema and defaults live here; `applyExternalEdits` is environment wide.
  */
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -127,6 +127,56 @@ export function decodeProjectPolicyDocumentOverrideValue(
   raw: unknown,
 ): Option.Option<ProjectPolicyDocumentOverride> {
   return decodeProjectPolicyDocumentOverride(raw);
+}
+
+/**
+ * Per-project feature toggle override: any subset of toggles, stored as
+ * `projectSettingsOverrides[projectId].ft3FeatureToggles`. Absent keys inherit
+ * the environment default.
+ */
+export const ProjectFeatureTogglesOverride = Schema.Struct({
+  documents: Schema.optionalKey(Schema.Boolean),
+  roles: Schema.optionalKey(Schema.Boolean),
+  board: Schema.optionalKey(Schema.Boolean),
+  mail: Schema.optionalKey(Schema.Boolean),
+  planning: Schema.optionalKey(Schema.Boolean),
+  delegation: Schema.optionalKey(Schema.Boolean),
+  orchestration: Schema.optionalKey(Schema.Boolean),
+  boardAutomation: Schema.optionalKey(Schema.Boolean),
+  sidebarForest: Schema.optionalKey(Schema.Boolean),
+  chatExtensions: Schema.optionalKey(Schema.Boolean),
+  vcs: Schema.optionalKey(Schema.Boolean),
+  pi: Schema.optionalKey(Schema.Boolean),
+  kimi: Schema.optionalKey(Schema.Boolean),
+  usage: Schema.optionalKey(Schema.Boolean),
+  files: Schema.optionalKey(Schema.Boolean),
+});
+export type ProjectFeatureTogglesOverride = typeof ProjectFeatureTogglesOverride.Type;
+
+const decodeProjectFeatureTogglesOverride = Schema.decodeUnknownOption(
+  ProjectFeatureTogglesOverride,
+);
+
+/**
+ * A present but corrupt override decodes to no override instead of failing,
+ * with a logged warning, the same corruption handling as `readPolicySettings`.
+ */
+export function decodeProjectFeatureTogglesOverrideValue(
+  raw: unknown,
+): Option.Option<ProjectFeatureTogglesOverride> {
+  const decoded = decodeProjectFeatureTogglesOverride(raw);
+  if (raw !== undefined && Option.isNone(decoded)) {
+    Effect.runFork(Effect.logWarning("Ignoring a corrupt ft3FeatureToggles project override"));
+  }
+  return decoded;
+}
+
+/** Requested toggles for one project: the environment defaults with the project's overrides applied. */
+export function resolveRequestedFeatures(
+  settings: Pick<PoliciesSettings, "features">,
+  projectOverride?: ProjectFeatureTogglesOverride | null,
+): Readonly<Record<FeatureId, boolean>> {
+  return { ...settings.features, ...projectOverride };
 }
 
 /** Effective sources: the environment setting, with the project's one document replacing its key. */
