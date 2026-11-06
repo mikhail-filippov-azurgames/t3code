@@ -262,6 +262,11 @@ it.effect("refuses a lead role, an empty team, a bad budget and a blank title", 
   return Effect.gen(function* () {
     yield* migrateMail;
     assert.equal(yield* refusal(teamOf([{ role: "lead" }])), "invalid_role");
+    const badRole = yield* teamOf([{ role: "lead" }], "request:roles").pipe(Effect.flip);
+    assert.include(
+      badRole.message,
+      "architect, implementation, review, test, research, general, planner",
+    );
     assert.equal(yield* refusal(teamOf([])), "invalid_request");
     assert.equal(
       yield* refusal(teamOf([{ role: "test", responseBudgetSeconds: 30 }])),

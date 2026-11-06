@@ -175,17 +175,15 @@ describe("mail MCP tools", () => {
         "kind_not_disputed",
       );
 
-      // Closing with an active member stays refused.
-      assert.equal(
-        decodeFailure(
-          yield* call("mail_task_close", {
-            taskId: task.taskId,
-            outcome: "succeeded",
-            summary: "Done.",
-          }),
-        ).code,
-        "members_active",
-      );
+      // Closing with an active member closes the member with the task.
+      const closed = structured(
+        yield* call("mail_task_close", {
+          taskId: task.taskId,
+          outcome: "succeeded",
+          summary: "Done.",
+        }),
+      ) as unknown as { readonly status: string };
+      assert.equal(closed.status, "closed");
     }).pipe(Effect.provide(fixture(true))),
   );
 

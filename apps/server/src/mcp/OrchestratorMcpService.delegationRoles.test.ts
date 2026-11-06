@@ -256,6 +256,24 @@ describe("OrchestratorMcpService delegation roles", () => {
         { ft3: { policies: { features: { roles: true, board: true, mail: true } } } },
       );
       assert.equal(error.code, "mail_required");
+      assert.include(error.message, '(role: "implementation")');
+      assert.deepStrictEqual(yield* Ref.get(dispatched), []);
+    }),
+  );
+
+  it.effect("names the plain mail alias in mail_required", () =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:ft3-mail-required-review");
+      const dispatched = yield* Ref.make<Dispatched>([]);
+      const error = yield* delegate(
+        threadId,
+        dispatched,
+        undefined,
+        { task: "Review it.", role: "review" },
+        { ft3: { policies: { features: { roles: true, board: true, mail: true } } } },
+      );
+      assert.equal(error.code, "mail_required");
+      assert.include(error.message, '(role: "review")');
       assert.deepStrictEqual(yield* Ref.get(dispatched), []);
     }),
   );

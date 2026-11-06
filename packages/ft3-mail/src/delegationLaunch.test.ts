@@ -3,7 +3,7 @@ import { DelegationLaunchPolicy } from "@t3tools/ft3-delegation/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
-import { mailDelegationLaunchLayer } from "./delegationLaunch.ts";
+import { mailDelegationLaunchLayer, mailMemberAliasHint } from "./delegationLaunch.ts";
 import { gateLayer } from "./mail.testkit.ts";
 
 const launchOn = mailDelegationLaunchLayer.pipe(Layer.provide(gateLayer(true)));
@@ -28,5 +28,17 @@ it.effect("launches a delegated role as a mail participant only while mail is on
     assert.deepStrictEqual(yield* launchOf("design").pipe(Effect.provide(launchOff)), {
       _tag: "direct",
     });
+  }),
+);
+
+it.effect("names the mail alias of a delegated role id", () =>
+  Effect.sync(() => {
+    assert.equal(mailMemberAliasHint("review-common"), 'role: "review", specialization: "common"');
+    assert.equal(
+      mailMemberAliasHint("architect-data"),
+      'role: "architect", specialization: "data"',
+    );
+    assert.equal(mailMemberAliasHint("implementation"), 'role: "implementation"');
+    assert.equal(mailMemberAliasHint("review"), 'role: "review"');
   }),
 );
