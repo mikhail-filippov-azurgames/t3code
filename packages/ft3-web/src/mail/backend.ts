@@ -12,5 +12,10 @@ export function createMailEnvironmentAtoms<R, E>(
     tag: WS_METHODS.mailTasks,
     staleTimeMs: 15_000,
   });
-  return { tasks };
+  const letter = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:mail:letter",
+    tag: WS_METHODS.mailLetter,
+    staleTimeMs: 15_000,
+  });
+  return { tasks, letter };
 }

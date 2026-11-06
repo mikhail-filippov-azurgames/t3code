@@ -2,13 +2,27 @@ import { AuthOrchestrationReadScope, EnvironmentAuthorizationError } from "@t3to
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { MailTask, MailTimelineEntry } from "./contracts.ts";
+import { MailLetter, MailLetterKind, MailTask, MailTimelineEntry } from "./contracts.ts";
 import { MailMcpFailure } from "./toolContracts.ts";
 
 export const FT3_MAIL_WS_METHODS = {
   mailTimeline: "mail.timeline",
   mailTasks: "mail.tasks",
+  mailLetter: "mail.letter",
 } as const;
+
+export const MailLetterRpcInput = Schema.Struct({
+  letterId: Schema.String.check(Schema.isMinLength(1)),
+  /** The lead thread the letter is shown in; only that task's lead may read it here. */
+  threadId: Schema.String.check(Schema.isMinLength(1)),
+});
+export type MailLetterRpcInput = typeof MailLetterRpcInput.Type;
+
+export const MailLetterRpcSuccess = Schema.Struct({
+  letter: MailLetter,
+  effectiveKind: MailLetterKind,
+});
+export type MailLetterRpcSuccess = typeof MailLetterRpcSuccess.Type;
 
 export const MailTimelineRpcInput = Schema.Struct({
   taskId: Schema.String.check(Schema.isMinLength(1)),
@@ -54,9 +68,15 @@ export const mailRpcs = [
     success: MailTasksRpcSuccess,
     error: MailRpcError,
   }),
+  Rpc.make(FT3_MAIL_WS_METHODS.mailLetter, {
+    payload: MailLetterRpcInput,
+    success: MailLetterRpcSuccess,
+    error: MailRpcError,
+  }),
 ];
 
 export const mailRpcScopes = {
   [FT3_MAIL_WS_METHODS.mailTimeline]: AuthOrchestrationReadScope,
   [FT3_MAIL_WS_METHODS.mailTasks]: AuthOrchestrationReadScope,
+  [FT3_MAIL_WS_METHODS.mailLetter]: AuthOrchestrationReadScope,
 } as const;

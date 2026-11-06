@@ -112,6 +112,16 @@ export function BoardMailTab(props: {
   );
 }
 
+/** Reads one letter by id for the lead chat notice; null input stays idle. */
+export function useBoardMailLetter(
+  environmentId: EnvironmentId,
+  input: { readonly letterId: string; readonly threadId: string } | null,
+) {
+  return useEnvironmentQuery(
+    input === null ? null : mailEnvironment.letter({ environmentId, input }),
+  );
+}
+
 /** The tab's single query; the panel subscribes to the same atom for content and refresh. */
 export function useBoardMailTasks(environmentId: EnvironmentId, cardIds: ReadonlyArray<string>) {
   return useEnvironmentQuery(

@@ -46,6 +46,7 @@ import {
 import { cn } from "~/lib/utils";
 import { formatUpcomingTimestamp } from "../../timestampFormat";
 import { FetchedToolOutput, V2ItemInspector } from "./V2ItemInspector";
+import { MailNotificationRow } from "@t3tools/ft3-web/mail";
 import { SubagentNotificationLink } from "./V2LifecycleRow";
 import {
   TimelineRowCtx,
@@ -152,6 +153,22 @@ type WorkEntryRowProps = {
 export const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowProps) {
   const ctx = use(TimelineRowCtx);
   const item = props.workEntry.projectedItem?.item;
+  const source = item?.type === "notification" ? item.source : undefined;
+  const mail = source?.kind === "delegated_task" ? source.mail : undefined;
+  if (item?.type === "notification" && source?.kind === "delegated_task" && mail !== undefined) {
+    return (
+      <MailNotificationRow
+        workEntry={props.workEntry}
+        workspaceRoot={props.workspaceRoot}
+        mail={mail}
+        senderThreadId={source.childThreadId ?? null}
+        threadId={item.threadId}
+        environmentId={ctx.activeThreadEnvironmentId}
+        timestampFormat={ctx.timestampFormat}
+        onOpenThread={ctx.onOpenThread}
+      />
+    );
+  }
   const childThreadId =
     item?.type === "notification" ? notificationChildThreadId(item.source) : undefined;
   if (item?.type !== "notification" || childThreadId === undefined) {

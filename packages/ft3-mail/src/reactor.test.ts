@@ -515,6 +515,7 @@ it.effect("drains a recorded wake and marks the delivery on the next tick", () =
     const wake = harness.dispatched[0]!;
     assert.equal(wake.threadId, childId);
     assert.deepStrictEqual(wake.dispatchMode, { type: "queue_after_active" });
+    assert.deepEqual(wake.notification?.source, { kind: "delegated_task", taskIds: [] });
     assert.include(wake.text, "Start.");
     assert.include(wake.text, 'New request letter from lead in mail task "Refactor":');
     assert.include(
@@ -563,7 +564,63 @@ it.effect("names the participant role in a wake on the lead thread", () => {
       kind: "delegated_task",
       taskIds: [],
       childThreadId: childId,
+      mail: {
+        taskId: created.task.taskId,
+        letterId: sent.letter.letterId,
+        preview: "Done.",
+      },
     });
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("bounds the wake preview to two whole lines", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const first = yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: `Intro line.\n${"b".repeat(250)}`,
+      clientRequestId: "request:long-answer",
+    });
+    assert.isTrue(first.created);
+    yield* (yield* MailDeliveryReactor).recover;
+    const second = yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: "First line.\nSecond line.\nThird line.",
+      clientRequestId: "request:three-line-answer",
+    });
+    assert.isTrue(second.created);
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 2);
+    assert.deepEqual(
+      harness.dispatched.map((dispatch) => {
+        const source = dispatch.notification?.source;
+        return source?.kind === "delegated_task" ? source.mail : null;
+      }),
+      [
+        {
+          taskId: created.task.taskId,
+          letterId: first.letter.letterId,
+          preview: "Intro line.",
+        },
+        {
+          taskId: created.task.taskId,
+          letterId: second.letter.letterId,
+          preview: "First line.\nSecond line.",
+        },
+      ],
+    );
   }).pipe(Effect.provide(harness.layer));
 });
 

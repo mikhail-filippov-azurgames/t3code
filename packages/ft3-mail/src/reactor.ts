@@ -60,6 +60,17 @@ const participantLabel = (member: {
   readonly specialization: string | null;
 }): string => (member.specialization ? `${member.roleId}/${member.specialization}` : member.roleId);
 
+const PREVIEW_MAX_LENGTH = 200;
+
+/** Two lines at most; overlong previews cut at the last whole line. */
+const letterPreview = (body: string): string => {
+  const trimmed = body.trim().split(/\r?\n/, 2).join("\n");
+  if (trimmed.length <= PREVIEW_MAX_LENGTH) return trimmed;
+  const cut = trimmed.slice(0, PREVIEW_MAX_LENGTH);
+  const lineEnd = cut.lastIndexOf("\n");
+  return (lineEnd > 0 ? cut.slice(0, lineEnd) : cut).trimEnd();
+};
+
 const questionBody = (input: {
   readonly roleId: string;
   readonly threadId: string;
@@ -99,6 +110,12 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     readonly summary: string;
     /** The participant that wrote the letter; the notice opens its thread. */
     readonly senderThreadId?: ThreadId;
+    /** Points the lead chat at the letter: its task, id and a bounded preview. */
+    readonly mail?: {
+      readonly taskId: string;
+      readonly letterId: string;
+      readonly preview: string;
+    };
     /** A lead override: the next dispatch on this thread runs on the new model. */
     readonly modelSelection?: ModelSelection;
   }) {
@@ -123,6 +140,7 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
             kind: "delegated_task",
             taskIds: delegatedTaskId === undefined ? [] : [delegatedTaskId],
             ...(input.senderThreadId === undefined ? {} : { childThreadId: input.senderThreadId }),
+            ...(input.mail === undefined ? {} : { mail: input.mail }),
           },
           outcome: "updated",
           summary: input.summary,
@@ -205,16 +223,23 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         senderParticipantThreadId = ThreadId.make(letter.senderThreadId);
       }
     }
-    // The header is model-facing (the lead reads the wake) and parsed by the
-    // web notice in ft3-web/boardWakeNotice.logic.ts, which also accepts the
-    // sender-less legacy shape; keep `New <kind> letter[ from <sender>] in
-    // mail task "<title>":` stable.
+    // The lead reads this header in the wake; legacy user-message notices parse
+    // it too. Keep `New <kind> letter[ from <sender>] in mail task "<title>":` stable.
     const from = sender === null ? "" : ` from ${sender}`;
     yield* wake({
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
       text: `New ${letter.kind} letter${from} in mail task "${task.title}":\n\n${letter.body}`,
       summary: `Mail ${letter.kind} letter${from} in "${task.title}"`,
+      ...(input.participantThreadId === task.createdByThreadId
+        ? {
+            mail: {
+              taskId: task.taskId,
+              letterId: letter.letterId,
+              preview: letterPreview(letter.body),
+            },
+          }
+        : {}),
       ...(senderParticipantThreadId === undefined
         ? {}
         : { senderThreadId: senderParticipantThreadId }),

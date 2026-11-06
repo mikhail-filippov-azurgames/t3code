@@ -1,9 +1,11 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { effectiveLetterKind } from "./classifier.ts";
 import { MailRepository, type MailIdempotencyConflict, MailRepositoryError } from "./repository.ts";
 import {
   FT3_MAIL_WS_METHODS,
+  type MailLetterRpcInput,
   type MailTasksRpcInput,
   type MailTimelineRpcInput,
 } from "./rpc-contracts.ts";
@@ -12,6 +14,8 @@ import { MailMcpFailure } from "./toolContracts.ts";
 
 export { FT3_MAIL_WS_METHODS, mailRpcs, mailRpcScopes } from "./rpc-contracts.ts";
 export type {
+  MailLetterRpcInput,
+  MailLetterRpcSuccess,
   MailTasksRpcInput,
   MailTasksRpcSuccess,
   MailTimelineRpcInput,
@@ -123,5 +127,38 @@ export const mailRpcHandlers = {
             ),
           );
     return { tasks, ...(letters === undefined ? {} : { letters }) };
+  }),
+  [FT3_MAIL_WS_METHODS.mailLetter]: Effect.fn("MailRpc.mailLetter")(function* (
+    input: MailLetterRpcInput,
+  ) {
+    const repository = yield* MailRepository;
+    const letter = yield* repository
+      .getLetter(input.letterId)
+      .pipe(
+        Effect.mapError(
+          (error) => new MailMcpFailure({ code: "internal", message: error.message }),
+        ),
+      );
+    if (letter === null) {
+      return yield* new MailMcpFailure({
+        code: "letter_not_found",
+        message: `Letter "${input.letterId}" was not found.`,
+      });
+    }
+    const task = yield* repository
+      .getTask(letter.taskId)
+      .pipe(
+        Effect.mapError(
+          (error) => new MailMcpFailure({ code: "internal", message: error.message }),
+        ),
+      );
+    // The lead's notice is the only reader here; participants read letters through mail_read.
+    if (task === null || task.createdByThreadId !== input.threadId) {
+      return yield* new MailMcpFailure({
+        code: "capability_denied",
+        message: `Letter "${input.letterId}" is not readable from thread "${input.threadId}".`,
+      });
+    }
+    return { letter, effectiveKind: effectiveLetterKind(letter) };
   }),
 };

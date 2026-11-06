@@ -110,3 +110,31 @@ it.effect("lists board tasks with their recent letters in one call", () =>
     assert.equal((refused as { code: string }).code, "invalid_request");
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect("reads a letter by id only from the lead thread of its task", () =>
+  Effect.gen(function* () {
+    yield* migrate;
+    const repository = yield* MailRepository;
+    yield* repository.createTask(taskInput());
+    yield* repository.appendLetter(letterInput());
+
+    const read = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailLetter]({
+      letterId: "letter:one",
+      threadId: "thread:lead",
+    });
+    assert.equal(read.letter.body, "Start.");
+    assert.equal(read.effectiveKind, "request");
+
+    const foreign = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailLetter]({
+      letterId: "letter:one",
+      threadId: "thread:someone-else",
+    }).pipe(Effect.flip);
+    assert.equal((foreign as { code: string }).code, "capability_denied");
+
+    const missing = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailLetter]({
+      letterId: "letter:missing",
+      threadId: "thread:lead",
+    }).pipe(Effect.flip);
+    assert.equal((missing as { code: string }).code, "letter_not_found");
+  }).pipe(Effect.provide(testLayer)),
+);

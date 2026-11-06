@@ -1286,6 +1286,14 @@ export const OrchestrationV2NotificationSource = kindUnionWithFallback(
       kind: Schema.Literal("delegated_task"),
       taskIds: Schema.Array(NodeId),
       childThreadId: Schema.optional(ThreadId),
+      /** A mail letter the lead is told about: its task, letter id and a bounded body preview. */
+      mail: Schema.optional(
+        Schema.Struct({
+          taskId: Schema.String,
+          letterId: Schema.String,
+          preview: Schema.String,
+        }),
+      ),
     }),
     Schema.Struct({
       kind: Schema.Literal("background_task"),

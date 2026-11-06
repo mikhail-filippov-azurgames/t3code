@@ -547,6 +547,15 @@ describe("background work kinds from older or newer servers", () => {
         { kind: "delegated_task", taskIds: ["task-1"], childThreadId: "child" },
         { kind: "delegated_task", taskIds: ["task-1"] },
       ],
+      [
+        {
+          kind: "delegated_task",
+          taskIds: ["task-1"],
+          childThreadId: "child",
+          mail: { taskId: "mail-task-1", letterId: "letter-1", preview: "Done." },
+        },
+        { kind: "delegated_task", taskIds: ["task-1"] },
+      ],
     ] as const;
     for (const [source, preSpecificKindsSource] of cases) {
       const item = decodeOrchestrationV2TurnItemJson(storedNotification(source));

@@ -64,6 +64,45 @@ const mailTask = Schema.decodeSync(MailContracts.MailTask)({
   closedAt: null,
 });
 
+const mailLetter = Schema.decodeSync(MailContracts.MailLetter)({
+  letterId: "letter:one",
+  taskId: "task:timeline",
+  sequence: 1,
+  senderThreadId: "thread:lead",
+  recipient: "lead",
+  kind: "request",
+  body: "Start.",
+  replyToLetterId: null,
+  sourceLetterId: null,
+  planPhase: null,
+  planStep: null,
+  planSha256: null,
+  planDocId: null,
+  classifierKind: null,
+  classifierConfidence: null,
+  kindDisputed: false,
+  leadKind: null,
+  clientRequestId: "request:letter",
+  requestFingerprint: "fp",
+  createdAt: "2026-11-04T00:00:00.000Z",
+});
+
+const planRecord = {
+  cardId,
+  required: true,
+  requiredBy: "human" as const,
+  requiredReason: null,
+  state: "accepted" as const,
+  planDocId: "plan-doc",
+  plannerMemberId: null,
+  plannerThreadId: null,
+  reviewRounds: 0,
+  acceptedSha256: "0".repeat(64),
+  acceptedRevision: 1,
+  acceptedAt: "2026-10-26T00:00:00.000Z",
+  updatedAt: "2026-10-26T00:00:00.000Z",
+};
+
 const piStatus = {
   instanceId: "pi",
   phase: "stopped" as const,
@@ -144,6 +183,15 @@ const stubs = {
   [FT3_WS_METHODS.boardStart]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardUpdate]: () => Effect.succeed(card),
   [FT3_WS_METHODS.boardDelete]: () => Effect.succeed({}),
+  [FT3_WS_METHODS.boardPlanGet]: () =>
+    Effect.succeed({
+      record: planRecord,
+      doc: { stableId: "plan", relPath: "corvis/plans/plan.md", name: "plan.md" },
+      liveSha256: null,
+      versions: [],
+    }),
+  [FT3_WS_METHODS.boardPlanSetRequired]: () => Effect.succeed(planRecord),
+  [FT3_WS_METHODS.boardPlanAccept]: () => Effect.succeed(planRecord),
   [FT3_WS_METHODS.vcsListCommitHistory]: () =>
     Effect.succeed({ commits: [], isRepo: false, nextCursor: null }),
   [FT3_WS_METHODS.vcsResolveCommitMentions]: () => Effect.succeed({ commits: [] }),
@@ -187,6 +235,8 @@ const stubs = {
   [FT3_WS_METHODS.mailTimeline]: () => Effect.succeed({ task: mailTask, entries: [] }),
   [FT3_WS_METHODS.mailTasks]: () =>
     Effect.succeed({ tasks: [mailTask], letters: { "task:timeline": [] } }),
+  [FT3_WS_METHODS.mailLetter]: () =>
+    Effect.succeed({ letter: mailLetter, effectiveKind: mailLetter.kind }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -253,6 +303,18 @@ describe("FT3 RPC authorization", () => {
         cardId,
       });
       expect(yield* client[FT3_WS_METHODS.boardDelete]({ cardId })).toEqual({});
+      expect(yield* client[FT3_WS_METHODS.boardPlanGet]({ cardId })).toMatchObject({
+        liveSha256: null,
+        versions: [],
+      });
+      expect(
+        yield* client[FT3_WS_METHODS.boardPlanSetRequired]({ cardId, required: true }),
+      ).toMatchObject({ cardId });
+      expect(
+        yield* client[FT3_WS_METHODS.boardPlanAccept]({ cardId, sha256: "0".repeat(64) }),
+      ).toMatchObject({
+        cardId,
+      });
       expect(
         yield* client[FT3_WS_METHODS.vcsListCommitHistory]({ cwd: "/repo", limit: 10 }),
       ).toEqual({ commits: [], isRepo: false, nextCursor: null });
@@ -334,6 +396,12 @@ describe("FT3 RPC authorization", () => {
         tasks: [mailTask],
         letters: { "task:timeline": [] },
       });
+      expect(
+        yield* client[FT3_WS_METHODS.mailLetter]({
+          letterId: "letter:one",
+          threadId: "thread:lead",
+        }),
+      ).toMatchObject({ effectiveKind: "request" });
       expect(yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" })).toEqual({
         status: "not_found",
       });
@@ -505,6 +573,12 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
         yield* client[FT3_WS_METHODS.mailTasks]({ cardIds: ["card-1"] }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(
+        yield* client[FT3_WS_METHODS.mailLetter]({
+          letterId: "letter:one",
+          threadId: "thread:lead",
+        }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
       expect(
         yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" }).pipe(Effect.flip),
