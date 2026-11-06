@@ -412,3 +412,79 @@ describe("PolicyDocumentLoader store trees", () => {
     }).pipe(Effect.provide(loaderLayer(new Map())));
   });
 });
+
+describe("PolicyChangeTracker path-source pending", () => {
+  it.effect(
+    "holds a child-file external edit as pending with auto-apply off, then applies it",
+    () => {
+      const directory = Effect.acquireRelease(
+        Effect.sync(() => {
+          const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "ft3-roles-pending-"));
+          NodeFS.writeFileSync(NodePath.join(dir, "roles.json"), ROLES_MANIFEST);
+          NodeFS.writeFileSync(NodePath.join(dir, "lead.md"), roleFile("lead", 3));
+          NodeFS.writeFileSync(NodePath.join(dir, "implementation.md"), roleFile("implementation"));
+          return dir;
+        }),
+        (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+      );
+      return withTracker(new Map(), (tracker) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const dir = yield* directory;
+            const pathSources = {
+              ...sources,
+              roles: {
+                kind: "path",
+                path: NodePath.join(dir, "roles.json"),
+              } satisfies PolicyDocumentSource,
+            };
+            const appliedBaseline = yield* tracker.refresh({
+              sources: pathSources,
+              features: { board: true },
+              applyExternalEdits: true,
+            });
+            const initial = appliedBaseline.documents.find((document) => document.key === "roles");
+            assert.equal(initial?.applied?.revision, 3);
+            assert.isFalse(initial?.pending);
+            assert.equal(appliedBaseline.configVersion, 1);
+
+            NodeFS.writeFileSync(NodePath.join(dir, "lead.md"), roleFile("lead", 4));
+
+            const held = yield* tracker.refresh({
+              sources: pathSources,
+              features: { board: true },
+            });
+            assert.equal(held.configVersion, 2);
+            const status = held.documents.find((document) => document.key === "roles");
+            assert.equal(status?.applied?.revision, 3);
+            assert.isTrue(status?.pending);
+
+            const pending = yield* tracker.pendingChange("roles");
+            assert.deepStrictEqual(
+              pending?.files.map((file) => file.file),
+              ["lead.md"],
+            );
+            assert.equal(pending?.files[0]?.appliedSha256, sha256(roleFile("lead", 3)));
+            assert.equal(pending?.files[0]?.liveSha256, sha256(roleFile("lead", 4)));
+
+            const applied = yield* tracker.refresh({
+              sources: pathSources,
+              features: { board: true },
+              forceApplyKeys: ["roles"],
+              appliedBy: "human_apply",
+            });
+            assert.equal(applied.configVersion, 3);
+            const statusAfter = applied.documents.find((document) => document.key === "roles");
+            assert.isFalse(statusAfter?.pending);
+            assert.isNull(yield* tracker.pendingChange("roles"));
+            const appliedDocument = yield* tracker.applied("roles");
+            assert.equal(
+              appliedDocument?.files.find((file) => file.file === "lead.md")?.sha256,
+              sha256(roleFile("lead", 4)),
+            );
+          }),
+        ),
+      );
+    },
+  );
+});

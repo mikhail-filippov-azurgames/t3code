@@ -21,7 +21,7 @@ export type PolicyDocumentBadge = "invalid-kept" | "pending" | "applied" | "unap
 
 export const POLICY_DOCUMENT_BADGE_LABELS: Readonly<Record<PolicyDocumentBadge, string>> = {
   "invalid-kept": "Invalid: previous version kept",
-  pending: "Pending external change",
+  pending: "Applied · change pending",
   applied: "Applied",
   unapplied: "Not applied yet",
 };

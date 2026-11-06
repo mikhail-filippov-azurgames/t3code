@@ -199,6 +199,26 @@ const sameFiles = (
     live.some((other) => fileKey(other) === fileKey(file) && other.sha256 === file.sha256),
   );
 
+const samePending = (
+  before: PolicyPendingChange | null,
+  after: PolicyPendingChange | null,
+): boolean => {
+  if (before === null || after === null) return before === after;
+  return (
+    before.liveSha256 === after.liveSha256 &&
+    before.valid === after.valid &&
+    before.files.length === after.files.length &&
+    before.files.every((file) =>
+      after.files.some(
+        (other) =>
+          other.file === file.file &&
+          other.appliedSha256 === file.appliedSha256 &&
+          other.liveSha256 === file.liveSha256,
+      ),
+    )
+  );
+};
+
 const labelOf = (file: { readonly file: string; readonly relPath: string | null }): string =>
   file.relPath ?? (file.file === "" ? "document" : file.file);
 
@@ -448,6 +468,10 @@ const make = Effect.gen(function* () {
       changed = changed || result.changed;
     }
     const previous = scopeOf(yield* Ref.get(state), scope);
+    // Pending-only transitions must also order command results against query refreshes in the tab.
+    const pendingChanged = POLICY_DOCUMENT_KEYS.some(
+      (key) => !samePending(previous.entries[key]?.pending ?? null, entries[key]?.pending ?? null),
+    );
     const next: ScopeState = {
       entries: {
         routingPolicy: entries.routingPolicy ?? null,
@@ -456,7 +480,7 @@ const make = Effect.gen(function* () {
       },
       sources: input.sources,
       configVersion:
-        changed || previous.configVersion === 0
+        changed || pendingChanged || previous.configVersion === 0
           ? previous.configVersion + 1
           : previous.configVersion,
       restored: previous.restored,

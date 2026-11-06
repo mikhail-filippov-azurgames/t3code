@@ -245,7 +245,7 @@ describe("policies settings panel", () => {
     expect(text).toContain("Routing policy");
     expect(text).toContain("Built-in template");
     expect(text).toContain("Applied");
-    expect(text).toContain("Pending external change");
+    expect(text).toContain("Applied · change pending");
     expect(text).toContain("Invalid: previous version kept");
     expect(text).toContain("File: /etc/ft3/lead-skills.json");
   });
