@@ -154,11 +154,18 @@ const noFeatures: Record<(typeof FEATURE_IDS)[number], FeatureResolution> = Obje
   ]),
 ) as Record<(typeof FEATURE_IDS)[number], FeatureResolution>;
 
+const noFeatureSources: Record<(typeof FEATURE_IDS)[number], "default" | "project"> =
+  Object.fromEntries(FEATURE_IDS.map((id) => [id, "default"])) as Record<
+    (typeof FEATURE_IDS)[number],
+    "default" | "project"
+  >;
+
 const noSnapshot = {
   configVersion: 1,
   documents: [],
   requirements: noRequirements,
   features: noFeatures,
+  featureSources: noFeatureSources,
   needsAttention: false,
   warnings: [],
 };
@@ -341,6 +348,7 @@ describe("FT3 RPC authorization", () => {
         documents: [],
         requirements: noRequirements,
         features: noFeatures,
+        featureSources: noFeatureSources,
         needsAttention: false,
         warnings: [],
       });

@@ -196,6 +196,7 @@ const services = (
   applyExternalEdits: boolean,
   applied: Layer.Layer<PolicyAppliedStore> = policyAppliedStoreLayer,
   documents?: PoliciesSettings["documents"],
+  projectSettingsOverrides?: Record<string, unknown>,
 ) => {
   const docs = docsOver(files);
   return Layer.mergeAll(
@@ -204,7 +205,10 @@ const services = (
       Layer.provide(applied),
     ),
     Layer.succeed(DocsService, docs),
-    ServerSettings.layerTest({ ft3: { policies: policySettings(applyExternalEdits, documents) } }),
+    ServerSettings.layerTest({
+      ft3: { policies: policySettings(applyExternalEdits, documents) },
+      ...(projectSettingsOverrides === undefined ? {} : { projectSettingsOverrides }),
+    } as Parameters<typeof ServerSettings.layerTest>[0]),
   );
 };
 
@@ -591,4 +595,62 @@ describe("policy write and apply RPC", () => {
       assert.equal(rolesOf(restartedEnv)?.applied?.revision, 0);
     });
   });
+});
+
+describe("per-project feature toggle RPC", () => {
+  const toggleServices = () => services(new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]), false);
+
+  it.effect("sets a project override without touching the environment", () =>
+    Effect.gen(function* () {
+      const set = yield* setFeature({ projectId: "proj-1", feature: "mail", enabled: true });
+
+      assert.isTrue(set.snapshot.features.mail.requestedEnabled);
+      assert.equal(set.snapshot.featureSources.mail, "project");
+      assert.equal(set.snapshot.featureSources.board, "default");
+      // D2: documents is environment-only and never reports a project source.
+      assert.equal(set.snapshot.featureSources.documents, "default");
+
+      const env = yield* getSnapshot({});
+      assert.isFalse(env.features.mail.requestedEnabled);
+      assert.equal(env.featureSources.mail, "default");
+
+      const project = yield* getSnapshot({ projectId: "proj-1" });
+      assert.isTrue(project.features.mail.requestedEnabled);
+      assert.equal(project.featureSources.mail, "project");
+    }).pipe(Effect.provide(toggleServices())),
+  );
+
+  it.effect("resets a project override with enabled null", () =>
+    Effect.gen(function* () {
+      yield* setFeature({ projectId: "proj-1", feature: "mail", enabled: true });
+      const reset = yield* setFeature({ projectId: "proj-1", feature: "mail", enabled: null });
+
+      assert.isFalse(reset.snapshot.features.mail.requestedEnabled);
+      assert.equal(reset.snapshot.featureSources.mail, "default");
+    }).pipe(Effect.provide(toggleServices())),
+  );
+
+  it.effect("rejects a reset without a projectId", () =>
+    Effect.gen(function* () {
+      const error = yield* setFeature({ feature: "mail", enabled: null }).pipe(Effect.flip);
+
+      assert.equal(error._tag, "PoliciesSetFeatureError");
+      if (error._tag !== "PoliciesSetFeatureError") return;
+      assert.equal(error.code, "reset_requires_project");
+    }).pipe(Effect.provide(toggleServices())),
+  );
+
+  it.effect("rejects a per-project override of the environment-only documents feature", () =>
+    Effect.gen(function* () {
+      const error = yield* setFeature({
+        projectId: "proj-1",
+        feature: "documents",
+        enabled: false,
+      }).pipe(Effect.flip);
+
+      assert.equal(error._tag, "PoliciesSetFeatureError");
+      if (error._tag !== "PoliciesSetFeatureError") return;
+      assert.equal(error.code, "environment_only_feature");
+    }).pipe(Effect.provide(toggleServices())),
+  );
 });

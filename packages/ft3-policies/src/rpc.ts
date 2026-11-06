@@ -47,11 +47,13 @@ import {
   type PoliciesSetApplyExternalEditsResult,
   type PoliciesSetDocumentInput,
   type PoliciesSetDocumentResult,
+  PoliciesSetFeatureError,
   type PoliciesSetFeatureInput,
   type PoliciesSetFeatureResult,
 } from "./rpc-contracts.ts";
 import {
   type FeatureId,
+  FEATURE_IDS,
   POLICY_REQUIREMENT_IDS,
   type PolicyDocumentKey,
   type PolicyDocumentSource,
@@ -81,10 +83,15 @@ export const policiesRpcServiceLayer: Layer.Layer<
   ),
 );
 
+const ENV_FEATURE_SOURCES: Readonly<Record<FeatureId, "default" | "project">> = Object.fromEntries(
+  FEATURE_IDS.map((id) => [id, "default" as const]),
+) as Record<FeatureId, "default" | "project">;
+
 const resultOf = (
   snapshot: TrackerSnapshot,
   warnings: PoliciesGetSnapshotResult["warnings"],
   requested: Readonly<Partial<Record<FeatureId, boolean>>>,
+  featureSources: Readonly<Record<FeatureId, "default" | "project">> = ENV_FEATURE_SOURCES,
 ) => {
   const features = resolveFeatureStates({ requested, requirements: snapshot.requirements });
   return {
@@ -94,6 +101,7 @@ const resultOf = (
       POLICY_REQUIREMENT_IDS.map((id) => [id, snapshot.requirements[id] === true]),
     ) as Record<PolicyRequirementId, boolean>,
     features,
+    featureSources,
     needsAttention:
       Object.values(features).some((state) => state.requestedEnabled && !state.effectiveEnabled) ||
       snapshot.documents.some((document) => document.pending || document.warnings.length > 0),
@@ -222,6 +230,17 @@ const scopeFor = (
   projectId: string | null | undefined,
 ): string | undefined => (override !== null && projectId != null ? projectId : undefined);
 
+/** A source is project only for an explicitly overridden, project-scoped feature. */
+const featureSourcesOf = (
+  override: ProjectFeatureTogglesOverride | null,
+): Readonly<Record<FeatureId, "default" | "project">> =>
+  Object.fromEntries(
+    FEATURE_IDS.map((id) => [
+      id,
+      id !== "documents" && override?.[id] !== undefined ? "project" : "default",
+    ]),
+  ) as Readonly<Record<FeatureId, "default" | "project">>;
+
 const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
   policies: ReturnType<typeof readPolicySettings>,
   warnings: PoliciesGetSnapshotResult["warnings"],
@@ -230,20 +249,25 @@ const refreshWith = Effect.fn("PoliciesRpc.refreshWith")(function* (
   extra: {
     readonly forceApplyKeys?: readonly PolicyDocumentKey[];
     readonly appliedBy?: "human_tab" | "human_apply" | "auto";
+    /** Resolved requested toggles for the snapshot; defaults to the environment features. */
+    readonly requested?: Readonly<Partial<Record<FeatureId, boolean>>>;
+    readonly featureSources?: Readonly<Record<FeatureId, "default" | "project">>;
   } = {},
 ) {
   const tracker = yield* PolicyChangeTracker;
+  const requested = extra.requested ?? policies.features;
   const snapshot = yield* tracker.refresh({
     sources: resolvePolicyDocumentSources(policies, override),
     features: {
-      board: policies.features.board,
-      planning: policies.features.planning,
+      board: requested.board === true,
+      planning: requested.planning === true,
     },
     applyExternalEdits: policies.applyExternalEdits,
     ...(scope === undefined ? {} : { scope }),
-    ...extra,
+    ...(extra.forceApplyKeys === undefined ? {} : { forceApplyKeys: extra.forceApplyKeys }),
+    ...(extra.appliedBy === undefined ? {} : { appliedBy: extra.appliedBy }),
   });
-  return resultOf(snapshot, warnings, policies.features);
+  return resultOf(snapshot, warnings, requested, extra.featureSources);
 });
 
 const getSnapshot = Effect.fn("PoliciesRpc.getSnapshot")(function* (
@@ -251,7 +275,11 @@ const getSnapshot = Effect.fn("PoliciesRpc.getSnapshot")(function* (
 ) {
   const { settings, policies, warnings } = yield* prepared;
   const override = projectOverrideOf(settings, input.projectId);
-  return yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId));
+  const togglesOverride = projectTogglesOverrideOf(settings, input.projectId);
+  return yield* refreshWith(policies, warnings, override, scopeFor(override, input.projectId), {
+    requested: resolveRequestedFeatures(policies, togglesOverride),
+    featureSources: featureSourcesOf(togglesOverride),
+  });
 });
 
 const readDocument = Effect.fn("PoliciesRpc.readDocument")(function* (
@@ -516,18 +544,64 @@ const setDocument = Effect.fn("PoliciesRpc.setDocument")(function* (
 const setFeature = Effect.fn("PoliciesRpc.setFeature")(function* (input: PoliciesSetFeatureInput) {
   const serverSettings = yield* ServerSettingsService;
   const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
-  const current = readPolicySettings(settings.ft3);
-  const updated = readPolicySettings(
-    (yield* serverSettings
-      .updateSettings({
-        ft3: withPolicySettings(settings.ft3, {
-          ...current,
-          features: { ...current.features, [input.feature]: input.enabled },
-        }),
-      })
-      .pipe(Effect.orDie)).ft3,
+  const projectId = input.projectId ?? null;
+
+  if (projectId === null) {
+    if (input.enabled === null) {
+      return yield* new PoliciesSetFeatureError({ code: "reset_requires_project" });
+    }
+    const current = readPolicySettings(settings.ft3);
+    const updated = readPolicySettings(
+      (yield* serverSettings
+        .updateSettings({
+          ft3: withPolicySettings(settings.ft3, {
+            ...current,
+            features: { ...current.features, [input.feature]: input.enabled },
+          }),
+        })
+        .pipe(Effect.orDie)).ft3,
+    );
+    const snapshot = yield* refreshWith(updated, [], null, undefined);
+    return { snapshot } satisfies PoliciesSetFeatureResult;
+  }
+
+  // D2: `documents` gates startup layers and has no project scope.
+  if (input.feature === "documents") {
+    return yield* new PoliciesSetFeatureError({ code: "environment_only_feature" });
+  }
+
+  const overrides = settings.projectSettingsOverrides as Readonly<
+    Record<string, { readonly ft3FeatureToggles?: unknown } | undefined>
+  >;
+  const entry: Record<string, unknown> = { ...overrides[projectId] };
+  const decoded = decodeProjectFeatureTogglesOverrideValue(entry.ft3FeatureToggles);
+  const toggles: Record<string, unknown> = decoded._tag === "Some" ? { ...decoded.value } : {};
+  if (input.enabled === null) {
+    delete toggles[input.feature];
+  } else {
+    toggles[input.feature] = input.enabled;
+  }
+  if (Object.keys(toggles).length === 0) {
+    delete entry.ft3FeatureToggles;
+  } else {
+    entry.ft3FeatureToggles = toggles;
+  }
+  const updated = yield* serverSettings
+    .updateSettings({ projectSettingsOverrides: { [projectId]: entry } })
+    .pipe(Effect.orDie);
+  const policies = readPolicySettings(updated.ft3);
+  const documentOverride = projectOverrideOf(updated, projectId);
+  const togglesOverride = projectTogglesOverrideOf(updated, projectId);
+  const snapshot = yield* refreshWith(
+    policies,
+    [],
+    documentOverride,
+    scopeFor(documentOverride, projectId),
+    {
+      requested: resolveRequestedFeatures(policies, togglesOverride),
+      featureSources: featureSourcesOf(togglesOverride),
+    },
   );
-  const snapshot = yield* refreshWith(updated, [], null, undefined);
   return { snapshot } satisfies PoliciesSetFeatureResult;
 });
 

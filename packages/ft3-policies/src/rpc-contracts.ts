@@ -102,6 +102,8 @@ export const PoliciesGetSnapshotResult = Schema.Struct({
   requirements: Schema.Record(PolicyRequirementId, Schema.Boolean),
   /** Effective state of every feature, computed from the toggles and this snapshot's requirements. */
   features: Schema.Record(FeatureId, PolicyFeatureStateSchema),
+  /** Where each feature's requested value came from: the environment default or a project override. */
+  featureSources: Schema.Record(FeatureId, Schema.Literals(["default", "project"])),
   /** An enabled-but-ineffective feature, an active-policy warning or a pending change needs a look. */
   needsAttention: Schema.Boolean,
   /** Migration warnings, such as an unresolvable legacy policy reference. */
@@ -249,9 +251,28 @@ export const PoliciesSetDocumentResult = Schema.Struct({
 });
 export type PoliciesSetDocumentResult = typeof PoliciesSetDocumentResult.Type;
 
+export const POLICIES_SET_FEATURE_ERROR_CODES = [
+  "reset_requires_project",
+  "environment_only_feature",
+] as const;
+
+/** Invalid per-project feature toggle operations. */
+export class PoliciesSetFeatureError extends Schema.TaggedError<PoliciesSetFeatureError>()(
+  "PoliciesSetFeatureError",
+  { code: Schema.Literals(POLICIES_SET_FEATURE_ERROR_CODES) },
+) {
+  override get message(): string {
+    return this.code === "reset_requires_project"
+      ? "enabled null resets a project override and requires projectId."
+      : "The documents feature is environment-only and cannot be overridden per project.";
+  }
+}
+
+/** Writes an environment default or project override; null resets a project override. */
 export const PoliciesSetFeatureInput = Schema.Struct({
+  projectId: Schema.optionalKey(Schema.String),
   feature: FeatureId,
-  enabled: Schema.Boolean,
+  enabled: Schema.NullOr(Schema.Boolean),
 });
 export type PoliciesSetFeatureInput = typeof PoliciesSetFeatureInput.Type;
 
@@ -361,7 +382,7 @@ export const policiesRpcs = [
   Rpc.make(FT3_POLICIES_WS_METHODS.policiesSetFeature, {
     payload: PoliciesSetFeatureInput,
     success: PoliciesSetFeatureResult,
-    error: EnvironmentAuthorizationError,
+    error: Schema.Union([PoliciesSetFeatureError, EnvironmentAuthorizationError]),
   }),
   Rpc.make(FT3_POLICIES_WS_METHODS.policiesListStoreDocuments, {
     payload: PoliciesListStoreDocumentsInput,
