@@ -107,7 +107,9 @@ function setup(options: {
   readonly snapshot?: unknown;
 }) {
   vi.clearAllMocks();
-  mocks.tasks.mockReturnValue(
+  // One atom instance per setup: the query family memoizes atoms by target, so
+  // production renders see a stable atom identity and a stable refresh callback.
+  const tasksAtom =
     options.tasksFailure === "offline"
       ? Atom.make(AsyncResult.failure(Cause.fail(new Error("offline"))))
       : options.tasksFailure === "unknown-method"
@@ -117,8 +119,8 @@ function setup(options: {
               tasks: options.tasks ?? [],
               letters: options.letters ?? {},
             }),
-          ),
-  );
+          );
+  mocks.tasks.mockReturnValue(tasksAtom);
   mocks.snapshot.mockReturnValue(
     Atom.make(AsyncResult.success(options.snapshot ?? mailEnabledSnapshot)),
   );
@@ -259,6 +261,30 @@ describe("BoardMailTab", () => {
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
 
     await vi.advanceTimersByTimeAsync(30_000);
+    expect(refreshCards).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps polling across re-renders instead of resetting the interval", async () => {
+    using state = setup({ tasks: [] });
+    const refreshCards = vi.fn();
+    using _timers = fakeTimers();
+    const tab = (refresh?: () => void) => (
+      <RegistryContext.Provider value={state.registry}>
+        <BoardMailTab
+          threadRef={threadRef}
+          cardIds={[]}
+          {...(refresh === undefined ? {} : { refreshCards: refresh })}
+        />
+      </RegistryContext.Provider>
+    );
+    await using screen = await render(tab(refreshCards));
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    // Re-renders used to rebuild the poll callback and restart the interval,
+    // so a busy lead thread could stall the task list with stale statuses.
+    await screen.rerender(tab(refreshCards));
+    await vi.advanceTimersByTimeAsync(20_000);
     expect(refreshCards).toHaveBeenCalledTimes(2);
   });
 

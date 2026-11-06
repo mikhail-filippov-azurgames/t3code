@@ -43,10 +43,13 @@ export function BoardMailTab(props: {
   const { environmentId } = props.threadRef;
   const { refreshCards } = props;
   const tasksQuery = useBoardMailTasks(environmentId, props.cardIds, props.threadRef.threadId);
+  // The query view object changes every render; only its refresh callback is
+  // stable, and the polling interval resets when this callback's identity changes.
+  const tasksRefresh = tasksQuery.refresh;
   const refresh = useCallback(() => {
     refreshCards?.();
-    void tasksQuery.refresh();
-  }, [refreshCards, tasksQuery]);
+    tasksRefresh();
+  }, [refreshCards, tasksRefresh]);
   useMailTabPolling(refresh);
   const snapshotQuery = useEnvironmentQuery(
     policiesEnvironment.snapshot({ environmentId, input: {} }),
