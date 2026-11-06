@@ -583,6 +583,10 @@ export class MailRepository extends Context.Service<
     readonly listLetterDeliveries: (
       letterId: string,
     ) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
+    /** Deliveries the member has been shown and has not answered, oldest first. */
+    readonly listUnansweredMemberDeliveries: (
+      memberId: string,
+    ) => Effect.Effect<ReadonlyArray<MailDelivery>, MailRepositoryError>;
     readonly recordDelivery: (
       input: RecordDeliveryInput,
     ) => Effect.Effect<MailDelivery, MailRepositoryError>;
@@ -921,13 +925,17 @@ const make = Effect.gen(function* () {
     ),
     closeTask: Effect.fn("MailRepository.closeTask")((input) =>
       mapError("closeTask")(
-        Effect.gen(function* () {
-          yield* sql`UPDATE ft3_mail_tasks SET
-              status = 'closed', outcome = ${input.outcome}, summary = ${input.summary},
-              closed_at = ${input.closedAt}, updated_at = ${input.closedAt}
-            WHERE task_id = ${input.taskId}`;
-          return yield* findTask(input.taskId);
-        }),
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* sql`UPDATE ft3_mail_members SET status = 'closed', updated_at = ${input.closedAt}
+              WHERE task_id = ${input.taskId} AND status = 'active'`;
+            yield* sql`UPDATE ft3_mail_tasks SET
+                status = 'closed', outcome = ${input.outcome}, summary = ${input.summary},
+                closed_at = ${input.closedAt}, updated_at = ${input.closedAt}
+              WHERE task_id = ${input.taskId}`;
+            return yield* findTask(input.taskId);
+          }),
+        ),
       ),
     ),
     addMember: Effect.fn("MailRepository.addMember")((input: AddMemberInput) =>
@@ -1026,6 +1034,14 @@ const make = Effect.gen(function* () {
         sql<DeliveryRow>`SELECT ${sql.literal(DELIVERY_COLUMNS)} FROM ft3_mail_deliveries
           WHERE letter_id = ${letterId} ORDER BY created_at ASC, delivery_id ASC`,
       ).pipe(Effect.map((rows) => rows.map(toDelivery))),
+    ),
+    listUnansweredMemberDeliveries: Effect.fn("MailRepository.listUnansweredMemberDeliveries")(
+      (memberId: string) =>
+        mapError("listUnansweredMemberDeliveries")(
+          sql<DeliveryRow>`SELECT ${sql.literal(DELIVERY_COLUMNS)} FROM ft3_mail_deliveries
+            WHERE member_id = ${memberId} AND state IN ('delivered', 'read')
+            ORDER BY created_at ASC, delivery_id ASC`,
+        ).pipe(Effect.map((rows) => rows.map(toDelivery))),
     ),
     recordDelivery: Effect.fn("MailRepository.recordDelivery")((input: RecordDeliveryInput) =>
       mapError("recordDelivery")(

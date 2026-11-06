@@ -58,7 +58,12 @@ const make = Effect.gen(function* () {
 
     const assignment = yield* roles.assignment(input.roleId);
     const roleLine = assignment._tag === "assigned" ? roleInstructionLine(assignment.resolved) : "";
-    const prompt = participantLaunchPrompt({ roleLine, letterBody: input.letterBody });
+    const prompt = participantLaunchPrompt({
+      roleLine,
+      letterBody: input.letterBody,
+      taskId: input.taskId,
+      letterId: input.letterId,
+    });
 
     const liveProviders = yield* providers.getProviders;
     const settings = yield* serverSettings.getSettings.pipe(

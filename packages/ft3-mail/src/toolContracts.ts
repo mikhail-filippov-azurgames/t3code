@@ -26,7 +26,7 @@ export const MailSpecificMcpFailureCode = Schema.Literals([
   "task_not_found",
   "card_not_found",
   "task_closed",
-  "members_active",
+  "member_closed",
   "letter_not_found",
   "address_denied",
   "kind_denied",

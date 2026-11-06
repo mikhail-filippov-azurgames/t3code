@@ -63,7 +63,7 @@ export const MailServiceErrorCode = Schema.Literals([
   "task_not_found",
   "card_not_found",
   "task_closed",
-  "members_active",
+  "member_closed",
   "letter_not_found",
   "address_denied",
   "kind_denied",
@@ -115,10 +115,15 @@ const PARTICIPANT_TO_LEAD_KINDS: ReadonlyArray<MailLetterKind> = [
   "info",
 ];
 const CONSULTANT_REVIEW_KINDS: ReadonlyArray<MailLetterKind> = ["approve", "changes"];
+const CONSULTANT_REVIEW_ROLES: ReadonlyArray<string> = ["architect", "review"];
+
+/** Wake reasons; an urgent letter's wake steers the participant instead of queueing. */
+export const MAIL_LETTER_WAKE_REASON = "mail-letter";
+export const MAIL_URGENT_LETTER_WAKE_REASON = "mail-letter-urgent";
 
 /**
  * Who may send which letter kind to whom. Participants never send `request`:
- * only the lead dispatches work. `approve` and `changes` are architect review answers.
+ * only the lead dispatches work. `approve` and `changes` are architect and review answers.
  */
 export const mailKindAllowed = (
   sender: MailSenderKind,
@@ -136,7 +141,8 @@ export const mailKindAllowed = (
       return (
         target === "lead" &&
         (PARTICIPANT_TO_LEAD_KINDS.includes(kind) ||
-          (sender.roleId === "architect" && CONSULTANT_REVIEW_KINDS.includes(kind)))
+          (CONSULTANT_REVIEW_ROLES.includes(sender.roleId) &&
+            CONSULTANT_REVIEW_KINDS.includes(kind)))
       );
   }
 };
@@ -211,6 +217,8 @@ export interface SendMailLetterInput {
   readonly replyToLetterId?: string | null;
   readonly clientRequestId: string;
   readonly plan?: MailPlanSend | undefined;
+  /** Lead only: steers an active participant instead of waiting for its turn to end. */
+  readonly urgent?: boolean | undefined;
 }
 
 export interface MailLetterNoCandidate extends MailNoCandidate {
@@ -542,7 +550,10 @@ const make = Effect.gen(function* () {
   const requireRoutingRole = Effect.fn("MailService.requireRoutingRole")(function* (role: string) {
     const roleId = routingRoleOf(role);
     if (roleId === null)
-      return yield* refuse("invalid_role", `Role "${role}" is not a mail participant role.`);
+      return yield* refuse(
+        "invalid_role",
+        `Role "${role}" is not a mail participant role. Use one of: ${ROUTING_ROLES.join(", ")}.`,
+      );
     return roleId;
   });
 
@@ -891,12 +902,21 @@ const make = Effect.gen(function* () {
         `Recipient "${input.to}" must be human, lead, or role:<role>[/<specialization>].`,
       );
     }
+    if (input.urgent === true && sender.kind !== "lead") {
+      return yield* refuse("capability_denied", "Only the lead can send an urgent letter.");
+    }
     const targets = yield* resolveTargets(sender, recipient, task, members);
     for (const target of targets) {
       if (!mailKindAllowed(sender, target.target, input.kind)) {
         return yield* refuse(
           "kind_denied",
           `A ${sender.kind} cannot send a ${input.kind} letter to the ${target.target}.`,
+        );
+      }
+      if (target.member !== null && target.member.status === "closed") {
+        return yield* refuse(
+          "member_closed",
+          `Member "${target.member.memberId}" is closed and receives no more letters.`,
         );
       }
     }
@@ -1020,6 +1040,18 @@ const make = Effect.gen(function* () {
                 ),
             }),
           );
+        const senderMemberId =
+          sender.kind === "participant"
+            ? members.find((member) => member.participantThreadId === input.callerThreadId)
+                ?.memberId
+            : undefined;
+        if (replyToLetterId !== null && senderMemberId !== undefined) {
+          const parentDeliveries = yield* repository.listLetterDeliveries(replyToLetterId);
+          const own = parentDeliveries.find((delivery) => delivery.memberId === senderMemberId);
+          if (own !== undefined) {
+            yield* repository.markDeliveryAnswered({ deliveryId: own.deliveryId, at: now });
+          }
+        }
         if (cardId !== null) {
           const citation =
             plan?.citation === undefined
@@ -1131,10 +1163,12 @@ const make = Effect.gen(function* () {
         }
         const launchInput: MailParticipantLaunchInput = {
           leadThreadId: task.createdByThreadId,
+          taskId: task.taskId,
           taskTitle: task.title,
           memberId: current.memberId,
           roleId: current.roleId,
           modelSelectionJson,
+          letterId: appended.letter.letterId,
           letterBody: input.body,
           isolation: task.isolation,
         };
@@ -1168,7 +1202,7 @@ const make = Effect.gen(function* () {
       }
     }
     // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.
-    const deliveries = yield* Effect.forEach(targets, (target) =>
+    const recordedDeliveries = yield* Effect.forEach(targets, (target) =>
       newId.pipe(
         Effect.flatMap((deliveryId) =>
           repository
@@ -1209,15 +1243,26 @@ const make = Effect.gen(function* () {
         ),
       ),
     );
+    // A member launched by this letter already received it in its first prompt, so its delivery is
+    // delivered and gets no wake; only a pending delivery with a thread is woken.
+    const deliveries = yield* Effect.forEach(recordedDeliveries, (delivery) =>
+      launched.some((member) => member.memberId === delivery.memberId)
+        ? repository
+            .markDeliveryDelivered({ deliveryId: delivery.deliveryId, at: now })
+            .pipe(Effect.map((marked) => marked ?? delivery))
+        : Effect.succeed(delivery),
+    );
     // An agent thread gets a durable wake; the reactor drains it and marks the delivery.
     yield* Effect.forEach(
-      deliveries.filter((delivery) => delivery.participantThreadId !== null),
+      deliveries.filter(
+        (delivery) => delivery.participantThreadId !== null && delivery.state === "pending",
+      ),
       (delivery) =>
         repository.recordWake({
           wakeId: `mail:wake:${delivery.deliveryId}`,
           taskId: task.taskId,
           targetThreadId: delivery.participantThreadId ?? "",
-          reason: "mail-letter",
+          reason: input.urgent === true ? MAIL_URGENT_LETTER_WAKE_REASON : MAIL_LETTER_WAKE_REASON,
           idempotencyKey: `mail:wake:${delivery.deliveryId}`,
           createdAt: now,
         }),
@@ -1302,6 +1347,23 @@ const make = Effect.gen(function* () {
     }
   });
 
+  // A participant reads only the letters it sent or was delivered; the lead reads the whole task.
+  const letterReadableBy = (
+    task: MailTask,
+    members: ReadonlyArray<MailMember>,
+    callerThreadId: string,
+    letter: MailLetter,
+    deliveries: ReadonlyArray<MailDelivery>,
+  ) => {
+    if (task.createdByThreadId === callerThreadId || letter.senderThreadId === callerThreadId) {
+      return true;
+    }
+    const member = members.find((candidate) => candidate.participantThreadId === callerThreadId);
+    return (
+      member !== undefined && deliveries.some((delivery) => delivery.memberId === member.memberId)
+    );
+  };
+
   const TIMELINE_DEFAULT_LIMIT = 50;
   const TIMELINE_MAX_LIMIT = 100;
 
@@ -1370,6 +1432,14 @@ const make = Effect.gen(function* () {
     }
     const task = yield* requireTask(letter.taskId);
     yield* requireTaskAccess(task, input.callerThreadId);
+    const members = yield* repository.listMembers(task.taskId);
+    const addressed = yield* repository.listLetterDeliveries(letter.letterId);
+    if (!letterReadableBy(task, members, input.callerThreadId, letter, addressed)) {
+      return yield* refuse(
+        "capability_denied",
+        `Letter "${letter.letterId}" is neither from nor addressed to thread "${input.callerThreadId}".`,
+      );
+    }
     // Marking a delivery read is a write, so only an enabled mail feature does it.
     if (task.status === "open" && (yield* gate.isEffective("mail"))) {
       const pending = yield* repository.listLetterDeliveries(letter.letterId);
@@ -1410,11 +1480,14 @@ const make = Effect.gen(function* () {
     }
     const members = yield* repository.listMembers(task.taskId);
     const rounds = yield* repository.listRounds(task.taskId);
-    const entries = yield* repository.listTimeline({
+    const timeline = yield* repository.listTimeline({
       taskId: task.taskId,
       ...(beforeSequence === undefined ? {} : { beforeSequence }),
       limit,
     });
+    const entries = timeline.filter((entry) =>
+      letterReadableBy(task, members, input.callerThreadId, entry.letter, entry.deliveries),
+    );
     return { task, members, rounds, entries } satisfies ReadMailTaskResult;
   });
 
@@ -1512,10 +1585,7 @@ const make = Effect.gen(function* () {
     if (task.status === "closed") {
       return yield* refuse("task_closed", `Mail task "${task.taskId}" is already closed.`);
     }
-    const members = yield* repository.listMembers(task.taskId);
-    if (members.some((member) => member.status === "active")) {
-      return yield* refuse("members_active", "Close the task after its active members finish.");
-    }
+    // Closing the task closes its active members: a member otherwise stays active until the lead ends it.
     const closed = yield* repository.closeTask({
       taskId: task.taskId,
       outcome: input.outcome,
