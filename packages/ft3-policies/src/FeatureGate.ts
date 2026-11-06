@@ -1,7 +1,8 @@
 /**
  * The single server guard for feature toggles: resolves the `ft3.policies`
  * registry against live settings and the applied documents' requirement
- * validity, and refuses an ineffective feature with the Policies reason.
+ * validity — per project when a projectId is given — and refuses an
+ * ineffective feature with the Policies reason.
  */
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -19,7 +20,14 @@ import {
   resolveFeatureStates,
 } from "./contracts.ts";
 import { PolicyChangeTracker } from "./policyChangeTracker.ts";
-import { readPolicySettings } from "./settings.ts";
+import {
+  decodeProjectFeatureTogglesOverrideValue,
+  decodeProjectPolicyDocumentOverrideValue,
+  type ProjectFeatureTogglesOverride,
+  type ProjectPolicyDocumentOverride,
+  readPolicySettings,
+  resolveRequestedFeatures,
+} from "./settings.ts";
 
 /** Why a call was refused: the requested toggle is off, or a reason the gate resolved. */
 const FEATURE_DISABLED_CODES = [
@@ -52,13 +60,16 @@ export class FeatureDisabledError extends Schema.TaggedError<FeatureDisabledErro
 export class FeatureGate extends Context.Service<
   FeatureGate,
   {
-    /** Every feature resolved once from the current settings and applied documents. */
+    /** Every feature resolved once for the environment (no project override). */
     readonly states: Effect.Effect<Readonly<Record<FeatureId, FeatureResolution>>>;
-    /** The effective state and, when off, why. */
-    readonly state: (feature: FeatureId) => Effect.Effect<FeatureResolution>;
-    readonly isEffective: (feature: FeatureId) => Effect.Effect<boolean>;
+    /** The effective state and, when off, why; a projectId applies its overrides. */
+    readonly state: (feature: FeatureId, projectId?: string) => Effect.Effect<FeatureResolution>;
+    readonly isEffective: (feature: FeatureId, projectId?: string) => Effect.Effect<boolean>;
     /** Refuses when the feature is ineffective; the design's only server guard. */
-    readonly require: (feature: FeatureId) => Effect.Effect<void, FeatureDisabledError>;
+    readonly require: (
+      feature: FeatureId,
+      projectId?: string,
+    ) => Effect.Effect<void, FeatureDisabledError>;
   }
 >()("@t3tools/ft3-policies/FeatureGate") {}
 
@@ -80,37 +91,89 @@ const disabledError = (
           requirement: reason.requirement,
         });
 
+/** The raw per-project override entries the gate reads out of the server settings. */
+type ProjectOverrideEntries = Readonly<
+  Record<
+    string,
+    { readonly ft3PolicyDocuments?: unknown; readonly ft3FeatureToggles?: unknown } | undefined
+  >
+>;
+
+/** The project's document override, when it decodes; null otherwise (the same rule as PoliciesRpc). */
+const projectDocumentOverrideOf = (
+  overrides: ProjectOverrideEntries,
+  projectId: string | undefined,
+): ProjectPolicyDocumentOverride | null => {
+  if (projectId === undefined) return null;
+  const raw = overrides[projectId]?.ft3PolicyDocuments;
+  if (raw === undefined) return null;
+  const decoded = decodeProjectPolicyDocumentOverrideValue(raw);
+  return Option.isSome(decoded) ? decoded.value : null;
+};
+
+/** The project's toggle override, when it decodes; null means inherit (D3). */
+const projectTogglesOverrideOf = (
+  overrides: ProjectOverrideEntries,
+  projectId: string | undefined,
+): ProjectFeatureTogglesOverride | null => {
+  if (projectId === undefined) return null;
+  const raw = overrides[projectId]?.ft3FeatureToggles;
+  if (raw === undefined) return null;
+  const decoded = decodeProjectFeatureTogglesOverrideValue(raw);
+  return Option.isSome(decoded) ? decoded.value : null;
+};
+
 const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettingsService;
 
-  /** Requirement validity of the applied documents; absent without a tracker. */
-  const requirements = Effect.gen(function* () {
-    const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
-    if (Option.isNone(tracker)) return {};
-    const snapshot = yield* tracker.value.snapshot();
-    return snapshot.requirements;
-  });
-
-  const states = Effect.gen(function* () {
+  /**
+   * Resolves every feature for one project: environment defaults plus the
+   * project's toggle override, against the project scope's requirements when
+   * the project overrides a document (the `PoliciesRpc.scopeFor` rule), else
+   * the environment scope. An unknown project resolves like the environment.
+   */
+  const statesFor = Effect.fn("FeatureGate.statesFor")(function* (projectId?: string) {
     const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+    const policies = readPolicySettings(settings.ft3);
+    const documentOverride = projectDocumentOverrideOf(
+      settings.projectSettingsOverrides,
+      projectId,
+    );
+    const scope = documentOverride !== null && projectId !== undefined ? projectId : undefined;
+    const tracker = yield* Effect.serviceOption(PolicyChangeTracker);
+    const requirements = Option.isNone(tracker)
+      ? {}
+      : (yield* tracker.value.snapshot(scope)).requirements;
     return resolveFeatureStates({
-      requested: readPolicySettings(settings.ft3).features,
-      requirements: yield* requirements,
+      requested: resolveRequestedFeatures(
+        policies,
+        projectTogglesOverrideOf(settings.projectSettingsOverrides, projectId),
+      ),
+      requirements,
     });
   });
 
-  const state = Effect.fn("FeatureGate.state")(function* (feature: FeatureId) {
-    const resolved = yield* states;
+  /** Every feature resolved once for the environment (no project). */
+  const states = statesFor();
+
+  const state = Effect.fn("FeatureGate.state")(function* (feature: FeatureId, projectId?: string) {
+    const resolved = yield* statesFor(projectId);
     return resolved[feature];
   });
 
-  const isEffective = Effect.fn("FeatureGate.isEffective")(function* (feature: FeatureId) {
-    const resolved = yield* states;
+  const isEffective = Effect.fn("FeatureGate.isEffective")(function* (
+    feature: FeatureId,
+    projectId?: string,
+  ) {
+    const resolved = yield* statesFor(projectId);
     return resolved[feature].effectiveEnabled;
   });
 
-  const require = Effect.fn("FeatureGate.require")(function* (feature: FeatureId) {
-    const resolved = yield* states;
+  const require = Effect.fn("FeatureGate.require")(function* (
+    feature: FeatureId,
+    projectId?: string,
+  ) {
+    const resolved = yield* statesFor(projectId);
     const resolvedState = resolved[feature];
     if (resolvedState.effectiveEnabled) return;
     return yield* disabledError(feature, resolvedState.offReason);

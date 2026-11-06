@@ -11,6 +11,20 @@ const gateLayer = (features: Readonly<Record<string, boolean>>) =>
     Layer.provideMerge(ServerSettings.layerTest({ ft3: { policies: { features } } })),
   );
 
+/** Settings with per-project override entries beside the environment toggles. */
+const gateLayerWithProjects = (
+  features: Readonly<Record<string, boolean>>,
+  projectSettingsOverrides: Record<string, unknown>,
+) =>
+  FeatureGate.layer.pipe(
+    Layer.provideMerge(
+      ServerSettings.layerTest({
+        ft3: { policies: { features } },
+        projectSettingsOverrides,
+      } as Parameters<typeof ServerSettings.layerTest>[0]),
+    ),
+  );
+
 const trackerWithRequirements = (
   requirements: PolicySnapshot["requirements"],
 ): Layer.Layer<PolicyChangeTracker> =>
@@ -19,6 +33,25 @@ const trackerWithRequirements = (
     PolicyChangeTracker.of({
       refresh: () => Effect.die("unused in the gate tests"),
       snapshot: () => Effect.succeed({ configVersion: 1, documents: [], requirements }),
+      applied: () => Effect.succeed(null),
+      pendingChange: () => Effect.succeed(null),
+      live: () => Effect.succeed(null),
+    }),
+  );
+
+const trackerWithRequirementsByScope = (
+  requirementsFor: (scope: string | undefined) => PolicySnapshot["requirements"],
+): Layer.Layer<PolicyChangeTracker> =>
+  Layer.succeed(
+    PolicyChangeTracker,
+    PolicyChangeTracker.of({
+      refresh: () => Effect.die("unused in the gate tests"),
+      snapshot: (scope?: string) =>
+        Effect.succeed({
+          configVersion: 1,
+          documents: [],
+          requirements: requirementsFor(scope),
+        }),
       applied: () => Effect.succeed(null),
       pendingChange: () => Effect.succeed(null),
       live: () => Effect.succeed(null),
@@ -141,6 +174,165 @@ describe("FeatureGate", () => {
               leadSkills: true,
               leadRole: true,
             }),
+          ),
+        ),
+      ),
+    ),
+  );
+});
+
+describe("FeatureGate per project", () => {
+  it.effect("uses the environment value when the project has no override", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+
+      const withoutProject = yield* gate.state("board");
+      const withProject = yield* gate.state("board", "proj");
+
+      assert.isFalse(withoutProject.requestedEnabled);
+      assert.isFalse(withoutProject.effectiveEnabled);
+      assert.deepStrictEqual(withProject, withoutProject);
+
+      const error = yield* gate.require("board", "proj").pipe(Effect.flip);
+      assert.equal(error.code, "feature_disabled");
+    }).pipe(Effect.provide(gateLayerWithProjects({ board: false }, {}))),
+  );
+
+  it.effect("turns a feature on for a project while the environment stays off", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+
+      const mail = yield* gate.state("mail", "proj");
+
+      assert.isTrue(mail.requestedEnabled);
+      assert.isTrue(mail.effectiveEnabled);
+      assert.isNull(mail.offReason);
+      yield* gate.require("mail", "proj");
+      assert.isFalse((yield* gate.state("mail")).requestedEnabled);
+    }).pipe(
+      Effect.provide(
+        gateLayerWithProjects(
+          { mail: false, board: true, delegation: true },
+          {
+            proj: { ft3FeatureToggles: { mail: true } },
+          },
+        ),
+      ),
+    ),
+  );
+
+  it.effect("turns a feature off for a project while the environment stays on", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+
+      const board = yield* gate.state("board", "proj");
+
+      assert.isFalse(board.requestedEnabled);
+      assert.isFalse(board.effectiveEnabled);
+      assert.isNull(board.offReason);
+      assert.isTrue(yield* gate.isEffective("board"));
+
+      const error = yield* gate.require("board", "proj").pipe(Effect.flip);
+      assert.equal(error.code, "feature_disabled");
+    }).pipe(
+      Effect.provide(
+        gateLayerWithProjects(
+          { board: true, roles: true },
+          {
+            proj: { ft3FeatureToggles: { board: false } },
+          },
+        ),
+      ),
+    ),
+  );
+
+  it.effect("falls back to the environment value for an unknown project", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+
+      const board = yield* gate.state("board", "ghost");
+
+      assert.isFalse(board.requestedEnabled);
+      assert.isFalse(board.effectiveEnabled);
+
+      const error = yield* gate.require("board", "ghost").pipe(Effect.flip);
+      assert.equal(error.code, "feature_disabled");
+    }).pipe(
+      Effect.provide(
+        gateLayerWithProjects(
+          { board: false },
+          {
+            other: { ft3FeatureToggles: { board: true } },
+          },
+        ),
+      ),
+    ),
+  );
+
+  it.effect("reports a dependency the project override turned off", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+
+      const board = yield* gate.state("board", "proj");
+
+      assert.isTrue(board.requestedEnabled);
+      assert.isFalse(board.effectiveEnabled);
+      assert.deepStrictEqual(board.offReason, {
+        code: "feature_dependency_off",
+        dependency: "roles",
+      });
+      assert.isTrue((yield* gate.state("board")).effectiveEnabled);
+
+      const error = yield* gate.require("board", "proj").pipe(Effect.flip);
+      assert.equal(error.code, "feature_dependency_off");
+      assert.equal(error.dependency, "roles");
+    }).pipe(
+      Effect.provide(
+        gateLayerWithProjects(
+          { board: true, roles: true },
+          {
+            proj: { ft3FeatureToggles: { roles: false } },
+          },
+        ),
+      ),
+    ),
+  );
+
+  it.effect("reads requirements from the project scope only when it overrides a document", () =>
+    Effect.gen(function* () {
+      const gate = yield* FeatureGate.FeatureGate;
+
+      const toggles = yield* gate.state("mail", "toggles");
+      assert.isTrue(toggles.requestedEnabled);
+      assert.isTrue(toggles.effectiveEnabled);
+
+      const docs = yield* gate.state("mail", "docs");
+      assert.isTrue(docs.requestedEnabled);
+      assert.isFalse(docs.effectiveEnabled);
+      assert.deepStrictEqual(docs.offReason, {
+        code: "feature_document_off",
+        requirement: "routingPolicy",
+      });
+
+      const error = yield* gate.require("mail", "docs").pipe(Effect.flip);
+      assert.equal(error.code, "feature_document_off");
+      assert.equal(error.requirement, "routingPolicy");
+    }).pipe(
+      Effect.provide(
+        gateLayerWithProjects(
+          { mail: false, board: true, delegation: true },
+          {
+            toggles: { ft3FeatureToggles: { mail: true } },
+            docs: {
+              ft3FeatureToggles: { mail: true },
+              ft3PolicyDocuments: { key: "routingPolicy", source: { kind: "builtin" } },
+            },
+          },
+        ).pipe(
+          Layer.provideMerge(
+            trackerWithRequirementsByScope((scope) =>
+              scope === "docs" ? { routingPolicy: false } : {},
+            ),
           ),
         ),
       ),
