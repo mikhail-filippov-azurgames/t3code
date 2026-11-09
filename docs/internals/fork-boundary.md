@@ -506,31 +506,22 @@ Coordinator / Needs human, строка фильтров, чипы коорди�
 перенесены ранее). Поведение не перенесено: delegated-summary history в панели
 и пин провайдера в диалоге архитектора — отдельные срезы.
 
-## Usage page: model columns, sorting and per-session cost (S)
+## Usage page: pooled limits heading only (S)
 
-`packages/ft3-web/src/usage` owns the column picker, column persistence, sort
-logic, the model table and the per-session formatter. Upstream `UsagePage` keeps
-its own metric/window controls, provider filter, chart, totals and time
-breakdown; it only mounts the table and formats two extra figures. V2 already
-ships the pooled limits view (`UsageLimitsPooled` with `collectLimitPools`), so
-the old fork's pooled component is not ported.
+Решение человека (2026-11-09): в спорных местах берём upstream, собственные
+колонки/сортировку моделей и per-session cost старого форка не возвращаем.
+`UsagePage`, `usageBreakdown` и `ModelTotals` остаются upstream-ными без правок;
+восстановленные после rebase модули `usageModelColumns`, `usageModelSort`,
+`usageSessionCost`, `usageModelColumnsPreference`, `UsageModelTable` и поле
+`ModelTotals.sessions` удалены.
 
-`packages/shared/src/usageMerge.ts` gains `ModelTotals.sessions`, summed from
-bucket session counts. A session using several models or days counts under each,
-because buckets do not carry session ids.
+`packages/ft3-web/src/usage` удерживает только заголовок пула лимитов для
+Kimi usage limits: `UsageLimitsPoolHeading` и `limitPoolDisplayName`
+(см. «Kimi usage limits»); шов в `UsageLimitsPooled` описан там.
 
-| Upstream file                                          | Connection                                                                                                                                                                                                                                                                       | Reason                                                                           |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| `apps/web/src/components/usage/UsagePage.tsx`          | import `UsageModelTable`/`formatUsdPerSession`; mount the package table before the upstream table (hidden by `[data-ft3-model-table] + table`); add the average tile inside the upstream totals grid behind `[data-ft3-usage-metric]`; append `$/session` after `{sessionLabel}` | upstream table and totals markup stay verbatim; ft3 only adds siblings and cells |
-| `apps/web/src/components/usage/usageBreakdown.ts`      | retain upstream `sortModelsByTokens`/`modelShare` unchanged; ft3 columns and sorting are added through `UsageModelTable`                                                                                                                                                         | no upstream helper removal; package owns its added table behavior                |
-| `apps/web/src/components/usage/usageBreakdown.test.ts` | add `sessions` to the `ModelTotals` fixture                                                                                                                                                                                                                                      | follow the additive model field                                                  |
-| `packages/shared/src/usageMerge.ts`                    | add `ModelTotals.sessions` from bucket counts                                                                                                                                                                                                                                    | the field is a generic usage metric, so it stays next to the other totals        |
-| `packages/shared/src/usageMerge.test.ts`               | assert per-model session sums                                                                                                                                                                                                                                                    | cover the new additive field                                                     |
-| `packages/ft3-web/package.json`                        | export `./usage`                                                                                                                                                                                                                                                                 | expose the extension entry                                                       |
-
-New fork-owned tests: `packages/ft3-web/src/usage/*.test.ts` (including
-`UsageModelTable.browser.test.tsx` and `usageProviders.test.ts`), not under
-`apps/web`.
+| Upstream file                   | Connection       | Reason                     |
+| ------------------------------- | ---------------- | -------------------------- |
+| `packages/ft3-web/package.json` | export `./usage` | expose the extension entry |
 
 ## Sidebar: лес делегирования и роль-бейджи (порт старого форка)
 
