@@ -6,6 +6,7 @@ import type {
   AcpSessionUpdate,
 } from "@t3tools/provider-acp-registry/server";
 import { describe, expect, it } from "@effect/vitest";
+import type { AcpError } from "effect-acp/errors";
 import * as Effect from "effect/Effect";
 
 import { decorateKimiRuntime, kimiEmptyTurnFailureMessage } from "./promptFailure.ts";
@@ -44,7 +45,7 @@ const makeRuntime = (input: {
   readonly update?: AcpSessionUpdate;
 }): {
   readonly runtime: AcpSessionRuntimeService;
-  readonly runPrompt: () => Effect.Effect<AcpPromptResponse>;
+  readonly runPrompt: () => Effect.Effect<AcpPromptResponse, AcpError>;
 } => {
   let handler: UpdateHandler | undefined;
   const runtime = {
