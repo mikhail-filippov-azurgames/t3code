@@ -7,6 +7,7 @@ import {
   type ProjectSettingsOverrides,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -16,6 +17,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
+import * as McpHttpServer from "../../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as ProviderRegistry from "../../../apps/server/src/provider/ProviderRegistry.ts";
@@ -66,9 +68,12 @@ const client = McpSchema.McpServerClient.of({
   },
   getClient: Effect.die("unused"),
 });
-const crypto = Layer.succeed(
-  SecureRandom.SecureRandom,
-  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+const crypto = Layer.merge(
+  Layer.succeed(
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+  ),
+  Digest.layerWebCrypto,
 );
 
 function fixture(
@@ -121,6 +126,7 @@ function fixture(
   );
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits, Ft3Host.layer).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provideMerge(SqlitePersistence.layerMemory),
     Layer.provide(threads),
     Layer.provide(planningFakes),

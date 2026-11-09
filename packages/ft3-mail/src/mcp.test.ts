@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import { McpSchema, McpServer } from "effect/ai";
 
+import * as McpHttpServer from "../../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 
@@ -64,6 +65,7 @@ const fixture = (
   });
   const layer = mailMcpLayerFrom(harness.layer, gateLayer(enabled, true, projectOverrides)).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(SqlitePersistence.layerMemory),
     Layer.provideMerge(harness.threadLayer),
     Layer.provide(cryptoLayer),

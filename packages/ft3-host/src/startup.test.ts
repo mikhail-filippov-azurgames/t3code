@@ -14,6 +14,7 @@ import { layer, runMigrations } from "./server.ts";
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -31,9 +32,12 @@ const hostLayer = (
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
     Layer.provide(ServerSettings.layerTest(settings)),
     Layer.provide(
-      Layer.succeed(
-        SecureRandom.SecureRandom,
-        SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+      Layer.merge(
+        Layer.succeed(
+          SecureRandom.SecureRandom,
+          SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+        ),
+        Digest.layerWebCrypto,
       ),
     ),
     Layer.provide(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-host-" })),

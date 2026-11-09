@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -23,6 +24,7 @@ import {
   PolicyChangeTracker,
   layer as policyChangeTrackerLayer,
 } from "../../../../packages/ft3-policies/src/policyChangeTracker.ts";
+import { layerMemory as policyAppliedStoreLayer } from "../../../../packages/ft3-policies/src/policyAppliedStore.ts";
 import { layer as policyDocumentLoaderLayer } from "../../../../packages/ft3-policies/src/policyDocumentLoader.ts";
 import { memoryPolicyDocumentPort } from "../../../../packages/ft3-policies/src/policyDocuments.testkit.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
@@ -169,6 +171,7 @@ type Dispatched = ReadonlyArray<{ readonly task: string; readonly role?: string 
 const trackerLayerFor = (files: ReadonlyMap<string, string>) =>
   policyChangeTrackerLayer.pipe(
     Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(files))),
+    Layer.provide(policyAppliedStoreLayer),
   );
 
 type TestSettings = Parameters<typeof ServerSettings.layerTest>[0];
@@ -184,6 +187,7 @@ const layerFor = (
       Layer.provide(
         Layer.mergeAll(
           NodeServices.layer,
+          NodeCrypto.layer,
           ServerSettings.layerTest(settings),
           Layer.mock(ProviderRegistry.ProviderRegistry)({
             getProviders: Effect.succeed([codexProvider]),

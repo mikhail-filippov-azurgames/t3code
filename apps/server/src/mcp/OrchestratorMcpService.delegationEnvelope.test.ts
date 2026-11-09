@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -129,6 +130,7 @@ const parentProjection = (threadId: ThreadId) =>
 const layerDependencies = (threadId: ThreadId, dispatched: Ref.Ref<number>) =>
   Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     settingsLayer,
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed(providers),

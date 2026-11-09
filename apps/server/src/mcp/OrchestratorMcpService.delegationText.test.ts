@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -84,6 +85,7 @@ const adapterRegistryLayer = Layer.succeed(
 const baseLayers = () =>
   Layer.mergeAll(
     NodeServices.layer,
+    NodeCrypto.layer,
     ServerSettings.layerTest(),
     Layer.mock(ProviderRegistry.ProviderRegistry)({
       getProviders: Effect.succeed([codexProvider]),

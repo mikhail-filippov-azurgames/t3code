@@ -18,8 +18,13 @@ export const memoryPolicyDocumentPort = (
   read: ({ ref }) => {
     const content = files.get(ref);
     if (content === undefined) {
-      return Effect.fail({ code: "document_not_found", message: `no document ${ref}` });
+      return Effect.fail({ code: "document_not_found", message: `no document ${ref}` } as const);
     }
-    return Effect.succeed({ content, sha256: sha256(content), relPath: ref });
+    return Effect.succeed({
+      content,
+      sha256: sha256(content),
+      relPath: ref,
+      stableId: sha256(ref),
+    });
   },
 });

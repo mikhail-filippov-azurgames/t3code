@@ -1,3 +1,5 @@
+// @effect-diagnostics processEnvInEffect:off - the test folds the executor-only instance list env in and out.
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
@@ -75,5 +77,5 @@ it.effect("an executor-only instance never receives the orchestration capability
       "pull-requests",
       "worktree",
     ]);
-  }).pipe((use) => withExecutorOnly("pi-local", use)),
+  }).pipe((use) => withExecutorOnly("pi-local", use), Effect.provide(NodeCrypto.layer)),
 );

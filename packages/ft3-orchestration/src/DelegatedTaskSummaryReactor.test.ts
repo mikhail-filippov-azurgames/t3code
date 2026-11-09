@@ -42,6 +42,7 @@ import * as OrchestrationEventStore from "../../../apps/server/src/persistence/O
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as TextGeneration from "../../../apps/server/src/textGeneration/TextGeneration.ts";
 import * as Ft3Host from "../../ft3-host/src/server.ts";
@@ -233,6 +234,7 @@ function fixture() {
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-summary-" })),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(NodeCrypto.layer),
       Layer.provide(launcherFake().layer),
       // The mail stack builds the plan layers, and PlanService reads the
       // project store; the summary tests never touch plans.

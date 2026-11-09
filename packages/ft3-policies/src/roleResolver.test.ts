@@ -6,6 +6,7 @@ import type { PolicyDocumentSource } from "./contracts.ts";
 import { PolicyChangeTracker, layer as policyChangeTrackerLayer } from "./policyChangeTracker.ts";
 import { layer as policyDocumentLoaderLayer } from "./policyDocumentLoader.ts";
 import { memoryPolicyDocumentPort } from "./policyDocuments.testkit.ts";
+import { layerMemory as policyAppliedStoreLayer } from "./policyAppliedStore.ts";
 import {
   RoleResolutionError,
   RoleResolver,
@@ -63,6 +64,7 @@ const sources = {
 const trackerLayerFor = (files: ReadonlyMap<string, string>) =>
   policyChangeTrackerLayer.pipe(
     Layer.provide(policyDocumentLoaderLayer(memoryPolicyDocumentPort(files))),
+    Layer.provide(policyAppliedStoreLayer),
   );
 
 const layerFor = (files: ReadonlyMap<string, string>) =>

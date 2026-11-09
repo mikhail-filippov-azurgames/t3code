@@ -20,6 +20,7 @@ import {
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
+import * as McpHttpServer from "../../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import {
   idleThreadProjection,
@@ -75,9 +77,12 @@ const handoff: Contracts.TaskHandoff = {
   evidence: [contractDocUrl],
   predecessorRefs: [],
 };
-const crypto = Layer.succeed(
-  SecureRandom.SecureRandom,
-  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+const crypto = Layer.merge(
+  Layer.succeed(
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+  ),
+  Digest.layerWebCrypto,
 );
 const providerRegistry = Layer.mock(ProviderRegistry.ProviderRegistry)({
   getProviders: Effect.succeed([]),
@@ -290,6 +295,7 @@ function fixture() {
   });
   const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(Layer.mock(MailParticipantLauncher)({})),
     Layer.provide(Layer.mock(PlanGate)({})),
     Layer.provide(Layer.mock(PlanService)({})),
@@ -671,6 +677,7 @@ describe("ft3 task toolkit through ft3-host", () => {
       });
       const layer = Layer.mergeAll(...Ft3Host.mcpToolkits).pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provide(Layer.mock(MailParticipantLauncher)({})),
         Layer.provide(Layer.mock(PlanGate)({})),
         Layer.provide(Layer.mock(PlanService)({})),

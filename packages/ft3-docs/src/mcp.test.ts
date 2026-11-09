@@ -15,6 +15,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { McpSchema, McpServer } from "effect/ai";
 
+import * as McpHttpServer from "../../../apps/server/src/mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../../apps/server/src/mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
@@ -137,6 +138,7 @@ function fixture(root: string, options: FixtureOptions = {}) {
     ...(options.writeFacts === undefined ? {} : { writeFacts: factsLayer(options.writeFacts) }),
   }).pipe(
     Layer.provideMerge(McpServer.McpServer.layer),
+    Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
     Layer.provide(SqlitePersistence.layerMemory),
     Layer.provide(threads),
     Layer.provide(cryptoLayer),

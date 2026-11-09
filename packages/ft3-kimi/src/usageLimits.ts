@@ -10,7 +10,6 @@ import {
 } from "@t3tools/provider-core/server/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
-import * as Data from "effect/Data";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -49,9 +48,9 @@ const WINDOW_DEFS: Readonly<
   limit_month_code: { kind: "monthly", label: "Monthly · Code" },
 };
 
-class KimiUsageProbeError extends Data.TaggedError("KimiUsageProbeError")<{
-  readonly cause: unknown;
-}> {}
+class KimiUsageProbeError extends Schema.TaggedError<KimiUsageProbeError>()("KimiUsageProbeError", {
+  cause: Schema.Unknown,
+}) {}
 
 /** Wire shape of the CLI's credential file, as `kimi login` writes it. */
 const TokenWireSchema = Schema.Struct({

@@ -35,6 +35,7 @@ import * as OrchestrationEventStore from "../../../apps/server/src/persistence/O
 import * as SqlitePersistence from "../../../apps/server/src/persistence/Sqlite.ts";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as EventSink from "../../../apps/server/src/orchestration-v2/EventSink.ts";
 import * as EventStore from "../../../apps/server/src/orchestration-v2/EventStore.ts";
@@ -271,6 +272,7 @@ function fixture() {
     Layer.provideMerge(ServerSettings.layerTest(configuredLeadPolicySettings())),
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-board-reactor-" })),
     Layer.provideMerge(NodeServices.layer),
+    Layer.provideMerge(NodeCrypto.layer),
     Layer.provide(launcher.layer),
     Layer.provideMerge(projects),
   );

@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - the test writes a roles tree into a temporary directory.
+// @effect-diagnostics nodeBuiltinImport:off processEnvInEffect:off - the test writes a roles tree into a temporary directory and folds T3CODE_FT3_ROLES_DIR in and out.
 import { DocsService } from "@t3tools/ft3-docs/server";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";

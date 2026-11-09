@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off cryptoRandomUUID:off cryptoRandomUUIDInEffect:off - the tests create a document store on disk with fresh ids.
+// @effect-diagnostics nodeBuiltinImport:off cryptoRandomUUID:off cryptoRandomUUIDInEffect:off globalErrorInEffectCatch:off - the tests create a document store on disk with fresh ids; symlink EPERM skip needs the raw errno.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -94,9 +94,10 @@ describe("docs.read", () => {
           );
           const filePath = NodePath.join(root, "contexts", "project", "plan.md");
           yield* Effect.promise(() => NodeFSP.rm(filePath, { force: true }));
-          const linked = yield* Effect.tryPromise(() =>
-            NodeFSP.symlink(NodePath.join(outside, "secret.md"), filePath, "file"),
-          ).pipe(
+          const linked = yield* Effect.tryPromise({
+            try: () => NodeFSP.symlink(NodePath.join(outside, "secret.md"), filePath, "file"),
+            catch: (cause) => cause as NodeJS.ErrnoException,
+          }).pipe(
             Effect.as(true),
             // Without link privileges the OS refuses with EPERM; the test
             // cannot run there, so it skips instead of failing.
