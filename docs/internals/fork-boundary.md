@@ -916,9 +916,9 @@ store через `DocAddress` из `@t3tools/ft3-docs/contracts` или внеш
 через generic-ключ project settings, поэтому upstream settings service остаётся
 единственным хранилищем.
 
-| Upstream-файл                        | Правка                                                                                                                                    | Зачем                                                                          |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `packages/contracts/src/settings.ts` | optional `ft3PolicyDocuments` в `ProjectSettingsOverrides`; payload `Unknown`, типизированный decode — в `@t3tools/ft3-policies/settings` | один generic-шов project settings без импорта fork-пакета в upstream-контракты |
+| Upstream-файл                        | Правка                                                                                                                                                          | Зачем                                                                          |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `packages/contracts/src/settings.ts` | optional `ft3PolicyDocuments` и `ft3FeatureToggles` в `ProjectSettingsOverrides`; payload `Unknown`, типизированный decode — в `@t3tools/ft3-policies/settings` | один generic-шов project settings без импорта fork-пакета в upstream-контракты |
 
 Fork-owned tests: `packages/ft3-policies/src/features.test.ts` and
 `packages/ft3-policies/src/settings.test.ts`.
