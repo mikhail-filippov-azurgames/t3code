@@ -43,6 +43,7 @@ import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts"
 import { SecretRequests } from "../secrets/SecretRequests.ts";
 import { ServerSettingsService } from "../serverSettings.ts";
 import { SourceControlRepositoryService } from "../sourceControl/SourceControlRepositoryService.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { GitVcsDriver } from "../vcs/GitVcsDriver.ts";
 import { VcsStatusBroadcaster } from "../vcs/VcsStatusBroadcaster.ts";
 import { buildCodexAdditionalContext } from "./CodexDeveloperInstructions.ts";
@@ -126,6 +127,8 @@ const codexAdditionalContext = () =>
 const layerAdvertisedTools = McpHttpServer.layerTools.pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
   Layer.provide(toolHandlerServices),
+  // The ft3 toolkits build repositories against the SQL client.
+  Layer.provide(SqlitePersistence.layerMemory),
 );
 
 // Claude Code loads these tools up front instead of behind ToolSearch, outside this budget.
