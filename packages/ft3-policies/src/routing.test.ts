@@ -199,6 +199,13 @@ describe("normal service policy", () => {
     const codex = normalServiceOptions("codex", { serviceTier: "default" });
     assert.equal(codex.accelerated, false);
     assert.deepStrictEqual(codex.options, [{ id: "serviceTier", value: "default" }]);
+
+    const unforced = normalServiceOptions("", { serviceTier: "default", reasoningEffort: "low" });
+    assert.equal(unforced.accelerated, false);
+    assert.deepStrictEqual(unforced.options, [
+      { id: "serviceTier", value: "default" },
+      { id: "reasoningEffort", value: "low" },
+    ]);
   });
 
   it("turns an alias's accelerated tier into the normal one on the chain", () => {

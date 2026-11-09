@@ -167,8 +167,15 @@ export function normalServiceOptions(
       kept.push({ id, value });
       continue;
     }
+    const forced = NORMAL_TIER_BY_DRIVER[driverKind];
+    if (isNormalTierValue(id, value)) {
+      // An explicit normal tier must survive: some catalog defaults are priority.
+      if (forced === undefined) kept.push({ id, value });
+      else removed.push(id);
+      continue;
+    }
     removed.push(id);
-    if (!isNormalTierValue(id, value)) accelerated = true;
+    accelerated = true;
   }
   const forced = NORMAL_TIER_BY_DRIVER[driverKind];
   if (forced !== undefined) kept.push(forced);

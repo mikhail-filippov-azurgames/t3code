@@ -667,7 +667,7 @@ const make = Effect.gen(function* () {
       );
     }
     const normalized = normalService.normalizeSelection({
-      // No driver forcing: an override runs on provider defaults, which are normal.
+      // No driver forcing: an explicit normal tier is kept, an accelerated one refused.
       driverKind: "",
       instanceId: decoded.instanceId,
       model: decoded.model,
