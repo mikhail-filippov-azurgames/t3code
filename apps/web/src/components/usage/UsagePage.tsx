@@ -1,6 +1,6 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
-import { providersForWindow } from "@t3tools/ft3-web/usage";
+import { formatUsdPerSession, providersForWindow, UsageModelTable } from "@t3tools/ft3-web/usage";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -739,6 +739,9 @@ function UsageOverview({
                         )}
                       >
                         {sessionLabel}
+                        {providerSessions > 0
+                          ? ` · ${formatUsdPerSession(totals?.costUsd ?? 0, providerSessions)}/session`
+                          : ""}
                       </span>
                     </span>
                   </span>
@@ -819,6 +822,13 @@ function UsageOverview({
             label="Cache savings"
             value={formatUsd(merged.costQuality.cacheSavingsUsd)}
           />
+          <div data-ft3-usage-metric="" className="contents">
+            <Metric
+              loading={loadingPartial}
+              label="Avg cost / session"
+              value={formatUsdPerSession(merged.costUsd, merged.sessions)}
+            />
+          </div>
         </div>
       </section>
 
@@ -876,6 +886,15 @@ function UsageOverview({
             ))}
           </ToggleGroup>
         </div>
+
+        {breakdown === "model" ? (
+          <UsageModelTable
+            models={breakdownModels}
+            metric={metric === "tokens" ? "tokens" : "cost"}
+            loadingProviders={loadingProviders}
+            onSelectModel={onSelectModel}
+          />
+        ) : null}
 
         {breakdown === "model" ? (
           <table className="w-full text-sm">
