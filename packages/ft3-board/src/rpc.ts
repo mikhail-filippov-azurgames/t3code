@@ -2,6 +2,7 @@ import { FT3_BOARD_WS_METHODS } from "./rpc-contracts.ts";
 export { FT3_BOARD_WS_METHODS, boardRpcs, boardRpcScopes } from "./rpc-contracts.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Result from "effect/Result";
 
 import { ThreadId } from "@t3tools/contracts";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
@@ -58,9 +59,14 @@ const requireBoardForThread = Effect.fn("BoardRpc.requireBoardForThread")(functi
   yield* service.requireFeature({ threadId });
 });
 
-const requireBoardForEnvironment = Effect.gen(function* () {
+const boardEnabledForThread = Effect.fn("BoardRpc.boardEnabledForThread")(function* (
+  threadId: ThreadId,
+) {
   const service = yield* BoardService.BoardService;
-  yield* service.requireFeature({});
+  const result = yield* Effect.result(service.requireFeature({ threadId }));
+  if (Result.isSuccess(result)) return true;
+  if (result.failure.code === "feature_disabled") return false;
+  return yield* result.failure;
 });
 
 const requireBoardForCard = Effect.fn("BoardRpc.requireBoardForCard")(function* (
@@ -80,7 +86,6 @@ const requirePlanningForCard = Effect.fn("BoardRpc.requirePlanningForCard")(func
 export const boardRpcHandlers = {
   [FT3_BOARD_WS_METHODS.boardOrchestratorsList]: Effect.fn("BoardRpc.orchestratorsList")(
     function* () {
-      yield* requireBoardForEnvironment;
       const service = yield* BoardService.BoardService;
       return yield* service.listOrchestrators();
     },
@@ -111,16 +116,15 @@ export const boardRpcHandlers = {
   ) {
     const service = yield* BoardService.BoardService;
     const resolved = yield* service.resolveCards(input);
+    const matches: Contracts.BoardCardLookupMatch[] = [];
     for (const match of resolved.matches) {
-      yield* requireBoardForThread(match.card.orchestratorThreadId);
+      if (yield* boardEnabledForThread(match.card.orchestratorThreadId)) matches.push(match);
     }
+    const details: Contracts.BoardCardLookupDetail[] = [];
     for (const detail of resolved.details) {
-      yield* requireBoardForThread(detail.card.orchestratorThreadId);
+      if (yield* boardEnabledForThread(detail.card.orchestratorThreadId)) details.push(detail);
     }
-    if (resolved.matches.length === 0 && resolved.details.length === 0) {
-      yield* requireBoardForEnvironment;
-    }
-    return resolved;
+    return { ...resolved, matches, details };
   }),
   [FT3_BOARD_WS_METHODS.boardExecutorDelegations]: Effect.fn("BoardRpc.executorDelegations")(
     function* (input: Contracts.BoardExecutorDelegationsInput) {
@@ -139,7 +143,6 @@ export const boardRpcHandlers = {
   [FT3_BOARD_WS_METHODS.boardList]: Effect.fn("BoardRpc.list")(function* (
     input: Contracts.BoardListInput,
   ) {
-    yield* requireBoardForEnvironment;
     const service = yield* BoardService.BoardService;
     const plans = yield* PlanService;
     const result = yield* service.listBoard(input);
