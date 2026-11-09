@@ -1,6 +1,12 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import { PROVIDER_ORDER, providersWithUsage } from "~/components/usage/usageProviders";
+import {
+  PROVIDER_ORDER,
+  providersWithUsage,
+  rankProvidersByMetric,
+} from "~/components/usage/usageProviders";
+
+export { rankProvidersByMetric };
 
 /**
  * A provider whose scan reported a source is configured for this environment,

@@ -111,7 +111,7 @@ describe("UsageModelTable", () => {
     const zeroTokenRow = rows.find((row) => row.textContent?.includes("zero-token-model"));
     expect(unpricedRow?.textContent).toContain("Unpriced");
     expect(unpricedRow?.textContent).not.toContain("$0.00");
-    expect(zeroTokenRow?.textContent).toContain("—");
+    expect(zeroTokenRow?.textContent).toContain("–");
     expect(zeroTokenRow?.textContent).not.toContain("Infinity");
     expect(zeroTokenRow?.textContent).not.toContain("NaN");
   });

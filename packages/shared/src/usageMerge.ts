@@ -34,6 +34,8 @@ export interface ModelTotals {
   readonly records: number;
   readonly unpricedRecords: number;
   readonly unpricedTokens: number;
+  /** Sums bucket counts, so a session using several models counts under each. */
+  readonly sessions: number;
   readonly costShare: number;
   readonly tokenShare: number;
 }
@@ -359,6 +361,7 @@ export function mergeUsage(
       records: number;
       unpricedRecords: number;
       unpricedTokens: number;
+      sessions: number;
     }
   >();
   const dailyAccumulator = new Map<
@@ -452,6 +455,7 @@ export function mergeUsage(
         records: 0,
         unpricedRecords: 0,
         unpricedTokens: 0,
+        sessions: 0,
       };
       model.costUsd += bucket.costUsd;
       model.totalTokens += tokens;
@@ -464,6 +468,7 @@ export function mergeUsage(
       };
       model.records += bucket.records;
       model.unpricedRecords += bucket.unpricedRecords;
+      model.sessions += bucket.sessions;
       if (bucket.records > 0) {
         model.unpricedTokens += (tokens * bucket.unpricedRecords) / bucket.records;
       }
@@ -528,6 +533,7 @@ export function mergeUsage(
       records: totals.records,
       unpricedRecords: totals.unpricedRecords,
       unpricedTokens: totals.unpricedTokens,
+      sessions: totals.sessions,
       costShare: costUsd === 0 ? 0 : totals.costUsd / costUsd,
       tokenShare: totalTokens === 0 ? 0 : totals.totalTokens / totalTokens,
     }))

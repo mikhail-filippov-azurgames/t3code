@@ -1,3 +1,4 @@
+// @effect-diagnostics extendsNativeError:off - the engine-unavailable marker crosses a Promise-based transport boundary, not the Effect failure channel.
 import type { ProviderDriverKind, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 
 /**

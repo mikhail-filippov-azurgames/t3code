@@ -20,6 +20,7 @@ import type { ThreadFamilyRoot } from "@t3tools/ft3-web/sidebar";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { serverEnvironment } from "./server";
 import { environmentShell } from "./shell";
 
@@ -56,6 +57,7 @@ export function useThreadFamilies(roots: readonly ThreadFamilyRoot[]): void {
       ...new Set(roots.map((root) => JSON.stringify([root.environmentId, root.rootThreadId]))),
     ].sort(),
   );
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- holds the thread-family registry mounts until unmount
   useEffect(() => {
     const releases = (JSON.parse(rootsKey) as string[]).map((key) => {
       const [environmentId, rootThreadId] = JSON.parse(key) as [EnvironmentId, ThreadId];
@@ -70,6 +72,7 @@ export function useThreadFamily(
   environmentId: EnvironmentId | null,
   rootThreadId: ThreadId | null,
 ): void {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- holds the thread-family registry mount until unmount
   useEffect(() => {
     if (environmentId === null || rootThreadId === null) return;
     return threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId);

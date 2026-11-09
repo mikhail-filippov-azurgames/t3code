@@ -1,6 +1,4 @@
 import { VoiceInputSetup } from "./VoiceInputSetup";
-import { ArchitectPublishButton } from "@t3tools/ft3-web/architect";
-import { PiInferenceServerControl } from "@t3tools/ft3-web/pi";
 import { ChatComposerFt3Actions } from "@t3tools/ft3-web/chat-composer";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";

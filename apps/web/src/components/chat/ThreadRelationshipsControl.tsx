@@ -501,8 +501,8 @@ export function ThreadRelationshipsPanel(props: {
   const pinnedLineage = props.pinnedLineageRows?.(props.threadId);
   const pinnedRows = pinnedLineage?.rows ?? [];
   // Pinned threads leave the groups but still count toward the running total.
-  const isUnpinnedRow = ({ threadId }: ThreadRelationshipWalkRow) =>
-    !pinnedLineage?.hiddenThreadIds.has(threadId);
+  const isUnpinnedRow = (row: LineageRow) =>
+    "remote" in row || !pinnedLineage?.hiddenThreadIds.has(row.threadId);
   const relationshipRows = orderWebThreadLineageRows({
     graph,
     rows: immediateThreadRelationships(graph, props.threadId),

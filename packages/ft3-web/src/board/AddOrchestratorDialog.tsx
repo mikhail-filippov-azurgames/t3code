@@ -357,7 +357,6 @@ export function AddOrchestratorDialog({
                       promptUltrathink="none"
                       modelOptions={modelSelection.options ?? []}
                       allowPromptInjectedEffort={false}
-                      planModeEnabled={pickerSettings.planModeEnabled}
                       onModelOptionsChange={(options) => {
                         setModelSelectionOverride(
                           createModelSelection(

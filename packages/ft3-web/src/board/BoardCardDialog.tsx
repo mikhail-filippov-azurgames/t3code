@@ -183,7 +183,6 @@ export function BoardCardDialog({ environmentId, onClose, onCreate }: BoardCardD
                     promptUltrathink="none"
                     modelOptions={modelSelection.options ?? []}
                     allowPromptInjectedEffort={false}
-                    planModeEnabled={pickerSettings.planModeEnabled}
                     onModelOptionsChange={(options) => {
                       setModelSelectionOverride(
                         createModelSelection(

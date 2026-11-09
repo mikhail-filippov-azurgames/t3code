@@ -32,7 +32,7 @@ function figureClass(loading: boolean) {
 
 function formatUsdPerMillion(model: ModelTotals): string {
   const value = modelSortValue(model, "pricePerMillion", "cost");
-  return value === null ? "—" : formatUsd(value);
+  return value === null ? "–" : formatUsd(value);
 }
 
 function ModelCell({
@@ -55,7 +55,7 @@ function ModelCell({
       return metric === "tokens"
         ? formatPercent(model.tokenShare)
         : isModelCostUnknown(model)
-          ? "—"
+          ? "–"
           : formatPercent(model.costShare);
     case "tokens":
       return formatTokens(model.totalTokens);
