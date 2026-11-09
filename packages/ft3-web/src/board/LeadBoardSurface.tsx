@@ -608,6 +608,8 @@ function PinnedCard(props: {
   readonly onRequest: (card: BoardCard, text: string) => Promise<void>;
 }) {
   const [requestText, setRequestText] = useState("");
+  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
+  const [historyExpanded, setHistoryExpanded] = useState(false);
   const { card, events, orchestratorThreadTitle } = props.detail ?? {};
 
   return (
@@ -691,9 +693,26 @@ function PinnedCard(props: {
                 Orchestrator: {orchestratorThreadTitle ?? card.orchestratorThreadId}
               </p>
               {card.body ? (
-                <p className="mb-3 max-h-28 overflow-y-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
-                  {card.body}
-                </p>
+                <div className="mb-3">
+                  <button
+                    type="button"
+                    className="flex cursor-pointer items-center gap-1 rounded-sm text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-expanded={descriptionExpanded}
+                    onClick={() => setDescriptionExpanded((value) => !value)}
+                  >
+                    {descriptionExpanded ? (
+                      <ChevronDownIcon className="size-3.5" aria-hidden="true" />
+                    ) : (
+                      <ChevronRightIcon className="size-3.5" aria-hidden="true" />
+                    )}
+                    Description
+                  </button>
+                  {descriptionExpanded ? (
+                    <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-relaxed">
+                      {card.body}
+                    </p>
+                  ) : null}
+                </div>
               ) : null}
               <div className="mb-3 flex flex-wrap gap-1.5">
                 <Button
@@ -785,27 +804,41 @@ function PinnedCard(props: {
                 </p>
               ) : null}
               <div className="border-t border-border pt-2">
-                <h4 className="mb-1 text-xs font-semibold">History</h4>
-                {events?.length ? (
-                  <ol className="space-y-2">
-                    {events.map((entry) => (
-                      <li key={entry.entryId} className="border-l-2 border-border pl-2 text-xs">
-                        <p className="font-medium">
-                          {boardStatusLabel(entry.status)} ·{" "}
-                          {boardExecutorRoleLabel(entry.executorRole)}
-                        </p>
-                        {entry.body ? (
-                          <p className="break-words text-muted-foreground">{entry.body}</p>
-                        ) : null}
-                        <time className="text-[10px] text-muted-foreground" dateTime={entry.at}>
-                          {new Date(entry.at).toLocaleString()}
-                        </time>
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="text-xs text-muted-foreground">No history.</p>
-                )}
+                <button
+                  type="button"
+                  className="flex cursor-pointer items-center gap-1 rounded-sm text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-expanded={historyExpanded}
+                  onClick={() => setHistoryExpanded((value) => !value)}
+                >
+                  {historyExpanded ? (
+                    <ChevronDownIcon className="size-3.5" aria-hidden="true" />
+                  ) : (
+                    <ChevronRightIcon className="size-3.5" aria-hidden="true" />
+                  )}
+                  History
+                </button>
+                {historyExpanded ? (
+                  events?.length ? (
+                    <ol className="mt-1 space-y-2">
+                      {events.map((entry) => (
+                        <li key={entry.entryId} className="border-l-2 border-border pl-2 text-xs">
+                          <p className="font-medium">
+                            {boardStatusLabel(entry.status)} ·{" "}
+                            {boardExecutorRoleLabel(entry.executorRole)}
+                          </p>
+                          {entry.body ? (
+                            <p className="break-words text-muted-foreground">{entry.body}</p>
+                          ) : null}
+                          <time className="text-[10px] text-muted-foreground" dateTime={entry.at}>
+                            {new Date(entry.at).toLocaleString()}
+                          </time>
+                        </li>
+                      ))}
+                    </ol>
+                  ) : (
+                    <p className="mt-1 text-xs text-muted-foreground">No history.</p>
+                  )
+                ) : null}
               </div>
             </>
           ) : null}
