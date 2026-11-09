@@ -7,6 +7,7 @@ import { useCallback } from "react";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { useRightPanelStore } from "~/rightPanelStore";
+import { useThreadShell } from "~/state/entities";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useEnvironmentQuery } from "~/state/query";
 import { OpenContextDocChip } from "../chat/OpenContextDocChip.tsx";
@@ -43,6 +44,7 @@ export function BoardMailTab(props: {
 }) {
   const { environmentId } = props.threadRef;
   const { refreshCards } = props;
+  const threadShell = useThreadShell(props.threadRef);
   const tasksQuery = useBoardMailTasks(environmentId, props.cardIds, props.threadRef.threadId);
   // The query view object changes every render; only its refresh callback is
   // stable, and the polling interval resets when this callback's identity changes.
@@ -53,7 +55,10 @@ export function BoardMailTab(props: {
   }, [refreshCards, tasksRefresh]);
   useMailTabPolling(refresh, undefined, props.pollingEnabled ?? true);
   const snapshotQuery = useEnvironmentQuery(
-    policiesEnvironment.snapshot({ environmentId, input: {} }),
+    policiesEnvironment.snapshot({
+      environmentId,
+      input: threadShell === null ? {} : { projectId: threadShell.projectId },
+    }),
   );
   const mailEnabled = snapshotQuery.data?.features.mail.effectiveEnabled ?? true;
 

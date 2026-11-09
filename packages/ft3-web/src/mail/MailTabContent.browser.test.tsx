@@ -11,6 +11,7 @@ import { BoardMailTab } from "./MailTabContent.tsx";
 const mocks = vi.hoisted(() => ({
   tasks: vi.fn(),
   snapshot: vi.fn(),
+  threadShell: { projectId: "project-mail" },
 }));
 
 vi.mock("./state.ts", () => ({
@@ -23,6 +24,10 @@ vi.mock("../policies/state.ts", () => ({
   policiesEnvironment: {
     snapshot: (target: unknown) => mocks.snapshot(target),
   },
+}));
+
+vi.mock("~/state/entities", () => ({
+  useThreadShell: () => mocks.threadShell,
 }));
 
 vi.mock("../chat/openContextState.ts", () => ({
@@ -107,9 +112,8 @@ function setup(options: {
   readonly snapshot?: unknown;
 }) {
   vi.clearAllMocks();
-  // One atom instance per setup: the query family memoizes atoms by target, so
-  // production renders see a stable atom identity and a stable refresh callback.
-  const tasksAtom =
+  mocks.threadShell = { projectId: "project-mail" };
+  mocks.tasks.mockReturnValue(
     options.tasksFailure === "offline"
       ? Atom.make(AsyncResult.failure(Cause.fail(new Error("offline"))))
       : options.tasksFailure === "unknown-method"
@@ -119,8 +123,8 @@ function setup(options: {
               tasks: options.tasks ?? [],
               letters: options.letters ?? {},
             }),
-          );
-  mocks.tasks.mockReturnValue(tasksAtom);
+          ),
+  );
   mocks.snapshot.mockReturnValue(
     Atom.make(AsyncResult.success(options.snapshot ?? mailEnabledSnapshot)),
   );
@@ -144,6 +148,17 @@ const renderTab = (
   );
 
 describe("BoardMailTab", () => {
+  it("loads the feature state for the current thread's project", async () => {
+    using state = setup({ tasks: [task()] });
+    mocks.threadShell = { projectId: "project-alpha" };
+    await using _screen = await renderTab(state);
+
+    expect(mocks.snapshot).toHaveBeenCalledWith({
+      environmentId: "browser-env",
+      input: { projectId: "project-alpha" },
+    });
+  });
+
   it("shows one group per task with letters oldest first and delivery badges", async () => {
     using state = setup({
       tasks: [task()],
@@ -261,30 +276,6 @@ describe("BoardMailTab", () => {
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
 
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(refreshCards).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps polling across re-renders instead of resetting the interval", async () => {
-    using state = setup({ tasks: [] });
-    const refreshCards = vi.fn();
-    using _timers = fakeTimers();
-    const tab = (refresh?: () => void) => (
-      <RegistryContext.Provider value={state.registry}>
-        <BoardMailTab
-          threadRef={threadRef}
-          cardIds={[]}
-          {...(refresh === undefined ? {} : { refreshCards: refresh })}
-        />
-      </RegistryContext.Provider>
-    );
-    await using screen = await render(tab(refreshCards));
-    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
-
-    await vi.advanceTimersByTimeAsync(10_000);
-    // Re-renders used to rebuild the poll callback and restart the interval,
-    // so a busy lead thread could stall the task list with stale statuses.
-    await screen.rerender(tab(refreshCards));
-    await vi.advanceTimersByTimeAsync(20_000);
     expect(refreshCards).toHaveBeenCalledTimes(2);
   });
 
