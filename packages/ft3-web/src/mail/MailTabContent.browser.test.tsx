@@ -4,14 +4,14 @@ import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
-import { fakeTimers, render } from "../../../../apps/web/test/render";
+import { act, render } from "../../../../apps/web/test/render";
 import { BoardMailTab } from "./MailTabContent.tsx";
 
 const mocks = vi.hoisted(() => ({
   tasks: vi.fn(),
   snapshot: vi.fn(),
-  threadShell: { projectId: "project-mail" },
 }));
 
 vi.mock("./state.ts", () => ({
@@ -24,10 +24,6 @@ vi.mock("../policies/state.ts", () => ({
   policiesEnvironment: {
     snapshot: (target: unknown) => mocks.snapshot(target),
   },
-}));
-
-vi.mock("~/state/entities", () => ({
-  useThreadShell: () => mocks.threadShell,
 }));
 
 vi.mock("../chat/openContextState.ts", () => ({
@@ -93,6 +89,11 @@ const entry = (overrides: Record<string, unknown> = {}): MailTimelineEntry => ({
   ...overrides,
 });
 
+type MailTasksPage = {
+  readonly tasks: MailTask[];
+  readonly letters: Record<string, MailTimelineEntry[]>;
+};
+
 const mailEnabledSnapshot = {
   features: {
     mail: { id: "mail", requestedEnabled: true, effectiveEnabled: true, offReason: null },
@@ -112,53 +113,39 @@ function setup(options: {
   readonly snapshot?: unknown;
 }) {
   vi.clearAllMocks();
-  mocks.threadShell = { projectId: "project-mail" };
-  mocks.tasks.mockReturnValue(
+  // One atom instance per setup: the query family memoizes atoms by target, so
+  // production renders see a stable atom identity and a stable refresh callback.
+  const tasksAtom = Atom.make<AsyncResult.AsyncResult<MailTasksPage, unknown>>(
     options.tasksFailure === "offline"
-      ? Atom.make(AsyncResult.failure(Cause.fail(new Error("offline"))))
+      ? AsyncResult.failure<MailTasksPage, unknown>(Cause.fail(new Error("offline")))
       : options.tasksFailure === "unknown-method"
-        ? Atom.make(AsyncResult.failure(Cause.die(new Error("Unknown request tag: mail.tasks"))))
-        : Atom.make(
-            AsyncResult.success({
-              tasks: options.tasks ?? [],
-              letters: options.letters ?? {},
-            }),
-          ),
+        ? AsyncResult.failure<MailTasksPage, unknown>(
+            Cause.die(new Error("Unknown request tag: mail.tasks")),
+          )
+        : AsyncResult.success<MailTasksPage, unknown>({
+            tasks: options.tasks ?? [],
+            letters: options.letters ?? {},
+          }),
   );
+  mocks.tasks.mockReturnValue(tasksAtom);
   mocks.snapshot.mockReturnValue(
     Atom.make(AsyncResult.success(options.snapshot ?? mailEnabledSnapshot)),
   );
   const registry = AtomRegistry.make();
-  return { registry, [Symbol.dispose]: () => registry.dispose() };
+  return { registry, tasksAtom, [Symbol.dispose]: () => registry.dispose() };
 }
 
 const renderTab = (
   state: ReturnType<typeof setup>,
   cardIds: ReadonlyArray<string> = ["11111111-1111-4111-8111-111111111111"],
-  refreshCards?: () => void,
 ) =>
   render(
     <RegistryContext.Provider value={state.registry}>
-      <BoardMailTab
-        threadRef={threadRef}
-        cardIds={cardIds}
-        {...(refreshCards === undefined ? {} : { refreshCards })}
-      />
+      <BoardMailTab threadRef={threadRef} cardIds={cardIds} />
     </RegistryContext.Provider>,
   );
 
 describe("BoardMailTab", () => {
-  it("loads the feature state for the current thread's project", async () => {
-    using state = setup({ tasks: [task()] });
-    mocks.threadShell = { projectId: "project-alpha" };
-    await using _screen = await renderTab(state);
-
-    expect(mocks.snapshot).toHaveBeenCalledWith({
-      environmentId: "browser-env",
-      input: { projectId: "project-alpha" },
-    });
-  });
-
   it("shows one group per task with letters oldest first and delivery badges", async () => {
     using state = setup({
       tasks: [task()],
@@ -191,7 +178,15 @@ describe("BoardMailTab", () => {
     await using screen = await renderTab(state);
 
     await expect.element(screen.getByRole("heading", { name: "Refactor" })).toBeVisible();
+    // The group and its letters start collapsed; the chevrons reveal them.
+    expect(screen.container.querySelector("[data-mail-letter-id]")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Развернуть задачу" }));
     const group = screen.container.querySelector('[data-mail-task-id="task:one"]')!;
+    for (const button of screen.container.querySelectorAll(
+      'button[aria-label="Развернуть письмо"]',
+    )) {
+      await userEvent.click(button);
+    }
     // The batched letters arrive newest-first; the tab reads oldest first.
     const bodies = [...group.querySelectorAll("[data-mail-letter-id]")].map(
       (node) => node.textContent,
@@ -243,6 +238,11 @@ describe("BoardMailTab", () => {
     expect(targets.size).toBe(1);
     const headings = screen.container.querySelectorAll("h3");
     expect(headings.length).toBe(3);
+    for (const button of screen.container.querySelectorAll(
+      'button[aria-label="Развернуть задачу"]',
+    )) {
+      await userEvent.click(button);
+    }
     expect(screen.container.querySelectorAll("[data-mail-letter-id]").length).toBe(6);
   });
 
@@ -267,16 +267,45 @@ describe("BoardMailTab", () => {
     await expect.element(screen.getByRole("heading", { name: "Refactor" })).toBeVisible();
   });
 
-  it("re-reads the board's cards on each poll so new cards join the mail page", async () => {
-    using state = setup({ tasks: [] });
-    const refreshCards = vi.fn();
-    // The poll interval is armed on mount, so fake timers come first.
-    using _timers = fakeTimers();
-    await using _screen = await renderTab(state, [], refreshCards);
-    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+  it("collapses tasks and letters by default and expands them on chevron click", async () => {
+    using state = setup({ tasks: [task()], letters: { "task:one": [entry()] } });
+    await using screen = await renderTab(state);
 
-    await vi.advanceTimersByTimeAsync(30_000);
-    expect(refreshCards).toHaveBeenCalledTimes(2);
+    // Collapsed: the task heading shows, its letters do not render at all.
+    await expect.element(screen.getByRole("heading", { name: "Refactor" })).toBeVisible();
+    expect(screen.container.querySelector("[data-mail-letter-id]")).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Развернуть задачу" }));
+    await expect.element(screen.getByRole("button", { name: "Свернуть задачу" })).toBeVisible();
+    // The letter header shows in one line; its body stays hidden.
+    await expect.element(screen.getByRole("button", { name: "Развернуть письмо" })).toBeVisible();
+    expect(screen.container.textContent).not.toContain("Start.");
+
+    await userEvent.click(screen.getByRole("button", { name: "Развернуть письмо" }));
+    await expect.element(screen.getByText("Start.")).toBeVisible();
+  });
+
+  it("keeps expanded content and skips the loading state when a refresh already has data", async () => {
+    using state = setup({ tasks: [task()], letters: { "task:one": [entry()] } });
+    await using screen = await renderTab(state);
+    await userEvent.click(screen.getByRole("button", { name: "Развернуть задачу" }));
+    await userEvent.click(screen.getByRole("button", { name: "Развернуть письмо" }));
+    await expect.element(screen.getByText("Start.")).toBeVisible();
+
+    // A refresh marks the query waiting but keeps the previous page; the tab
+    // must not swap it for the loading state or drop the expanded rows.
+    await act(() =>
+      state.registry.set(
+        state.tasksAtom,
+        AsyncResult.waiting(
+          AsyncResult.success({ tasks: [task()], letters: { "task:one": [entry()] } }),
+        ),
+      ),
+    );
+
+    expect(screen.container.textContent).not.toContain("Loading mail…");
+    await expect.element(screen.getByText("Start.")).toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Свернуть письмо" })).toBeVisible();
   });
 
   it("shows card-less tasks in a Without a card group alongside card tasks", async () => {
@@ -299,6 +328,17 @@ describe("BoardMailTab", () => {
     await expect.element(screen.getByRole("heading", { name: "Without a card" })).toBeVisible();
     const section = screen.container.querySelector("section")!;
     expect(section.querySelector('[data-mail-task-id="task:free"]')).not.toBeNull();
+    // Letter bodies stay collapsed until the chevrons open.
+    for (const button of screen.container.querySelectorAll(
+      'button[aria-label="Развернуть задачу"]',
+    )) {
+      await userEvent.click(button);
+    }
+    for (const button of screen.container.querySelectorAll(
+      'button[aria-label="Развернуть письмо"]',
+    )) {
+      await userEvent.click(button);
+    }
     expect(section.textContent).toContain("Unbound work.");
     // The card group still renders above, and the empty note stays hidden.
     await expect.element(screen.getByRole("heading", { name: "Card task" })).toBeVisible();

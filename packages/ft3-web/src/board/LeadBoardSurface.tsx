@@ -84,7 +84,6 @@ const SECTION_LABELS: Record<LeadBoardSection, string> = {
 
 export function LeadBoardSurface({
   threadRef,
-  visible,
   section,
 }: Ft3PanelProps & { readonly section: LeadBoardSection }) {
   const leads = useEnvironmentQuery(
@@ -114,7 +113,7 @@ export function LeadBoardSurface({
     >
       {section === "cards" ? <BoardCardsSection threadRef={threadRef} /> : null}
       {section === "history" ? <BoardHistorySection threadRef={threadRef} /> : null}
-      {section === "mail" ? <BoardMailSection threadRef={threadRef} visible={visible} /> : null}
+      {section === "mail" ? <BoardMailSection threadRef={threadRef} /> : null}
     </div>
   );
 }
@@ -490,10 +489,7 @@ function BoardHistorySection(props: { readonly threadRef: ScopedThreadRef }) {
   );
 }
 
-function BoardMailSection(props: {
-  readonly threadRef: ScopedThreadRef;
-  readonly visible: boolean;
-}) {
+function BoardMailSection(props: { readonly threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = props.threadRef;
   const boardList = useEnvironmentQuery(
     boardEnvironment.listForChatPanel({ environmentId, input: { includeArchived: true } }),
@@ -523,12 +519,7 @@ function BoardMailSection(props: {
       }
     >
       <div className="px-2.5">
-        <BoardMailTab
-          threadRef={props.threadRef}
-          cardIds={boardCardIds}
-          refreshCards={refreshCards}
-          pollingEnabled={props.visible}
-        />
+        <BoardMailTab threadRef={props.threadRef} cardIds={boardCardIds} />
       </div>
     </ThreadDetailsSection>
   );
