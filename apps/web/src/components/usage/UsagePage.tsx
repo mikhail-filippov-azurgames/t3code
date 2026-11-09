@@ -1,5 +1,6 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
+import { formatUsdPerSession, providersForWindow, UsageModelTable } from "@t3tools/ft3-web/usage";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -619,6 +620,15 @@ function UsageOverview({
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
   const providersWithData = new Set(providersWithUsage(merged.providers));
+  for (const provider of providersForWindow(
+    merged.providers,
+    selectedEnvironments.flatMap(
+      (environment) =>
+        environment.summary?.sources.map((source) => source.fingerprint.provider) ?? [],
+    ),
+  )) {
+    providersWithData.add(provider);
+  }
   // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
   // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
