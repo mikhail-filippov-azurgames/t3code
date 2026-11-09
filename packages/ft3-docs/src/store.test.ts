@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - the test creates a document store on disk.
 import { assert, describe, it } from "@effect/vitest";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeFSP from "node:fs/promises";
@@ -17,11 +17,8 @@ const FIXTURE_TIME = "2026-01-01T00:00:00.000Z";
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
 );
 
 const storeLayer = (root: string) => DocsStore.layer({ root }).pipe(Layer.provide(cryptoLayer));

@@ -5,7 +5,7 @@ import * as NodePath from "node:path";
 
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -302,7 +302,7 @@ const sha256Hex = (content: string): string =>
 
 const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
   const sql = yield* SqlClient.SqlClient;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   // Serializes check-and-set writes inside this store instance, so two
   // concurrent saves with the same base SHA cannot both win.
   const writeLock = yield* Semaphore.make(1);
@@ -399,9 +399,7 @@ const make = Effect.fn("DocsStore.make")(function* (options: DocsStoreOptions) {
   });
 
   const newStableId = Effect.fn("DocsStore.newStableId")(function* () {
-    return yield* crypto
-      .randomUUIDv4()
-      .pipe(Effect.mapError((cause) => storeError("store_unavailable", contextsRoot, cause)));
+    return yield* random.uuidV4();
   });
 
   const findRootFolderRow = Effect.fn("DocsStore.findRootFolderRow")(function* () {

@@ -7,7 +7,7 @@ import {
   type ProjectSettingsOverrides,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -67,11 +67,8 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 const crypto = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
 );
 
 function fixture(

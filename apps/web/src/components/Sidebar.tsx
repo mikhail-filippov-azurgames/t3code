@@ -1,11 +1,11 @@
 import { attachSidebarTree } from "../lib/sidebarTree";
-import { ArchitectSidebarPin } from "@t3tools/ft3-web/architect";
 import {
   useFt3SidebarRows,
   mergeForestRowThreads,
   runFt3SidebarDelegatedAction,
 } from "@t3tools/ft3-web/sidebar";
 import {
+  useSwitchThreadProvider,
   canSwitchThreadProvider,
   requestSwitchProviderTarget,
   selectStaleDelegatedChildren,

@@ -7,7 +7,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -49,12 +49,8 @@ type Parsed =
   | { readonly kind: "error"; readonly message: string };
 
 const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => new Uint8Array(NodeCrypto.randomBytes(size)),
-    digest: (algorithm, data) =>
-      Effect.sync(() => new Uint8Array(NodeCrypto.createHash(algorithm).update(data).digest())),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(NodeCrypto.randomBytes(size))),
 );
 
 const parseArgs = (args: ReadonlyArray<string>): Parsed => {

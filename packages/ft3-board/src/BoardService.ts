@@ -1,6 +1,6 @@
 import { CommandId, type ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Equal from "effect/Equal";
@@ -119,7 +119,7 @@ const make = Effect.gen(function* () {
   const repo = yield* BoardRepository.BoardRepository;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const wake = yield* BoardWakeService.BoardWakeService;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const roles = yield* RoleResolver;
   const featureGate = yield* FeatureGate.FeatureGate;
   const gate = yield* PlanGate.PlanGate;
@@ -139,12 +139,7 @@ const make = Effect.gen(function* () {
     at: string,
     body?: string,
   ) {
-    return buildEvent(
-      card,
-      at,
-      yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable)),
-      body,
-    );
+    return buildEvent(card, at, yield* random.uuidV4(), body);
   });
 
   const requireOrchestrator = Effect.fn("Ft3BoardService.requireOrchestrator")(function* (
@@ -277,9 +272,7 @@ const make = Effect.gen(function* () {
       const threadId = yield* requireOrchestrator(scope, true);
       const at = DateTime.formatIso(yield* DateTime.now);
       const card: Contracts.BoardCard = {
-        cardId: Contracts.BoardCardId.make(
-          yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable)),
-        ),
+        cardId: Contracts.BoardCardId.make(yield* random.uuidV4()),
         orchestratorThreadId: threadId,
         title: input.title,
         body: input.body,
@@ -513,7 +506,7 @@ const make = Effect.gen(function* () {
         });
       }
       yield* requireMarkableThread(input.threadId);
-      const nonce = yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable));
+      const nonce = yield* random.uuidV4();
       yield* wakeOrchestrator(
         input.threadId,
         "brief",
@@ -606,9 +599,7 @@ const make = Effect.gen(function* () {
     createHumanCard: Effect.fn("Ft3BoardService.createHumanCard")(function* (input) {
       const at = DateTime.formatIso(yield* DateTime.now);
       const card: Contracts.BoardCard = {
-        cardId: Contracts.BoardCardId.make(
-          yield* crypto.randomUUIDv4().pipe(Effect.mapError(unavailable)),
-        ),
+        cardId: Contracts.BoardCardId.make(yield* random.uuidV4()),
         orchestratorThreadId: input.orchestratorThreadId,
         title: input.title,
         body: input.body,

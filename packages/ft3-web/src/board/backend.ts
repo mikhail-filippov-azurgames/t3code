@@ -7,7 +7,7 @@ import {
   type RuntimeMode,
   type ThreadId,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import type { Atom, AtomRegistry } from "effect/reactivity";
 
@@ -29,7 +29,10 @@ export interface BoardOrchestratorRequestInput {
 }
 
 export function createBoardEnvironmentAtoms<R, E>(
-  runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | Crypto.Crypto | R, E>,
+  runtime: Atom.AtomRuntime<
+    EnvironmentRegistry.EnvironmentRegistry | SecureRandom.SecureRandom | R,
+    E
+  >,
 ) {
   const commandScheduler = createAtomCommandScheduler();
   const serial = {
@@ -161,8 +164,8 @@ export function createBoardEnvironmentAtoms<R, E>(
 const sendOrchestratorRequest = Effect.fn("Ft3Board.sendOrchestratorRequest")(function* (
   input: BoardOrchestratorRequestInput,
 ) {
-  const crypto = yield* Crypto.Crypto;
-  const messageId = yield* crypto.randomUUIDv4().pipe(Effect.map(MessageId.make));
+  const random = yield* SecureRandom.SecureRandom;
+  const messageId = yield* random.uuidV4().pipe(Effect.map(MessageId.make));
   return yield* startThreadTurn({
     threadId: input.threadId,
     message: { messageId, role: "user", text: input.text, attachments: [] },

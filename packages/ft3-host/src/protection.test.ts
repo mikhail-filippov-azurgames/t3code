@@ -4,7 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as docs from "@t3tools/ft3-docs/server";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeFS from "node:fs";
@@ -23,11 +23,8 @@ const buildProtection = (root: string) =>
       Layer.provide(ServerSettings.layerTest()),
       Layer.provide(
         Layer.succeed(
-          Crypto.Crypto,
-          Crypto.make({
-            randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-            digest: () => Effect.die("unused"),
-          }),
+          SecureRandom.SecureRandom,
+          SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
         ),
       ),
       Layer.provideMerge(NodeServices.layer),

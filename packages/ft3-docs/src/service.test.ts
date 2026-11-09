@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off cryptoRandomUUID:off cryptoRandomUUIDInEffect:off - the tests create a document store on disk with fresh ids.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -26,11 +26,8 @@ vi.mock("node:fs", async (importOriginal) => {
 const NIL_ID = "00000000-0000-0000-0000-000000000000";
 
 const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
 );
 
 const sqlLayer = () => NodeSqliteClient.layer({ filename: ":memory:" });

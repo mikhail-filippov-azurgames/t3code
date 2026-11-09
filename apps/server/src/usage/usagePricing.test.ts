@@ -286,6 +286,8 @@ describe("usage pricing", () => {
     });
 
     expect(lookupRate(table, "example-model")).toBeNull();
+  });
+
   it("prices Kimi Code model ids from the fork price table", () => {
     const table = parseRateTable({});
     const overrides = createOverrideRateTable(kimiPriceOverrides);

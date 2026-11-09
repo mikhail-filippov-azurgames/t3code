@@ -6,7 +6,8 @@ import {
   ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeFSP from "node:fs/promises";
@@ -54,16 +55,12 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
-const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: (_algorithm, data) =>
-      Effect.promise(async () => {
-        const bytes = new Uint8Array(data);
-        return new Uint8Array(await globalThis.crypto.subtle.digest("SHA-256", bytes));
-      }),
-  }),
+const cryptoLayer = Layer.merge(
+  Layer.succeed(
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+  ),
+  Digest.layerWebCrypto,
 );
 
 const makeRoot = () =>

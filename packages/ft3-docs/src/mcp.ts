@@ -3,7 +3,7 @@
  * whole store without an absolute path; writes need the MCP write access and
  * the `documents:write` rule the `DocsService` port resolves per call.
  */
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -216,9 +216,9 @@ export interface DocsToolkitOptions {
   /**
    * Protected-document rule override; nothing is protected by default. The
    * rule must be total (per-call lookups already degrade to no identity);
-   * the store it resolves through needs randomness, so `Crypto` propagates.
+   * the store it resolves through needs randomness, so `SecureRandom` propagates.
    */
-  readonly protection?: Layer.Layer<Service.DocsProtection, never, Crypto.Crypto>;
+  readonly protection?: Layer.Layer<Service.DocsProtection, never, SecureRandom.SecureRandom>;
   /**
    * Shared change bus service-side writes publish to; without it nothing is
    * emitted. The host shares one bus between the runtime and this toolkit.

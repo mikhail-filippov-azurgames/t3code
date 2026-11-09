@@ -14,7 +14,7 @@ import { layer, runMigrations } from "./server.ts";
 import { ProjectStoreV2 } from "../../../apps/server/src/orchestration-v2/ProjectStore.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
@@ -32,11 +32,8 @@ const hostLayer = (
     Layer.provide(ServerSettings.layerTest(settings)),
     Layer.provide(
       Layer.succeed(
-        Crypto.Crypto,
-        Crypto.make({
-          randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-          digest: () => Effect.die("unused"),
-        }),
+        SecureRandom.SecureRandom,
+        SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
       ),
     ),
     Layer.provide(ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-ft3-host-" })),

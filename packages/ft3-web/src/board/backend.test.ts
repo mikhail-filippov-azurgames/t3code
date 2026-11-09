@@ -16,7 +16,7 @@ import {
 } from "@t3tools/client-runtime/connection";
 import type { RpcSession, WsRpcProtocolClient } from "@t3tools/client-runtime/rpc";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -139,11 +139,8 @@ const makeHarness = Effect.fn("Ft3BoardTest.makeHarness")(function* (
       Layer.mergeAll(
         Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, environments),
         Layer.succeed(
-          Crypto.Crypto,
-          Crypto.make({
-            randomBytes: (size) => new Uint8Array(size),
-            digest: (_algorithm, data) => Effect.succeed(data),
-          }),
+          SecureRandom.SecureRandom,
+          SecureRandom.make((size) => new Uint8Array(size)),
         ),
       ),
     ),

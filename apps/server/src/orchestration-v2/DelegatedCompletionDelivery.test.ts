@@ -2570,6 +2570,8 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         assert.equal(followup?.childThreadId, child.childThreadId);
         assert.isNull(followup?.result);
       }),
+    );
+
     it.effect.each(["always", "settled_only", "none"] as const)(
       "records a human-message follow-up for a %s task only while its completion wakes the parent",
       (completionWake) =>

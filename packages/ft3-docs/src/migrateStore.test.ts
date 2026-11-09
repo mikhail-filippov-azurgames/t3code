@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off - the tests build a legacy document store on disk.
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as NodeFS from "node:fs";
@@ -21,11 +21,8 @@ const FIXTURE_TIME = "2026-01-01T00:00:00.000Z";
 const CONTEXTS = "contexts";
 
 const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
 );
 
 const newId = (): string => {

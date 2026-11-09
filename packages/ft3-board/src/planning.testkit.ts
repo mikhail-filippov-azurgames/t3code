@@ -17,7 +17,7 @@ import type { FeatureId } from "@t3tools/ft3-policies/contracts";
 import * as FeatureGate from "@t3tools/ft3-policies/server";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
@@ -79,11 +79,8 @@ export type PlanTestServices =
   | PlanDocsReads;
 
 const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
 );
 
 const threadsLayer = (options: PlanTestOptions) =>

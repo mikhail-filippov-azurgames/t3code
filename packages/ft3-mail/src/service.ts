@@ -17,7 +17,8 @@ import {
 } from "@t3tools/ft3-policies/routingPolicy";
 import { FeatureGate } from "@t3tools/ft3-policies/server";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -382,9 +383,6 @@ const refuse = (code: MailServiceErrorCode, reason: string) =>
 const routingRoleOf = (role: string): RoutingRoleId | null =>
   (ROUTING_ROLES as ReadonlyArray<string>).includes(role) ? (role as RoutingRoleId) : null;
 
-const hexOf = (bytes: Uint8Array): string =>
-  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
-
 const parseRecipient = (to: string): Recipient | null => {
   if (to === "human") return { kind: "human" };
   if (to === "lead") return { kind: "lead" };
@@ -488,7 +486,8 @@ const make = Effect.gen(function* () {
   const repository = yield* MailRepository;
   const routing = yield* RoutingPolicyService;
   const gate = yield* FeatureGate;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
+  const digest = yield* Digest.Digest;
   const evidence = yield* MailPolicyEvidence;
   const launcher = yield* MailParticipantLauncher;
   const classifier = yield* MailKindClassifier;
@@ -555,12 +554,10 @@ const make = Effect.gen(function* () {
     }
   };
 
-  const newId = crypto.randomUUIDv4().pipe(Effect.orDie);
+  const newId = random.uuidV4();
   const nowIso = DateTime.now.pipe(Effect.map(DateTime.formatIso));
   const fingerprintOf = (value: unknown) =>
-    crypto
-      .digest("SHA-256", new TextEncoder().encode(JSON.stringify(value)))
-      .pipe(Effect.map(hexOf), Effect.orDie);
+    digest.digestHex(Digest.sha256, new TextEncoder().encode(JSON.stringify(value)));
 
   const requireTask = Effect.fn("MailService.requireTask")(function* (taskId: string) {
     const task = yield* repository.getTask(taskId);

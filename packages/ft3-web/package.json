@@ -25,7 +25,7 @@
     "./mail": "./src/mail/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "effect-tsgo tsrs --noEmit",
     "test": "vp test run --project ft3-web-unit --project ft3-web-browser"
   },
   "dependencies": {

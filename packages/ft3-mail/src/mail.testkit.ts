@@ -18,7 +18,8 @@ import {
   PlanGateError,
   type PlanGateErrorCode,
 } from "@t3tools/ft3-board/planning";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
@@ -51,17 +52,12 @@ export const migrateMail = Migrator.make({})({
   table: "ft3_migrations",
 });
 
-export const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: (algorithm, data) =>
-      Effect.promise(() =>
-        globalThis.crypto.subtle
-          .digest(algorithm, new Uint8Array(data))
-          .then((bytes) => new Uint8Array(bytes)),
-      ),
-  }),
+export const cryptoLayer = Layer.merge(
+  Layer.succeed(
+    SecureRandom.SecureRandom,
+    SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
+  ),
+  Digest.layerWebCrypto,
 );
 
 export const databaseLayer = mailRepositoryLayer.pipe(

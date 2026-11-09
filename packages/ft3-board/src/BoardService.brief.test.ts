@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { ThreadId } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -36,11 +36,8 @@ const ROLES_MANIFEST_PATH = `policies/${ROLES_MANIFEST_FILE}`;
 const LEAD_SKILLS_MANIFEST_PATH = `policies/${LEAD_SKILLS_MANIFEST_FILE}`;
 
 const cryptoLayer = Layer.succeed(
-  Crypto.Crypto,
-  Crypto.make({
-    randomBytes: (size) => globalThis.crypto.getRandomValues(new Uint8Array(size)),
-    digest: () => Effect.die("unused"),
-  }),
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => globalThis.crypto.getRandomValues(new Uint8Array(size))),
 );
 
 const appliedLeadPolicies = (leadBody: string): ReadonlyMap<string, string> =>
