@@ -15,7 +15,7 @@ import {
   type RoutingLevel,
   type RoutingRoleId,
 } from "@t3tools/ft3-policies/routingPolicy";
-import { FeatureGate, projectIdOfThread } from "@t3tools/ft3-policies/server";
+import { FeatureGate } from "@t3tools/ft3-policies/server";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -1475,7 +1475,7 @@ const make = Effect.gen(function* () {
       );
     }
     // Marking a delivery read is a write, so only an enabled mail feature does it.
-    const projectId = Option.getOrUndefined(yield* projectIdOfThread(input.callerThreadId));
+    const projectId = Option.getOrUndefined(yield* projectIdOfMailTask(task));
     if (
       task.status === "open" &&
       (yield* gate.isEffective("mail", projectId).pipe(Effect.orElseSucceed(() => false)))

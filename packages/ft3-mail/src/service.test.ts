@@ -355,7 +355,7 @@ it.effect("guards mail sends by the task project and falls back to the environme
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("does not mark a mail delivery read in a disabled caller project", () => {
+it.effect("does not mark a task read when its project has mail disabled", () => {
   const threadProjects: Record<string, string> = { [LEAD]: "project:alpha" };
   const harness = mailHarness({ threadProjects });
   return Effect.gen(function* () {
@@ -363,8 +363,9 @@ it.effect("does not mark a mail delivery read in a disabled caller project", () 
     const created = yield* teamOf([{ role: "implementation" }]);
     const sent = yield* sendAs(LEAD, created.task.taskId, "role:implementation", "request");
     const participantThreadId = sent.launched[0]!.participantThreadId;
-    threadProjects[participantThreadId] = "project:alpha";
+    threadProjects[participantThreadId] = "project:beta";
     harness.setProjectFeature("project:alpha", "mail", false);
+    harness.setProjectFeature("project:beta", "mail", true);
 
     const mail = yield* MailService;
     const read = yield* mail.readLetter({
