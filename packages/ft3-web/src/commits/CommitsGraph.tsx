@@ -2,7 +2,7 @@ import "@web-git-graph/web/register";
 import type { WebGitGraphElement } from "@web-git-graph/web";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { useTheme } from "~/hooks/useTheme";
 import { useEnvironmentQuery } from "~/state/query";
@@ -13,7 +13,6 @@ import type { CommitGraphColumn, CommitGraphDateFormat } from "./commitsGraphPre
 import { DEFAULT_COMMIT_GRAPH_COLUMNS } from "./commitsGraphPreferences.ts";
 import { createCommitSelectionBridge } from "./commitsGraphSelection.ts";
 import {
-  COMMITS_PAGE_LIMIT,
   createCommitsGraphProvider,
   loadHistoryUntilCommit,
   type CommitHistoryFetcher,
@@ -73,8 +72,8 @@ export function CommitsGraph({
   const elementRef = useRef<WebGitGraphElement | null>(null);
   const errorHandlerRef = useRef(onError);
   const commitSelectHandlerRef = useRef(onCommitSelect);
-  const commitSelectionBridgeRef = useRef(
-    createCommitSelectionBridge((commitId) => commitSelectHandlerRef.current?.(commitId)),
+  const commitSelectionBridgeRef = useRef<ReturnType<typeof createCommitSelectionBridge> | null>(
+    null,
   );
   const { resolvedTheme } = useTheme();
   const runListCommitHistory = useAtomCommand(commitsEnvironment.listCommitHistory);
@@ -83,10 +82,12 @@ export function CommitsGraph({
   );
   const repositoryRefs = refsQuery.data?.refs;
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the latest onError handler in a ref for the custom element's event listeners
   useEffect(() => {
     errorHandlerRef.current = onError;
   }, [onError]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the latest onCommitSelect handler in a ref for the selection bridge
   useEffect(() => {
     commitSelectHandlerRef.current = onCommitSelect;
   }, [onCommitSelect]);
@@ -102,43 +103,54 @@ export function CommitsGraph({
     },
     [cwd, environmentId, runListCommitHistory],
   );
-  const pageRequests = useMemo(
-    () => new Map<string, ReturnType<CommitHistoryFetcher>>(),
-    [cwd, environmentId],
-  );
+  // In-flight page cache keyed by repository; self-invalidates when cwd or environmentId changes.
+  const pageRequestsRef = useRef<{
+    key: string;
+    requests: Map<string, ReturnType<CommitHistoryFetcher>>;
+  }>({
+    key: "",
+    requests: new Map(),
+  });
   const fetcher = useCallback<CommitHistoryFetcher>(
     (input) => {
+      const cacheKey = `${environmentId}:${cwd}`;
+      let cache = pageRequestsRef.current;
+      if (cache.key !== cacheKey) {
+        cache = { key: cacheKey, requests: new Map() };
+        pageRequestsRef.current = cache;
+      }
       const key = input.cursor ? `${input.cursor.id}:${input.cursor.offset}` : "first";
-      const existing = pageRequests.get(key);
+      const existing = cache.requests.get(key);
       if (existing) return existing;
       const request = fetchPage(input);
-      pageRequests.set(key, request);
+      cache.requests.set(key, request);
       void request.then(
-        () => pageRequests.delete(key),
-        () => pageRequests.delete(key),
+        () => cache.requests.delete(key),
+        () => cache.requests.delete(key),
       );
       return request;
     },
-    [fetchPage, pageRequests],
-  );
-  const provider = useMemo(
-    () => createCommitsGraphProvider(fetcher, repositoryRefs ?? []),
-    [fetcher, repositoryRefs],
+    [cwd, environmentId, fetchPage],
   );
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the web-git-graph custom element lifecycle: creates it on mount and removes it on unmount
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const element = document.createElement("web-git-graph");
     element.style.height = "100%";
     elementRef.current = element;
+    const bridge = createCommitSelectionBridge((commitId) =>
+      commitSelectHandlerRef.current?.(commitId),
+    );
+    commitSelectionBridgeRef.current = bridge;
     const handleError = (event: Event) => {
       const detail = (event as CustomEvent<{ error?: unknown }>).detail;
       errorHandlerRef.current?.(detail?.error ?? event);
     };
     const handleCommitSelect = (event: Event) => {
       const detail = (event as CustomEvent<{ commit?: { oid?: string } }>).detail;
-      if (detail?.commit?.oid) commitSelectionBridgeRef.current.handleSelect(detail.commit.oid);
+      if (detail?.commit?.oid) bridge.handleSelect(detail.commit.oid);
     };
     element.addEventListener("gitgraph-error", handleError);
     element.addEventListener("gitgraph-commit-select", handleCommitSelect);
@@ -151,9 +163,11 @@ export function CommitsGraph({
       element.removeEventListener("gitgraph-commit-select", handleCommitSelect);
       element.remove();
       elementRef.current = null;
+      commitSelectionBridgeRef.current = null;
     };
   }, []);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pushes the column and date format props into the custom element
   useEffect(() => {
     const element = elementRef.current;
     if (!element) return;
@@ -161,14 +175,15 @@ export function CommitsGraph({
     element.dateFormat = dateFormat;
   }, [columns, dateFormat]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pages history in until the focused commit exists, then focuses it; cancels on change or unmount
   useEffect(() => {
     const element = elementRef.current;
     if (!element || !focusCommitId) return;
+    const bridge = commitSelectionBridgeRef.current;
+    if (!bridge) return;
     let cancelled = false;
     if (element.data.commits.some((commit) => commit.oid === focusCommitId)) {
-      commitSelectionBridgeRef.current.selectForFocus(focusCommitId, (commitId) =>
-        element.selectCommit(commitId),
-      );
+      bridge.selectForFocus(focusCommitId, (commitId) => element.selectCommit(commitId));
       element.focusCommit(focusCommitId);
       return;
     }
@@ -177,9 +192,7 @@ export function CommitsGraph({
     })
       .then((found) => {
         if (!found || cancelled) return;
-        commitSelectionBridgeRef.current.selectForFocus(focusCommitId, (commitId) =>
-          element.selectCommit(commitId),
-        );
+        bridge.selectForFocus(focusCommitId, (commitId) => element.selectCommit(commitId));
         element.focusCommit(focusCommitId);
       })
       .catch((error: unknown) => {
@@ -190,15 +203,17 @@ export function CommitsGraph({
     };
   }, [fetcher, focusCommitId]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pushes the resolved theme into the custom element
   useEffect(() => {
     const element = elementRef.current;
     if (element) element.theme = resolvedTheme;
   }, [resolvedTheme]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- builds the data provider and pushes it into the custom element
   useEffect(() => {
     const element = elementRef.current;
-    if (element) element.provider = provider;
-  }, [provider]);
+    if (element) element.provider = createCommitsGraphProvider(fetcher, repositoryRefs ?? []);
+  }, [fetcher, repositoryRefs]);
 
   return <div ref={hostRef} className={className} />;
 }

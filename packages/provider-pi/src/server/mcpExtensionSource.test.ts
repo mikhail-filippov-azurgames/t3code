@@ -6,7 +6,12 @@ import * as NodeModule from "node:module";
 import * as NodeVM from "node:vm";
 import { assert, describe, it } from "@effect/vitest";
 
-import { PI_T3_MCP_EXTENSION_SOURCE, PI_T3_SERVICE_TIER_COMMAND } from "./mcpExtensionSource.ts";
+import {
+  PI_T3_MCP_EXTENSION_SOURCE,
+  PI_T3_SERVICE_TIER_COMMAND,
+  piT3McpExtensionSource,
+  setPiExtensionSourceTransform,
+} from "./mcpExtensionSource.ts";
 import { loadMcpBridge } from "./mcpBridge.testkit.ts";
 
 type RequestHook = (

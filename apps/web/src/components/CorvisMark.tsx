@@ -14,7 +14,7 @@ export function CorvisMark(props: SVGProps<SVGSVGElement>) {
       <path
         d="M 266 145 V 226 M 266 226 L 191 266 M 266 226 L 341 266"
         fill="none"
-        stroke="#638bfa"
+        stroke="var(--color-corvis-brand)"
         strokeWidth={55}
         strokeLinecap="round"
         strokeLinejoin="round"

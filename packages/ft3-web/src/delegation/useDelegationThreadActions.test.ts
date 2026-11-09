@@ -1,5 +1,4 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { ScopedThreadRef } from "@t3tools/contracts";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";

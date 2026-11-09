@@ -27,6 +27,7 @@ export function PiBonsaiPresetSection(props: PiBonsaiPresetSectionProps) {
   const [folderError, setFolderError] = useState<string | null>(null);
   const detectionSequence = useRef(0);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- runs the one-shot Bonsai detect command on mount and cancels it on unmount
   useEffect(() => {
     let active = true;
     const sequence = ++detectionSequence.current;
@@ -55,7 +56,7 @@ export function PiBonsaiPresetSection(props: PiBonsaiPresetSectionProps) {
       active = false;
       detectionSequence.current++;
     };
-  }, [detect, props.environmentId, props.instanceId]);
+  }, [detect, props.environmentId]);
 
   const runApply = async (input: { readonly rootPath?: string }, sequence: number) => {
     const result = await apply({

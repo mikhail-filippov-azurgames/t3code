@@ -1,7 +1,7 @@
 import { ThreadId, type ServerSettings } from "@t3tools/contracts";
 import type { BoardAutomationSettings } from "./settings.ts";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

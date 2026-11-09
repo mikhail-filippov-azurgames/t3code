@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { DEFAULT_SERVER_SETTINGS, ProviderInstanceId } from "@t3tools/contracts";
@@ -25,7 +26,7 @@ const decodeRequest = Schema.decodeSync(
 );
 const encoder = new TextEncoder();
 
-const makeSpawner = Effect.fnUntraced(function* () {
+const makeSpawner = Effect.fn("test.makeSpawner")(function* () {
   const launches: Array<ChildProcess.StandardCommand> = [];
   const spawner = ChildProcessSpawner.make((command) =>
     Effect.gen(function* () {
@@ -115,13 +116,14 @@ it.effect("runs the availability probe through the bundled launcher", () =>
     const path = yield* Path.Path;
     const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "ft3-pi-driver-" });
     const { spawner, launches } = yield* makeSpawner();
+    const platform = yield* HostProcess.Platform;
     const launcher = path.join(
       root,
       "userdata",
       "pi",
       "pi",
       "runtime",
-      process.platform === "win32" ? "pi.cmd" : "pi",
+      platform === "win32" ? "pi.cmd" : "pi",
     );
 
     yield* Effect.gen(function* () {

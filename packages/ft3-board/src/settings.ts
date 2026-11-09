@@ -1,10 +1,7 @@
 /**
  * Fork-owned server settings: board retention, coordinator nudges and the
- * deleted-thread purge window.
- *
- * Upstream `ServerSettings` only carries the generic `ft3` namespace; the
- * typed schema, bounds and defaults live here so the upstream schema stays a
- * single connection point.
+ * deleted-thread purge window; upstream `ServerSettings` carries only the
+ * generic `ft3` namespace.
  *
  * @module ft3-board/settings
  */

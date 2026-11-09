@@ -6,7 +6,7 @@ import {
   type EnvironmentId,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
-import { memo, use, useMemo, useRef } from "react";
+import { memo, use, useRef } from "react";
 import { resolvePreferredEditor } from "@t3tools/ft3-web/files";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { shortcutLabelForCommand } from "../../keybindings";
@@ -251,11 +251,9 @@ export const OpenInPicker = memo(function OpenInPicker({
   const environmentLabel = useEnvironment(environmentId)?.label ?? "this machine";
   // Remote editors run on the viewing machine; only desktop can probe that PATH.
   const effectiveEditors = remote.mode === "local-exec" ? availableEditors : remoteCapableEditors;
-  const contextEditors = useMemo(
-    () =>
-      allowTypora ? effectiveEditors : effectiveEditors.filter((editor) => editor !== "typora"),
-    [allowTypora, effectiveEditors],
-  );
+  const contextEditors = allowTypora
+    ? effectiveEditors
+    : effectiveEditors.filter((editor) => editor !== "typora");
   const [preferredEditor, setPreferredEditor] = usePreferredEditor(contextEditors);
 
   const openInEditor = async (editorId: EditorId | null): Promise<boolean> => {

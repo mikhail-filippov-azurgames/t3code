@@ -90,6 +90,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 :root {
+  --color-corvis-brand: #638bfa;
   --app-scrollbar-width: 6px;
   --appearance-contrast-base: 100%;
   --appearance-contrast-boost: 0%;

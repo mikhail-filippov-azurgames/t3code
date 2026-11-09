@@ -3,11 +3,9 @@ import type { ContextMenuItem, EnvironmentId, ScopedThreadRef, ThreadId } from "
 import type { ThreadChildrenAction } from "@t3tools/contracts/settings";
 
 /**
- * Delegated-children orchestration for the thread action menu, ported from
- * the ft3 engine fork onto V2 lineage: children are V2 subagent threads whose
- * `lineage.parentThreadId` points at the parent (delegation stays inside one
- * environment). Pure functions only — the sidebar and chat-header hooks
- * inject the archive/delete runners and the dialogs.
+ * Delegated-children orchestration for the thread action menu: children are
+ * V2 subagent threads whose `lineage.parentThreadId` points at the parent.
+ * Pure functions only — hooks inject the archive/delete runners and dialogs.
  */
 
 export type DelegationMenuItemId =
@@ -100,12 +98,10 @@ export function collectDelegatedChildRefs(input: {
 }
 
 /**
- * Every delegated descendant of `parent` — children, grandchildren, and
- * beyond — resolved to scoped refs and sorted by scoped key. Archived threads
- * are included on purpose: the server deletes the whole subtree, archived
- * branches included, so the delete confirmation counts exactly what the
- * server will remove. A visited set keeps the walk total even if lineage ever
- * forms a cycle.
+ * Every delegated descendant of `parent`, sorted by scoped key. Archived
+ * threads are included: the server deletes the whole subtree, so the delete
+ * confirmation must count them. A visited set keeps the walk total even if
+ * lineage ever forms a cycle.
  */
 export function collectDelegatedDescendantRefs(input: {
   readonly parent: ScopedThreadRef;
@@ -315,11 +311,9 @@ export type DelegatedChildrenActionOutcome =
     };
 
 /**
- * Runs the parent action together with its delegated children in one order:
- * every child first, in the given (sorted) order, parent last. `runParent`
- * receives `cascadeConfirmed`, so the caller skips the parent's own
- * confirmation when the children dialog already approved it. A dismissed
- * dialog or a failed child stops before the parent, leaving nothing orphaned.
+ * Runs the parent action after its delegated children, child first, parent
+ * last. `runParent` receives `cascadeConfirmed` from the children dialog; a
+ * dismissed dialog or a failed child stops before the parent.
  */
 export async function runDelegatedChildrenAction(input: {
   readonly children: ReadonlyArray<ScopedThreadRef>;

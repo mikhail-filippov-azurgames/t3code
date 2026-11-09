@@ -1,3 +1,4 @@
+// @effect-diagnostics processEnvInEffect:off - the test folds T3CODE_DESKTOP_USER_DATA_DIR in and out around the scoped effect.
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";

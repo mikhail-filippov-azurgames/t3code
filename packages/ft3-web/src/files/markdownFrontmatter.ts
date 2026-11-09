@@ -17,7 +17,10 @@ export function extractMarkdownFrontmatter(text: string): string | null {
     const lineEnd = separatorOffset === -1 ? text.length : lineStart + separatorOffset;
     const line = text.slice(lineStart, lineEnd);
     if (CLOSING_FRONTMATTER_FENCE.test(line)) {
-      return text.slice(yamlStart, lineStart).replace(/\r\n|\r/g, "\n").replace(/\n$/, "");
+      return text
+        .slice(yamlStart, lineStart)
+        .replace(/\r\n|\r/g, "\n")
+        .replace(/\n$/, "");
     }
     if (separatorOffset === -1) break;
     const separatorWidth = text[lineEnd] === "\r" && text[lineEnd + 1] === "\n" ? 2 : 1;

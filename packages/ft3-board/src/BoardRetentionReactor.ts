@@ -1,12 +1,6 @@
 /**
- * Periodically archives and deletes done board cards past their retention.
- *
- * A done card whose `updatedAt` is older than `boardArchiveAfterDays` is
- * archived once; an archived done card older than
- * `boardDeleteArchivedAfterDays` is deleted together with its history, leaving
- * only a minimal deletion record. `backlog` and unfinished cards are never
- * touched, and manually archived unfinished cards are never deleted by age.
- * The pass wakes nobody: it only writes board rows, never dispatches turns.
+ * Archives and deletes done board cards past their retention; the pass only
+ * writes board rows, never dispatches turns.
  *
  * @module BoardRetentionReactor
  */
@@ -36,7 +30,7 @@ export class BoardRetentionReactor extends Context.Service<
   }
 >()("@t3tools/ft3-board/BoardRetentionReactor") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const board = yield* BoardRepository.BoardRepository;
   const settingsService = yield* ServerSettingsService;

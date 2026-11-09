@@ -44,7 +44,7 @@ const makeRuntime = (input: {
   readonly update?: AcpSessionUpdate;
 }): {
   readonly runtime: AcpSessionRuntimeService;
-  readonly runPrompt: () => Promise<AcpPromptResponse>;
+  readonly runPrompt: () => Effect.Effect<AcpPromptResponse>;
 } => {
   let handler: UpdateHandler | undefined;
   const runtime = {
@@ -68,19 +68,15 @@ const makeRuntime = (input: {
   return {
     runtime,
     runPrompt: () =>
-      Effect.runPromise(
-        Effect.gen(function* () {
-          const decorated = decorateKimiRuntime({
-            runtime,
-            limits: promptLimits(
-              limits({ usedPercent: 100, resetsAt: "2026-10-27T05:30:00.000Z" }),
-            ),
-            nowMillis: Effect.succeed(Date.parse(checkedAt)),
-          });
-          yield* decorated.handleSessionUpdate(() => Effect.void);
-          return yield* decorated.prompt({ prompt: [] });
-        }),
-      ),
+      Effect.gen(function* () {
+        const decorated = decorateKimiRuntime({
+          runtime,
+          limits: promptLimits(limits({ usedPercent: 100, resetsAt: "2026-10-27T05:30:00.000Z" })),
+          nowMillis: Effect.succeed(Date.parse(checkedAt)),
+        });
+        yield* decorated.handleSessionUpdate(() => Effect.void);
+        return yield* decorated.prompt({ prompt: [] });
+      }),
   };
 };
 
@@ -117,45 +113,53 @@ describe("kimiEmptyTurnFailureMessage", () => {
 });
 
 describe("decorateKimiRuntime", () => {
-  it("turns an empty end_turn into a quota failure", async () => {
-    const { runPrompt } = makeRuntime({ stopReason: "end_turn" });
-    const error = await runPrompt().catch((cause: unknown) => cause);
+  it.effect("turns an empty end_turn into a quota failure", () =>
+    Effect.gen(function* () {
+      const { runPrompt } = makeRuntime({ stopReason: "end_turn" });
+      const error = yield* Effect.flip(runPrompt());
 
-    expect((error as { _tag?: string })._tag).toBe("AcpRequestError");
-    expect((error as { errorMessage?: string }).errorMessage).toBe(
-      "Kimi: 5-hour limit exhausted, resets in 1h 30m.",
-    );
-  });
+      expect((error as { _tag?: string })._tag).toBe("AcpRequestError");
+      expect((error as { errorMessage?: string }).errorMessage).toBe(
+        "Kimi: 5-hour limit exhausted, resets in 1h 30m.",
+      );
+    }),
+  );
 
-  it("keeps a successful turn that produced text", async () => {
-    const { runPrompt } = makeRuntime({
-      stopReason: "end_turn",
-      update: {
-        sessionUpdate: "agent_message_chunk",
-        messageId: "message-1",
-        content: { type: "text", text: "hello" },
-      },
-    });
+  it.effect("keeps a successful turn that produced text", () =>
+    Effect.gen(function* () {
+      const { runPrompt } = makeRuntime({
+        stopReason: "end_turn",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          messageId: "message-1",
+          content: { type: "text", text: "hello" },
+        },
+      });
 
-    await expect(runPrompt()).resolves.toEqual({ stopReason: "end_turn" });
-  });
+      expect(yield* runPrompt()).toEqual({ stopReason: "end_turn" });
+    }),
+  );
 
-  it("keeps a successful turn that produced a tool call", async () => {
-    const { runPrompt } = makeRuntime({
-      stopReason: "end_turn",
-      update: {
-        sessionUpdate: "tool_call",
-        toolCallId: "tool-1",
-        title: "Read file",
-      },
-    });
+  it.effect("keeps a successful turn that produced a tool call", () =>
+    Effect.gen(function* () {
+      const { runPrompt } = makeRuntime({
+        stopReason: "end_turn",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tool-1",
+          title: "Read file",
+        },
+      });
 
-    await expect(runPrompt()).resolves.toEqual({ stopReason: "end_turn" });
-  });
+      expect(yield* runPrompt()).toEqual({ stopReason: "end_turn" });
+    }),
+  );
 
-  it("does not rewrite cancelled prompts", async () => {
-    const { runPrompt } = makeRuntime({ stopReason: "cancelled" });
+  it.effect("does not rewrite cancelled prompts", () =>
+    Effect.gen(function* () {
+      const { runPrompt } = makeRuntime({ stopReason: "cancelled" });
 
-    await expect(runPrompt()).resolves.toEqual({ stopReason: "cancelled" });
-  });
+      expect(yield* runPrompt()).toEqual({ stopReason: "cancelled" });
+    }),
+  );
 });

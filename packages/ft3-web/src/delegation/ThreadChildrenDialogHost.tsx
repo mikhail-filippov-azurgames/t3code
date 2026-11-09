@@ -23,6 +23,7 @@ import {
 export function ThreadChildrenDialogHost() {
   const request = useThreadChildrenDialogRequest();
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- dismisses the dialog request held outside React when the host unmounts
   useEffect(() => () => respondToThreadChildrenDialog("dismissed"), []);
 
   if (!request) return null;

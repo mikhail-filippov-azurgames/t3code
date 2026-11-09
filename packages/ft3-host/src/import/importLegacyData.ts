@@ -64,13 +64,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const JsonCodec = Schema.fromJsonString(Schema.Unknown);
 
+const decodeJson = Schema.decodeOption(JsonCodec);
+
 const parseJson = (json: string): Record<string, unknown> | null => {
-  const decoded = Schema.decodeOption(JsonCodec)(json);
-  const value = Option.getOrNull(decoded);
+  const value = Option.getOrNull(decodeJson(json));
   return isRecord(value) ? value : null;
 };
 
-const encodeJson = (value: unknown): string => Schema.encodeSync(JsonCodec)(value);
+const encodeJsonValue = Schema.encodeSync(JsonCodec);
+
+const encodeJson = (value: unknown): string => encodeJsonValue(value);
 
 const isSlug = (value: string): boolean => /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(value);
 
@@ -285,7 +288,7 @@ export const importLegacyDataSql = Effect.fn("importLegacyDataSql")(function* ()
         const createdAt = validIso(row.created_at) ? row.created_at : "1970-01-01T00:00:00.000Z";
         const subagentId = `${SUBAGENT_ID_PREFIX}${childThreadId}`;
         const subagentPayload = {
-          ...(payload ?? {}),
+          ...payload,
           id: subagentId,
           threadId: parentThreadId,
           runId: null,
