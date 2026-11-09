@@ -37,7 +37,9 @@ export class MailKindClassifier extends Context.Service<
 export const layerNoopClassifier: Layer.Layer<MailKindClassifier> = Layer.succeed(
   MailKindClassifier,
   MailKindClassifier.of({
-    classify: (_input: MailClassifyInput) => Effect.succeed(null),
+    classify: Effect.fn("MailKindClassifier.classify")((_input: MailClassifyInput) =>
+      Effect.succeed(null),
+    ),
   }),
 );
 

@@ -24,7 +24,7 @@ export const memoryPolicyDocumentPort = (
       content,
       sha256: sha256(content),
       relPath: ref,
-      stableId: sha256(ref),
+      stableId: sha256(content),
     });
   },
 });

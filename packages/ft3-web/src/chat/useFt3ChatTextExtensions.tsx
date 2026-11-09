@@ -377,7 +377,11 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
 
       const resolution = await findWorkspaceMatchResolution(lookupPath);
       if (!isLatestLookup()) return;
-      if (resolution === null) return;
+      // No workspace answer (still loading or unavailable): open as upstream would.
+      if (resolution === null) {
+        fallback();
+        return;
+      }
       if (resolution.kind === "resolved") {
         openAt(resolution.path);
         return;
@@ -391,7 +395,10 @@ export function useFt3ChatTextExtensions(options: Ft3ChatTextOptions): Ft3ChatTe
         return;
       }
       if (kind === "missing") {
+        // The index confirms absence: flag the Not found chip, but the click
+        // still opens, as upstream does; the server reports a missing file.
         markFileMissing(meta.targetPath);
+        fallback();
         return;
       }
       fallback();

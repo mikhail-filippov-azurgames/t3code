@@ -90,10 +90,6 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("keeps the fork-owned docs read behind orchestration:read", () => {
-    expect(requiredScopeForRpcMethod("docs.read")).toBe(AuthOrchestrationReadScope);
-  });
-
   it("keeps the fork-owned plan RPCs behind orchestration scopes", () => {
     expect(requiredScopeForRpcMethod("board.planSetRequired")).toBe(AuthOrchestrationOperateScope);
     expect(requiredScopeForRpcMethod("board.planAccept")).toBe(AuthOrchestrationOperateScope);

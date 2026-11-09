@@ -160,7 +160,8 @@ describe("RoleResolver applied roles", () => {
 
         files.set(`${ROLES_FOLDER}/general.md`, roleFile("general", "# General\n\nOwn the wave."));
         files.set(ROLES_MANIFEST_PATH, manifest(5));
-        yield* tracker.refresh({ sources, features: { board: true } });
+        // External edits stay pending until applied; the toggle applies a valid change directly.
+        yield* tracker.refresh({ sources, features: { board: true }, applyExternalEdits: true });
 
         const updated = yield* resolver.resolve("general");
         assert.equal(updated.revision, 5);

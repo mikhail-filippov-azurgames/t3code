@@ -13,6 +13,9 @@ const POSITION_HASH_PATTERN = /^#L(\d+)(?:C(\d+))?$/i;
 export function parseFileUrlHref(
   href: string,
 ): { readonly path: string; readonly hash: string } | null {
+  // Chromium parses `d:whatever` as file:///d:whatever; a one-letter scheme that
+  // is not a drive path is an unknown scheme, not a file URL.
+  if (/^[A-Za-z]:(?![/\\])/.test(href.trim())) return null;
   try {
     const parsed = new URL(href);
     if (parsed.protocol.toLowerCase() !== "file:") return null;

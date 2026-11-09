@@ -56,7 +56,8 @@ export function PiBonsaiPresetSection(props: PiBonsaiPresetSectionProps) {
       active = false;
       detectionSequence.current++;
     };
-  }, [detect, props.environmentId]);
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- instanceId re-runs detection, whose cleanup bumps the sequence guard and drops a pending folder pick
+  }, [detect, props.environmentId, props.instanceId]);
 
   const runApply = async (input: { readonly rootPath?: string }, sequence: number) => {
     const result = await apply({

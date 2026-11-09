@@ -94,11 +94,16 @@ vi.mock("~/state/entities", async (importOriginal) => ({
   useProjects: () => mocks.projects,
 }));
 
-vi.mock("~/hooks/useLiveRefresh", () => ({
-  useLiveRefresh: (_refresh: unknown, options: { key?: string }) => {
-    if (options.key !== undefined) mocks.liveRefreshKeys.push(options.key);
-  },
-}));
+vi.mock("~/hooks/useLiveRefresh", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("~/hooks/useLiveRefresh")>();
+  return {
+    ...actual,
+    useLiveRefresh: (refresh: (() => void) | null, options: { key?: string }) => {
+      if (options.key !== undefined) mocks.liveRefreshKeys.push(options.key);
+      return actual.useLiveRefresh(refresh, options);
+    },
+  };
+});
 
 vi.mock("~/components/settings/SettingsScopeContext", () => ({
   useOptionalSettingsScope: () => ({ environment: { environmentId: "env-1" } }),

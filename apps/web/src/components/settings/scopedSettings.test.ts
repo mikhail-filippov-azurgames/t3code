@@ -1,3 +1,4 @@
+import { APP_BASE_NAME } from "~/branding";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentAuthorizationError,
@@ -264,7 +265,7 @@ describe("scoped settings writes", () => {
     const unsupported = [
       {
         label: server.label,
-        message: "This environment does not support this setting. Update T3 Code on it.",
+        message: `This environment does not support this setting. Update ${APP_BASE_NAME} on it.`,
       },
     ];
 

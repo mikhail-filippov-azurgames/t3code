@@ -106,8 +106,9 @@ describe("ft3 chat file links", () => {
         .click();
     });
 
-    expect(useRightPanelStore.getState().openFile).not.toHaveBeenCalled();
-    expect(fallback).not.toHaveBeenCalled();
+    // Upstream behavior wins the click: the file opens, and the confirmed
+    // absence still flags the Not found chip.
+    expect(fallback).toHaveBeenCalledTimes(1);
     expect(screen.container.querySelectorAll('[data-markdown-file-missing="true"]')).toHaveLength(
       1,
     );

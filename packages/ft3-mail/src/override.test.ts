@@ -175,7 +175,7 @@ it.effect("reroutes a routeless member when the letter is resent after the polic
   }).pipe(Effect.provide(harness.layer));
 });
 
-it.effect("binds the pending delivery and wake to the thread on a same-key resend", () => {
+it.effect("binds the pending delivery to the thread on a same-key resend", () => {
   const routable: Array<RoutingRoleId> = [];
   const harness = mailHarness({ routable });
   return Effect.gen(function* () {
@@ -212,10 +212,14 @@ it.effect("binds the pending delivery and wake to the thread on a same-key resen
     const thread = healed.launched[0]!.participantThreadId;
     assert.equal(healed.deliveries.length, 1);
     assert.equal(healed.deliveries[0]!.participantThreadId, thread);
-    assert.equal((yield* repository.listLetterDeliveries(healed.letter.letterId)).length, 1);
+    // The launched member carries the letter in its first prompt: the delivery is
+    // delivered and no wake is recorded for it.
+    const healedDeliveries = yield* repository.listLetterDeliveries(healed.letter.letterId);
+    assert.equal(healedDeliveries.length, 1);
+    assert.equal(healedDeliveries[0]!.state, "delivered");
     const wakes = yield* repository.listUndeliveredWakes({ limit: 10 });
-    assert.equal(wakes.length, 1);
-    assert.equal(wakes[0]!.targetThreadId, thread);
+    assert.equal(wakes.length, 0);
+    assert.equal(thread, healed.deliveries[0]!.participantThreadId);
   }).pipe(Effect.provide(harness.layer));
 });
 
