@@ -1,6 +1,7 @@
 import type { EnvironmentId } from "@t3tools/contracts";
 import { parseDocRef } from "@t3tools/ft3-docs/contracts";
 import {
+  FEATURE_REGISTRY,
   FEATURE_IDS,
   resolveFeatureStates,
   type FeatureId,
@@ -75,6 +76,19 @@ const policyFileTabId = (file: string) => `policy-document-file-tab:${file}`;
 /** The banner's document causes scroll to and select these rows. */
 const policyDocumentRowId = (key: PolicyDocumentKey) => `ft3-policy-document-row:${key}`;
 const policyFeatureRowId = (feature: FeatureId) => `ft3-policy-feature-row:${feature}`;
+const PROJECT_FEATURE_ROOTS = ["board", "mail", "planning"] as const satisfies readonly FeatureId[];
+const PROJECT_FEATURES = (() => {
+  const features = new Set<FeatureId>();
+  const addWithDependencies = (feature: FeatureId) => {
+    if (feature === "documents" || features.has(feature)) return;
+    features.add(feature);
+    for (const dependency of FEATURE_REGISTRY[feature].dependencies) {
+      addWithDependencies(dependency);
+    }
+  };
+  for (const feature of PROJECT_FEATURE_ROOTS) addWithDependencies(feature);
+  return features;
+})();
 
 export function PoliciesSettingsPanel() {
   const scope = useOptionalSettingsScope();
@@ -187,7 +201,7 @@ export function PoliciesSettingsPanel() {
     if (
       environmentId === null ||
       featurePending ||
-      (selectedProjectId !== null && feature === "documents")
+      (selectedProjectId !== null && !PROJECT_FEATURES.has(feature))
     )
       return;
     const previous = requestedFeatures[feature];
@@ -399,30 +413,35 @@ export function PoliciesSettingsPanel() {
           ) : null}
           {toggleSnapshot !== null && featureStates !== null
             ? FEATURE_IDS.map((feature) => {
-                const state =
-                  selectedProjectId !== null && feature === "documents"
-                    ? snapshot.features.documents
-                    : featureStates[feature];
+                const environmentOnly =
+                  selectedProjectId !== null && !PROJECT_FEATURES.has(feature);
+                const state = environmentOnly
+                  ? (snapshot?.features[feature] ?? {
+                      ...toggleSnapshot.features[feature],
+                      requestedEnabled: policySettings.features[feature],
+                    })
+                  : featureStates[feature];
                 const reason = state.requestedEnabled
                   ? featureOffReasonText(state.offReason)
                   : null;
-                const featureSource = toggleSnapshot.featureSources[feature] ?? "default";
+                const featureSource = toggleSnapshot.featureSources?.[feature] ?? "default";
                 const sourceDescription =
                   selectedProjectId === null
                     ? null
-                    : feature === "documents"
-                      ? `Environment value: ${state.requestedEnabled ? "on" : "off"}`
+                    : environmentOnly
+                      ? `Environment value: ${state.requestedEnabled ? "on" : "off"}${
+                          feature === "documents" ? "" : " · Not project-scoped"
+                        }`
                       : featureSource === "project"
                         ? "Overridden"
                         : `Inherited: ${state.requestedEnabled ? "on" : "off"}`;
                 const effectiveDescription =
-                  selectedProjectId === null
+                  selectedProjectId === null || (environmentOnly && feature !== "documents")
                     ? null
                     : `Effective: ${state.effectiveEnabled ? "on" : "off"}`;
                 const description =
                   [sourceDescription, effectiveDescription, reason].filter(Boolean).join(" · ") ||
                   undefined;
-                const environmentOnly = selectedProjectId !== null && feature === "documents";
                 return (
                   <SettingsRow
                     key={feature}

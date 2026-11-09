@@ -504,6 +504,27 @@ describe("policies settings panel", () => {
     ).toBeNull();
   });
 
+  it("limits project switches to guarded features and their dependencies", async () => {
+    setup();
+    mocks.projects = [{ id: "project-alpha", title: "Alpha", environmentId: "env-1" }];
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    await userEvent.click(screen.getByRole("combobox", { name: "Feature toggles project" }));
+    await userEvent.click(screen.getByRole("option", { name: "Alpha" }));
+
+    for (const feature of ["board", "mail", "planning", "roles", "delegation"]) {
+      expect(
+        screen.container.querySelector(`[role="switch"][aria-label="Enable ${feature}"]`),
+      ).not.toBeNull();
+    }
+    for (const feature of ["documents", "orchestration", "files"]) {
+      expect(
+        screen.container.querySelector(`[role="switch"][aria-label="Enable ${feature}"]`),
+      ).toBeNull();
+    }
+    expect(screen.container.textContent).toContain("Environment value: off · Not project-scoped");
+    expect(mocks.calls.filter((entry) => entry.label === "policies.setFeature")).toHaveLength(0);
+  });
+
   it("resets an overridden project feature with enabled null", async () => {
     setup();
     mocks.projects = [{ id: "project-beta", title: "Beta", environmentId: "env-1" }];
