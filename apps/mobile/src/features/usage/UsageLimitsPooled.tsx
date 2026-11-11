@@ -28,7 +28,7 @@ import { ProviderIcon } from "../../components/ProviderIcon";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { environmentPresentations } from "../../state/presentation";
 import { ResetCredits } from "./UsageLimitsSection";
-import { poolDisplayName, usageProviderKind, useProviderColors } from "./usageProviders";
+import { usageProviderKind, useProviderColors } from "./usageProviders";
 
 const PACE_LABEL = { ahead: "Ahead of pace", on: "On pace", under: "Under pace" } as const;
 
@@ -433,18 +433,14 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool) => {
         const windows = displayLimitWindows(pool);
-        const label =
-          poolDisplayName(pool) ?? providerClients.get(pool.driver)?.label ?? pool.driver;
         return (
           <Fragment key={pool.driver}>
             <View className="gap-3">
               <View className="flex-row items-center gap-2 px-1">
-                <ProviderIcon
-                  provider={pool.driver}
-                  displayName={poolDisplayName(pool)}
-                  size={18}
-                />
-                <Text className="text-base font-t3-medium text-foreground">{label}</Text>
+                <ProviderIcon provider={pool.driver} size={18} />
+                <Text className="text-base font-t3-medium text-foreground">
+                  {providerClients.get(pool.driver)?.label ?? pool.driver}
+                </Text>
               </View>
               {windows.map((window) => {
                 const details =
@@ -556,11 +552,7 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
           <>
             <View className="gap-2">
               <View className="flex-row items-center gap-2">
-                <ProviderIcon
-                  provider={account.driver}
-                  displayName={account.displayName}
-                  size={24}
-                />
+                <ProviderIcon provider={account.driver} size={24} />
                 <Text className="flex-1 text-xl font-t3-bold text-foreground">
                   {account.displayName ??
                     providerClients.get(account.driver)?.label ??
