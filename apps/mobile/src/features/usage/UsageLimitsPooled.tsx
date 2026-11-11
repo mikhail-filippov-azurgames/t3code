@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { EnvironmentId } from "@t3tools/contracts";
+import { providerClients } from "@t3tools/client-runtime/provider-clients";
 import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   collectLimitAccounts,
@@ -29,17 +30,11 @@ import { environmentPresentations } from "../../state/presentation";
 import { ResetCredits } from "./UsageLimitsSection";
 import { poolDisplayName, usageProviderKind, useProviderColors } from "./usageProviders";
 
-const DRIVER_LABEL: Partial<Record<string, string>> = {
-  codex: "Codex",
-  claudeAgent: "Claude",
-  grok: "Grok",
-  antigravity: "Antigravity",
-};
 const PACE_LABEL = { ahead: "Ahead of pace", on: "On pace", under: "Under pace" } as const;
 
 function accountName(account: LimitAccount) {
   if (account.displayName) return account.displayName;
-  if (!account.email) return DRIVER_LABEL[account.driver] ?? String(account.driver);
+  if (!account.email) return providerClients.get(account.driver)?.label ?? account.driver;
   return emailInitials(account.email) || "Account";
 }
 
@@ -438,7 +433,8 @@ export function UsageLimitsSection({
       ) : null}
       {pools.map((pool) => {
         const windows = displayLimitWindows(pool);
-        const label = poolDisplayName(pool) ?? DRIVER_LABEL[pool.driver] ?? pool.driver;
+        const label =
+          poolDisplayName(pool) ?? providerClients.get(pool.driver)?.label ?? pool.driver;
         return (
           <Fragment key={pool.driver}>
             <View className="gap-3">
@@ -566,7 +562,9 @@ export function UsageLimitAccountScreen({ route }: AccountScreenProps) {
                   size={24}
                 />
                 <Text className="flex-1 text-xl font-t3-bold text-foreground">
-                  {account.displayName ?? DRIVER_LABEL[account.driver] ?? account.driver}
+                  {account.displayName ??
+                    providerClients.get(account.driver)?.label ??
+                    account.driver}
                 </Text>
               </View>
               {account.email ? (
