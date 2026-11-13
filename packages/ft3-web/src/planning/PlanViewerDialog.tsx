@@ -37,21 +37,36 @@ export function PlanViewerDialog(props: {
   const planGetQuery = useEnvironmentQuery(
     planningEnvironment.planGet({ environmentId, input: { cardId } }),
   );
-  const record = planGetQuery.data?.record ?? null;
-  const doc = planGetQuery.data?.doc ?? null;
+  const [retainedPlan, setRetainedPlan] = useState(planGetQuery.data);
+  if (planGetQuery.data !== null && planGetQuery.data !== retainedPlan)
+    setRetainedPlan(planGetQuery.data);
+  const planData = planGetQuery.data ?? retainedPlan;
+  const record = planData?.record ?? null;
+  const doc = planData?.doc ?? null;
   const readDocQuery = useEnvironmentQuery(
     doc === null
       ? null
       : planningEnvironment.readDoc({ environmentId, input: { ref: `oc://doc/${doc.stableId}` } }),
   );
+  const [retainedDoc, setRetainedDoc] = useState(readDocQuery.data);
+  if (readDocQuery.data !== null && readDocQuery.data !== retainedDoc)
+    setRetainedDoc(readDocQuery.data);
+  const shownDoc = readDocQuery.data ?? retainedDoc;
   const acceptCommand = useAtomCommand(planningEnvironment.planAccept, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<PlanRecord | null>(null);
 
   const state = accepted?.state ?? record?.state ?? null;
-  const shownSha256 = readDocQuery.data?.status === "found" ? readDocQuery.data.sha256 : null;
-  const canAccept = planAcceptAvailable(state) && shownSha256 !== null && !busy;
+  const shownSha256 = shownDoc?.status === "found" ? shownDoc.sha256 : null;
+  const canAccept =
+    planAcceptAvailable(state) &&
+    shownSha256 !== null &&
+    !busy &&
+    planGetQuery.isSuccess &&
+    readDocQuery.isSuccess &&
+    !planGetQuery.isPending &&
+    !readDocQuery.isPending;
 
   const accept = async () => {
     if (shownSha256 === null) return;
@@ -82,7 +97,10 @@ export function PlanViewerDialog(props: {
         if (!open) props.onClose();
       }}
     >
-      <DialogPopup className="sm:max-w-2xl">
+      <DialogPopup
+        bottomStickOnMobile={false}
+        className="fixed inset-0 h-dvh max-h-none max-w-none rounded-none"
+      >
         <DialogHeader>
           <DialogTitle>{`Plan: ${props.title}`}</DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-x-2">
@@ -91,14 +109,14 @@ export function PlanViewerDialog(props: {
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="flex min-h-0 flex-col gap-3 text-base sm:text-sm">
-          {planGetQuery.isPending || readDocQuery.isPending ? (
+          {shownDoc?.status === "found" ? (
+            <pre className="min-h-0 whitespace-pre-wrap break-words rounded-md border border-border bg-card px-3 py-2 text-sm leading-relaxed select-text">
+              {shownDoc.content}
+            </pre>
+          ) : planGetQuery.isPending || readDocQuery.isPending ? (
             <p role="status" className="text-xs text-muted-foreground">
               Loading plan…
             </p>
-          ) : readDocQuery.data?.status === "found" ? (
-            <pre className="max-h-96 min-h-0 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border bg-card px-3 py-2 text-xs leading-relaxed select-text">
-              {readDocQuery.data.content}
-            </pre>
           ) : (
             <p role="alert" className="text-xs text-muted-foreground">
               Could not load the plan document.

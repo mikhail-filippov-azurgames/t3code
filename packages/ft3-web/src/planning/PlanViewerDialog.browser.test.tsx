@@ -3,6 +3,7 @@ import { BoardCardId, BoardMcpFailure } from "@t3tools/ft3-board/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser";
 
 import { render } from "../../../../apps/web/test/render";
 import { PlanViewerDialog } from "./PlanViewerDialog.tsx";
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   calls: [] as Array<{ label: string; input: unknown }>,
   refreshes: [] as string[],
   commandResult: null as unknown,
+  pending: false,
 }));
 
 vi.mock("./state.ts", () => ({
@@ -28,15 +30,15 @@ vi.mock("~/state/query", () => ({
     const view = {
       error: null,
       failure: null,
-      isPending: false,
-      isSuccess: true,
+      isPending: mocks.pending,
+      isSuccess: !mocks.pending,
       dataUpdatedAt: 0,
     };
     if (atom === null) return { ...view, data: null, refresh: () => {} };
     const query = (atom as { __query: string }).__query;
     return {
       ...view,
-      data: query === "planGet" ? mocks.planGet : mocks.readDoc,
+      data: mocks.pending ? null : query === "planGet" ? mocks.planGet : mocks.readDoc,
       refresh: () => {
         mocks.refreshes.push(query);
       },
@@ -90,6 +92,7 @@ const readDocResult = {
 
 function setup(options: { readonly state: string }) {
   vi.clearAllMocks();
+  mocks.pending = false;
   mocks.planGet = planGetResult(options.state);
   mocks.readDoc = readDocResult;
   mocks.calls = [];
@@ -121,6 +124,42 @@ describe("PlanViewerDialog", () => {
     await expect.element(screen.getByText("Discussion", { exact: true })).toBeVisible();
     await expect.element(screen.getByText(/# Plan/)).toBeVisible();
     await expect.element(screen.getByRole("button", { name: "Open planner thread" })).toBeVisible();
+  });
+
+  it("preserves the document and its scroll position while plan queries refresh", async () => {
+    setup({ state: "discussion" });
+    mocks.readDoc = { ...readDocResult, content: "# Plan\n" + "Step P1.\n".repeat(300) };
+    await using screen = await renderDialog();
+    const dialog = page.getByRole("dialog", { name: "Plan: Ship the board" });
+    const scroll = dialog.element().querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+    scroll.style.height = "160px";
+    scroll.style.overflowY = "auto";
+    scroll.scrollTop = 120;
+    expect(scroll.scrollTop).toBe(120);
+    mocks.pending = true;
+    await screen.rerender(
+      <PlanViewerDialog
+        environmentId={environmentId}
+        cardId={cardId}
+        title="Ship the board"
+        onClose={() => {}}
+      />,
+    );
+    await expect.element(dialog.getByText(/# Plan/)).toBeVisible();
+    await expect.element(dialog.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(120);
+    mocks.pending = false;
+    await screen.rerender(
+      <PlanViewerDialog
+        environmentId={environmentId}
+        cardId={cardId}
+        title="Ship the board"
+        onClose={() => {}}
+      />,
+    );
+    await expect.element(dialog.getByRole("button", { name: "Plan accepted" })).toBeEnabled();
+    expect(scroll.scrollTop).toBe(120);
   });
 
   it("accepts the shown plan from discussion and shows the accepted state", async () => {

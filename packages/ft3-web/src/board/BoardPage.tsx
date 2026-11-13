@@ -564,6 +564,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
 
       {selectedCard !== null ? (
         <BoardCardDetailDialog
+          key={selectedCard.cardId}
           environmentId={environmentId ?? undefined}
           card={selectedCard}
           events={events}

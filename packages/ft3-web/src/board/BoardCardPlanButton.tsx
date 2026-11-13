@@ -10,25 +10,30 @@ export function BoardCardPlanButton({
   environmentId,
   cardId,
   size = "xs",
+  onOpenPlan,
 }: {
   readonly environmentId: EnvironmentId;
   readonly cardId: BoardCardId;
   readonly size?: "xs" | "sm";
+  readonly onOpenPlan?: (plan: { cardId: BoardCardId; title: string }) => void;
 }) {
-  const [viewerOpen, setViewerOpen] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<{ cardId: BoardCardId; title: string } | null>(
+    null,
+  );
   const plan = usePlanThreadSource(environmentId).forCard(cardId);
-  if (plan === null) return null;
   return (
     <>
-      <Button size={size} variant="outline" onClick={() => setViewerOpen(true)}>
-        Plan
-      </Button>
-      {viewerOpen ? (
+      {plan === null ? null : (
+        <Button size={size} variant="outline" onClick={() => (onOpenPlan ?? setSelectedPlan)(plan)}>
+          Plan
+        </Button>
+      )}
+      {selectedPlan !== null ? (
         <PlanViewerDialog
           environmentId={environmentId}
-          cardId={cardId}
-          title={plan.title}
-          onClose={() => setViewerOpen(false)}
+          cardId={selectedPlan.cardId}
+          title={selectedPlan.title}
+          onClose={() => setSelectedPlan(null)}
         />
       ) : null}
     </>

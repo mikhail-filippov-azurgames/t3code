@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { RegistryContext } from "@effect/atom-react";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { BoardCardId, type BoardCard } from "@t3tools/ft3-board/contracts";
+import { BoardCardId, type BoardCard, type BoardListResult } from "@t3tools/ft3-board/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
-import { render } from "../../../../apps/web/test/render";
+import { act, render } from "../../../../apps/web/test/render";
 import { Ft3SurfaceContent } from "../panels.tsx";
+import { BoardPage } from "./BoardPage.tsx";
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
@@ -18,7 +19,6 @@ const mocks = vi.hoisted(() => ({
   remove: vi.fn(),
   resend: vi.fn(),
   request: vi.fn(),
-  planForCard: vi.fn(),
   planGet: vi.fn(),
   readDoc: vi.fn(),
 }));
@@ -36,12 +36,20 @@ vi.mock("./state.ts", () => ({
     requestOrchestrator: mocks.request,
   },
 }));
-vi.mock("~/state/entities", () => ({ useThreadShells: () => [] }));
+vi.mock("./useBoardBackend", async () => ({
+  boardEnvironment: (await import("./state.ts")).boardEnvironment,
+  useBoardOrchestratorThreadKeys: () => new Set<string>(),
+}));
+vi.mock("~/state/entities", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/state/entities")>()),
+  useThreadShells: () => [],
+}));
+vi.mock("~/state/environments", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("~/state/environments")>()),
+  usePrimaryEnvironmentId: () => EnvironmentId.make("browser-env"),
+}));
 vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: (command: unknown) => command }));
 vi.mock("./BoardCardDialog.tsx", () => ({ BoardCardDialog: () => null }));
-vi.mock("../lineage/usePlanThreadSource.ts", () => ({
-  usePlanThreadSource: () => ({ forCard: mocks.planForCard, forOrchestratorThread: () => [] }),
-}));
 vi.mock("../planning/state.ts", () => ({
   planningEnvironment: {
     planGet: (target: unknown) => mocks.planGet(target),
@@ -55,14 +63,13 @@ const ref = {
   threadId: ThreadId.make("browser-coordinator"),
 };
 
-function setup() {
+function setup(options: { withPlan?: boolean; longBody?: boolean } = {}) {
   vi.clearAllMocks();
-  mocks.planForCard.mockReturnValue(null);
   const card: BoardCard = {
     cardId: BoardCardId.make("11111111-1111-4111-8111-111111111111"),
     orchestratorThreadId: ref.threadId,
     title: "Ship the board",
-    body: "Acceptance criteria",
+    body: options.longBody ? "Acceptance criteria\n".repeat(300) : "Acceptance criteria",
     status: "todo",
     readiness: "ready",
     readinessNote: null,
@@ -78,7 +85,24 @@ function setup() {
     createdAt: "2026-10-26T00:00:00Z",
     updatedAt: "2026-10-26T00:00:00Z",
   };
-  const list = Atom.make(AsyncResult.success({ cards: [card], events: [] }));
+  const listData: BoardListResult = {
+    cards: [card],
+    events: [],
+    plans: options.withPlan
+      ? [
+          {
+            cardId: card.cardId,
+            title: card.title,
+            planDocId: "doc-plan",
+            plannerThreadId: ThreadId.make("planner-thread"),
+            status: "discussion",
+            stepCount: 1,
+            implementStarted: false,
+          },
+        ]
+      : [],
+  };
+  const list = Atom.make<AsyncResult.AsyncResult<BoardListResult>>(AsyncResult.success(listData));
   const orchestrators = Atom.make(
     AsyncResult.success({
       orchestrators: [{ threadId: ref.threadId, createdBy: "human", createdAt: card.createdAt }],
@@ -121,12 +145,12 @@ function setup() {
         relPath: "corvis/plans/demo/card.md",
         name: "card.md",
         sha256: "a".repeat(64),
-        content: "# Plan\n\nStep P1.",
+        content: "# Plan\n\n" + "Step P1.\n".repeat(300),
       }),
     ),
   );
   const registry = AtomRegistry.make();
-  return { registry, [Symbol.dispose]: () => registry.dispose() };
+  return { registry, list, listData, card, [Symbol.dispose]: () => registry.dispose() };
 }
 
 describe("Board registry rendering", () => {
@@ -184,15 +208,7 @@ describe("Board registry rendering", () => {
   });
 
   it("opens the plan viewer from the card's Plan button", async () => {
-    using state = setup();
-    mocks.planForCard.mockReturnValue({
-      cardId: BoardCardId.make("11111111-1111-4111-8111-111111111111"),
-      title: "Ship the board",
-      orchestratorThreadId: ref.threadId,
-      plannerThreadId: ThreadId.make("planner-thread"),
-      state: "discussion",
-      implementStarted: false,
-    });
+    using state = setup({ withPlan: true });
     await using screen = await render(
       <RegistryContext.Provider value={state.registry}>
         <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
@@ -203,6 +219,98 @@ describe("Board registry rendering", () => {
       .element(screen.getByRole("heading", { name: "Plan: Ship the board" }))
       .toBeVisible();
     await expect.element(screen.getByText("Discussion", { exact: true })).toBeVisible();
+
+    const planDialog = page.getByRole("dialog", { name: "Plan: Ship the board" });
+    const scroll = planDialog
+      .element()
+      .querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+    scroll.style.height = "160px";
+    scroll.style.overflowY = "auto";
+    scroll.scrollTop = 120;
+    expect(scroll.scrollTop).toBe(120);
+
+    await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
+    await expect.element(planDialog).toBeVisible();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(120);
+
+    await act(() =>
+      state.registry.set(
+        state.list,
+        AsyncResult.success({
+          cards: [{ ...state.card, status: "in_progress", title: "Updated card" }],
+          events: [],
+          plans: [],
+          archivedCounts: [],
+        }),
+      ),
+    );
+    await expect.element(planDialog).toBeVisible();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(120);
+    (
+      planDialog
+        .getByRole("button", { name: "Close", exact: true })
+        .first()
+        .element() as HTMLElement
+    ).click();
+    await expect.element(planDialog).not.toBeInTheDocument();
+  });
+
+  it("keeps card details and their scroll position while the list refreshes", async () => {
+    using state = setup({ longBody: true });
+    await using screen = await render(
+      <RegistryContext.Provider value={state.registry}>
+        <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
+      </RegistryContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Ship the board", exact: true }));
+    const dialog = page.getByRole("dialog", { name: "Ship the board", exact: true });
+    await expect.element(dialog).toBeVisible();
+    const scroll = dialog.element().querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+    scroll.style.height = "160px";
+    scroll.style.overflowY = "auto";
+    scroll.scrollTop = 50;
+    expect(scroll.scrollTop).toBe(50);
+    await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
+    await expect.element(dialog).toBeVisible();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(50);
+  });
+
+  it("keeps the full board's plan open across a card list refresh", async () => {
+    using state = setup({ withPlan: true });
+    await using screen = await render(
+      <RegistryContext.Provider value={state.registry}>
+        <BoardPage initialOrchestratorId={null} createOnMount={false} />
+      </RegistryContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Ship the board/ }));
+    const detail = page.getByRole("dialog", { name: "Ship the board", exact: true });
+    await userEvent.click(detail.getByRole("button", { name: "Plan", exact: true }));
+    const plan = page.getByRole("dialog", { name: "Plan: Ship the board" });
+    await expect.element(plan).toBeVisible();
+    const scroll = plan.element().querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+    scroll.style.height = "160px";
+    scroll.style.overflowY = "auto";
+    scroll.scrollTop = 120;
+    expect(scroll.scrollTop).toBe(120);
+    await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
+    await expect.element(plan).toBeVisible();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(120);
+    await act(() =>
+      state.registry.set(
+        state.list,
+        AsyncResult.success({
+          ...state.listData,
+          cards: [{ ...state.card, status: "in_progress", title: "Updated card" }],
+        }),
+      ),
+    );
+    await expect.element(plan).toBeVisible();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(120);
   });
 
   it("shows a fallback for a removed surface", async () => {

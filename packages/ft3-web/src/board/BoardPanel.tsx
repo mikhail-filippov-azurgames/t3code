@@ -1,6 +1,11 @@
 import { RegistryContext } from "@effect/atom-react";
 import type { SettledAsyncResult } from "@t3tools/client-runtime/state/runtime";
-import type { BoardCard, BoardCardEvent, BoardCardId } from "@t3tools/ft3-board/contracts";
+import type {
+  BoardCard,
+  BoardCardEvent,
+  BoardCardId,
+  BoardListResult,
+} from "@t3tools/ft3-board/contracts";
 import { ThreadId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import {
@@ -36,6 +41,7 @@ import {
   useBoardCardPins,
 } from "./BoardCardPinnedPanel.tsx";
 import { BoardCardPlanButton } from "./BoardCardPlanButton.tsx";
+import { PlanViewerDialog } from "../planning/PlanViewerDialog.tsx";
 import { addBoardCardPin } from "./boardCardPins.ts";
 import { BoardRoleIcon } from "./boardRoleIcons.tsx";
 import {
@@ -64,6 +70,9 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
   const [coordinator, setCoordinator] = useState<string>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<{ cardId: BoardCardId; title: string } | null>(
+    null,
+  );
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const pins = useBoardCardPins(threadRef);
@@ -99,7 +108,10 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
   const registered = orchestrators.data?.orchestrators ?? [];
   const currentRegistered = registered.some((entry) => entry.threadId === threadRef.threadId);
   const selectedRegistered = registered.some((entry) => entry.threadId === coordinator);
-  const cards = list.data?.cards ?? [];
+  const [retainedList, setRetainedList] = useState<BoardListResult | null>(null);
+  if (list.data !== null && list.data !== retainedList) setRetainedList(list.data);
+  const listData = list.data ?? retainedList;
+  const cards = listData?.cards ?? [];
   const scopedCards = cards.filter(
     (card) => coordinator === "all" || card.orchestratorThreadId === coordinator,
   );
@@ -107,7 +119,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
   const grouped = groupBoardCardsByStatus(filteredCards);
   const counts = countBoardCardsByStatus(filteredCards);
   const archivedCounts = countOmittedArchivedByStatus(
-    list.data,
+    listData,
     coordinator === "all" ? null : ThreadId.make(coordinator),
   );
   const pinnedCards = pinned.data?.details.map((detail) => detail.card) ?? [];
@@ -117,9 +129,9 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
     null;
   const pinnedEvents = pinned.data?.details.flatMap((detail) => detail.events) ?? [];
   const events: readonly BoardCardEvent[] = [
-    ...(list.data?.events ?? []),
+    ...(listData?.events ?? []),
     ...pinnedEvents.filter(
-      (event) => !list.data?.events.some((entry) => entry.entryId === event.entryId),
+      (event) => !listData?.events.some((entry) => entry.entryId === event.entryId),
     ),
   ];
   const title = (id: string) => shells.find((shell) => shell.id === id)?.title ?? id;
@@ -475,6 +487,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
                     <BoardCardPlanButton
                       environmentId={threadRef.environmentId}
                       cardId={card.cardId}
+                      onOpenPlan={setSelectedPlan}
                     />
                     <Button
                       size="xs"
@@ -537,6 +550,15 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
           }
           onRequest={requestCoordinator}
           onOpenExecutor={openExecutor}
+        />
+      ) : null}
+      {selectedPlan !== null ? (
+        <PlanViewerDialog
+          key={`plan:${selectedPlan.cardId}`}
+          environmentId={threadRef.environmentId}
+          cardId={selectedPlan.cardId}
+          title={selectedPlan.title}
+          onClose={() => setSelectedPlan(null)}
         />
       ) : null}
     </div>
