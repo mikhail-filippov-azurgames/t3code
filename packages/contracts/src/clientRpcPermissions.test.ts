@@ -1,6 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { AuthOrchestrationOperateScope, AuthSettingsWriteScope } from "./auth.ts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
+  AuthSettingsWriteScope,
+} from "./auth.ts";
 import {
   CLIENT_GUARDED_RPC_SCOPES,
   FT3_CLIENT_GUARDED_RPC_SCOPES,
@@ -41,6 +45,14 @@ describe("clientRpcRequiredScopes", () => {
       "policies.setDocument",
       "policies.setFeature",
       "policies.browseServerDirectory",
+      "zavod.connect",
     ]);
+  });
+
+  it("guards Zavod connect with providers:manage and leaves detection queryable", () => {
+    expect(clientRpcRequiredScopes("zavod.connect", {})).toEqual([AuthProvidersManageScope]);
+    expect(clientRpcRequiredScopes("zavod.detect", {})).toEqual([]);
+    expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("zavod.connect");
+    expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("zavod.detect");
   });
 });

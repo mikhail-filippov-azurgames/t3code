@@ -1748,9 +1748,15 @@ importers:
       '@t3tools/ft3-vcs':
         specifier: workspace:*
         version: link:../ft3-vcs
+      '@t3tools/provider-core':
+        specifier: workspace:*
+        version: link:../provider-core
       effect:
         specifier: 4.1.2
         version: 4.1.2
+      smol-toml:
+        specifier: 1.9.1
+        version: 1.9.1
     devDependencies:
       '@effect/platform-node':
         specifier: 4.1.2
@@ -1956,6 +1962,9 @@ importers:
       '@t3tools/ft3-docs':
         specifier: workspace:*
         version: link:../ft3-docs
+      '@t3tools/ft3-host':
+        specifier: workspace:*
+        version: link:../ft3-host
       '@t3tools/ft3-mail':
         specifier: workspace:*
         version: link:../ft3-mail

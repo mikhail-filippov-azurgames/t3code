@@ -142,14 +142,19 @@ describe("applied policies at server startup", () => {
     );
   });
 
-  it.effect("leaves roles off when neither settings nor the environment configure them", () => {
+  it.effect("serves the built-in role profile without external settings", () => {
     const previous = process.env[ROLES_DIR_ENV];
     delete process.env[ROLES_DIR_ENV];
     return Effect.gen(function* () {
       yield* refreshAppliedPolicies;
       const roles = yield* RoleResolver;
-      assert.deepStrictEqual(yield* roles.assignment(undefined), { _tag: "off", role: undefined });
-      assert.equal(yield* roles.leadLine, "");
+      const assignment = yield* roles.assignment(undefined);
+      assert.equal(assignment._tag, "assigned");
+      if (assignment._tag === "assigned") {
+        assert.equal(assignment.resolved.roleId, "general");
+        assert.equal(assignment.resolved.revision, 1);
+      }
+      assert.include(yield* roles.leadLine, "Claude Opus 5.5 through Zavod");
     }).pipe(
       Effect.provide(services),
       Effect.ensuring(

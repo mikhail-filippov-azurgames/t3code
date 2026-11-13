@@ -25,6 +25,7 @@ import {
 import { policiesRpcHandlers, refreshAppliedPolicies } from "./rpc.ts";
 import { FT3_POLICIES_WS_METHODS } from "./rpc-contracts.ts";
 import { DEFAULT_POLICY_SETTINGS, type PoliciesSettings } from "./settings.ts";
+import { resolveRoutingCandidates } from "./routing.ts";
 
 const ROUTING_POLICY_PATH = "policies/routing-policy.md";
 const ROLES_DIR = "policies/roles/";
@@ -327,6 +328,30 @@ const rolesOf = (snapshot: {
 }) => snapshot.documents.find((document) => document.key === "roles") ?? null;
 
 describe("policy write and apply RPC", () => {
+  it.effect("uses configured store documents when the built-in profile is available", () => {
+    const external = routingPolicy(24);
+    const files = new Map([[ROUTING_POLICY_PATH, external]]);
+    return Effect.gen(function* () {
+      const snapshot = yield* getSnapshot({});
+      assert.equal(revisionOf(snapshot)?.source.kind, "doc");
+      assert.equal(revisionOf(snapshot)?.applied?.revision, 24);
+      const tracker = yield* PolicyChangeTracker;
+      const applied = yield* tracker.applied("routingPolicy");
+      assert.equal(applied?.key, "routingPolicy");
+      if (applied?.key !== "routingPolicy" || applied.document === null) {
+        return yield* Effect.die("expected the configured routing document");
+      }
+      assert.equal(applied.sha256, sha256(external));
+      const route = resolveRoutingCandidates(applied.document, {
+        role: "implementation",
+        level: "low",
+      });
+      assert.deepStrictEqual(
+        route.candidates.map((candidate) => [candidate.provider.instanceId, candidate.model]),
+        [["alpha", "alpha-one"]],
+      );
+    }).pipe(Effect.provide(services(files, false)));
+  });
   it.effect("saves a valid document from the Policies tab and applies it at once", () => {
     const files = new Map([[ROUTING_POLICY_PATH, routingPolicy(1)]]);
     return Effect.gen(function* () {
@@ -565,8 +590,7 @@ describe("policy write and apply RPC", () => {
       const off = yield* setFeature({ feature: "mail", enabled: false });
       assert.isFalse(off.snapshot.features.mail.requestedEnabled);
       assert.isFalse(off.snapshot.features.mail.effectiveEnabled);
-      // Unconfigured built-in roles and skills keep warning-level attention up.
-      assert.isTrue(off.snapshot.needsAttention);
+      assert.isFalse(off.snapshot.needsAttention);
     }).pipe(Effect.provide(services(files, false)));
   });
 
@@ -580,7 +604,7 @@ describe("policy write and apply RPC", () => {
       const toBuiltin = yield* setDocument({ key: "routingPolicy", source: { kind: "builtin" } });
       assert.equal(revisionOf(toBuiltin.snapshot)?.source.kind, "builtin");
       assert.equal(revisionOf(toBuiltin.snapshot)?.applied?.revision, 1);
-      assert.isTrue(revisionOf(toBuiltin.snapshot)?.kept);
+      assert.isFalse(revisionOf(toBuiltin.snapshot)?.kept);
 
       const back = yield* setDocument({
         key: "routingPolicy",
@@ -637,7 +661,7 @@ describe("policy write and apply RPC", () => {
 
       const envInitial = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
       assert.equal(rolesOf(envInitial)?.source.kind, "builtin");
-      assert.equal(rolesOf(envInitial)?.applied?.revision, 0);
+      assert.equal(rolesOf(envInitial)?.applied?.revision, 1);
 
       const set = yield* setDocument({ projectId: "proj-1", key: "roles", source: docSource }).pipe(
         Effect.provide(servicesFor()),
@@ -647,7 +671,7 @@ describe("policy write and apply RPC", () => {
 
       const env = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
       assert.equal(rolesOf(env)?.source.kind, "builtin");
-      assert.equal(rolesOf(env)?.applied?.revision, 0);
+      assert.equal(rolesOf(env)?.applied?.revision, 1);
 
       const project = yield* getSnapshot({ projectId: "proj-1" }).pipe(
         Effect.provide(servicesFor()),
@@ -669,7 +693,7 @@ describe("policy write and apply RPC", () => {
       );
       assert.equal(rolesOf(projectAgain)?.applied?.revision, 1);
       const envAgain = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
-      assert.equal(rolesOf(envAgain)?.applied?.revision, 0);
+      assert.equal(rolesOf(envAgain)?.applied?.revision, 1);
 
       // Restart: a fresh tracker over the shared store restores each scope.
       const restarted = yield* getSnapshot({ projectId: "proj-1" }).pipe(
@@ -677,7 +701,7 @@ describe("policy write and apply RPC", () => {
       );
       assert.equal(rolesOf(restarted)?.applied?.revision, 1);
       const restartedEnv = yield* getSnapshot({}).pipe(Effect.provide(servicesFor()));
-      assert.equal(rolesOf(restartedEnv)?.applied?.revision, 0);
+      assert.equal(rolesOf(restartedEnv)?.applied?.revision, 1);
     });
   });
 });

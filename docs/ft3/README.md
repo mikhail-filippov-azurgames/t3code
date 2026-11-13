@@ -4,6 +4,8 @@
 upstream-файлов — в [fork-boundary.md](../internals/fork-boundary.md); здесь только карта,
 без повторения швов.
 
+[Установка Corvis для коллег](./install.md).
+
 ## Что такое ft3
 
 ft3 — форк upstream T3 Code V2 (`pingdotgg/t3code`), ветка `ft3/v2`. Upstream остаётся

@@ -1,6 +1,7 @@
 import {
   type AuthEnvironmentScope,
   EnvironmentAuthorizationError,
+  type ServerSettingsError,
   authScopeRequiredResponse,
 } from "@t3tools/contracts";
 import { planGateLayer, planServiceLayer } from "@t3tools/ft3-board/planning";
@@ -53,6 +54,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import { FT3_ZAVOD_WS_METHODS, ZavodRpcError, zavodRpcScopes, zavodRpcs } from "./rpc-contracts.ts";
+import * as Zavod from "./zavod/service.ts";
+import * as ZavodInstances from "./zavod/instances.ts";
 
 export { BoardService } from "@t3tools/ft3-board/service";
 export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
@@ -63,6 +67,7 @@ export { CommitHistoryService } from "@t3tools/ft3-vcs/service";
 export { MailService } from "@t3tools/ft3-mail/service";
 export { MailRepository } from "@t3tools/ft3-mail/repository";
 export { PolicyChangeTracker, PolicyPickers } from "@t3tools/ft3-policies/rpc";
+export { ZavodService } from "./zavod/service.ts";
 
 export const FT3_WS_METHODS = {
   ...FT3_BOARD_WS_METHODS,
@@ -71,6 +76,7 @@ export const FT3_WS_METHODS = {
   ...FT3_DOCS_WS_METHODS,
   ...FT3_POLICIES_WS_METHODS,
   ...FT3_MAIL_WS_METHODS,
+  ...FT3_ZAVOD_WS_METHODS,
 } as const;
 
 const ft3RpcScopes = {
@@ -80,6 +86,7 @@ const ft3RpcScopes = {
   ...docsRpcScopes,
   ...policiesRpcScopes,
   ...mailRpcScopes,
+  ...zavodRpcScopes,
 } as const;
 
 export class Ft3RpcScopeAuthorization extends RpcMiddleware.Service<Ft3RpcScopeAuthorization>()(
@@ -115,7 +122,20 @@ export const group = RpcGroup.make(
   ...docsRpcs,
   ...policiesRpcs,
   ...mailRpcs,
+  ...zavodRpcs,
 ).middleware(Ft3RpcScopeAuthorization);
+
+const zavodRpcError = (
+  operation: ZavodRpcError["operation"],
+  error: ServerSettingsError | ZavodInstances.ZavodInstancesError,
+) =>
+  new ZavodRpcError({
+    operation,
+    stage: error._tag === "ServerSettingsError" ? "settings" : error.stage,
+    ...(error._tag === "ZavodInstancesError" && error.instanceId !== undefined
+      ? { instanceId: error.instanceId }
+      : {}),
+  });
 
 export const handlers = {
   ...boardRpcHandlers,
@@ -124,7 +144,17 @@ export const handlers = {
   ...docsRpcHandlers,
   ...policiesRpcHandlers,
   ...mailRpcHandlers,
+  [FT3_ZAVOD_WS_METHODS.zavodDetect]: () =>
+    Effect.flatMap(Zavod.ZavodService, (service) => service.detect()).pipe(
+      Effect.mapError((error) => zavodRpcError("detect", error)),
+    ),
+  [FT3_ZAVOD_WS_METHODS.zavodConnect]: () =>
+    Effect.flatMap(Zavod.ZavodService, (service) => service.connect()).pipe(
+      Effect.mapError((error) => zavodRpcError("connect", error)),
+    ),
 };
+
+export const zavodRpcServiceLayer = Zavod.layer.pipe(Layer.provide(ZavodInstances.layer));
 
 // The store root is a setting (`ft3.docs.root`), so it can point at the store
 // the machine already has instead of the empty state-directory one.
@@ -152,6 +182,7 @@ const rpcServices = Layer.mergeAll(
   // task row through MailRepository.
   mailServiceLayer,
   mailRepositoryLayer,
+  zavodRpcServiceLayer,
 );
 
 // BoardService and the RPC handlers read PlanService through the gate layer;

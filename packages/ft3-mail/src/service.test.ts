@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { FeatureDisabledError, FeatureGate } from "@t3tools/ft3-policies/server";
 import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
+import type { RoutingRoleId } from "@t3tools/ft3-policies/routingPolicy";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -162,6 +163,89 @@ it.effect("keeps a member without a route and reports the cell and the skipped c
     );
   }).pipe(Effect.provide(harness.layer));
 });
+
+it.effect("routes review specializations while preserving the stored member role", () => {
+  const harness = mailHarness({ routable: ["review", "review-claude", "review-codex"] });
+  return Effect.gen(function* () {
+    yield* migrateMail;
+    const created = yield* teamOf([
+      { role: "review", specialization: "claude" },
+      { role: "review", specialization: "codex" },
+      { role: "review" },
+      { role: "review", specialization: "contracts" },
+    ]);
+    assert.deepStrictEqual(
+      harness.selects.map((selection) => selection.role),
+      ["review-claude", "review-codex", "review", "review"],
+    );
+    assert.deepStrictEqual(
+      created.members.map(({ member }) => [member.roleId, member.specialization]),
+      [
+        ["review", "claude"],
+        ["review", "codex"],
+        ["review", null],
+        ["review", "contracts"],
+      ],
+    );
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect.each(["claude", "codex"] as const)(
+  "uses the review-%s row for replay and letter diagnostics",
+  (specialization) => {
+    const routingRole = `review-${specialization}` as const;
+    const harness = mailHarness({ routable: [routingRole] });
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const members = [{ role: "review", specialization }];
+      const created = yield* teamOf(members);
+      assert.isNull(created.members[0]?.noCandidate);
+      const replay = yield* teamOf(members);
+      assert.isNull(replay.members[0]?.noCandidate);
+      const sent = yield* sendAs(
+        LEAD,
+        created.task.taskId,
+        `role:review/${specialization}`,
+        "request",
+      );
+      assert.deepStrictEqual(sent.noCandidate, []);
+      assert.lengthOf(sent.launched, 1);
+      assert.equal(harness.selects.length, 1);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect.each(["claude", "codex"] as const)(
+  "retains review-%s when retrying a member without a route",
+  (specialization) => {
+    const routingRole = `review-${specialization}` as const;
+    const routable: RoutingRoleId[] = [];
+    const harness = mailHarness({ routable });
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const created = yield* teamOf([{ role: "review", specialization }]);
+      assert.isNotNull(created.members[0]?.noCandidate);
+      routable.push(routingRole);
+      const sent = yield* sendAs(
+        LEAD,
+        created.task.taskId,
+        `role:review/${specialization}`,
+        "request",
+      );
+      assert.lengthOf(sent.launched, 1);
+      assert.deepStrictEqual(sent.noCandidate, []);
+      assert.deepStrictEqual(
+        harness.selects.map((selection) => selection.role),
+        [routingRole, routingRole],
+      );
+      const repository = yield* MailRepository;
+      const [member] = yield* repository.listMembers(created.task.taskId);
+      assert.equal(member?.roleId, "review");
+      assert.equal(member?.specialization, specialization);
+      assert.isNotNull(member?.routeModelSelectionJson);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect("replays a repeated create without routing or writing the team again", () => {
   const harness = mailHarness();

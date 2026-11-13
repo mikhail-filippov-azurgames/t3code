@@ -1,4 +1,5 @@
 import { PiBonsaiPresetSection } from "@t3tools/ft3-web/pi";
+import { ZavodSettingsSection } from "@t3tools/ft3-web/zavod";
 import { SettingsGroup } from "./SettingsGroup";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import {
@@ -1085,6 +1086,8 @@ export function EnvironmentProviderSettings({
           </div>
         </SettingsGroup>
       </SettingsSection>
+
+      <ZavodSettingsSection environmentId={environmentId} />
 
       <UsageProviderSettings
         key={environmentId}

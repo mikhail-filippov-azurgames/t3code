@@ -383,6 +383,11 @@ const refuse = (code: MailServiceErrorCode, reason: string) =>
 const routingRoleOf = (role: string): RoutingRoleId | null =>
   (ROUTING_ROLES as ReadonlyArray<string>).includes(role) ? (role as RoutingRoleId) : null;
 
+const routingRoleFor = (roleId: RoutingRoleId, specialization: string | null): RoutingRoleId =>
+  roleId === "review" && (specialization === "claude" || specialization === "codex")
+    ? `review-${specialization}`
+    : roleId;
+
 const parseRecipient = (to: string): Recipient | null => {
   if (to === "human") return { kind: "human" };
   if (to === "lead") return { kind: "lead" };
@@ -590,9 +595,13 @@ const make = Effect.gen(function* () {
   const noCandidateFor = Effect.fn("MailService.noCandidateFor")(function* (
     role: string,
     level: MailLevel,
+    specialization: string | null,
   ) {
     const roleId = yield* requireRoutingRole(role);
-    const resolution = yield* routing.resolve({ role: roleId, level });
+    const resolution = yield* routing.resolve({
+      role: routingRoleFor(roleId, specialization),
+      level,
+    });
     if (resolution === null) return yield* refuse("mail_disabled", ROUTING_UNAVAILABLE);
     return resolution.candidates.length === 0
       ? { role: roleId, level, skipped: resolution.skipped }
@@ -604,8 +613,13 @@ const make = Effect.gen(function* () {
     memberId: string,
     role: RoutingRoleId,
     level: MailLevel,
+    specialization: string | null,
   ) {
-    const selection = yield* routing.select({ role, level, delegationId: memberId });
+    const selection = yield* routing.select({
+      role: routingRoleFor(role, specialization),
+      level,
+      delegationId: memberId,
+    });
     if (selection === null) return yield* refuse("mail_disabled", ROUTING_UNAVAILABLE);
     const selected = selection.selected;
     if (selected === null) {
@@ -745,7 +759,7 @@ const make = Effect.gen(function* () {
     }
     const stored = yield* repository.listMembers(task.taskId);
     const members = yield* Effect.forEach(stored, (member) =>
-      noCandidateFor(member.roleId, member.level ?? task.level).pipe(
+      noCandidateFor(member.roleId, member.level ?? task.level, member.specialization).pipe(
         Effect.map((noCandidate) => ({ member, noCandidate })),
       ),
     );
@@ -803,7 +817,7 @@ const make = Effect.gen(function* () {
     > =>
       row.modelOverrideJson !== null
         ? Effect.succeed({ route: null, noCandidate: null })
-        : selectRoute(row.memberId, row.roleId, row.level ?? input.level);
+        : selectRoute(row.memberId, row.roleId, row.level ?? input.level, row.specialization);
     const routes = yield* Effect.forEach(rows, routeMember);
     const now = yield* nowIso;
     const result = yield* repository
@@ -1178,6 +1192,7 @@ const make = Effect.gen(function* () {
             current.memberId,
             yield* requireRoutingRole(current.roleId),
             current.level ?? task.level,
+            current.specialization,
           );
           if (retry.route !== null) {
             current =
@@ -1304,7 +1319,11 @@ const make = Effect.gen(function* () {
     const noCandidate: MailLetterNoCandidate[] = [];
     for (const target of targets) {
       if (target.member === null || target.member.modelOverrideJson !== null) continue;
-      const gap = yield* noCandidateFor(target.member.roleId, target.member.level ?? task.level);
+      const gap = yield* noCandidateFor(
+        target.member.roleId,
+        target.member.level ?? task.level,
+        target.member.specialization,
+      );
       if (gap !== null) noCandidate.push({ memberId: target.member.memberId, ...gap });
     }
     return {

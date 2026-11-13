@@ -1,7 +1,7 @@
 {
   "schema": "corvis-lead-skills-v1",
-  "revision": 0,
-  "configured": false,
+  "revision": 1,
+  "configured": true,
   "skills": [
     { "id": "t3-orchestrator", "file": "t3-orchestrator/SKILL.md" },
     { "id": "board-orchestrator", "file": "board-orchestrator/SKILL.md" },

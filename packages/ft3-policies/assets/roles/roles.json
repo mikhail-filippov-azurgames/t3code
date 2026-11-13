@@ -1,7 +1,7 @@
 {
   "schema": "corvis-role-map-v1",
-  "revision": 0,
-  "configured": false,
+  "revision": 1,
+  "configured": true,
   "roles": [
     { "id": "lead", "roleId": "lead", "file": "lead.md" },
     { "id": "planner", "roleId": "planner", "file": "planner.md" },

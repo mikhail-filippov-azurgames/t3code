@@ -17,6 +17,7 @@ import {
   UsageLimitSourceId,
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
+import { readPolicySettings } from "@t3tools/ft3-policies/settings";
 import { assert, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -136,6 +137,44 @@ function strictSecretReferencePaths(
 }
 
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
+  it.effect("enables mail when initializing an environment without a settings file", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      assert.isFalse(yield* fs.exists(config.settingsPath));
+
+      const settings = yield* service.getSettings;
+      assert.isTrue(readPolicySettings(settings.ft3).features.mail);
+      const saved = yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath));
+      assert.isTrue(readPolicySettings(saved.ft3).features.mail);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect.each([
+    ["without the mail field", {}],
+    ["with mail disabled", { policies: { features: { mail: false } } }],
+  ] as const)("preserves the mail default in an existing settings file %s", ([_name, ft3]) =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(config.settingsPath, JSON.stringify({ ft3 }));
+
+      const settings = yield* service.getSettings;
+      assert.isFalse(readPolicySettings(settings.ft3).features.mail);
+      const saved = yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath));
+      assert.isFalse(readPolicySettings(saved.ft3).features.mail);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("keeps the decoder mail default disabled", () =>
+    Effect.gen(function* () {
+      const decoded = yield* decodeServerSettings({});
+      assert.isFalse(readPolicySettings(decoded.ft3).features.mail);
+    }),
+  );
+
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

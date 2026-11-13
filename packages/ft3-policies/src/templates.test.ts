@@ -35,19 +35,19 @@ function readSkillFiles(relativeDirectory: string, skillIds: readonly string[]) 
 const errorIssues = (issues: readonly { severity: string }[]) =>
   issues.filter((issue) => issue.severity === "error");
 
-describe("bundled role templates", () => {
+describe("bundled role profile", () => {
   const manifest = readText("assets/roles/roles.json");
   const files = readMarkdownFiles("assets/roles");
 
-  it("parse clean and only report the template state", () => {
+  it("parses as a configured profile", () => {
     const parsed = parseRolesDocumentSet({ manifest, files });
 
     expect(errorIssues(parsed.issues)).toEqual([]);
     expect(parsed.valid).toBe(true);
-    expect(parsed.configured).toBe(false);
-    expect(parsed.revision).toBe(0);
-    expect(parsed.issues.map((issue) => issue.code)).toEqual(["document_unconfigured"]);
-    expect(parsed.requirements).toEqual({ rolesManifest: false });
+    expect(parsed.configured).toBe(true);
+    expect(parsed.revision).toBe(1);
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.requirements).toEqual({ rolesManifest: true });
   });
 
   it("declare the nine design roles with their delegated role ids", () => {
@@ -119,7 +119,7 @@ describe("bundled role templates", () => {
     }
   });
 
-  it("do not claim a required role before the template is configured", () => {
+  it("provides the roles required by board and planning", () => {
     const parsed = parseRolesDocumentSet({
       manifest,
       files,
@@ -127,13 +127,13 @@ describe("bundled role templates", () => {
     });
 
     expect(errorIssues(parsed.issues)).toEqual([]);
-    expect(parsed.requirements.leadRole).toBe(false);
-    expect(parsed.requirements.plannerRole).toBe(false);
-    expect(parsed.requirements.architectRole).toBe(false);
+    expect(parsed.requirements.leadRole).toBe(true);
+    expect(parsed.requirements.plannerRole).toBe(true);
+    expect(parsed.requirements.architectRole).toBe(true);
   });
 });
 
-describe("bundled lead-skill templates", () => {
+describe("bundled lead-skill profile", () => {
   const manifest = readText("assets/lead-skills/lead-skills.json");
   const files = readSkillFiles("assets/lead-skills", [
     "t3-orchestrator",
@@ -141,14 +141,15 @@ describe("bundled lead-skill templates", () => {
     "plan-orchestrator",
   ]);
 
-  it("parse clean and only report the template state", () => {
+  it("parses as a configured profile", () => {
     const parsed = parseLeadSkillsDocumentSet({ manifest, files });
 
     expect(errorIssues(parsed.issues)).toEqual([]);
     expect(parsed.valid).toBe(true);
-    expect(parsed.configured).toBe(false);
-    expect(parsed.issues.map((issue) => issue.code)).toEqual(["document_unconfigured"]);
-    expect(parsed.requirements).toEqual({ leadSkills: false });
+    expect(parsed.configured).toBe(true);
+    expect(parsed.revision).toBe(1);
+    expect(parsed.issues).toEqual([]);
+    expect(parsed.requirements).toEqual({ leadSkills: true });
   });
 
   it("declare the three lead skills and their files", () => {
@@ -175,7 +176,7 @@ describe("bundled lead-skill templates", () => {
     }
   });
 
-  it("do not claim a required skill before the template is configured", () => {
+  it("provides the skills required by board and planning", () => {
     const parsed = parseLeadSkillsDocumentSet({
       manifest,
       files,
@@ -183,7 +184,7 @@ describe("bundled lead-skill templates", () => {
     });
 
     expect(errorIssues(parsed.issues)).toEqual([]);
-    expect(parsed.requirements.leadSkills).toBe(false);
-    expect(parsed.requirements.planOrchestratorSkill).toBe(false);
+    expect(parsed.requirements.leadSkills).toBe(true);
+    expect(parsed.requirements.planOrchestratorSkill).toBe(true);
   });
 });

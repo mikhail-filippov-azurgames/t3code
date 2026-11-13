@@ -30,7 +30,7 @@ export const ROUTING_ROLES = [
   "general",
   "planner",
 ] as const;
-export type RoutingRoleId = (typeof ROUTING_ROLES)[number];
+export type RoutingRoleId = (typeof ROUTING_ROLES)[number] | "review-claude" | "review-codex";
 
 /** Rows every policy needs; `planner` is required only by the planning feature. */
 export const REQUIRED_ROUTING_ROLES = [
@@ -107,6 +107,8 @@ const ROLE_BY_LABEL: Readonly<Record<string, RoutingRoleId>> = {
   architect: "architect",
   implementation: "implementation",
   review: "review",
+  "review-claude": "review-claude",
+  "review-codex": "review-codex",
   test: "test",
   research: "research",
   general: "general",
@@ -479,12 +481,15 @@ export const parseRoutingPolicy = (
       }
     }
 
+    const reviewFallback = roles["review-codex"] ?? roles["review-claude"];
+    if (roles.review === undefined && reviewFallback !== undefined) roles.review = reviewFallback;
+
     const requiredRoles = new Set<RoutingRoleId>([
       ...REQUIRED_ROUTING_ROLES,
       ...(options.requiredRoles ?? []),
     ]);
-    for (const role of ROUTING_ROLES) {
-      if (!requiredRoles.has(role) || roles[role] !== undefined) continue;
+    for (const role of requiredRoles) {
+      if (roles[role] !== undefined) continue;
       issues.push(routingRoleMissingIssue(role, role === "planner" ? "planning" : "mail"));
     }
 

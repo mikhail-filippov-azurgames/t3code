@@ -155,6 +155,48 @@ describe("routing policy of the live document shape", () => {
   });
 });
 
+describe("review specialization rows", () => {
+  it.each([
+    { specializations: ["claude", "codex"], expected: "low" },
+    { specializations: ["codex"], expected: "low" },
+    { specializations: ["claude"], expected: "high" },
+  ] as const)("fills generic review from $specializations when its row is absent", (test) => {
+    const content = buildDocument({
+      roleRows: [
+        ...DEFAULT_ROLE_ROWS.filter((row) => !row.includes("review-*")),
+        ...test.specializations.map((specialization) => {
+          const candidate = specialization === "codex" ? "A1@low" : "A1@high";
+          return `| \`review-${specialization}\` | ${candidate} | ${candidate} | ${candidate} | ${candidate} |`;
+        }),
+      ],
+    });
+    const policy = requirePolicy(parseRoutingPolicy(content));
+    expect(policy.roles.review?.low).toEqual([{ alias: "A1", level: test.expected }]);
+  });
+
+  it("keeps exact review rows separate from the wildcard", () => {
+    const content = buildDocument({
+      roleRows: [
+        ...DEFAULT_ROLE_ROWS,
+        "| `review-claude` | A1@low | A1@low | A1@low | A1@low |",
+        "| `review-codex` | | | | |",
+      ],
+    });
+    const policy = requirePolicy(parseRoutingPolicy(content));
+    expect(policy.roles.review?.low).toEqual([{ alias: "A1", level: null }]);
+    expect(policy.roles["review-claude"]?.low).toEqual([{ alias: "A1", level: "low" }]);
+    expect(policy.roles["review-codex"]?.low).toEqual([]);
+  });
+
+  it("continues to normalize other review specializations to the wildcard", () => {
+    const content = buildDocument({
+      roleRows: DEFAULT_ROLE_ROWS.map((row) => row.replace("review-*", "review-contracts")),
+    });
+    const policy = requirePolicy(parseRoutingPolicy(content));
+    expect(policy.roles.review?.low).toEqual([{ alias: "A1", level: null }]);
+  });
+});
+
 describe("routing policy row errors", () => {
   it("rejects a cell explanation and names its line", () => {
     const content = buildDocument({
@@ -307,7 +349,11 @@ describe("routing policy table errors", () => {
   });
 
   it("reports a template with no candidates as unconfigured", () => {
-    const result = parseRoutingPolicy(readFixture("../assets/routing-policy.md"));
+    const result = parseRoutingPolicy(
+      buildDocument({
+        roleRows: DEFAULT_ROLE_ROWS.map((row) => row.replaceAll("A1", "")),
+      }),
+    );
 
     expect(result.policy).toBeNull();
     expect(result.issues.map((issue) => issue.code)).toEqual(["document_unconfigured"]);

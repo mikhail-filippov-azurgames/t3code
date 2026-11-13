@@ -1,0 +1,107 @@
+---
+revision: 24
+---
+
+# Выбор исполнителя
+
+Исполнителя выбирает сервер, а не агент. Ведущий указывает для участника команды роль и уровень задачи; сервер по этой таблице находит модель и запускает её.
+
+Правила поведения задаются документами ролей. Здесь задаётся выбор модели.
+
+## 1. Клетки: роль × уровень
+
+В клетке — кандидаты в порядке проверки. Работает первый доступный.
+
+| Роль | low | medium | high | very-high |
+|---|---|---|---|---|
+| `architect`, `architect-*` | O → S → KP → W → U → N → D → E → L | O → S → KP → W → U → N → D → E → L | O → S → KP → W → U → N → E → L → D → K | O → S → KP → W → U → N → E → L → D |
+| `implementation` | D → E → L → U | E → L → D → U | U → E → L → D → K → S | K → W → KP → S → U → E → L → D |
+| `review-*` | S → D → E → L → U | S → D → E → L → U | KP → E → L → U → D → K → S | KP → W → S → U → E → L → D |
+| `test` | D → E → L → U | E → L → D → U | U → E → L → D → K → S | K → W → KP → S → U → E → L → D |
+| `research` | D → E → L → U | D → E → L → U | E → L → U → D → K → S | E → L → W → KP → S → U → D |
+| `general` | D → E → L → U | D → E → L → U | E → L → U → D → K → S | E → L → W → KP → S → U → D |
+| `planner` | O@low → S@low → KP@low | O@low → S@low → KP@low | O@low → S@low → KP@low | O@low → S@low → KP@low |
+
+`alias@level` в клетке фиксирует уровень модели: `planner` всегда идёт на `low`, независимо от уровня задачи.
+
+Ведущий (`lead`) в таблицу не входит: человек начинает чат с той моделью, которую назначает ведущим.
+
+## 2. Цели
+
+### Codex (`codex / codex`)
+
+| Алиас | model | low | medium | high | very-high |
+|---|---|---|---|---|---|
+| S | `gpt-6.1-sol` | `reasoningEffort=low` | `reasoningEffort=medium` | `reasoningEffort=high` | `reasoningEffort=xhigh` |
+| T | `gpt-6.1-terra` | `reasoningEffort=medium` | `reasoningEffort=high` | `reasoningEffort=high` | `reasoningEffort=high` |
+| L | `gpt-6-luna` | `reasoningEffort=max` | `reasoningEffort=max` | `reasoningEffort=max` | `reasoningEffort=max` |
+
+### Claude (`claudeAgent / claudeAgent`)
+
+| Алиас | model | low | medium | high | very-high |
+|---|---|---|---|---|---|
+| O | `claude-opus-5-5` | `effort=low` | `effort=low` | `effort=medium` | `effort=high` |
+| N | `claude-sonnet-5-5` | `effort=medium` | `effort=high` | `effort=high` | `effort=high` |
+| H | `claude-haiku-5-5` | `effort=xhigh` | `effort=xhigh` | `effort=xhigh` | `effort=xhigh` |
+
+### Muse Code (`museCode / muse`)
+
+| Алиас | model | low | medium | high | very-high |
+|---|---|---|---|---|---|
+| U | `muse-spark-1.3` | `reasoningEffort=medium` | `reasoningEffort=high` | `reasoningEffort=high` | `reasoningEffort=high` |
+| W | `muse-wonder-1.0` | `reasoningEffort=low` | `reasoningEffort=low` | `reasoningEffort=medium` | `reasoningEffort=high` |
+| WF | `muse-wonder-full-1.0` | `reasoningEffort=low` | `reasoningEffort=low` | `reasoningEffort=medium` | `reasoningEffort=medium` |
+| E | `muse-ember-1.0` | `reasoningEffort=max` | `reasoningEffort=max` | `reasoningEffort=max` | `reasoningEffort=max` |
+
+### Kimi (`kimi / acpRegistry`)
+
+Уровень задаётся option `thinking`: `low`, `high` или `max`. `mode` не передаётся.
+
+| Алиас | model | low | medium | high | very-high |
+|---|---|---|---|---|---|
+| K | `kimi-code/kimi-for-coding` (K2.8 Preview) | `thinking=high` | `thinking=high` | `thinking=max` | `thinking=max` |
+| K3 | `kimi-code/k3` | `thinking=low` | `thinking=low` | `thinking=high` | `thinking=max` |
+| K3L | `kimi-code/k3-256k` | `thinking=low` | `thinking=low` | `thinking=high` | `thinking=max` |
+| KP | `kimi-code/k3.1-pro` | `thinking=low` | `thinking=low` | `thinking=high` | `thinking=max` |
+
+### OpenCode (`opencode / opencode`)
+
+| Алиас | model | low | medium | high | very-high |
+|---|---|---|---|---|---|
+| D | `opencode-go/deepseek-v4.1-flash` | `variant=high` | `variant=high` | `variant=max` | `variant=max` |
+| GF | `opencode-go/glm-5.3-flash` | `variant=low` | `variant=high` | `variant=max` | `variant=max` |
+| GA | `opencode-go/gemini-4-argon` | `variant=low` | `variant=medium` | `variant=high` | `variant=high` |
+| HY | `opencode-go/hy4-preview` | `variant=none` | `variant=high` | `variant=high` | `variant=high` |
+| BF | `opencode-go/beam-free` | `variant=low` | `variant=medium` | `variant=high` | `variant=xhigh` |
+| IC | `opencode-go/iceman-contributor-free` | — | — | — | — |
+| B | `bonsai/bonsai2-27b` (локальная) | `variant=low` | `variant=medium` | `variant=high` | `variant=high` |
+| OH | `opencode-go/claude-haiku-5-5` | `variant=xhigh` | `variant=xhigh` | `variant=xhigh` | `variant=xhigh` |
+| OL | `opencode-go/gpt-6-luna` | `variant=max` | `variant=max` | `variant=max` | `variant=max` |
+| MF | `opencode-go/mimo-v2.6-flash` | — | — | — | — |
+| MP | `opencode-go/mimo-v2.6-pro` | — | — | — | — |
+| MM | `opencode-go/minimax-m3.1-flash` | `variant=low` | `variant=medium` | `variant=high` | `variant=xhigh` |
+| NV | `opencode/nemotron-3.5-super-vl-free` | `variant=low` | `variant=medium` | `variant=high` | `variant=xhigh` |
+| NL | `opencode/nemotron-3.5-lightning-free` | — | — | — | — |
+| LG | `opencode-go/longcat-2.0` | — | — | — | — |
+
+Алиасы, не указанные ни в одной клетке §1, доступны как явные цели, но сервер не выбирает их автоматически. Прочерк означает, что options для этой модели не передаются.
+
+## 3. Алгоритм сервера
+
+1. Вход: роль (со специализацией) и уровень `low | medium | high | very-high` из состава команды.
+2. Клетка = строка роли × столбец уровня. Специализация на выбор клетки не влияет: `review-contracts` берёт строку `review-*`.
+3. Для каждого кандидата клетки по порядку: проверить по живому каталогу, что модель есть, провайдер включён, options из §2 поддерживаются. Первый годный запускается с options из §2 для этого уровня и режимом обслуживания из §5.
+4. Годных нет: участник не создаётся, ведущему уходит письмо `system → lead` с клеткой, кандидатами и причинами отказа.
+5. После запуска замена запрещена. Сбой, таймаут или неясный результат — письмо ведущему. Новая попытка — только по решению ведущего.
+6. Сервер записывает: ревизию таблицы, клетку, рассмотренных кандидатов с причинами, запущенную модель и options.
+7. Таблица с алиасом, которого нет в §2, считается битой: сервер её не загружает и сообщает об ошибке.
+
+## 4. Выбор уровня
+
+Уровень задаёт ведущий в составе команды, по своей оценке сложности задачи. Для `implementation` по умолчанию — уровень сессии ведущего; всё выше `very-high` считается `very-high`.
+
+## 5. Режим обслуживания
+
+Для всех провайдеров и моделей используется только обычный (медленный) режим обслуживания. Никогда не выбираются fast mode, priority/flex-upgraded tier, «super speed» и любые другие ускоренные опции: они стоят в 2–4 раза больше токенов. Для целей §2 это значит: Codex всегда получает `serviceTier=default`, Claude — `fastMode=false`; ускоренное значение не передаётся, даже если каталог предлагает его по умолчанию.
+
+Переопределить это может только человек — явно и на одну задачу. Переопределение записывается в evidence делегации вместе с задачей, для которой оно дано.

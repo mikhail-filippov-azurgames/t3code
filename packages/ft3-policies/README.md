@@ -19,10 +19,9 @@
   applied-версия, последняя увиденная версия, ошибки и warning'и каждого документа
   политики для вкладки Policies.
 
-Встроенные шаблоны — ресурсы пакета `assets/`; `assets/routing-policy.md` уже в
-формате parser'а: пустая таблица клеток на семь ролей и пустая таблица алиасов под
-заголовком-примером провайдера, поэтому шаблон разбирается как
-`document_unconfigured`. `DocumentKey` — `routingPolicy`, `roles`, `leadSkills`; по
+Встроенный профиль — ресурсы пакета `assets/`; `assets/routing-policy.md` содержит
+готовую матрицу маршрутизации через `zavod-claude` и `zavod-codex`, включая строки
+`review-claude` и `review-codex`. `DocumentKey` — `routingPolicy`, `roles`, `leadSkills`; по
 умолчанию все три берут `{ kind: "builtin" }`.
 
 - `./server` — строгие парсеры документов политики ролей и lead-скиллов:
@@ -36,9 +35,9 @@
 
 `assets/roles/` — `roles.json` (`corvis-role-map-v1`) и девять Markdown-файлов
 ролей; `assets/lead-skills/` — `lead-skills.json` и `SKILL.md` трёх скиллов
-(`t3-orchestrator`, `board-orchestrator`, `plan-orchestrator`). Шаблоны
-обезличены: без абсолютных путей и `oc://`-идентификаторов, `configured: false`
-до заполнения человеком.
+(`t3-orchestrator`, `board-orchestrator`, `plan-orchestrator`). Поставляемые роли и
+lead-скиллы обезличены, заполнены и имеют `configured: true`, `revision: 1`.
+Они используются при встроенном источнике соответствующего документа политики.
 
 Файл роли читается в одном из двух форматов: `corvis-role-v1` (шаблон; `roleId`,
 `configured` и `revision` во frontmatter) или `ced-v1` (frontmatter документного store;

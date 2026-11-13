@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - compatibility fixtures capture the prior parser and resolver output.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -14,7 +17,13 @@ import {
   resolveRoutingCandidates,
   routingPolicyServiceLayer,
 } from "./routing.ts";
-import { type RoutingPolicy, parseRoutingPolicy } from "./routingPolicy.ts";
+import {
+  ROUTING_LEVELS,
+  type RoutingRoleId,
+  type RoutingPolicy,
+  parseRoutingPolicy,
+} from "./routingPolicy.ts";
+import { BUILTIN_ASSET_CONTENTS } from "./builtinAssets.ts";
 
 const CELL_HEADER = ["| Role | low | medium | high | very-high |", "|---|---|---|---|---|"];
 
@@ -87,6 +96,108 @@ const chain = (
   role: "implementation" | "planner",
   level: "low" | "medium" | "high" | "very-high",
 ) => resolveRoutingCandidates(policy(), { role, level });
+
+describe("bundled Zavod routing", () => {
+  const parsed = parseRoutingPolicy(BUILTIN_ASSET_CONTENTS["assets/routing-policy.md"] ?? "");
+  const matrix = [
+    ["architect", ["O", "S"], ["O", "S"], ["O", "S"], ["O", "S"]],
+    ["planner", ["O", "S"], ["O", "S"], ["O", "S"], ["O", "S"]],
+    ["implementation", ["L", "N"], ["N", "S"], ["S", "O"], ["S", "O"]],
+    ["test", ["L", "N"], ["N", "S"], ["S", "O"], ["S", "O"]],
+    ["research", ["L", "N"], ["L", "N"], ["S"], ["S"]],
+    ["general", ["L", "N"], ["L", "N"], ["S"], ["S"]],
+    ["review-claude", ["S", "O"], ["S", "O"], ["S", "O"], ["S", "O"]],
+    ["review-codex", ["O", "S"], ["O", "S"], ["O", "S"], ["O", "S"]],
+    ["review", [], [], [], []],
+  ] as const;
+  const targets = {
+    O: ["zavod-claude", "claudeAgent", "claude-opus-5-5"],
+    N: ["zavod-claude", "claudeAgent", "claude-sonnet-5-5"],
+    S: ["zavod-codex", "codex", "gpt-6.1-sol"],
+    L: ["zavod-codex", "codex", "gpt-6-luna"],
+  } as const;
+
+  it("ships a valid policy", () => {
+    assert.deepStrictEqual(parsed.issues, []);
+    assert.isNotNull(parsed.policy);
+  });
+
+  const cases = matrix.flatMap(([role, ...cells]) =>
+    ROUTING_LEVELS.map((level, index) => ({ role, level, aliases: cells[index]! })),
+  );
+  it.each(cases)(
+    "resolves $role at $level in the approved fallback order",
+    ({ role, level, aliases }) => {
+      assert.isNotNull(parsed.policy);
+      const resolved = resolveRoutingCandidates(parsed.policy!, { role, level });
+      assert.deepStrictEqual(
+        resolved.candidates.map((candidate) => [
+          candidate.provider.instanceId,
+          candidate.provider.driverKind,
+          candidate.model,
+        ]),
+        aliases.map((alias) => [...targets[alias]]),
+      );
+      assert.deepStrictEqual(resolved.skipped, []);
+      for (const candidate of resolved.candidates) {
+        assert.includeDeepMembers(
+          [...candidate.options],
+          [
+            candidate.provider.driverKind === "codex"
+              ? { id: "serviceTier", value: "default" }
+              : { id: "fastMode", value: false },
+          ],
+        );
+      }
+    },
+  );
+});
+
+describe("live policy compatibility", () => {
+  it("matches the parser and all 28 chains captured before the specialization change", () => {
+    const fixture = new URL("../fixtures/routing-policy-live-2026-11-12.txt", import.meta.url);
+    const baseline = JSON.parse(
+      NodeFS.readFileSync(
+        new URL("../fixtures/routing-policy-live-2026-11-12-baseline.json", import.meta.url),
+        "utf8",
+      ),
+    );
+    const source = NodeFS.readFileSync(fixture, "utf8");
+    assert.equal(
+      NodeCrypto.createHash("sha256").update(source).digest("hex"),
+      baseline.sourceSha256,
+    );
+    const parsed = parseRoutingPolicy(source);
+    assert.isNotNull(parsed.policy);
+    const originalRoles: readonly RoutingRoleId[] = [
+      "architect",
+      "implementation",
+      "review",
+      "test",
+      "research",
+      "general",
+      "planner",
+    ];
+    const chains = originalRoles.flatMap((role) =>
+      ROUTING_LEVELS.map((level) => resolveRoutingCandidates(parsed.policy!, { role, level })),
+    );
+    const hash = (value: unknown) =>
+      NodeCrypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    assert.equal(hash(parsed), baseline.parsedSha256);
+    assert.equal(hash(chains), baseline.chainsSha256);
+  });
+
+  it("uses the existing review row when a policy has no exact specialization row", () => {
+    for (const role of ["review-claude", "review-codex"] as const) {
+      for (const level of ROUTING_LEVELS) {
+        const generic = resolveRoutingCandidates(policy(), { role: "review", level });
+        const specialized = resolveRoutingCandidates(policy(), { role, level });
+        assert.deepStrictEqual(specialized.candidates, generic.candidates);
+        assert.deepStrictEqual(specialized.skipped, generic.skipped);
+      }
+    }
+  });
+});
 
 describe("routing candidate chain", () => {
   it("uses the cell of the task level and the alias options of that level", () => {

@@ -2,7 +2,7 @@
 schema: corvis-role-v1
 roleId: lead
 revision: 1
-configured: false
+configured: true
 ---
 
 # Lead
@@ -21,3 +21,8 @@ Responsibilities: decomposition, exact handoff, aggregation of evidence, conflic
 
 - May contact: the human, the planner, architects and executors.
 - Do not knock on a closed door: if the addressee is not allowed, do not try.
+
+## Routing
+
+- Start the lead with Claude Opus 5.5 through Zavod.
+- For a Claude implementation, request role `review` with specialization `claude`. For a Codex implementation, request role `review` with specialization `codex`.

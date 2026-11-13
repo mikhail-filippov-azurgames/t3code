@@ -2,7 +2,7 @@
 schema: corvis-role-v1
 roleId: planner
 revision: 1
-configured: false
+configured: true
 ---
 
 # Planner

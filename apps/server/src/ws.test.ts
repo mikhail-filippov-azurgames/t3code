@@ -35,6 +35,7 @@ import {
   PlanService as Ft3PlanService,
   PolicyChangeTracker as Ft3PolicyChangeTracker,
   PolicyPickers as Ft3PolicyPickers,
+  ZavodService as Ft3ZavodService,
 } from "@t3tools/ft3-host/rpc";
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
@@ -811,6 +812,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(McpAppRequests.McpAppRequests)({}),
   Layer.mock(Ft3MailService)({}),
   Layer.mock(Ft3MailRepository)({}),
+  Layer.mock(Ft3ZavodService)({}),
   Layer.mock(ModelManifest.ModelManifest)({}),
   Layer.mock(OrchestrationEventStore.OrchestrationEventStore)({}),
   Layer.mock(Orchestrator.OrchestratorV2)({}),

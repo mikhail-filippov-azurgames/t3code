@@ -349,7 +349,12 @@ export function resolveRoutingCandidates(
   const skipped: RoutingSkippedCandidate[] = [];
   const aliases = new Map(policy.aliases.map((alias) => [alias.alias, alias]));
 
-  for (const candidate of policy.roles[input.role]?.[input.level] ?? []) {
+  const cells =
+    policy.roles[input.role] ??
+    (input.role === "review-claude" || input.role === "review-codex"
+      ? policy.roles.review
+      : undefined);
+  for (const candidate of cells?.[input.level] ?? []) {
     const target = aliases.get(candidate.alias);
     if (target === undefined) {
       skipped.push({ alias: candidate.alias, model: null, reason: "alias_unknown" });

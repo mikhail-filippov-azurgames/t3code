@@ -55,6 +55,7 @@ import {
   isModelSelectionProviderEnabled,
 } from "@t3tools/shared/serverSettings";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
+import { readPolicySettings, withPolicySettings } from "@t3tools/ft3-policies/settings";
 import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 import { secretProviderDefinitions } from "./secrets/secretProviderDefinitions.ts";
 import {
@@ -818,6 +819,16 @@ const make = Effect.gen(function* () {
       } else {
         settings = decoded.value;
       }
+    } else {
+      const policies = readPolicySettings(settings.ft3);
+      settings = {
+        ...settings,
+        ft3: withPolicySettings(settings.ft3, {
+          ...policies,
+          features: { ...policies.features, mail: true },
+        }),
+      };
+      yield* writeSettingsAtomically(settings);
     }
     // Settings saved by a server that kept the mode in `compactIdleThreads` move
     // it to `idleCompaction`, so that switch goes to clients as a boolean. The

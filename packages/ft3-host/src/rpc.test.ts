@@ -1,9 +1,13 @@
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  AuthProvidersManageScope,
   AuthSettingsWriteScope,
   type AuthEnvironmentScope,
   ProviderInstanceId,
+  ProviderDriverKind,
+  ProviderInstanceEnvironment,
+  ServerSettingsError,
   ThreadId,
 } from "@t3tools/contracts";
 import * as BoardContracts from "@t3tools/ft3-board/contracts";
@@ -14,12 +18,26 @@ import {
 } from "@t3tools/ft3-policies/contracts";
 import * as MailContracts from "@t3tools/ft3-mail/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as RpcTest from "effect/rpc/RpcTest";
 import * as Schema from "effect/Schema";
 
-import { FT3_WS_METHODS, authorizationLayer, group } from "./rpc.ts";
+import {
+  FT3_WS_METHODS,
+  authorizationLayer,
+  group,
+  handlers,
+  zavodRpcServiceLayer,
+} from "./rpc.ts";
+import { ZavodRpcError, type ZavodStatus } from "./rpc-contracts.ts";
+import * as ServerConfig from "../../../apps/server/src/config.ts";
+import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 
 const cardId = BoardContracts.BoardCardId.make("11111111-1111-4111-8111-111111111111");
 const card = {
@@ -170,6 +188,15 @@ const noSnapshot = {
   warnings: [],
 };
 
+const zavodStatus = {
+  state: "off" as const,
+  baseUrl: "https://gateway.example/v1",
+  baseUrlSource: "state" as const,
+  reason: null,
+};
+const isZavodRpcError = Schema.is(ZavodRpcError);
+const encodeZavodRpcError = Schema.encodeUnknownSync(Schema.toCodecJson(ZavodRpcError));
+
 const stubs = {
   [FT3_WS_METHODS.boardOrchestratorsList]: () => Effect.succeed({ orchestrators: [] }),
   [FT3_WS_METHODS.boardOrchestratorAdd]: () =>
@@ -244,6 +271,13 @@ const stubs = {
     Effect.succeed({ tasks: [mailTask], letters: { "task:timeline": [] } }),
   [FT3_WS_METHODS.mailLetter]: () =>
     Effect.succeed({ letter: mailLetter, effectiveKind: mailLetter.kind }),
+  [FT3_WS_METHODS.zavodDetect]: () => Effect.succeed(zavodStatus),
+  [FT3_WS_METHODS.zavodConnect]: () =>
+    Effect.succeed({
+      ...zavodStatus,
+      claudeInstanceId: ProviderInstanceId.make("zavod-claude"),
+      codexInstanceId: ProviderInstanceId.make("zavod-codex"),
+    }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -264,6 +298,7 @@ describe("FT3 RPC authorization", () => {
         AuthOrchestrationReadScope,
         AuthOrchestrationOperateScope,
         AuthSettingsWriteScope,
+        AuthProvidersManageScope,
       ]);
       expect(yield* client[FT3_WS_METHODS.boardOrchestratorsList]({})).toEqual({
         orchestrators: [],
@@ -416,6 +451,12 @@ describe("FT3 RPC authorization", () => {
       ).toMatchObject({ effectiveKind: "request" });
       expect(yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" })).toEqual({
         status: "not_found",
+      });
+      expect(yield* client[FT3_WS_METHODS.zavodDetect]({})).toEqual(zavodStatus);
+      expect(yield* client[FT3_WS_METHODS.zavodConnect]({})).toMatchObject({
+        ...zavodStatus,
+        claudeInstanceId: "zavod-claude",
+        codexInstanceId: "zavod-codex",
       });
     }).pipe(Effect.scoped),
   );
@@ -598,6 +639,393 @@ describe("FT3 RPC authorization", () => {
       expect(
         yield* client[FT3_WS_METHODS.docsRead]({ ref: "plans/a.md" }).pipe(Effect.flip),
       ).toMatchObject({ _tag: "EnvironmentAuthorizationError", requiredPermission: read });
+      expect(yield* client[FT3_WS_METHODS.zavodDetect]({}).pipe(Effect.flip)).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: read,
+      });
+      expect(yield* client[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip)).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthProvidersManageScope,
+      });
     }).pipe(Effect.scoped),
+  );
+});
+
+const zavodTestLayer = ServerSettings.layerTest().pipe(
+  Layer.provideMerge(ServerConfig.layerTest(".", { prefix: "t3-zavod-rpc-" })),
+  Layer.provideMerge(Layer.mergeAll(NodeFileSystem.layer, NodePath.layer)),
+);
+
+const decodeProviderEnvironment = Schema.decodeEffect(ProviderInstanceEnvironment);
+
+const zavodFixture = Effect.fn("test.zavodRpcFixture")(function* (
+  options: {
+    readonly state?: ZavodStatus["state"];
+    readonly failSettings?: boolean;
+    readonly failCreate?: boolean;
+    readonly instanceEnvironment?: boolean;
+  } = {},
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
+  const settings = yield* ServerSettings.ServerSettingsService;
+  const platform = yield* HostProcess.Platform;
+  const home = path.join(config.baseDir, "user");
+  const helperPath = path.join(
+    home,
+    ".zavod",
+    "bin",
+    platform === "win32" ? "zavod-key.exe" : "zavod-key",
+  );
+  const key = "fixture-zavod-secret-never-returned";
+  const state = options.state ?? "off";
+  const claudeHome = path.join(home, "custom-claude");
+  const codexHome = path.join(home, "custom-codex");
+  const claudeOn = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example" } });
+  const codexOn =
+    'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://gateway.example/v1"\n';
+  for (const [file, text] of [
+    [
+      path.join(home, ".zavod", "desktop", "state.json"),
+      JSON.stringify({ version: 1, base_url: "https://gateway.example", key }),
+    ],
+    [path.join(home, ".claude", "settings.json"), claudeOn],
+    [path.join(home, ".codex", "config.toml"), codexOn],
+    [
+      path.join(claudeHome, "settings.json"),
+      !options.instanceEnvironment && (state === "on" || state === "mixed") ? claudeOn : "{}",
+    ],
+    [
+      path.join(codexHome, "config.toml"),
+      state === "on" ? codexOn : state === "unsupported" ? "model_provider = [" : "",
+    ],
+  ] as const) {
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+    yield* fs.writeFileString(file, text);
+  }
+  if (state !== "absent") {
+    yield* fs.makeDirectory(path.dirname(helperPath), { recursive: true });
+    yield* fs.writeFileString(helperPath, key);
+  }
+  for (const [id, driver, homePath] of [
+    ["claudeAgent", "claudeAgent", claudeHome],
+    ["codex", "codex", codexHome],
+  ] as const) {
+    yield* settings.updateProviderInstance({
+      operation: "upsert",
+      instanceId: ProviderInstanceId.make(id),
+      instance: {
+        driver: ProviderDriverKind.make(driver),
+        config: { homePath: options.instanceEnvironment ? "" : homePath, fixtureSecret: key },
+        ...(options.instanceEnvironment
+          ? {
+              environment:
+                driver === "claudeAgent"
+                  ? [
+                      { name: "CLAUDE_CONFIG_DIR", value: homePath, sensitive: false },
+                      {
+                        name: "ANTHROPIC_BASE_URL",
+                        value: "https://gateway.example",
+                        sensitive: false,
+                      },
+                      {
+                        name: "CODEX_HOME",
+                        value: path.join(home, "ignored-claude-codex"),
+                        sensitive: false,
+                      },
+                    ]
+                  : [
+                      { name: "CODEX_HOME", value: homePath, sensitive: false },
+                      {
+                        name: "ANTHROPIC_BASE_URL",
+                        value: "https://other.example",
+                        sensitive: false,
+                      },
+                      {
+                        name: "CLAUDE_CONFIG_DIR",
+                        value: path.join(home, "ignored-codex-claude"),
+                        sensitive: false,
+                      },
+                    ],
+            }
+          : {}),
+      },
+    });
+  }
+
+  let reads = 0;
+  const mutations: string[] = [];
+  const failure = () =>
+    new ServerSettingsError({
+      settingsPath: config.settingsPath,
+      operation: "create-provider-instance",
+      cause: new Error(`${helperPath} ${key}`),
+    });
+  const wrapped = ServerSettings.ServerSettingsService.of({
+    ...settings,
+    getSettings: Effect.suspend(() => {
+      reads++;
+      return options.failSettings ? Effect.fail(failure()) : settings.getSettings;
+    }),
+    updateProviderInstance: (mutation, patch) => {
+      mutations.push(mutation.operation);
+      return options.failCreate && mutation.operation === "create"
+        ? Effect.fail(failure())
+        : settings.updateProviderInstance(mutation, patch);
+    },
+  });
+  const context = yield* Layer.build(zavodRpcServiceLayer).pipe(
+    Effect.provideService(ServerSettings.ServerSettingsService, wrapped),
+    Effect.provideService(HostProcess.HomeDirectory, home),
+    Effect.provideService(HostProcess.Environment, {
+      CLAUDE_CONFIG_DIR: path.join(home, options.instanceEnvironment ? "empty-claude" : ".claude"),
+      CODEX_HOME: path.join(home, options.instanceEnvironment ? "empty-codex" : ".codex"),
+    }),
+  );
+  const handlerLayer = group
+    .toLayer({
+      ...stubs,
+      [FT3_WS_METHODS.zavodDetect]: handlers[FT3_WS_METHODS.zavodDetect],
+      [FT3_WS_METHODS.zavodConnect]: handlers[FT3_WS_METHODS.zavodConnect],
+    })
+    .pipe(Layer.provide(Layer.succeedContext(context)));
+
+  return {
+    fs,
+    path,
+    settings,
+    helperPath,
+    key,
+    claudeHome,
+    codexHome,
+    root: path.join(config.stateDir, "zavod"),
+    mutations,
+    get reads() {
+      return reads;
+    },
+    client: (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
+      RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlerLayer, authorizationLayer(scopes))),
+      ),
+  };
+});
+
+describe("Zavod RPC", () => {
+  it.effect("detects effective instance environments without reading secret references", () =>
+    Effect.gen(function* () {
+      const f = yield* zavodFixture({ state: "on", instanceEnvironment: true });
+      const client = yield* f.client([AuthOrchestrationReadScope, AuthProvidersManageScope]);
+      expect((yield* client[FT3_WS_METHODS.zavodDetect]({})).state).toBe("on");
+      for (const [id, name] of [
+        ["claudeAgent", "CLAUDE_CONFIG_DIR"],
+        ["claudeAgent", "ANTHROPIC_BASE_URL"],
+        ["codex", "CODEX_HOME"],
+      ] as const) {
+        const instanceId = ProviderInstanceId.make(id);
+        const previous = (yield* f.settings.getSettings).providerInstances[instanceId]!;
+        yield* f.settings.updateProviderInstance({
+          operation: "upsert",
+          instanceId,
+          instance: {
+            ...previous,
+            environment: yield* decodeProviderEnvironment([
+              { name, secret: { provider: "fixture", reference: "private-reference" } },
+            ]),
+          },
+        });
+        const result = yield* client[FT3_WS_METHODS.zavodDetect]({});
+        expect(result.state).toBe("unsupported");
+        expect(JSON.stringify(result)).not.toContain("private-reference");
+        const before = yield* f.settings.getSettings;
+        expect(yield* client[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip)).toMatchObject({
+          stage: "state",
+        });
+        expect(yield* f.settings.getSettings).toEqual(before);
+        yield* f.settings.updateProviderInstance({
+          operation: "upsert",
+          instanceId,
+          instance: previous,
+        });
+      }
+      const instanceId = ProviderInstanceId.make("codex");
+      const codex = (yield* f.settings.getSettings).providerInstances[instanceId]!;
+      yield* f.settings.updateProviderInstance({
+        operation: "upsert",
+        instanceId,
+        instance: {
+          ...codex,
+          environment: yield* decodeProviderEnvironment([
+            { name: "CODEX_HOME", secret: { provider: "fixture", reference: "private-reference" } },
+          ]),
+        },
+      });
+      yield* f.fs.remove(f.helperPath);
+      expect((yield* client[FT3_WS_METHODS.zavodDetect]({})).state).toBe("absent");
+    }).pipe(Effect.scoped, Effect.provide(zavodTestLayer)),
+  );
+  it.effect("authorizes before reading settings or writing managed instances", () =>
+    Effect.gen(function* () {
+      const f = yield* zavodFixture();
+      const denied = yield* f.client([]);
+      expect(yield* denied[FT3_WS_METHODS.zavodDetect]({}).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthOrchestrationReadScope,
+      });
+      expect(yield* denied[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthProvidersManageScope,
+      });
+      expect(f.reads).toBe(0);
+      const readOnly = yield* f.client([AuthOrchestrationReadScope]);
+      expect(yield* readOnly[FT3_WS_METHODS.zavodDetect]({})).toEqual(zavodStatus);
+      expect(yield* readOnly[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthProvidersManageScope,
+      });
+      expect(f.reads).toBe(1);
+      expect(f.mutations).toEqual([]);
+      expect(yield* f.fs.exists(f.root)).toBe(false);
+      const manager = yield* f.client([AuthProvidersManageScope]);
+      expect(yield* manager[FT3_WS_METHODS.zavodDetect]({}).pipe(Effect.flip)).toMatchObject({
+        requiredPermission: AuthOrchestrationReadScope,
+      });
+      expect(yield* manager[FT3_WS_METHODS.zavodConnect]({})).toMatchObject({
+        state: "off",
+        claudeInstanceId: "zavod-claude",
+        codexInstanceId: "zavod-codex",
+      });
+    }).pipe(Effect.scoped, Effect.provide(zavodTestLayer)),
+  );
+
+  it.effect(
+    "returns safe diagnostics and connects on, off or mixed through the real services",
+    () =>
+      Effect.gen(function* () {
+        for (const state of ["on", "off", "mixed", "unsupported", "absent"] as const) {
+          yield* Effect.gen(function* () {
+            const f = yield* zavodFixture({ state });
+            const client = yield* f.client([AuthOrchestrationReadScope, AuthProvidersManageScope]);
+            const before = yield* f.settings.getSettings;
+            const detected = yield* client[FT3_WS_METHODS.zavodDetect]({});
+            expect(detected.state).toBe(state);
+            expect(Object.keys(detected).sort()).toEqual([
+              "baseUrl",
+              "baseUrlSource",
+              "reason",
+              "state",
+            ]);
+            expect(detected.baseUrlSource).toBe(state === "absent" ? null : "state");
+            expect(JSON.stringify(detected)).not.toContain(f.helperPath);
+            expect(JSON.stringify(detected)).not.toContain(f.key);
+            if (state === "on" || state === "off" || state === "mixed") {
+              const connected = yield* client[FT3_WS_METHODS.zavodConnect]({});
+              expect(connected).toEqual({
+                ...detected,
+                claudeInstanceId: "zavod-claude",
+                codexInstanceId: "zavod-codex",
+              });
+              expect(JSON.stringify(connected)).not.toContain(f.helperPath);
+              expect(JSON.stringify(connected)).not.toContain(f.key);
+            } else {
+              expect(
+                yield* client[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip),
+              ).toMatchObject({
+                _tag: "ZavodRpcError",
+                operation: "connect",
+                stage: "state",
+              });
+            }
+            if (state === "on" || state === "off" || state === "mixed") {
+              expect(f.mutations).toEqual(["create", "create"]);
+              expect(yield* f.fs.exists(f.path.join(f.root, "zavod-claude", "settings.json"))).toBe(
+                true,
+              );
+              expect(yield* f.fs.exists(f.path.join(f.root, "zavod-codex", "config.toml"))).toBe(
+                true,
+              );
+            } else {
+              expect(yield* f.settings.getSettings).toEqual(before);
+              expect(f.mutations).toEqual([]);
+              expect(yield* f.fs.exists(f.root)).toBe(false);
+            }
+          }).pipe(Effect.scoped, Effect.provide(zavodTestLayer));
+        }
+      }),
+  );
+
+  it.effect("re-detects configured homes before connecting", () =>
+    Effect.gen(function* () {
+      const f = yield* zavodFixture();
+      const client = yield* f.client([AuthOrchestrationReadScope, AuthProvidersManageScope]);
+      expect((yield* client[FT3_WS_METHODS.zavodDetect]({})).state).toBe("off");
+      yield* f.fs.writeFileString(
+        f.path.join(f.claudeHome, "settings.json"),
+        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example" } }),
+      );
+      yield* f.fs.writeFileString(
+        f.path.join(f.codexHome, "config.toml"),
+        'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://gateway.example/v1"\n',
+      );
+      expect(yield* client[FT3_WS_METHODS.zavodConnect]({})).toMatchObject({
+        state: "on",
+        claudeInstanceId: "zavod-claude",
+        codexInstanceId: "zavod-codex",
+      });
+      expect(f.mutations).toEqual(["create", "create"]);
+      expect(yield* f.fs.exists(f.root)).toBe(true);
+    }).pipe(Effect.scoped, Effect.provide(zavodTestLayer)),
+  );
+
+  it.effect(
+    "maps settings and connection failures to typed errors without raw causes or paths",
+    () =>
+      Effect.gen(function* () {
+        for (const failSettings of [true, false]) {
+          yield* Effect.gen(function* () {
+            const f = yield* zavodFixture({ failSettings, failCreate: true });
+            const client = yield* f.client([AuthOrchestrationReadScope, AuthProvidersManageScope]);
+            const error = yield* client[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip);
+            expect(isZavodRpcError(error)).toBe(true);
+            expect(error).toMatchObject({
+              operation: "connect",
+              stage: failSettings ? "settings" : "write",
+            });
+            expect(error.message).toBe("Zavod request failed.");
+            expect(Object.keys(error)).not.toContain("cause");
+            expect(encodeZavodRpcError(error)).toEqual({
+              _tag: "ZavodRpcError",
+              operation: "connect",
+              stage: failSettings ? "settings" : "write",
+            });
+            expect(JSON.stringify(error)).not.toContain(f.helperPath);
+            expect(JSON.stringify(error)).not.toContain(f.key);
+            expect(yield* f.fs.exists(f.root)).toBe(false);
+            if (failSettings) {
+              expect(yield* client[FT3_WS_METHODS.zavodDetect]({}).pipe(Effect.flip)).toMatchObject(
+                { _tag: "ZavodRpcError", operation: "detect", stage: "settings" },
+              );
+            }
+          }).pipe(Effect.scoped, Effect.provide(zavodTestLayer));
+        }
+        yield* Effect.gen(function* () {
+          const f = yield* zavodFixture();
+          yield* f.settings.updateProviderInstance({
+            operation: "create",
+            instanceId: ProviderInstanceId.make("zavod-codex"),
+            instance: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { homePath: "foreign-home", fixtureSecret: f.key },
+            },
+          });
+          const client = yield* f.client([AuthProvidersManageScope]);
+          const error = yield* client[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip);
+          expect(encodeZavodRpcError(error)).toEqual({
+            _tag: "ZavodRpcError",
+            operation: "connect",
+            stage: "conflict",
+            instanceId: "zavod-codex",
+          });
+          expect(f.mutations).toEqual([]);
+          expect(yield* f.fs.exists(f.root)).toBe(false);
+        }).pipe(Effect.scoped, Effect.provide(zavodTestLayer));
+      }),
   );
 });

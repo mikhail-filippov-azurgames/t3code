@@ -1001,3 +1001,19 @@ Mobile вне scope документов, политик, почты и план
 Fork-owned UI and behavior tests: `packages/ft3-web/src/chat/MailNotificationRow.tsx`,
 `packages/ft3-web/src/chat/MailNotificationRow.browser.test.tsx`, plus the mail notice cases in
 `packages/ft3-mail/src/reactor.test.ts` and `packages/ft3-mail/src/rpc.test.ts`.
+
+## Подключение Zavod
+
+| Upstream-файл                                                | Правка                                                                                                | Зачем                                                                                      |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `packages/contracts/src/clientRpcPermissions.ts`             | `"zavod.connect": AuthProvidersManageScope` в `FT3_CLIENT_GUARDED_RPC_SCOPES`                         | клиентский guard подключения провайдеров                                                   |
+| `packages/contracts/src/clientRpcPermissions.test.ts`        | проверка scope подключения и отсутствия guard у `zavod.detect`                                        | чтение статуса доступно query-клиенту, запись требует `providers:manage`                   |
+| `apps/server/src/ws.test.ts`                                 | stub `ZavodService` в общем `layerUnusedConfigRpcServices` четырёх harness                            | существующие тесты WebSocket получают новую зависимость handlers                           |
+| `apps/web/src/components/settings/ProviderSettingsPanel.tsx` | import `ZavodSettingsSection` из `@t3tools/ft3-web/zavod` и один слот с выбранным `environmentId`     | статус Zavod и подключение экземпляров с проверкой прав                                    |
+| `apps/server/src/serverSettings.ts`                          | вызов `readPolicySettings` / `withPolicySettings` в ветке отсутствующего settings-файла включает mail | первичная инициализация environment, существующие настройки и default декодера сохраняются |
+| `apps/server/src/serverSettings.test.ts`                     | проверки первичного включения mail и сохранения значений существующего файла                          | защита границы первичной инициализации                                                     |
+
+Контракты, серверная авторизация и handlers находятся в `packages/ft3-host/src/rpc-contracts.ts`
+и `rpc.ts`. Композиция детектора и managed экземпляров — в `src/zavod/service.ts` того же пакета.
+Тесты RPC — в `packages/ft3-host/src/rpc.test.ts`, проверка client guard включена в шаг
+«Test changed contracts files» в `.github/workflows/ft3-gate.yml`.
