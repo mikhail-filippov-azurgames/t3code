@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Builds Corvis from ft3/v2 and creates a desktop shortcut.
+Builds Corvis from corvis/main and creates a desktop shortcut.
 .PARAMETER InstallDirectory
 Source checkout directory. Defaults to a corvis directory beside this script.
 #>
@@ -12,7 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repositoryUrl = 'https://github.com/mikhail-filippov-azurgames/t3code'
-$branch = 'ft3/v2'
+$branch = 'corvis/main'
 # Standalone downloads have no adjacent package.json. The test keeps this fallback
 # aligned with the root engines.node. The cloned manifest is checked again below.
 $requiredNodeVersion = '26.12.1'
@@ -91,7 +91,7 @@ try {
         }
         $currentBranch = (Invoke-Checked git @('-C', $InstallDirectory, 'branch', '--show-current') | Out-String).Trim()
         if ($currentBranch -ne $branch) {
-            throw 'The installation checkout must be on the ft3/v2 branch. Switch branches before updating.'
+            throw 'The installation checkout must be on the corvis/main branch. Switch branches before updating.'
         }
         $localCommitCount = (Invoke-Checked git @('-C', $InstallDirectory, 'rev-list', '--count', "origin/$branch..HEAD") | Out-String).Trim()
         if ([int] $localCommitCount -gt 0) {

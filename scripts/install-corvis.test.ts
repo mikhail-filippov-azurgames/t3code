@@ -55,12 +55,12 @@ function pnpm {
 function git {
     Write-Invocation 'git' $args
     if ($args -contains 'clone') {
-        & $gitExecutable -c core.longpaths=true clone --branch ft3/v2 --single-branch -- $config.fixture $config.installDirectory
+        & $gitExecutable -c core.longpaths=true clone --branch corvis/main --single-branch -- $config.fixture $config.installDirectory
         if ($LASTEXITCODE -ne 0) { return }
         & $gitExecutable -C $config.installDirectory remote set-url origin $config.repositoryUrl
     } elseif ($args -contains 'fetch') {
         if ($config.failAt -eq 'fetch') { $global:LASTEXITCODE = 42; return }
-        & $gitExecutable -C $config.installDirectory fetch $config.fixture '+refs/heads/ft3/v2:refs/remotes/origin/ft3/v2'
+        & $gitExecutable -C $config.installDirectory fetch $config.fixture '+refs/heads/corvis/main:refs/remotes/origin/corvis/main'
     } else {
         & $gitExecutable @args
     }
@@ -101,7 +101,7 @@ async function fixture() {
   await NodeFSP.mkdir(source);
   const git = (directory: string, ...args: string[]) =>
     NodeChildProcess.execFileSync("git", ["-C", directory, ...args], { encoding: "utf8" }).trim();
-  git(source, "init", "--initial-branch=ft3/v2");
+  git(source, "init", "--initial-branch=corvis/main");
   await NodeFSP.writeFile(
     NodePath.join(source, "package.json"),
     JSON.stringify({ engines: rootManifest.engines }),
@@ -258,7 +258,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Corvis Windows
           "core.longpaths=true",
           "clone",
           "--branch",
-          "ft3/v2",
+          "corvis/main",
           "--single-branch",
           "--",
           repositoryUrl,
@@ -309,7 +309,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Corvis Windows
           test.installDirectory,
           "fetch",
           "origin",
-          "+refs/heads/ft3/v2:refs/remotes/origin/ft3/v2",
+          "+refs/heads/corvis/main:refs/remotes/origin/corvis/main",
         ],
       });
       expect(test.git(test.installDirectory, "config", "--local", "--get", "core.longpaths")).toBe(
@@ -319,7 +319,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Corvis Windows
         test.git(test.source, "rev-parse", "HEAD"),
       );
       expect(repeat.commands.some((command) => command.arguments.includes("reset"))).toBe(true);
-      expect(test.git(test.installDirectory, "branch", "--show-current")).toBe("ft3/v2");
+      expect(test.git(test.installDirectory, "branch", "--show-current")).toBe("corvis/main");
     } finally {
       await test.cleanup();
     }
@@ -351,7 +351,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Corvis Windows
         const result = await test.run();
         expect(result.code, result.output).toBe(1);
         expect(result.output).toContain(
-          kind === "local-commit" ? "local commits" : "ft3/v2 branch",
+          kind === "local-commit" ? "local commits" : "corvis/main branch",
         );
         expect(test.git(test.installDirectory, "rev-parse", "HEAD")).toBe(before);
         expect(test.git(test.installDirectory, "branch", "--show-current")).toBe(branchBefore);

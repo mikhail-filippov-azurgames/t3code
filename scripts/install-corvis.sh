@@ -1,10 +1,10 @@
 #!/bin/sh
-# Builds Corvis from ft3/v2. Usage: sh install-corvis.sh [INSTALL_DIRECTORY]
+# Builds Corvis from corvis/main. Usage: sh install-corvis.sh [INSTALL_DIRECTORY]
 # The default checkout is a corvis directory beside this script.
 set -eu
 
 repository_url=https://github.com/mikhail-filippov-azurgames/t3code
-branch=ft3/v2
+branch=corvis/main
 # Kept aligned with root engines.node by the installer test for standalone use.
 required_node_version=26.12.1
 
@@ -92,7 +92,7 @@ if [ "$contents" != . ]; then
   changes=$(run git -C "$install_directory" status --porcelain --untracked-files=all)
   [ -z "$changes" ] || fail 'The installation checkout has local changes or untracked files. Commit, stash, or move them before updating.'
   current_branch=$(run git -C "$install_directory" branch --show-current)
-  [ "$current_branch" = "$branch" ] || fail 'The installation checkout must be on the ft3/v2 branch. Switch branches before updating.'
+  [ "$current_branch" = "$branch" ] || fail 'The installation checkout must be on the corvis/main branch. Switch branches before updating.'
   local_commits=$(run git -C "$install_directory" rev-list --count "origin/$branch..HEAD")
   [ "$local_commits" -eq 0 ] || fail 'The installation checkout has local commits. Preserve them before updating.'
   run git -C "$install_directory" fetch origin "+refs/heads/$branch:refs/remotes/origin/$branch"

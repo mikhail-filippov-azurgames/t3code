@@ -1,7 +1,14 @@
 # Установка Corvis
 
-Установщики скачивают ветку `ft3/v2`, устанавливают зависимости через pnpm и собирают
+Установщики скачивают ветку `corvis/main`, устанавливают зависимости через pnpm и собирают
 desktop-приложение. Исходники и собранное приложение остаются в выбранном каталоге.
+
+## Версии
+
+Версия записывается как `2.1.0:0.1.8`: до двоеточия — версия правок Corvis, после — версия
+T3, на которой основан Corvis. Версия Corvis растёт только от наших изменений и не
+сбрасывается при обновлении T3. В git двоеточие недопустимо, поэтому метка этой версии —
+`v2.1.0-0.1.8`.
 
 ## Что поставить заранее
 
@@ -27,7 +34,7 @@ corepack install --global pnpm@12.14.0
 
 ```powershell
 $installer = Join-Path $env:TEMP 'install-corvis.ps1'
-Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/mikhail-filippov-azurgames/t3code/ft3/v2/scripts/install-corvis.ps1' -OutFile $installer
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/mikhail-filippov-azurgames/t3code/corvis/main/scripts/install-corvis.ps1' -OutFile $installer
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallDirectory 'C:\Corvis'
 ```
 
@@ -39,7 +46,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File $installer -InstallDirec
 Выполните в терминале. Последний аргумент задаёт каталог установки.
 
 ```sh
-curl --fail --location 'https://raw.githubusercontent.com/mikhail-filippov-azurgames/t3code/ft3/v2/scripts/install-corvis.sh' --output /tmp/install-corvis.sh
+curl --fail --location 'https://raw.githubusercontent.com/mikhail-filippov-azurgames/t3code/corvis/main/scripts/install-corvis.sh' --output /tmp/install-corvis.sh
 sh /tmp/install-corvis.sh "$HOME/Corvis"
 ```
 
@@ -63,10 +70,10 @@ macOS выполняется без подписи.
 ## Обновление
 
 Повторите команды установки с тем же каталогом. Установщик скачает актуальную ветку
-`ft3/v2`, выполнит `pnpm install` и `pnpm run build:desktop`, затем обновит ярлык или
+`corvis/main`, выполнит `pnpm install` и `pnpm run build:desktop`, затем обновит ярлык или
 скрипт запуска.
 
-Для обновления клон должен быть на ветке `ft3/v2`, с чистым рабочим деревом и без
+Для обновления клон должен быть на ветке `corvis/main`, с чистым рабочим деревом и без
 локальных коммитов поверх скачанной ветки. Если вы меняли файлы или
 добавляли свои, сохраните их вне каталога установки или через
 `git stash --include-untracked` перед повторным запуском.

@@ -43,7 +43,7 @@ async function fixture() {
   const gitPath = windows
     ? git("--exec-path").replace(/\/mingw64\/libexec\/git-core$/, "/cmd/git.exe")
     : NodeChildProcess.execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
-  git("-C", source, "init", "--initial-branch=ft3/v2");
+  git("-C", source, "init", "--initial-branch=corvis/main");
   await NodeFSP.writeFile(
     NodePath.join(source, "package.json"),
     JSON.stringify({ engines: manifest.engines }),
@@ -113,11 +113,11 @@ fi
 if [ "$1" = clone ]; then
   destination=$7
   if command -v cygpath >/dev/null 2>&1; then destination=$(cygpath -w "$destination"); fi
-  "$CORVIS_TEST_GIT" clone --branch ft3/v2 --single-branch -- "$CORVIS_TEST_SOURCE" "$destination" || exit $?
+  "$CORVIS_TEST_GIT" clone --branch corvis/main --single-branch -- "$CORVIS_TEST_SOURCE" "$destination" || exit $?
   exec "$CORVIS_TEST_GIT" -C "$destination" remote set-url origin "$CORVIS_TEST_URL"
 elif [ "\${3:-}" = fetch ]; then
   [ "$CORVIS_TEST_FAIL_AT" != fetch ] || exit 42
-  exec "$CORVIS_TEST_GIT" -C "$2" fetch "$CORVIS_TEST_SOURCE" '+refs/heads/ft3/v2:refs/remotes/origin/ft3/v2'
+  exec "$CORVIS_TEST_GIT" -C "$2" fetch "$CORVIS_TEST_SOURCE" '+refs/heads/corvis/main:refs/remotes/origin/corvis/main'
 elif [ "\${3:-}" = rev-parse ]; then
   result=$("$CORVIS_TEST_GIT" "$@") || exit $?
   if command -v cygpath >/dev/null 2>&1; then cygpath -u "$result"; else printf '%s\\n' "$result"; fi
@@ -275,7 +275,7 @@ describe.skipIf(!shellAvailable)("Corvis shell installer", () => {
         const result = await test.run({ platform });
         expect(result.code, result.output).toBe(0);
         expect(result.commands).toContain(
-          `clone --branch ft3/v2 --single-branch -- ${repositoryUrl}`,
+          `clone --branch corvis/main --single-branch -- ${repositoryUrl}`,
         );
         expect(result.commands).toContain("pnpm install\n");
         expect(result.commands).toContain("pnpm run build:desktop\n");
@@ -333,7 +333,7 @@ describe.skipIf(!shellAvailable)("Corvis shell installer", () => {
       );
       const second = await test.run();
       expect(second.code, second.output).toBe(0);
-      expect(second.commands).toContain("reset --hard origin/ft3/v2");
+      expect(second.commands).toContain("reset --hard origin/corvis/main");
       expect(test.git("-C", test.installDirectory, "rev-parse", "HEAD")).toBe(
         test.git("-C", test.source, "rev-parse", "HEAD"),
       );
@@ -369,7 +369,7 @@ describe.skipIf(!shellAvailable)("Corvis shell installer", () => {
         const result = await test.run();
         expect(result.code, result.output).toBe(1);
         expect(result.output).toContain(
-          kind === "local-commit" ? "local commits" : "ft3/v2 branch",
+          kind === "local-commit" ? "local commits" : "corvis/main branch",
         );
         expect(test.git("-C", test.installDirectory, "rev-parse", "HEAD")).toBe(before);
         expect(test.git("-C", test.installDirectory, "branch", "--show-current")).toBe(
