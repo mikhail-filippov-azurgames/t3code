@@ -1,5 +1,5 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import type { BoardCard, BoardCardEvent } from "@t3tools/ft3-board/contracts";
+import type { BoardCard, BoardCardEvent, BoardCardId } from "@t3tools/ft3-board/contracts";
 import { CircleAlertIcon, OctagonAlertIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -37,6 +37,7 @@ export interface BoardCardDetailDialogProps {
   readonly onToggleArchive: (card: BoardCard, archived: boolean) => void;
   readonly onRequest: (card: BoardCard, text: string) => void;
   readonly onOpenExecutor: (card: BoardCard) => void;
+  readonly onOpenPlan?: ((cardId: BoardCardId) => void) | undefined;
 }
 
 export function BoardCardDetailDialog({
@@ -50,6 +51,7 @@ export function BoardCardDetailDialog({
   onToggleArchive,
   onRequest,
   onOpenExecutor,
+  onOpenPlan,
 }: BoardCardDetailDialogProps) {
   const [requestText, setRequestText] = useState("");
   const timeline = boardEventsForCard(events, card.cardId);
@@ -119,7 +121,11 @@ export function BoardCardDetailDialog({
               </Button>
             ) : null}
             {environmentId ? (
-              <BoardCardPlanButton environmentId={environmentId} cardId={card.cardId} />
+              <BoardCardPlanButton
+                environmentId={environmentId}
+                cardId={card.cardId}
+                onOpenPlan={onOpenPlan}
+              />
             ) : null}
           </div>
 

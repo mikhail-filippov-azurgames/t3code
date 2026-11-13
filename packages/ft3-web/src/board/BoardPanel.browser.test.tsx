@@ -220,7 +220,7 @@ describe("Board registry rendering", () => {
       .toBeVisible();
     await expect.element(screen.getByText("Discussion", { exact: true })).toBeVisible();
 
-    const planDialog = page.getByRole("dialog", { name: "Plan: Ship the board" });
+    const planDialog = page.getByRole("dialog", { name: /^Plan:/ });
     const scroll = planDialog
       .element()
       .querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
@@ -246,6 +246,12 @@ describe("Board registry rendering", () => {
       ),
     );
     await expect.element(planDialog).toBeVisible();
+    await expect.element(planDialog).toHaveAccessibleName("Plan: Updated card");
+    await act(() =>
+      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] })),
+    );
+    await expect.element(planDialog).toBeVisible();
+    await expect.element(planDialog).toHaveAccessibleName("Plan: Updated card");
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
     (
@@ -278,17 +284,21 @@ describe("Board registry rendering", () => {
     expect(scroll.scrollTop).toBe(50);
   });
 
-  it("keeps the full board's plan open across a card list refresh", async () => {
+  it.each(["page", "panel"])("keeps the %s plan open when its card disappears", async (surface) => {
     using state = setup({ withPlan: true });
     await using screen = await render(
       <RegistryContext.Provider value={state.registry}>
-        <BoardPage initialOrchestratorId={null} createOnMount={false} />
+        {surface === "page" ? (
+          <BoardPage initialOrchestratorId={null} createOnMount={false} />
+        ) : (
+          <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
+        )}
       </RegistryContext.Provider>,
     );
-    await userEvent.click(screen.getByRole("button", { name: /Ship the board/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Ship the board/ }).first());
     const detail = page.getByRole("dialog", { name: "Ship the board", exact: true });
     await userEvent.click(detail.getByRole("button", { name: "Plan", exact: true }));
-    const plan = page.getByRole("dialog", { name: "Plan: Ship the board" });
+    const plan = page.getByRole("dialog", { name: /^Plan:/ });
     await expect.element(plan).toBeVisible();
     const scroll = plan.element().querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
     scroll.style.height = "160px";
@@ -296,6 +306,12 @@ describe("Board registry rendering", () => {
     scroll.scrollTop = 120;
     expect(scroll.scrollTop).toBe(120);
     await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
+    await expect.element(plan).toBeVisible();
+    expect(scroll.isConnected).toBe(true);
+    expect(scroll.scrollTop).toBe(120);
+    await act(() =>
+      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] })),
+    );
     await expect.element(plan).toBeVisible();
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
@@ -309,6 +325,12 @@ describe("Board registry rendering", () => {
       ),
     );
     await expect.element(plan).toBeVisible();
+    await expect.element(plan).toHaveAccessibleName("Plan: Updated card");
+    await act(() =>
+      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] })),
+    );
+    await expect.element(plan).toBeVisible();
+    await expect.element(plan).toHaveAccessibleName("Plan: Updated card");
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
   });

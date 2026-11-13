@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   refreshes: [] as string[],
   commandResult: null as unknown,
   pending: false,
+  readPending: false,
 }));
 
 vi.mock("./state.ts", () => ({
@@ -38,6 +39,8 @@ vi.mock("~/state/query", () => ({
     const query = (atom as { __query: string }).__query;
     return {
       ...view,
+      isPending: mocks.pending || (query === "readDoc" && mocks.readPending),
+      isSuccess: !mocks.pending && !(query === "readDoc" && mocks.readPending),
       data: mocks.pending ? null : query === "planGet" ? mocks.planGet : mocks.readDoc,
       refresh: () => {
         mocks.refreshes.push(query);
@@ -93,6 +96,7 @@ const readDocResult = {
 function setup(options: { readonly state: string }) {
   vi.clearAllMocks();
   mocks.pending = false;
+  mocks.readPending = false;
   mocks.planGet = planGetResult(options.state);
   mocks.readDoc = readDocResult;
   mocks.calls = [];
@@ -166,15 +170,59 @@ describe("PlanViewerDialog", () => {
     setup({ state: "discussion" });
     await using screen = await renderDialog();
 
+    const refreshedSha = "b".repeat(64);
+    mocks.readDoc = { ...readDocResult, sha256: refreshedSha, content: "Updated plan text" };
+    await screen.rerender(
+      <PlanViewerDialog
+        environmentId={environmentId}
+        cardId={cardId}
+        title="Ship the board"
+        onClose={() => {}}
+      />,
+    );
+    await expect.element(screen.getByText("Updated plan text")).toBeVisible();
+
     (screen.getByRole("button", { name: "Plan accepted" }).element() as HTMLElement).click();
 
     expect(mocks.calls).toEqual([
       {
         label: "board.planAccept",
-        input: { cardId, sha256: readDocResult.sha256 },
+        input: { cardId, sha256: refreshedSha },
       },
     ]);
     await expect.element(screen.getByText("Accepted", { exact: true })).toBeVisible();
+  });
+
+  it("shows loading and errors for a replacement document without the previous text", async () => {
+    setup({ state: "discussion" });
+    await using screen = await renderDialog();
+    await expect.element(screen.getByText(/# Plan/)).toBeVisible();
+    mocks.planGet = {
+      ...planGetResult("discussion"),
+      doc: { stableId: "other-doc", name: "other.md" },
+    };
+    mocks.readDoc = null;
+    mocks.readPending = true;
+    const dialog = () => (
+      <PlanViewerDialog
+        environmentId={environmentId}
+        cardId={cardId}
+        title="Ship the board"
+        onClose={() => {}}
+      />
+    );
+    await screen.rerender(dialog());
+    await expect.element(screen.getByRole("status")).toHaveTextContent("Loading plan…");
+    await expect.element(screen.getByText(/# Plan/)).not.toBeInTheDocument();
+    mocks.readPending = false;
+    await screen.rerender(dialog());
+    await expect
+      .element(screen.getByRole("alert"))
+      .toHaveTextContent("Could not load the plan document.");
+    await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+    mocks.readDoc = { ...readDocResult, stableId: "other-doc", content: "Replacement plan" };
+    await screen.rerender(dialog());
+    await expect.element(screen.getByText("Replacement plan")).toBeVisible();
   });
 
   it("keeps Plan accepted disabled while the plan is drafting", async () => {

@@ -29,10 +29,12 @@ import { planningEnvironment } from "./state.ts";
 export function PlanViewerDialog(props: {
   readonly environmentId: EnvironmentId;
   readonly cardId: BoardCardId;
-  readonly title: string;
+  readonly title: string | undefined;
   readonly onClose: () => void;
 }) {
   const { environmentId, cardId } = props;
+  const [retainedTitle, setRetainedTitle] = useState(props.title ?? cardId);
+  if (props.title !== undefined && props.title !== retainedTitle) setRetainedTitle(props.title);
   const navigate = useNavigate();
   const planGetQuery = useEnvironmentQuery(
     planningEnvironment.planGet({ environmentId, input: { cardId } }),
@@ -48,10 +50,17 @@ export function PlanViewerDialog(props: {
       ? null
       : planningEnvironment.readDoc({ environmentId, input: { ref: `oc://doc/${doc.stableId}` } }),
   );
-  const [retainedDoc, setRetainedDoc] = useState(readDocQuery.data);
-  if (readDocQuery.data !== null && readDocQuery.data !== retainedDoc)
-    setRetainedDoc(readDocQuery.data);
-  const shownDoc = readDocQuery.data ?? retainedDoc;
+  const [retainedDoc, setRetainedDoc] = useState({
+    stableId: doc?.stableId,
+    data: readDocQuery.data,
+  });
+  if (
+    readDocQuery.data !== null &&
+    (readDocQuery.data !== retainedDoc.data || doc?.stableId !== retainedDoc.stableId)
+  )
+    setRetainedDoc({ stableId: doc?.stableId, data: readDocQuery.data });
+  const shownDoc =
+    readDocQuery.data ?? (retainedDoc.stableId === doc?.stableId ? retainedDoc.data : null);
   const acceptCommand = useAtomCommand(planningEnvironment.planAccept, { reportFailure: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -99,10 +108,10 @@ export function PlanViewerDialog(props: {
     >
       <DialogPopup
         bottomStickOnMobile={false}
-        className="fixed inset-0 h-dvh max-h-none max-w-none rounded-none"
+        className="fixed inset-x-0 top-[max(var(--native-titlebar-height,0px),env(safe-area-inset-top,0px))] bottom-[env(safe-area-inset-bottom,0px)] h-[calc(100dvh-max(var(--native-titlebar-height,0px),env(safe-area-inset-top,0px))-env(safe-area-inset-bottom,0px))] max-h-none max-w-none [-webkit-app-region:no-drag]"
       >
         <DialogHeader>
-          <DialogTitle>{`Plan: ${props.title}`}</DialogTitle>
+          <DialogTitle>{`Plan: ${props.title ?? retainedTitle}`}</DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-x-2">
             <span>{state === null ? "Loading the plan state…" : PLAN_STATE_LABELS[state]}</span>
             {doc === null ? null : <span>{`· ${doc.name}`}</span>}

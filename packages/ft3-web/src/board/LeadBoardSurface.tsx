@@ -1,6 +1,6 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import type { BoardCard, BoardCardLookupDetail } from "@t3tools/ft3-board/contracts";
+import type { BoardCard, BoardCardId, BoardCardLookupDetail } from "@t3tools/ft3-board/contracts";
 import type { Ft3PanelProps } from "../panels.tsx";
 import { AsyncResult } from "effect/reactivity";
 import {
@@ -39,6 +39,7 @@ import { useExpandCoordinatorHistoryByDefault } from "./boardPreferences";
 import { removeBoardCardPin } from "./boardCardPins";
 import { pinnedCardsQuery, useBoardCardPins } from "./BoardCardPinnedPanel";
 import { BoardCardPlanButton } from "./BoardCardPlanButton";
+import { PlanViewerDialog } from "../planning/PlanViewerDialog.tsx";
 import {
   coordinatorSummaryExecutorLabel,
   type CoordinatorSummaryHistoryEntry,
@@ -157,6 +158,7 @@ function SectionRefreshButton(props: {
 
 function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = props.threadRef;
+  const [selectedPlanId, setSelectedPlanId] = useState<BoardCardId | null>(null);
   const navigate = useNavigate();
   const pins = useBoardCardPins(props.threadRef);
   const pinned = useEnvironmentQuery(
@@ -265,42 +267,56 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
     [environmentId, requestOrchestrator],
   );
 
-  if (pins.length === 0) return <EmptySection text="No pinned cards." />;
-
   return (
-    <ThreadDetailsSection
-      headingId="ft3-board-cards-heading"
-      title="Cards"
-      actions={
-        <SectionRefreshButton label="Reload cards" refreshing={loading} onRefresh={refresh} />
-      }
-    >
-      <div className="space-y-3 px-2.5">
-        {pins.map((cardId) => {
-          const detail = details.get(cardId);
-          return (
-            <PinnedCard
-              key={cardId}
-              environmentId={environmentId}
-              cardId={cardId}
-              detail={detail}
-              loading={loading}
-              loadError={loadError}
-              busy={busyCardId === cardId}
-              collapsed={collapsedCardIds.has(cardId)}
-              onToggleCollapsed={() => toggleCardCollapsed(cardId)}
-              actionError={actionError}
-              onRetry={refresh}
-              onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
-              onOpenThread={openThread}
-              onStart={start}
-              onToggleArchive={toggleArchive}
-              onRequest={request}
-            />
-          );
-        })}
-      </div>
-    </ThreadDetailsSection>
+    <>
+      {pins.length === 0 ? (
+        <EmptySection text="No pinned cards." />
+      ) : (
+        <ThreadDetailsSection
+          headingId="ft3-board-cards-heading"
+          title="Cards"
+          actions={
+            <SectionRefreshButton label="Reload cards" refreshing={loading} onRefresh={refresh} />
+          }
+        >
+          <div className="space-y-3 px-2.5">
+            {pins.map((cardId) => {
+              const detail = details.get(cardId);
+              return (
+                <PinnedCard
+                  key={cardId}
+                  environmentId={environmentId}
+                  cardId={cardId}
+                  detail={detail}
+                  loading={loading}
+                  loadError={loadError}
+                  busy={busyCardId === cardId}
+                  collapsed={collapsedCardIds.has(cardId)}
+                  onToggleCollapsed={() => toggleCardCollapsed(cardId)}
+                  actionError={actionError}
+                  onRetry={refresh}
+                  onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
+                  onOpenThread={openThread}
+                  onStart={start}
+                  onToggleArchive={toggleArchive}
+                  onRequest={request}
+                  onOpenPlan={setSelectedPlanId}
+                />
+              );
+            })}
+          </div>
+        </ThreadDetailsSection>
+      )}
+      {selectedPlanId !== null ? (
+        <PlanViewerDialog
+          key={`plan:${selectedPlanId}`}
+          environmentId={environmentId}
+          cardId={selectedPlanId}
+          title={details.get(selectedPlanId)?.card.title}
+          onClose={() => setSelectedPlanId(null)}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -606,6 +622,7 @@ function PinnedCard(props: {
   readonly onStart: (card: BoardCard) => void;
   readonly onToggleArchive: (card: BoardCard) => void;
   readonly onRequest: (card: BoardCard, text: string) => Promise<void>;
+  readonly onOpenPlan: (cardId: BoardCardId) => void;
 }) {
   const [requestText, setRequestText] = useState("");
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
@@ -739,6 +756,7 @@ function PinnedCard(props: {
                   environmentId={props.environmentId}
                   cardId={card.cardId}
                   size="sm"
+                  onOpenPlan={props.onOpenPlan}
                 />
 
                 {isCardStartable(card) ? (

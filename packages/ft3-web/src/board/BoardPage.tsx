@@ -1,6 +1,7 @@
 import type { ThreadId } from "@t3tools/contracts";
 import type {
   BoardCard,
+  BoardCardId,
   BoardListResult,
   ExecutorRole as BoardExecutorRole,
 } from "@t3tools/ft3-board/contracts";
@@ -64,6 +65,7 @@ import {
 import { useSkipOrchestratorUnmarkConfirmation } from "./boardPreferences";
 import { boardEnvironment, useBoardOrchestratorThreadKeys } from "./useBoardBackend";
 import { BoardRoleIcon } from "./boardRoleIcons";
+import { PlanViewerDialog } from "../planning/PlanViewerDialog.tsx";
 
 export interface BoardPageProps {
   readonly initialOrchestratorId: ThreadId | null;
@@ -117,6 +119,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
     createOnMount && initialOrchestratorId !== null,
   );
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
+  const [selectedPlanId, setSelectedPlanId] = useState<BoardCardId | null>(null);
   const [busy, setBusy] = useState(false);
 
   const createCard = useAtomCommand(boardEnvironment.create, { reportFailure: false });
@@ -165,7 +168,13 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
       ),
     [archiveMatchable, listData, selectedOrchestratorId],
   );
-  const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
+  const currentSelectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
+  const [retainedSelectedCard, setRetainedSelectedCard] = useState<BoardCard | null>(null);
+  if (currentSelectedCard !== null && currentSelectedCard !== retainedSelectedCard)
+    setRetainedSelectedCard(currentSelectedCard);
+  const selectedCard =
+    currentSelectedCard ??
+    (retainedSelectedCard?.cardId === selectedCardId ? retainedSelectedCard : null);
 
   const environmentLabel = (threadId: ThreadId): string =>
     shellByThreadKey.get(`${environmentId}:${threadId}`)?.title ?? threadId;
@@ -580,6 +589,16 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
           onToggleArchive={(card, archived) => void handleToggleArchive(card, archived)}
           onRequest={(card, text) => void handleRequest(card, text)}
           onOpenExecutor={handleOpenExecutor}
+          onOpenPlan={setSelectedPlanId}
+        />
+      ) : null}
+      {selectedPlanId !== null && environmentId !== null ? (
+        <PlanViewerDialog
+          key={`plan:${selectedPlanId}`}
+          environmentId={environmentId}
+          cardId={selectedPlanId}
+          title={cards.find((card) => card.cardId === selectedPlanId)?.title}
+          onClose={() => setSelectedPlanId(null)}
         />
       ) : null}
     </SidebarInset>

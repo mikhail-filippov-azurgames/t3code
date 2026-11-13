@@ -1,12 +1,14 @@
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
+import { BoardCardId } from "@t3tools/ft3-board/contracts";
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
-import { render } from "../../../../apps/web/test/render";
+import { act, render } from "../../../../apps/web/test/render";
 import { LeadBoardSurface, type LeadBoardSection } from "./LeadBoardSurface.tsx";
 import type { CoordinatorSummaryHistoryEntry } from "./coordinatorSummaryHistory";
+import { removeBoardCardPin } from "./boardCardPins.ts";
 
 const mocks = vi.hoisted(() => ({
   listForChatPanel: vi.fn(),
@@ -15,6 +17,16 @@ const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   historyLoader: vi.fn(),
   mailTasks: vi.fn(),
+  planGet: vi.fn(),
+  readDoc: vi.fn(),
+}));
+
+vi.mock("../planning/state.ts", () => ({
+  planningEnvironment: {
+    planGet: (target: unknown) => mocks.planGet(target),
+    readDoc: (target: unknown) => mocks.readDoc(target),
+    planAccept: { label: "board.planAccept" },
+  },
 }));
 
 vi.mock("./state.ts", () => ({
@@ -194,6 +206,64 @@ describe("LeadBoardSurface", () => {
     await expect
       .element(screen.getByRole("button", { name: `Unpin card ${cardId}` }))
       .toBeVisible();
+  });
+
+  it("keeps the plan open when a pinned card disappears and its last pin is removed", async () => {
+    const planCardId = "33333333-3333-4333-8333-333333333333";
+    using state = setup({ pin: { cardId: planCardId, body: "Read the plan." } });
+    window.localStorage.setItem(
+      `t3code:board-card-pins:v1:${environmentId}:${threadId}`,
+      JSON.stringify([planCardId]),
+    );
+    mocks.list.mockReturnValue(
+      Atom.make(
+        AsyncResult.success({
+          cards: [pinnedCard(planCardId, "Read the plan.")],
+          events: [],
+          plans: [
+            {
+              cardId: BoardCardId.make(planCardId),
+              title: "Pinned work",
+              plannerThreadId: "planner",
+              status: "discussion",
+              planDocId: "doc-plan",
+            },
+          ],
+        }),
+      ),
+    );
+    mocks.planGet.mockReturnValue(
+      Atom.make(
+        AsyncResult.success({
+          record: { state: "discussion" },
+          doc: { stableId: "doc-plan", name: "plan.md" },
+        }),
+      ),
+    );
+    mocks.readDoc.mockReturnValue(
+      Atom.make(
+        AsyncResult.success({
+          status: "found",
+          stableId: "doc-plan",
+          sha256: "a".repeat(64),
+          content: "Pinned plan text",
+        }),
+      ),
+    );
+    await using screen = await renderSurface(state);
+    await userEvent.click(screen.getByRole("button", { name: "Plan", exact: true }));
+    const plan = page.getByRole("dialog", { name: "Plan: Pinned work" });
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    const resolve = mocks.resolve.mock.results.at(-1)!.value;
+    await act(() => state.registry.set(resolve, AsyncResult.success({ matches: [], details: [] })));
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    await act(() => removeBoardCardPin(environmentId, threadId, planCardId));
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    (
+      plan.getByRole("button", { name: "Close", exact: true }).first().element() as HTMLElement
+    ).click();
+    await expect.element(plan).not.toBeInTheDocument();
+    await expect.element(screen.getByText("No pinned cards.")).toBeVisible();
   });
 
   it("collapses the pinned card description and history behind chevron buttons", async () => {

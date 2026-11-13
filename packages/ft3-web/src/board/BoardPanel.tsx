@@ -70,9 +70,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
   const [coordinator, setCoordinator] = useState<string>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<{ cardId: BoardCardId; title: string } | null>(
-    null,
-  );
+  const [selectedPlanId, setSelectedPlanId] = useState<BoardCardId | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const pins = useBoardCardPins(threadRef);
@@ -123,10 +121,16 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
     coordinator === "all" ? null : ThreadId.make(coordinator),
   );
   const pinnedCards = pinned.data?.details.map((detail) => detail.card) ?? [];
-  const selectedCard =
+  const currentSelectedCard =
     cards.find((card) => card.cardId === selectedId) ??
     pinnedCards.find((card) => card.cardId === selectedId) ??
     null;
+  const [retainedSelectedCard, setRetainedSelectedCard] = useState<BoardCard | null>(null);
+  if (currentSelectedCard !== null && currentSelectedCard !== retainedSelectedCard)
+    setRetainedSelectedCard(currentSelectedCard);
+  const selectedCard =
+    currentSelectedCard ??
+    (retainedSelectedCard?.cardId === selectedId ? retainedSelectedCard : null);
   const pinnedEvents = pinned.data?.details.flatMap((detail) => detail.events) ?? [];
   const events: readonly BoardCardEvent[] = [
     ...(listData?.events ?? []),
@@ -487,7 +491,7 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
                     <BoardCardPlanButton
                       environmentId={threadRef.environmentId}
                       cardId={card.cardId}
-                      onOpenPlan={setSelectedPlan}
+                      onOpenPlan={setSelectedPlanId}
                     />
                     <Button
                       size="xs"
@@ -550,15 +554,21 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
           }
           onRequest={requestCoordinator}
           onOpenExecutor={openExecutor}
+          onOpenPlan={setSelectedPlanId}
         />
       ) : null}
-      {selectedPlan !== null ? (
+      {selectedPlanId !== null ? (
         <PlanViewerDialog
-          key={`plan:${selectedPlan.cardId}`}
+          key={`plan:${selectedPlanId}`}
           environmentId={threadRef.environmentId}
-          cardId={selectedPlan.cardId}
-          title={selectedPlan.title}
-          onClose={() => setSelectedPlan(null)}
+          cardId={selectedPlanId}
+          title={
+            (
+              cards.find((card) => card.cardId === selectedPlanId) ??
+              pinnedCards.find((card) => card.cardId === selectedPlanId)
+            )?.title
+          }
+          onClose={() => setSelectedPlanId(null)}
         />
       ) : null}
     </div>
