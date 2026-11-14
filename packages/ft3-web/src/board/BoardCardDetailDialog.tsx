@@ -37,7 +37,7 @@ export interface BoardCardDetailDialogProps {
   readonly onToggleArchive: (card: BoardCard, archived: boolean) => void;
   readonly onRequest: (card: BoardCard, text: string) => void;
   readonly onOpenExecutor: (card: BoardCard) => void;
-  readonly onOpenPlan?: ((cardId: BoardCardId) => void) | undefined;
+  readonly onOpenPlan: (cardId: BoardCardId) => void;
 }
 
 export function BoardCardDetailDialog({

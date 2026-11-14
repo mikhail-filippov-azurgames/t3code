@@ -121,16 +121,10 @@ export default function BoardPanel({ threadRef, visible }: Ft3PanelProps) {
     coordinator === "all" ? null : ThreadId.make(coordinator),
   );
   const pinnedCards = pinned.data?.details.map((detail) => detail.card) ?? [];
-  const currentSelectedCard =
+  const selectedCard =
     cards.find((card) => card.cardId === selectedId) ??
     pinnedCards.find((card) => card.cardId === selectedId) ??
     null;
-  const [retainedSelectedCard, setRetainedSelectedCard] = useState<BoardCard | null>(null);
-  if (currentSelectedCard !== null && currentSelectedCard !== retainedSelectedCard)
-    setRetainedSelectedCard(currentSelectedCard);
-  const selectedCard =
-    currentSelectedCard ??
-    (retainedSelectedCard?.cardId === selectedId ? retainedSelectedCard : null);
   const pinnedEvents = pinned.data?.details.flatMap((detail) => detail.events) ?? [];
   const events: readonly BoardCardEvent[] = [
     ...(listData?.events ?? []),

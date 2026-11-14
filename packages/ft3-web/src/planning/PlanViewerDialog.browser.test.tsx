@@ -1,6 +1,7 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { BoardCardId, BoardMcpFailure } from "@t3tools/ft3-board/contracts";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser";
@@ -16,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   commandResult: null as unknown,
   pending: false,
   readPending: false,
+  planResult: null as AsyncResult.AsyncResult<unknown, unknown> | null,
+  readResult: null as AsyncResult.AsyncResult<unknown, unknown> | null,
 }));
 
 vi.mock("./state.ts", () => ({
@@ -28,20 +31,26 @@ vi.mock("./state.ts", () => ({
 
 vi.mock("~/state/query", () => ({
   useEnvironmentQuery: (atom: unknown) => {
-    const view = {
+    const emptyView = {
       error: null,
       failure: null,
-      isPending: mocks.pending,
-      isSuccess: !mocks.pending,
+      isPending: false,
+      isSuccess: false,
       dataUpdatedAt: 0,
     };
-    if (atom === null) return { ...view, data: null, refresh: () => {} };
+    if (atom === null) return { ...emptyView, data: null, refresh: () => {} };
     const query = (atom as { __query: string }).__query;
+    const data = query === "planGet" ? mocks.planGet : mocks.readDoc;
+    const waiting = mocks.pending || (query === "readDoc" && mocks.readPending);
+    const result =
+      (query === "planGet" ? mocks.planResult : mocks.readResult) ??
+      (data === null ? AsyncResult.initial(waiting) : AsyncResult.success(data, { waiting }));
     return {
-      ...view,
-      isPending: mocks.pending || (query === "readDoc" && mocks.readPending),
-      isSuccess: !mocks.pending && !(query === "readDoc" && mocks.readPending),
-      data: mocks.pending ? null : query === "planGet" ? mocks.planGet : mocks.readDoc,
+      ...emptyView,
+      error: AsyncResult.isFailure(result) ? String(Cause.squash(result.cause)) : null,
+      isPending: result.waiting,
+      isSuccess: AsyncResult.isSuccess(result),
+      data: AsyncResult.getOrElse(result, () => null),
       refresh: () => {
         mocks.refreshes.push(query);
       },
@@ -97,6 +106,8 @@ function setup(options: { readonly state: string }) {
   vi.clearAllMocks();
   mocks.pending = false;
   mocks.readPending = false;
+  mocks.planResult = null;
+  mocks.readResult = null;
   mocks.planGet = planGetResult(options.state);
   mocks.readDoc = readDocResult;
   mocks.calls = [];
@@ -121,6 +132,55 @@ const renderDialog = () =>
   );
 
 describe("PlanViewerDialog", () => {
+  it.each(["planGet", "readDoc"] as const)(
+    "warns when %s fails after a successful read",
+    async (query) => {
+      setup({ state: "discussion" });
+      await using screen = await renderDialog();
+      await expect.element(screen.getByText(/# Plan/)).toBeVisible();
+      const result = AsyncResult.failure(Cause.fail(new Error("Card deleted")), {
+        previousSuccess: Option.some(AsyncResult.success(mocks[query])),
+      });
+      if (query === "planGet") mocks.planResult = result;
+      else mocks.readResult = result;
+      const dialog = () => (
+        <PlanViewerDialog
+          environmentId={environmentId}
+          cardId={cardId}
+          title="Ship the board"
+          onClose={() => {}}
+        />
+      );
+      await screen.rerender(dialog());
+      await expect
+        .element(screen.getByRole("alert"))
+        .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+      await expect.element(screen.getByText(/# Plan/)).toBeVisible();
+      await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+      mocks.planResult = null;
+      mocks.readResult = null;
+      await screen.rerender(dialog());
+      await expect.element(screen.getByRole("alert")).not.toBeInTheDocument();
+      await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeEnabled();
+    },
+  );
+
+  it("reports a missing plan or card when planGet succeeds without a record", async () => {
+    setup({ state: "discussion" });
+    await using screen = await renderDialog();
+    mocks.planGet = { ...planGetResult("discussion"), record: null, doc: null };
+    await screen.rerender(
+      <PlanViewerDialog
+        environmentId={environmentId}
+        cardId={cardId}
+        title="Ship the board"
+        onClose={() => {}}
+      />,
+    );
+    await expect.element(screen.getByText("Plan or card not found.")).toBeVisible();
+    await expect.element(screen.getByText("Loading the plan state…")).not.toBeInTheDocument();
+    await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+  });
   it("shows the plan state and content with a link to the planner thread", async () => {
     setup({ state: "discussion" });
     await using screen = await renderDialog();

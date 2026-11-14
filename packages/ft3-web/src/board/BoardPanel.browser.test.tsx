@@ -5,6 +5,7 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { BoardCardId, type BoardCard, type BoardListResult } from "@t3tools/ft3-board/contracts";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { act, render } from "../../../../apps/web/test/render";
 import { Ft3SurfaceContent } from "../panels.tsx";
 import { BoardPage } from "./BoardPage.tsx";
@@ -114,7 +115,7 @@ function setup(options: { withPlan?: boolean; longBody?: boolean } = {}) {
     AsyncResult.failure(Cause.fail(new Error("Waiting for human input."))),
   );
   mocks.planGet.mockReturnValue(
-    Atom.make(
+    Atom.make<AsyncResult.AsyncResult<unknown, Error>>(
       AsyncResult.success({
         record: {
           cardId: card.cardId,
@@ -138,7 +139,7 @@ function setup(options: { withPlan?: boolean; longBody?: boolean } = {}) {
     ),
   );
   mocks.readDoc.mockReturnValue(
-    Atom.make(
+    Atom.make<AsyncResult.AsyncResult<unknown, Error>>(
       AsyncResult.success({
         status: "found",
         stableId: "doc-plan",
@@ -229,7 +230,9 @@ describe("Board registry rendering", () => {
     scroll.scrollTop = 120;
     expect(scroll.scrollTop).toBe(120);
 
-    await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
+    await act(() =>
+      state.registry.set(state.list, AsyncResult.success(state.listData, { waiting: true })),
+    );
     await expect.element(planDialog).toBeVisible();
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
@@ -247,11 +250,29 @@ describe("Board registry rendering", () => {
     );
     await expect.element(planDialog).toBeVisible();
     await expect.element(planDialog).toHaveAccessibleName("Plan: Updated card");
-    await act(() =>
-      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] })),
-    );
+    await act(() => {
+      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] }));
+      for (const query of [mocks.planGet, mocks.readDoc]) {
+        const atom = query.mock.results.at(-1)!.value as Atom.Writable<
+          AsyncResult.AsyncResult<unknown, Error>
+        >;
+        const previous = state.registry.get(atom);
+        state.registry.set(
+          atom,
+          AsyncResult.failure(Cause.fail(new Error("Card deleted")), {
+            previousSuccess: AsyncResult.isSuccess(previous)
+              ? Option.some(previous)
+              : Option.none(),
+          }),
+        );
+      }
+    });
     await expect.element(planDialog).toBeVisible();
     await expect.element(planDialog).toHaveAccessibleName("Plan: Updated card");
+    await expect
+      .element(planDialog.getByRole("alert"))
+      .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+    await expect.element(planDialog.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
     (
@@ -263,26 +284,46 @@ describe("Board registry rendering", () => {
     await expect.element(planDialog).not.toBeInTheDocument();
   });
 
-  it("keeps card details and their scroll position while the list refreshes", async () => {
-    using state = setup({ longBody: true });
-    await using screen = await render(
-      <RegistryContext.Provider value={state.registry}>
-        <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
-      </RegistryContext.Provider>,
-    );
-    await userEvent.click(screen.getByRole("button", { name: "Ship the board", exact: true }));
-    const dialog = page.getByRole("dialog", { name: "Ship the board", exact: true });
-    await expect.element(dialog).toBeVisible();
-    const scroll = dialog.element().querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
-    scroll.style.height = "160px";
-    scroll.style.overflowY = "auto";
-    scroll.scrollTop = 50;
-    expect(scroll.scrollTop).toBe(50);
-    await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
-    await expect.element(dialog).toBeVisible();
-    expect(scroll.isConnected).toBe(true);
-    expect(scroll.scrollTop).toBe(50);
-  });
+  it.each(["page", "panel"])(
+    "keeps %s details during refresh and closes them after archive",
+    async (surface) => {
+      using state = setup({ longBody: true });
+      await using screen = await render(
+        <RegistryContext.Provider value={state.registry}>
+          {surface === "page" ? (
+            <BoardPage initialOrchestratorId={null} createOnMount={false} />
+          ) : (
+            <Ft3SurfaceContent surfaceType="board" threadRef={ref} visible />
+          )}
+        </RegistryContext.Provider>,
+      );
+      await userEvent.click(screen.getByRole("button", { name: /Ship the board/ }).first());
+      const dialog = page.getByRole("dialog", { name: "Ship the board", exact: true });
+      await expect.element(dialog).toBeVisible();
+      const scroll = dialog
+        .element()
+        .querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
+      scroll.style.height = "160px";
+      scroll.style.overflowY = "auto";
+      scroll.scrollTop = 50;
+      expect(scroll.scrollTop).toBe(50);
+      await act(() =>
+        state.registry.set(state.list, AsyncResult.success(state.listData, { waiting: true })),
+      );
+      await expect.element(dialog).toBeVisible();
+      expect(scroll.isConnected).toBe(true);
+      expect(scroll.scrollTop).toBe(50);
+      mocks.update.mockImplementation(async () => {
+        state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] }));
+        return AsyncResult.success({ ...state.card, archived: true });
+      });
+      (
+        dialog.getByRole("button", { name: "Archive", exact: true }).element() as HTMLElement
+      ).click();
+      await expect.element(dialog).not.toBeInTheDocument();
+      expect(scroll.isConnected).toBe(false);
+    },
+  );
 
   it.each(["page", "panel"])("keeps the %s plan open when its card disappears", async (surface) => {
     using state = setup({ withPlan: true });
@@ -305,12 +346,8 @@ describe("Board registry rendering", () => {
     scroll.style.overflowY = "auto";
     scroll.scrollTop = 120;
     expect(scroll.scrollTop).toBe(120);
-    await act(() => state.registry.set(state.list, AsyncResult.initial(true)));
-    await expect.element(plan).toBeVisible();
-    expect(scroll.isConnected).toBe(true);
-    expect(scroll.scrollTop).toBe(120);
     await act(() =>
-      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] })),
+      state.registry.set(state.list, AsyncResult.success(state.listData, { waiting: true })),
     );
     await expect.element(plan).toBeVisible();
     expect(scroll.isConnected).toBe(true);
@@ -326,11 +363,30 @@ describe("Board registry rendering", () => {
     );
     await expect.element(plan).toBeVisible();
     await expect.element(plan).toHaveAccessibleName("Plan: Updated card");
-    await act(() =>
-      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] })),
-    );
+    await act(() => {
+      state.registry.set(state.list, AsyncResult.success({ ...state.listData, cards: [] }));
+      for (const query of [mocks.planGet, mocks.readDoc]) {
+        const atom = query.mock.results.at(-1)!.value as Atom.Writable<
+          AsyncResult.AsyncResult<unknown, Error>
+        >;
+        const previous = state.registry.get(atom);
+        state.registry.set(
+          atom,
+          AsyncResult.failure(Cause.fail(new Error("Card deleted")), {
+            previousSuccess: AsyncResult.isSuccess(previous)
+              ? Option.some(previous)
+              : Option.none(),
+          }),
+        );
+      }
+    });
     await expect.element(plan).toBeVisible();
     await expect.element(plan).toHaveAccessibleName("Plan: Updated card");
+    await expect.element(detail).not.toBeInTheDocument();
+    await expect
+      .element(plan.getByRole("alert"))
+      .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+    await expect.element(plan.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
   });

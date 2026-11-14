@@ -2,6 +2,8 @@ import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contract
 import { BoardCardId } from "@t3tools/ft3-board/contracts";
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
+import * as Cause from "effect/Cause";
+import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -255,8 +257,28 @@ describe("LeadBoardSurface", () => {
     const plan = page.getByRole("dialog", { name: "Plan: Pinned work" });
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
     const resolve = mocks.resolve.mock.results.at(-1)!.value;
-    await act(() => state.registry.set(resolve, AsyncResult.success({ matches: [], details: [] })));
+    await act(() => {
+      state.registry.set(resolve, AsyncResult.success({ matches: [], details: [] }));
+      for (const query of [mocks.planGet, mocks.readDoc]) {
+        const atom = query.mock.results.at(-1)!.value as Atom.Writable<
+          AsyncResult.AsyncResult<unknown, Error>
+        >;
+        const previous = state.registry.get(atom);
+        state.registry.set(
+          atom,
+          AsyncResult.failure(Cause.fail(new Error("Card deleted")), {
+            previousSuccess: AsyncResult.isSuccess(previous)
+              ? Option.some(previous)
+              : Option.none(),
+          }),
+        );
+      }
+    });
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    await expect
+      .element(plan.getByRole("alert"))
+      .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+    await expect.element(plan.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
     await act(() => removeBoardCardPin(environmentId, threadId, planCardId));
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
     (

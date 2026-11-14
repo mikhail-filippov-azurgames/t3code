@@ -4,7 +4,7 @@ import type { PlanRecord } from "@t3tools/ft3-board/planning-contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -33,6 +33,7 @@ export function PlanViewerDialog(props: {
   readonly onClose: () => void;
 }) {
   const { environmentId, cardId } = props;
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [retainedTitle, setRetainedTitle] = useState(props.title ?? cardId);
   if (props.title !== undefined && props.title !== retainedTitle) setRetainedTitle(props.title);
   const navigate = useNavigate();
@@ -67,11 +68,14 @@ export function PlanViewerDialog(props: {
   const [accepted, setAccepted] = useState<PlanRecord | null>(null);
 
   const state = accepted?.state ?? record?.state ?? null;
+  const planMissing = planGetQuery.isSuccess && planGetQuery.data?.record === null;
+  const refreshFailed = planGetQuery.error !== null || readDocQuery.error !== null;
   const shownSha256 = shownDoc?.status === "found" ? shownDoc.sha256 : null;
   const canAccept =
     planAcceptAvailable(state) &&
     shownSha256 !== null &&
     !busy &&
+    !refreshFailed &&
     planGetQuery.isSuccess &&
     readDocQuery.isSuccess &&
     !planGetQuery.isPending &&
@@ -107,15 +111,27 @@ export function PlanViewerDialog(props: {
       }}
     >
       <DialogPopup
+        initialFocus={closeButtonRef}
         bottomStickOnMobile={false}
         className="fixed inset-x-0 top-[max(var(--native-titlebar-height,0px),env(safe-area-inset-top,0px))] bottom-[env(safe-area-inset-bottom,0px)] h-[calc(100dvh-max(var(--native-titlebar-height,0px),env(safe-area-inset-top,0px))-env(safe-area-inset-bottom,0px))] max-h-none max-w-none [-webkit-app-region:no-drag]"
       >
         <DialogHeader>
           <DialogTitle>{`Plan: ${props.title ?? retainedTitle}`}</DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-x-2">
-            <span>{state === null ? "Loading the plan state…" : PLAN_STATE_LABELS[state]}</span>
+            <span>
+              {planMissing
+                ? "Plan or card not found."
+                : state === null
+                  ? "Loading the plan state…"
+                  : PLAN_STATE_LABELS[state]}
+            </span>
             {doc === null ? null : <span>{`· ${doc.name}`}</span>}
           </DialogDescription>
+          {refreshFailed && shownDoc?.status === "found" ? (
+            <p role="alert" className="text-sm text-destructive">
+              Plan could not be refreshed; the view may be outdated
+            </p>
+          ) : null}
         </DialogHeader>
         <DialogPanel className="flex min-h-0 flex-col gap-3 text-base sm:text-sm">
           {shownDoc?.status === "found" ? (
@@ -159,7 +175,7 @@ export function PlanViewerDialog(props: {
           <Button type="button" disabled={!canAccept} onClick={() => void accept()}>
             Plan accepted
           </Button>
-          <Button type="button" variant="outline" onClick={props.onClose}>
+          <Button ref={closeButtonRef} type="button" variant="outline" onClick={props.onClose}>
             Close
           </Button>
         </DialogFooter>

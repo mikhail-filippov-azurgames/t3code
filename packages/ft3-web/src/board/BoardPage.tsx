@@ -168,13 +168,7 @@ export function BoardPage({ initialOrchestratorId, createOnMount }: BoardPagePro
       ),
     [archiveMatchable, listData, selectedOrchestratorId],
   );
-  const currentSelectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
-  const [retainedSelectedCard, setRetainedSelectedCard] = useState<BoardCard | null>(null);
-  if (currentSelectedCard !== null && currentSelectedCard !== retainedSelectedCard)
-    setRetainedSelectedCard(currentSelectedCard);
-  const selectedCard =
-    currentSelectedCard ??
-    (retainedSelectedCard?.cardId === selectedCardId ? retainedSelectedCard : null);
+  const selectedCard = cards.find((card) => card.cardId === selectedCardId) ?? null;
 
   const environmentLabel = (threadId: ThreadId): string =>
     shellByThreadKey.get(`${environmentId}:${threadId}`)?.title ?? threadId;
