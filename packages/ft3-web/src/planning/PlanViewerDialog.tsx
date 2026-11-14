@@ -33,7 +33,7 @@ export function PlanViewerDialog(props: {
   readonly onClose: () => void;
 }) {
   const { environmentId, cardId } = props;
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
   const [retainedTitle, setRetainedTitle] = useState(props.title ?? cardId);
   if (props.title !== undefined && props.title !== retainedTitle) setRetainedTitle(props.title);
   const navigate = useNavigate();
@@ -68,7 +68,6 @@ export function PlanViewerDialog(props: {
   const [accepted, setAccepted] = useState<PlanRecord | null>(null);
 
   const state = accepted?.state ?? record?.state ?? null;
-  const planMissing = planGetQuery.isSuccess && planGetQuery.data?.record === null;
   const refreshFailed = planGetQuery.error !== null || readDocQuery.error !== null;
   const shownSha256 = shownDoc?.status === "found" ? shownDoc.sha256 : null;
   const canAccept =
@@ -80,6 +79,11 @@ export function PlanViewerDialog(props: {
     readDocQuery.isSuccess &&
     !planGetQuery.isPending &&
     !readDocQuery.isPending;
+
+  const retry = () => {
+    planGetQuery.refresh();
+    if (doc !== null) readDocQuery.refresh();
+  };
 
   const accept = async () => {
     if (shownSha256 === null) return;
@@ -111,7 +115,10 @@ export function PlanViewerDialog(props: {
       }}
     >
       <DialogPopup
-        initialFocus={closeButtonRef}
+        ref={popupRef}
+        initialFocus={() =>
+          popupRef.current?.querySelector<HTMLElement>("[data-slot=scroll-area-viewport]") ?? false
+        }
         bottomStickOnMobile={false}
         className="fixed inset-x-0 top-[max(var(--native-titlebar-height,0px),env(safe-area-inset-top,0px))] bottom-[env(safe-area-inset-bottom,0px)] h-[calc(100dvh-max(var(--native-titlebar-height,0px),env(safe-area-inset-top,0px))-env(safe-area-inset-bottom,0px))] max-h-none max-w-none [-webkit-app-region:no-drag]"
       >
@@ -119,21 +126,37 @@ export function PlanViewerDialog(props: {
           <DialogTitle>{`Plan: ${props.title ?? retainedTitle}`}</DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-x-2">
             <span>
-              {planMissing
-                ? "Plan or card not found."
-                : state === null
-                  ? "Loading the plan state…"
-                  : PLAN_STATE_LABELS[state]}
+              {state === null
+                ? planGetQuery.error !== null
+                  ? "Plan state unavailable"
+                  : "Loading the plan state…"
+                : PLAN_STATE_LABELS[state]}
             </span>
             {doc === null ? null : <span>{`· ${doc.name}`}</span>}
           </DialogDescription>
-          {refreshFailed && shownDoc?.status === "found" ? (
-            <p role="alert" className="text-sm text-destructive">
-              Plan could not be refreshed; the view may be outdated
-            </p>
+          {refreshFailed ? (
+            <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
+              <span>
+                {shownDoc?.status === "found"
+                  ? "Plan could not be refreshed; the view may be outdated"
+                  : "Could not load the plan document."}
+              </span>
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                disabled={planGetQuery.isPending || readDocQuery.isPending}
+                onClick={retry}
+              >
+                Retry
+              </Button>
+            </div>
           ) : null}
         </DialogHeader>
-        <DialogPanel className="flex min-h-0 flex-col gap-3 text-base sm:text-sm">
+        <DialogPanel
+          viewportTabIndex={0}
+          className="flex min-h-0 flex-col gap-3 text-base sm:text-sm"
+        >
           {shownDoc?.status === "found" ? (
             <pre className="min-h-0 whitespace-pre-wrap break-words rounded-md border border-border bg-card px-3 py-2 text-sm leading-relaxed select-text">
               {shownDoc.content}
@@ -142,7 +165,7 @@ export function PlanViewerDialog(props: {
             <p role="status" className="text-xs text-muted-foreground">
               Loading plan…
             </p>
-          ) : (
+          ) : refreshFailed ? null : (
             <p role="alert" className="text-xs text-muted-foreground">
               Could not load the plan document.
             </p>
@@ -175,7 +198,7 @@ export function PlanViewerDialog(props: {
           <Button type="button" disabled={!canAccept} onClick={() => void accept()}>
             Plan accepted
           </Button>
-          <Button ref={closeButtonRef} type="button" variant="outline" onClick={props.onClose}>
+          <Button type="button" variant="outline" onClick={props.onClose}>
             Close
           </Button>
         </DialogFooter>

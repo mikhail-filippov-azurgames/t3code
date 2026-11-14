@@ -270,8 +270,12 @@ describe("Board registry rendering", () => {
     await expect.element(planDialog).toBeVisible();
     await expect.element(planDialog).toHaveAccessibleName("Plan: Updated card");
     await expect
-      .element(planDialog.getByRole("alert"))
-      .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+      .element(
+        planDialog
+          .getByRole("alert")
+          .getByText("Plan could not be refreshed; the view may be outdated"),
+      )
+      .toBeVisible();
     await expect.element(planDialog.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);
@@ -384,8 +388,10 @@ describe("Board registry rendering", () => {
     await expect.element(plan).toHaveAccessibleName("Plan: Updated card");
     await expect.element(detail).not.toBeInTheDocument();
     await expect
-      .element(plan.getByRole("alert"))
-      .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+      .element(
+        plan.getByRole("alert").getByText("Plan could not be refreshed; the view may be outdated"),
+      )
+      .toBeVisible();
     await expect.element(plan.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
     expect(scroll.isConnected).toBe(true);
     expect(scroll.scrollTop).toBe(120);

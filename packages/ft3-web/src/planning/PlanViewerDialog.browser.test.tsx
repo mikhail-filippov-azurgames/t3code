@@ -4,7 +4,7 @@ import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../../apps/web/test/render";
 import { PlanViewerDialog } from "./PlanViewerDialog.tsx";
@@ -153,10 +153,16 @@ describe("PlanViewerDialog", () => {
       );
       await screen.rerender(dialog());
       await expect
-        .element(screen.getByRole("alert"))
-        .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+        .element(
+          screen
+            .getByRole("alert")
+            .getByText("Plan could not be refreshed; the view may be outdated"),
+        )
+        .toBeVisible();
       await expect.element(screen.getByText(/# Plan/)).toBeVisible();
       await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+      (screen.getByRole("button", { name: "Retry" }).element() as HTMLElement).click();
+      expect(mocks.refreshes).toEqual(["planGet", "readDoc"]);
       mocks.planResult = null;
       mocks.readResult = null;
       await screen.rerender(dialog());
@@ -165,10 +171,16 @@ describe("PlanViewerDialog", () => {
     },
   );
 
-  it("reports a missing plan or card when planGet succeeds without a record", async () => {
+  it("reports an initial plan query failure and allows retrying", async () => {
     setup({ state: "discussion" });
+    mocks.planResult = AsyncResult.failure(Cause.fail(new Error("Card deleted")));
     await using screen = await renderDialog();
-    mocks.planGet = { ...planGetResult("discussion"), record: null, doc: null };
+    await expect.element(screen.getByText("Plan state unavailable")).toBeVisible();
+    await expect.element(screen.getByText("Loading the plan state…")).not.toBeInTheDocument();
+    await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+    (screen.getByRole("button", { name: "Retry" }).element() as HTMLElement).click();
+    expect(mocks.refreshes).toEqual(["planGet"]);
+    mocks.planResult = null;
     await screen.rerender(
       <PlanViewerDialog
         environmentId={environmentId}
@@ -177,9 +189,9 @@ describe("PlanViewerDialog", () => {
         onClose={() => {}}
       />,
     );
-    await expect.element(screen.getByText("Plan or card not found.")).toBeVisible();
-    await expect.element(screen.getByText("Loading the plan state…")).not.toBeInTheDocument();
-    await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+    await expect.element(screen.getByText("Discussion", { exact: true })).toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    await expect.element(screen.getByRole("button", { name: "Plan accepted" })).toBeEnabled();
   });
   it("shows the plan state and content with a link to the planner thread", async () => {
     setup({ state: "discussion" });
@@ -192,12 +204,24 @@ describe("PlanViewerDialog", () => {
 
   it("preserves the document and its scroll position while plan queries refresh", async () => {
     setup({ state: "discussion" });
+    mocks.planGet = {
+      ...planGetResult("discussion"),
+      record: planRecord("discussion", { plannerThreadId: null }),
+    };
     mocks.readDoc = { ...readDocResult, content: "# Plan\n" + "Step P1.\n".repeat(300) };
     await using screen = await renderDialog();
     const dialog = page.getByRole("dialog", { name: "Plan: Ship the board" });
     const scroll = dialog.element().querySelector<HTMLElement>("[data-slot=scroll-area-viewport]")!;
     scroll.style.height = "160px";
     scroll.style.overflowY = "auto";
+    await expect.element(scroll).toHaveFocus();
+    expect(scroll.scrollTop).toBe(0);
+    const scrollFinished = new Promise<void>((resolve) => {
+      scroll.addEventListener("scrollend", () => resolve(), { once: true });
+    });
+    await userEvent.keyboard("{PageDown}");
+    await scrollFinished;
+    expect(scroll.scrollTop).toBeGreaterThan(0);
     scroll.scrollTop = 120;
     expect(scroll.scrollTop).toBe(120);
     mocks.pending = true;

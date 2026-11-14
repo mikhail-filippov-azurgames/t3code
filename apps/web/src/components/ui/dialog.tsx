@@ -189,10 +189,14 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
 function DialogPanel({
   className,
   scrollFade = true,
+  viewportTabIndex,
   ...props
-}: React.ComponentProps<"div"> & { scrollFade?: boolean }) {
+}: React.ComponentProps<"div"> & { scrollFade?: boolean; viewportTabIndex?: number }) {
   return (
-    <ScrollArea scrollFade={scrollFade}>
+    <ScrollArea
+      scrollFade={scrollFade}
+      {...(viewportTabIndex === undefined ? {} : { viewportTabIndex })}
+    >
       <div
         className={cn(
           "space-y-4 p-6 in-[[data-slot=dialog-popup]:has([data-slot=dialog-header])]:pt-1 in-[[data-slot=dialog-popup]:has([data-slot=dialog-footer]:not(.border-t))]:pb-1",

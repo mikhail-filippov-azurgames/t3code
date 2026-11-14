@@ -276,8 +276,10 @@ describe("LeadBoardSurface", () => {
     });
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
     await expect
-      .element(plan.getByRole("alert"))
-      .toHaveTextContent("Plan could not be refreshed; the view may be outdated");
+      .element(
+        plan.getByRole("alert").getByText("Plan could not be refreshed; the view may be outdated"),
+      )
+      .toBeVisible();
     await expect.element(plan.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
     await act(() => removeBoardCardPin(environmentId, threadId, planCardId));
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
