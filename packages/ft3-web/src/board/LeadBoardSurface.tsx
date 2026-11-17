@@ -39,7 +39,13 @@ import { useExpandCoordinatorHistoryByDefault } from "./boardPreferences";
 import { removeBoardCardPin } from "./boardCardPins";
 import { pinnedCardsQuery, useBoardCardPins } from "./BoardCardPinnedPanel";
 import { BoardCardPlanButton } from "./BoardCardPlanButton";
-import { useCardsPanelState, useRetainedCardDetail } from "./cardsPanelState";
+import {
+  readCardsPanelDetail,
+  removeCardsPanelCard,
+  retainCardsPanelPins,
+  useCardsPanelState,
+  useRetainedCardDetail,
+} from "./cardsPanelState";
 import { PlanViewerDialog } from "../planning/PlanViewerDialog.tsx";
 import {
   coordinatorSummaryExecutorLabel,
@@ -191,13 +197,18 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
     [pinned.data],
   );
   const loading = pinned.isPending;
-  const setSelectedPlanId = (selectedPlanId: BoardCardId | null) =>
-    updateView({
-      selectedPlanId,
-      selectedPlanTitle:
-        selectedPlanId === null ? undefined : details.get(selectedPlanId)?.card.title,
-    });
+  const setSelectedPlanId = (selectedPlanId: BoardCardId | null) => updateView({ selectedPlanId });
   const loadError = pinned.error !== null;
+  const settled = pinned.isSuccess && !loading && !loadError;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- removes session registry entries when the server confirms deletion or the selected card is unpinned
+  useEffect(() => {
+    retainCardsPanelPins(props.threadRef, pins);
+    if (settled) {
+      for (const cardId of pins) {
+        if (!details.has(cardId)) removeCardsPanelCard(props.threadRef, cardId);
+      }
+    }
+  }, [settled, pins, details, props.threadRef]);
   const pinnedRefresh = pinned.refresh;
   const refresh = useCallback(() => pinnedRefresh(), [pinnedRefresh]);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
@@ -306,6 +317,7 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
                   detail={detail}
                   loading={loading}
                   loadError={loadError}
+                  missing={settled && detail === undefined}
                   busy={busyCardId === cardId}
                   actionError={actionError}
                   onRetry={refresh}
@@ -321,12 +333,17 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
           </div>
         </ThreadDetailsSection>
       )}
-      {selectedPlanId !== null ? (
+      {selectedPlanId !== null &&
+      pins.includes(selectedPlanId) &&
+      (!settled || details.has(selectedPlanId)) ? (
         <PlanViewerDialog
           key={`plan:${selectedPlanId}`}
           environmentId={environmentId}
           cardId={selectedPlanId}
-          title={details.get(selectedPlanId)?.card.title ?? view.selectedPlanTitle}
+          title={
+            (details.get(selectedPlanId) ?? readCardsPanelDetail(props.threadRef, selectedPlanId))
+              ?.card.title
+          }
           onClose={() => setSelectedPlanId(null)}
         />
       ) : null}
@@ -626,6 +643,7 @@ function PinnedCard(props: {
   readonly detail: BoardCardLookupDetail | undefined;
   readonly loading: boolean;
   readonly loadError: boolean;
+  readonly missing: boolean;
   readonly busy: boolean;
   readonly actionError: string | null;
   readonly onRetry: () => void;
@@ -636,10 +654,36 @@ function PinnedCard(props: {
   readonly onRequest: (card: BoardCard, text: string) => Promise<void>;
   readonly onOpenPlan: (cardId: BoardCardId) => void;
 }) {
-  const { state: view, update, entry } = useCardsPanelState(props.threadRef, props.cardId);
+  const {
+    state: view,
+    update,
+    entry,
+  } = useCardsPanelState(props.threadRef, props.cardId, !props.missing);
   const { requestText, descriptionExpanded, historyExpanded, collapsed } = view;
-  const detail = useRetainedCardDetail(entry, props.detail);
+  const detail = useRetainedCardDetail(entry, props.detail, props.loading || props.loadError);
   const { card, events, orchestratorThreadTitle } = detail ?? {};
+
+  if (props.missing) {
+    return (
+      <article
+        className="rounded-lg border border-border bg-card p-3"
+        data-board-card-id={props.cardId}
+      >
+        <p role="status" className="text-xs text-muted-foreground">
+          Card unavailable: it may have been deleted.
+        </p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Unpin card ${props.cardId}`}
+          onClick={props.onRemove}
+        >
+          <XIcon className="size-4" aria-hidden="true" />
+        </Button>
+      </article>
+    );
+  }
 
   return (
     <article

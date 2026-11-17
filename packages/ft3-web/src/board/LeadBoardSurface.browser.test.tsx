@@ -3,14 +3,14 @@ import { BoardCardId, type BoardCardResolveResult } from "@t3tools/ft3-board/con
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
-import * as Option from "effect/Option";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../../apps/web/test/render";
 import { LeadBoardSurface, type LeadBoardSection } from "./LeadBoardSurface.tsx";
 import type { CoordinatorSummaryHistoryEntry } from "./coordinatorSummaryHistory";
-import { removeBoardCardPin } from "./boardCardPins.ts";
+import { addBoardCardPin, removeBoardCardPin } from "./boardCardPins.ts";
+import { resetCardsPanelState } from "./cardsPanelState";
 
 const mocks = vi.hoisted(() => ({
   listForChatPanel: vi.fn(),
@@ -104,6 +104,7 @@ function setup(options: {
   readonly isLead?: boolean;
   readonly pin?: { readonly cardId: string; readonly body: string };
 }) {
+  resetCardsPanelState();
   vi.clearAllMocks();
   window.localStorage.clear();
   mocks.listForChatPanel.mockReturnValue(
@@ -172,6 +173,63 @@ const renderSurface = (state: ReturnType<typeof setup>, section: LeadBoardSectio
     </RegistryContext.Provider>,
   );
 
+function setupPinnedPlan(planCardId: string) {
+  const state = setup({ pin: { cardId: planCardId, body: "Read the plan." } });
+  window.localStorage.setItem(
+    `t3code:board-card-pins:v1:${environmentId}:${threadId}`,
+    JSON.stringify([planCardId]),
+  );
+  mocks.list.mockReturnValue(
+    Atom.make(
+      AsyncResult.success({
+        cards: [pinnedCard(planCardId, "Read the plan.")],
+        events: [],
+        plans: [
+          {
+            cardId: BoardCardId.make(planCardId),
+            title: "Pinned work",
+            plannerThreadId: "planner",
+            status: "discussion",
+            planDocId: "doc-plan",
+          },
+        ],
+      }),
+    ),
+  );
+  mocks.planGet.mockReturnValue(
+    Atom.make(
+      AsyncResult.success({
+        record: { state: "discussion" },
+        doc: { stableId: "doc-plan", name: "plan.md" },
+      }),
+    ),
+  );
+  mocks.readDoc.mockReturnValue(
+    Atom.make(
+      AsyncResult.success({
+        status: "found",
+        stableId: "doc-plan",
+        sha256: "a".repeat(64),
+        content: "Pinned plan text",
+      }),
+    ),
+  );
+  return state;
+}
+
+async function openReading(screen: Awaited<ReturnType<typeof renderSurface>>) {
+  await userEvent.click(screen.getByRole("button", { name: "Description", exact: true }));
+  await userEvent.click(screen.getByRole("button", { name: "History", exact: true }));
+  await userEvent.fill(
+    screen.getByRole("textbox", { name: "Request to orchestrator" }),
+    "Keep my draft",
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Plan", exact: true }));
+  await expect
+    .element(page.getByRole("dialog", { name: "Plan: Pinned work" }).getByText("Pinned plan text"))
+    .toBeVisible();
+}
+
 describe("LeadBoardSurface", () => {
   it("declines a thread that is not registered as a lead", async () => {
     using state = setup({ isLead: false });
@@ -210,150 +268,158 @@ describe("LeadBoardSurface", () => {
       .toBeVisible();
   });
 
-  it("preserves card reading state across refreshes, failures, remounts and deletion", async () => {
-    const planCardId = "33333333-3333-4333-8333-333333333333";
-    using state = setup({ pin: { cardId: planCardId, body: "Read the plan." } });
-    window.localStorage.setItem(
-      `t3code:board-card-pins:v1:${environmentId}:${threadId}`,
-      JSON.stringify([planCardId]),
-    );
-    mocks.list.mockReturnValue(
-      Atom.make(
-        AsyncResult.success({
-          cards: [pinnedCard(planCardId, "Read the plan.")],
-          events: [],
-          plans: [
-            {
-              cardId: BoardCardId.make(planCardId),
-              title: "Pinned work",
-              plannerThreadId: "planner",
-              status: "discussion",
-              planDocId: "doc-plan",
-            },
-          ],
-        }),
-      ),
-    );
-    mocks.planGet.mockReturnValue(
-      Atom.make(
-        AsyncResult.success({
-          record: { state: "discussion" },
-          doc: { stableId: "doc-plan", name: "plan.md" },
-        }),
-      ),
-    );
-    mocks.readDoc.mockReturnValue(
-      Atom.make(
-        AsyncResult.success({
-          status: "found",
-          stableId: "doc-plan",
-          sha256: "a".repeat(64),
-          content: "Pinned plan text",
-        }),
-      ),
-    );
+  it("keeps the plan and reading DOM mounted during refreshes and failures", async () => {
+    using state = setupPinnedPlan("33333333-3333-4333-8333-333333333333");
     await using screen = await renderSurface(state);
-    await userEvent.click(screen.getByRole("button", { name: "Description", exact: true }));
-    await userEvent.click(screen.getByRole("button", { name: "History", exact: true }));
-    await userEvent.fill(
-      screen.getByRole("textbox", { name: "Request to orchestrator" }),
-      "Keep my draft",
-    );
+    await openReading(screen);
+    const plan = page.getByRole("dialog", { name: "Plan: Pinned work" });
     const descriptionNode = screen.getByText("Read the plan.").element();
     const historyNode = screen.getByText("Card created.").element();
-    await userEvent.click(screen.getByRole("button", { name: "Plan", exact: true }));
-    const plan = page.getByRole("dialog", { name: "Plan: Pinned work" });
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
     const leads = mocks.orchestratorsList.mock.results.at(-1)!.value as Atom.Writable<
       AsyncResult.AsyncResult<{ orchestrators: Array<{ threadId: ThreadId }> }, Error>
     >;
-    await act(() => {
-      const previous = state.registry.get(leads);
-      state.registry.set(leads, AsyncResult.waiting(previous));
-    });
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
-    await act(() => state.registry.set(leads, AsyncResult.initial(true)));
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
-    await act(() =>
-      state.registry.set(leads, AsyncResult.failure(Cause.fail(new Error("Offline")))),
-    );
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
-    await act(() => {
-      state.registry.set(leads, AsyncResult.success({ orchestrators: [{ threadId }] }));
-    });
+    for (const result of [
+      AsyncResult.waiting(state.registry.get(leads)),
+      AsyncResult.initial(true),
+      AsyncResult.failure<{ orchestrators: Array<{ threadId: ThreadId }> }, Error>(
+        Cause.fail(new Error("Offline")),
+      ),
+      AsyncResult.success({ orchestrators: [{ threadId }] }),
+    ]) {
+      await act(() => state.registry.set(leads, result));
+      await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+      expect(screen.container.contains(descriptionNode)).toBe(true);
+      expect(screen.container.contains(historyNode)).toBe(true);
+    }
     const resolve = mocks.resolve.mock.results.at(-1)!.value;
     const original = state.registry.get(resolve) as AsyncResult.Success<BoardCardResolveResult>;
     for (const result of [
       AsyncResult.initial(true),
       AsyncResult.failure(Cause.fail(new Error("Offline"))),
-      AsyncResult.success({ matches: [], details: [] }),
       AsyncResult.success({
         ...original.value,
         details: original.value.details.map((detail) => ({
           ...detail,
-          card: { ...detail.card, body: "Updated description." },
+          card: { ...detail.card, body: "Updated description.", title: "Updated title" },
           events: detail.events.map((event) => ({ ...event, body: "Updated history." })),
         })),
       }),
     ]) {
       await act(() => state.registry.set(resolve, result));
-      await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+      await expect.element(page.getByRole("dialog").getByText("Pinned plan text")).toBeVisible();
       expect(screen.container.contains(descriptionNode)).toBe(true);
       expect(screen.container.contains(historyNode)).toBe(true);
     }
     expect(descriptionNode.textContent).toBe("Updated description.");
     expect(historyNode.textContent).toBe("Updated history.");
+    await act(() => state.registry.set(resolve, AsyncResult.initial(true)));
+    await expect.element(page.getByRole("dialog", { name: "Plan: Updated title" })).toBeVisible();
     await act(() => {
-      state.registry.set(leads, AsyncResult.initial(true));
-      state.registry.set(resolve, AsyncResult.initial(true));
+      (
+        page
+          .getByRole("dialog")
+          .getByRole("button", { name: "Close", exact: true })
+          .first()
+          .element() as HTMLElement
+      ).click();
+    });
+  });
+
+  it("reopens the existing card plan and reading state after remount and tab changes", async () => {
+    using state = setupPinnedPlan("44444444-4444-4444-8444-444444444444");
+    await using screen = await renderSurface(state);
+    await openReading(screen);
+    await act(() => {
+      state.registry.set(
+        mocks.orchestratorsList.mock.results.at(-1)!.value,
+        AsyncResult.initial(true),
+      );
+      state.registry.set(mocks.resolve.mock.results.at(-1)!.value, AsyncResult.initial(true));
     });
     await screen.rerender(
       <RegistryContext.Provider value={state.registry}>
         <LeadBoardSurface key="remounted" threadRef={threadRef} visible section="cards" />
       </RegistryContext.Provider>,
     );
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
-    for (const label of ["Description", "History"]) {
-      const button = Array.from(screen.container.querySelectorAll("button")).find(
-        (node) => node.textContent === label,
-      );
-      expect(button?.getAttribute("aria-expanded")).toBe("true");
-    }
-    expect((screen.container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(
-      "Keep my draft",
-    );
-    await act(() => {
-      state.registry.set(resolve, AsyncResult.success({ matches: [], details: [] }));
-      for (const query of [mocks.planGet, mocks.readDoc]) {
-        const atom = query.mock.results.at(-1)!.value as Atom.Writable<
-          AsyncResult.AsyncResult<unknown, Error>
-        >;
-        const previous = state.registry.get(atom);
-        state.registry.set(
-          atom,
-          AsyncResult.failure(Cause.fail(new Error("Card deleted")), {
-            previousSuccess: AsyncResult.isSuccess(previous)
-              ? Option.some(previous)
-              : Option.none(),
-          }),
-        );
-      }
-    });
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
     await expect
       .element(
-        plan.getByRole("alert").getByText("Plan could not be refreshed; the view may be outdated"),
+        page.getByRole("dialog", { name: "Plan: Pinned work" }).getByText("Pinned plan text"),
       )
       .toBeVisible();
-    await expect.element(plan.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
-    expect(screen.container.textContent).toContain("Card unavailable: it may have been deleted.");
-    await act(() => removeBoardCardPin(environmentId, threadId, planCardId));
-    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
-    (
-      plan.getByRole("button", { name: "Close", exact: true }).first().element() as HTMLElement
-    ).click();
-    await expect.element(plan).not.toBeInTheDocument();
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={threadRef} visible section="history" />
+      </RegistryContext.Provider>,
+    );
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={threadRef} visible section="cards" />
+      </RegistryContext.Provider>,
+    );
+    await expect
+      .element(
+        page.getByRole("dialog", { name: "Plan: Pinned work" }).getByText("Pinned plan text"),
+      )
+      .toBeVisible();
+    await act(() => {
+      (
+        page
+          .getByRole("dialog")
+          .getByRole("button", { name: "Close", exact: true })
+          .first()
+          .element() as HTMLElement
+      ).click();
+    });
+    await expect.element(screen.getByText("Read the plan.")).toBeVisible();
+    await expect.element(screen.getByText("Card created.")).toBeVisible();
+    await expect
+      .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
+      .toHaveValue("Keep my draft");
+  });
+
+  it("closes the deleted card plan and clears its content, actions and viewing state", async () => {
+    using state = setupPinnedPlan("55555555-5555-4555-8555-555555555555");
+    await using screen = await renderSurface(state);
+    await openReading(screen);
+    const resolve = mocks.resolve.mock.results.at(-1)!.value;
+    const original = state.registry.get(resolve);
+    await act(() => state.registry.set(resolve, AsyncResult.success({ matches: [], details: [] })));
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+    await expect
+      .element(screen.getByRole("status"))
+      .toHaveTextContent("Card unavailable: it may have been deleted.");
+    const article = screen.container.querySelector("article")!;
+    expect(article.querySelectorAll("button")).toHaveLength(1);
+    expect(article.querySelector("textarea")).toBeNull();
+    expect(article.textContent).not.toContain("Read the plan.");
+    await act(() => state.registry.set(resolve, AsyncResult.initial(true)));
+    expect(screen.container.textContent).not.toContain("Read the plan.");
+    await act(() => state.registry.set(resolve, original));
+    await expect
+      .element(screen.getByRole("button", { name: "Description" }))
+      .toHaveAttribute("aria-expanded", "false");
+    await expect
+      .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
+      .toHaveValue("");
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("closes the unpinned card plan and starts fresh after repinning", async () => {
+    const pinnedId = "66666666-6666-4666-8666-666666666666";
+    using state = setupPinnedPlan(pinnedId);
+    await using screen = await renderSurface(state);
+    await openReading(screen);
+    await act(() => removeBoardCardPin(environmentId, threadId, pinnedId));
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
     await expect.element(screen.getByText("No pinned cards.")).toBeVisible();
+    await act(() => addBoardCardPin(environmentId, threadId, pinnedId));
+    await expect
+      .element(screen.getByRole("button", { name: "Description" }))
+      .toHaveAttribute("aria-expanded", "false");
+    await expect
+      .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
+      .toHaveValue("");
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("collapses the pinned card description and history behind chevron buttons", async () => {
@@ -423,22 +489,6 @@ describe("LeadBoardSurface", () => {
     await expect
       .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
       .toHaveValue("Unsent request");
-    const otherRef = { environmentId: EnvironmentId.make("other-env"), threadId };
-    window.localStorage.setItem(
-      `t3code:board-card-pins:v1:${otherRef.environmentId}:${threadId}`,
-      JSON.stringify([detailCardId]),
-    );
-    await screen.rerender(
-      <RegistryContext.Provider value={state.registry}>
-        <LeadBoardSurface threadRef={otherRef} visible section="cards" />
-      </RegistryContext.Provider>,
-    );
-    await expect
-      .element(screen.getByRole("button", { name: "Description" }))
-      .toHaveAttribute("aria-expanded", "false");
-    await expect
-      .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
-      .toHaveValue("");
   });
 
   it("shows summaries on the History surface", async () => {

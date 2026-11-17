@@ -1,4 +1,5 @@
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { removeCardsPanelCard } from "./cardsPanelState";
 
 const fallbackPins = new Map<string, readonly string[]>();
 
@@ -58,6 +59,7 @@ export function removeBoardCardPin(
   threadId: ThreadId,
   cardId: string,
 ): void {
+  removeCardsPanelCard({ environmentId, threadId }, cardId);
   if (typeof window === "undefined") return;
   const key = boardCardPinsKey(environmentId, threadId);
   publishPins(
