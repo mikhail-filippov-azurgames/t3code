@@ -135,7 +135,7 @@ jobs:
 
       - name: Test changed desktop files
         working-directory: apps/desktop
-        run: vp test run src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts src/backend/DesktopExternalBackend.test.ts src/backend/DesktopBackendPool.test.ts
+        run: vp test run src/app/DesktopAppIdentity.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts src/backend/DesktopExternalBackend.test.ts src/backend/DesktopBackendPool.test.ts
 
       - name: Test provider-muse
         run: vp run --filter @t3tools/provider-muse test

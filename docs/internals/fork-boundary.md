@@ -1039,13 +1039,14 @@ on-disk OpenCode `models.json` удалён по согласованию. Со�
 приоритет. Источником остальных цен служит upstream LiteLLM.
 Список pricing-lost в отчёте синка host-specific, получен из локального каталога этой машины на 2026-11-17, а free-модели без rate теперь тоже unpriced, если нет явного reportedCostUsd или пользовательского override.
 
-| Upstream-файл                                                         | Правка                                                                                            | Зачем                                     |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`    | ранний возврат для `task.completionWake === "none"`                                               | вопрос участника почты не будит lead      |
-| `apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts` | ft3-тест «ignores a live question from a mail participant» рядом с upstream stale-question тестом | проверка почтового шва                    |
-| `apps/web/index.html`                                                 | title и splash copy Corvis поверх upstream branding script                                        | имя продукта до загрузки приложения       |
-| `apps/web/src/components/chat/TimelineAssistantRows.tsx`              | `APP_BASE_NAME` в заголовке assistant                                                             | имя продукта в таймлайне                  |
-| `apps/web/src/components/settings/SettingsPanels.logic.ts`            | `APP_BASE_NAME` в подписи настройки открытия PR                                                   | имя продукта в списке изменённых настроек |
+| Upstream-файл                                                         | Правка                                                                                                                                                 | Зачем                                     |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------- |
+| `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`    | ранний возврат для `task.completionWake === "none"`                                                                                                    | вопрос участника почты не будит lead      |
+| `apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts` | ft3-тест «ignores a live question from a mail participant» рядом с upstream stale-question тестом                                                      | проверка почтового шва                    |
+| `apps/desktop/src/app/DesktopAppIdentity.test.ts`                     | ожидания runtime/applicationName берут baseName/displayName из DesktopEnvironment.branding для Beta/Nightly/Dev, проверка User-Agent token сохраняется | тест согласованного Corvis branding       |
+| `apps/web/index.html`                                                 | title и splash copy Corvis поверх upstream branding script                                                                                             | имя продукта до загрузки приложения       |
+| `apps/web/src/components/chat/TimelineAssistantRows.tsx`              | `APP_BASE_NAME` в заголовке assistant                                                                                                                  | имя продукта в таймлайне                  |
+| `apps/web/src/components/settings/SettingsPanels.logic.ts`            | `APP_BASE_NAME` в подписи настройки открытия PR                                                                                                        | имя продукта в списке изменённых настроек |
 
 `settingsSearch.ts` сохраняет `/settings/policies` через upstream `msg`.
 `ChatMarkdown.tsx` добавляет ft3 remark plugins поверх upstream Insight plugins.
