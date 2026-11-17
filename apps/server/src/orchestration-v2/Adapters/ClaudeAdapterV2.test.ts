@@ -11585,6 +11585,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         modelSelection: CLAUDE_MODEL_SELECTION,
       }).pipe(Effect.provide(IdAllocator.layer), provideDeterministicTestRuntime);
       const scenario = { name: transcript.scenario, transcript, ...materialized };
+      // The host's ~/.claude may route through Zavod and change the expected query settings.
+      const home = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
+        prefix: "t3-claude-todo-home-",
+      });
       yield* Effect.gen(function* () {
         const result = yield* runOrchestratorV2Scenario(scenario);
         assertBaseProjection({ result, transcript, runCount: 1, runStatuses: ["completed"] });
@@ -11604,8 +11608,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         Effect.provide(layerProviderReplay(scenario, ClaudeOrchestratorReplayHarness)),
         provideDeterministicTestRuntime,
         Effect.scoped,
+        Effect.provideService(HostProcess.HomeDirectory, home),
       );
-    }),
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect(

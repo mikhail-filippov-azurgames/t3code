@@ -102,12 +102,15 @@ function withFakeClaudeEnv<A, E, R>(
     };
 
     const config = decodeClaudeSettings(input.claudeConfig ?? {});
-    const textGeneration = yield* makeClaudeTextGeneration(
-      config,
-      environment,
-      Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
-    );
-    return yield* effectFn(textGeneration);
+    // The host's ~/.claude may route through Zavod and add settings the fake CLI does not expect.
+    return yield* Effect.gen(function* () {
+      const textGeneration = yield* makeClaudeTextGeneration(
+        config,
+        environment,
+        Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
+      );
+      return yield* effectFn(textGeneration);
+    }).pipe(Effect.provideService(HostProcess.HomeDirectory, tempDir));
   }).pipe(Effect.scoped);
 }
 
