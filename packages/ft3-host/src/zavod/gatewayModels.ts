@@ -56,6 +56,12 @@ const readOptional = Effect.fn("Zavod.readGatewayFile")(function* (file: string)
   );
 });
 
+// Another gateway with its own key helper is not Zavod and keeps its catalog.
+function isZavodKeyHelper(command: string): boolean {
+  const name = command.split(/[\\/]/).pop()?.toLowerCase();
+  return name === "zavod-key" || name === "zavod-key.exe";
+}
+
 /** Gateway origin and key helper of a Claude or Codex home, or null when the home is not on a gateway. */
 export const readZavodGatewayConfig = Effect.fn("Zavod.readGatewayConfig")(function* (input: {
   readonly family: ModelFamily;
@@ -74,8 +80,8 @@ export const readZavodGatewayConfig = Effect.fn("Zavod.readGatewayConfig")(funct
       if (!url || helper === undefined || !helperIsPath(helper, home, path)) return null;
       const origin = endpointOrigin(url);
       if (origin === undefined) return null;
-      const command = helper.trim().replace(/^(["'])(.*)\1$/, "$2");
-      return { origin, helperCommand: expandHome(command, home, path) };
+      const command = expandHome(helper.trim().replace(/^(["'])(.*)\1$/, "$2"), home, path);
+      return isZavodKeyHelper(command) ? { origin, helperCommand: command } : null;
     }
     const text = yield* readOptional(path.join(input.homePath, "config.toml"));
     if (text === undefined) return null;
@@ -89,7 +95,8 @@ export const readZavodGatewayConfig = Effect.fn("Zavod.readGatewayConfig")(funct
     if (command === undefined || !helperIsPath(command, home, path, false)) return null;
     const origin = endpointOrigin(provider.base_url);
     if (origin === undefined) return null;
-    return { origin, helperCommand: expandHome(command.trim(), home, path) };
+    const helperCommand = expandHome(command.trim(), home, path);
+    return isZavodKeyHelper(helperCommand) ? { origin, helperCommand } : null;
   }).pipe(Effect.orElseSucceed(() => null));
 });
 
@@ -172,6 +179,15 @@ export function filterModelFamily<M extends GatewayCatalogModel>(
   );
 }
 
+/** True when the list keeps at least one non-custom model of the catalog. */
+export function listMatchesCatalog(
+  models: ReadonlyArray<GatewayCatalogModel>,
+  list: GatewayModelsList,
+): boolean {
+  const ids = new Set(list.ids);
+  return models.some((model) => !model.isCustom && ids.has(model.slug));
+}
+
 /**
  * Keeps custom models and the models the gateway lists. A list that would leave
  * no catalog model counts as unavailable, so an id format change cannot empty the picker.
@@ -182,10 +198,9 @@ export function applyGatewayModels<M extends GatewayCatalogModel>(
   lastGood: GatewayModelsList | undefined,
 ): ReadonlyArray<M> {
   for (const list of [result.kind === "list" ? result : undefined, lastGood]) {
-    if (list === undefined) continue;
+    if (list === undefined || !listMatchesCatalog(models, list)) continue;
     const ids = new Set(list.ids);
-    const kept = models.filter((model) => model.isCustom || ids.has(model.slug));
-    if (kept.some((model) => !model.isCustom)) return kept;
+    return models.filter((model) => model.isCustom || ids.has(model.slug));
   }
   return models;
 }

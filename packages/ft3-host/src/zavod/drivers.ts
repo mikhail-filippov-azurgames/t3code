@@ -19,6 +19,7 @@ import {
   applyGatewayModels,
   fetchGatewayModels,
   filterModelFamily,
+  listMatchesCatalog,
   readZavodGatewayConfig,
   type GatewayCatalogModel,
   type GatewayModelsList,
@@ -51,12 +52,17 @@ export const makeGatewayModelsInstance = Effect.fn("Zavod.makeGatewayModelsInsta
       ...snapshot,
       models: narrow(snapshot.models, current),
     }));
+  // A list that matches nothing in the family catalog must not displace a usable last good list.
   const check = Effect.flatMap(load, (result) =>
-    Ref.update(state, (current) =>
-      result.kind === "list"
-        ? { latest: result, lastGood: result }
-        : { latest: result, lastGood: current.lastGood },
-    ),
+    Effect.flatMap(upstream.getSnapshot, (current) => {
+      const usable =
+        result.kind === "list" &&
+        listMatchesCatalog(filterModelFamily(current.models, family), result);
+      return Ref.update(state, (previous) => ({
+        latest: result,
+        lastGood: usable ? result : previous.lastGood,
+      }));
+    }),
   );
   yield* check.pipe(Effect.andThen(PubSub.publish(checked, undefined)), Effect.forkScoped);
 

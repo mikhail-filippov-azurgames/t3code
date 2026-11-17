@@ -254,6 +254,51 @@ describe("withZavodGatewayModels", () => {
     ),
   );
 
+  it.effect("keeps the last good list after incompatible ids and then 503", () =>
+    decorate(
+      {
+        family: "claude",
+        files: claudeHome,
+        catalog: claudeCatalog,
+        responses: [
+          served("claude-opus-5-5", "claude-sonnet-5-5"),
+          served("anthropic/claude-opus-5-5"),
+          unavailable,
+        ],
+      },
+      ({ decorated, network }) =>
+        Effect.gen(function* () {
+          yield* settle;
+          const expected = ["claude-opus-5-5", "claude-sonnet-5-5", "my-tuned"];
+          assert.deepStrictEqual(slugs(yield* decorated.snapshot.refresh), expected);
+          assert.deepStrictEqual(slugs(yield* decorated.snapshot.refresh), expected);
+          assert.strictEqual(network.requests, 3);
+        }),
+    ),
+  );
+
+  it.effect("passes a third-party proxy with its own key helper through untouched", () =>
+    decorate(
+      {
+        family: "claude",
+        files: {
+          "settings.json": JSON.stringify({
+            env: { ANTHROPIC_BASE_URL: "https://proxy.example" },
+            apiKeyHelper: "/opt/tools/company-key.exe",
+          }),
+        },
+        catalog: [...claudeCatalog, model("gpt-6-luna")],
+        responses: [served("claude-opus-5-5")],
+      },
+      ({ upstream, decorated, network }) =>
+        Effect.gen(function* () {
+          yield* settle;
+          assert.strictEqual(decorated, upstream.instance);
+          assert.deepStrictEqual(network, { helper: 0, requests: 0 });
+        }),
+    ),
+  );
+
   it.effect("leaves the catalog whole when the gateway was never reachable", () =>
     decorate(
       { family: "claude", files: claudeHome, catalog: claudeCatalog, responses: [unavailable] },

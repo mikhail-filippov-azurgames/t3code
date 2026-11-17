@@ -215,6 +215,23 @@ describe("readZavodGatewayConfig", () => {
     ),
   );
 
+  it.effect("accepts zavod-key under the home .zavod directory", () =>
+    withHome(
+      {
+        "settings.json": JSON.stringify({
+          env: { ANTHROPIC_BASE_URL: origin },
+          apiKeyHelper: '"~/.zavod/bin/ZAVOD-KEY.exe"',
+        }),
+      },
+      (home) =>
+        Effect.map(
+          readZavodGatewayConfig({ family: "claude", homePath: home, homeDirectory: userHome }),
+          (result) =>
+            assert.match(result?.helperCommand ?? "", /[\\/]\.zavod[\\/]bin[\\/]ZAVOD-KEY\.exe$/),
+        ),
+    ),
+  );
+
   it.effect("reads the active Codex provider with an auth command", () =>
     withHome(
       {
@@ -266,6 +283,23 @@ describe("readZavodGatewayConfig", () => {
       },
     ],
     ["an unreadable Codex TOML", "codex", { "config.toml": "model_provider = " }],
+    [
+      "a Claude proxy with its own key helper",
+      "claude",
+      {
+        "settings.json": JSON.stringify({
+          env: { ANTHROPIC_BASE_URL: origin },
+          apiKeyHelper: "/opt/tools/company-key.exe",
+        }),
+      },
+    ],
+    [
+      "a Codex proxy with its own key helper",
+      "codex",
+      {
+        "config.toml": `model_provider = "corp"\n[model_providers.corp]\nbase_url = "${origin}/v1"\n[model_providers.corp.auth]\ncommand = '/opt/tools/company-key'`,
+      },
+    ],
   ] as const)("returns null for %s", ([, family, files]) =>
     withHome(files, (home) =>
       Effect.map(
