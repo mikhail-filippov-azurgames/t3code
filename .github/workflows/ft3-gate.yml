@@ -90,7 +90,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'apps/web typecheck failed' }
 
       - name: Install Chromium for ft3-web browser tests
-        run: node packages/ft3-web/node_modules/playwright/cli.js install --only-shell chromium
+        run: |
+          node packages/ft3-web/node_modules/playwright/cli.js install --only-shell chromium
+          node apps/web/node_modules/playwright/cli.js install --only-shell chromium
 
       - name: Test ft3 packages
         shell: pwsh
@@ -119,7 +121,7 @@ jobs:
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed web files
         working-directory: apps/web
-        run: vp test run src/components/chat/MessagesTimeline.logic.test.ts src/components/chat/MessagesTimeline.browser.test.tsx src/components/chat/ThreadRelationshipsControl.browser.test.tsx
+        run: vp test run src/components/chat/MessagesTimeline.logic.test.ts src/components/chat/MessagesTimeline.browser.test.tsx src/components/chat/ThreadRelationshipsControl.browser.test.tsx src/components/usage/UsageModelDialog.browser.test.tsx
 
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed contracts files
@@ -129,11 +131,11 @@ jobs:
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed server files
         working-directory: apps/server
-        run: vp test run src/ws.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts src/cli/config.test.ts src/provider/AgentContextBudget.test.ts src/usage/usagePricing.test.ts src/mcp/OrchestratorMcpService.delegationRoles.test.ts src/serverSettings.test.ts
+        run: vp test run src/ws.test.ts src/persistence/Sqlite.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts src/cli/config.test.ts src/provider/AgentContextBudget.test.ts src/mcp/McpToolAccess.test.ts src/auth/RpcAuthorization.test.ts src/usage/usagePricing.test.ts src/mcp/OrchestratorMcpService.delegationRoles.test.ts src/serverSettings.test.ts
 
       - name: Test changed desktop files
         working-directory: apps/desktop
-        run: vp test run src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts
+        run: vp test run src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts src/backend/DesktopExternalBackend.test.ts src/backend/DesktopBackendPool.test.ts
 
       - name: Test provider-muse
         run: vp run --filter @t3tools/provider-muse test

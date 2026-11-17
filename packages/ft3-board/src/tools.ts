@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
@@ -41,6 +41,7 @@ const boardListCards = Tool.make("board_list_cards", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "List board cards")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -84,6 +85,7 @@ const planRead = Tool.make("plan_read", {
   failureMode: "return",
   dependencies: planDependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Read card plan")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)

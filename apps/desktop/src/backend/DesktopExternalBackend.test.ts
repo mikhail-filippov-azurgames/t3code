@@ -195,3 +195,29 @@ describe("DesktopExternalBackend", () => {
     }),
   );
 });
+
+it.effect.each([false, true])(
+  "releases the external update marker only while unchanged %s",
+  (replaced) =>
+    Effect.gen(function* () {
+      let reads = 0;
+      let removed = false;
+      const fileSystem = yield* FileSystem.FileSystem.pipe(
+        Effect.provide(
+          FileSystem.layerNoop({
+            readFileString: () =>
+              Effect.sync(() => (++reads === 1 || !replaced ? "first" : "replacement")),
+            remove: () =>
+              Effect.sync(() => {
+                removed = true;
+              }),
+          }),
+        ),
+      );
+      yield* DesktopExternalBackend.releaseExternalUpdateMarker(
+        fileSystem,
+        "/runtime/desktop-update-in-progress",
+      );
+      assert.equal(removed, !replaced);
+    }),
+);

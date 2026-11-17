@@ -223,16 +223,12 @@ describe("mail MCP tools", () => {
   it.effect("refuses callers without a calling thread", () =>
     Effect.gen(function* () {
       yield* migrateMail;
-      assert.equal(
-        decodeFailure(
-          yield* call(
-            "mail_task_read",
-            { taskId: "task:missing" },
-            { ...scope, thread: undefined },
-          ),
-        ).code,
-        "thread_credential_required",
-      );
+      const hidden = yield* call(
+        "mail_task_read",
+        { taskId: "task:missing" },
+        { ...scope, thread: undefined },
+      ).pipe(Effect.flip);
+      assert.instanceOf(hidden, McpSchema.InvalidParams);
     }).pipe(Effect.provide(fixture(true).layer)),
   );
 

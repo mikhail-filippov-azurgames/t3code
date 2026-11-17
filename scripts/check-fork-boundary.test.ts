@@ -66,3 +66,15 @@ it("scans fork source and assets, skipping excluded and out-of-scope files", () 
     NodeFS.rmSync(root, { recursive: true, force: true });
   }
 });
+
+it.each([
+  ["apps/web/src/filePathDisplay.test.ts", "mike"],
+  ["apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts", "private"],
+  ["apps/server/src/process/externalLauncher.test.ts", "server"],
+  ["apps/server/src/usage/usageTranscriptReader.test.ts", "User"],
+])("accepts only the upstream fixture pair %s and %s", (file, name) => {
+  const text = 'const path = "/home/' + name + '/fixture";';
+  expect(scanText(file, text)).toEqual([]);
+  expect(scanText("packages/ft3-board/src/other.test.ts", text)).toHaveLength(1);
+  expect(scanText(file, 'const path = "/home/owner-account/fixture";')).toHaveLength(1);
+});

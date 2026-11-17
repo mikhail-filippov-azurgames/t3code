@@ -200,13 +200,23 @@ describe("ft3 host startup", () => {
       Effect.gen(function* () {
         const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-ft3-host-policies-"));
         writePolicyFixtures(dir);
+        const unconfiguredRoles = NodePath.join(dir, "unconfigured-roles.json");
+        NodeFS.writeFileSync(
+          unconfiguredRoles,
+          JSON.stringify({
+            schema: "corvis-role-map-v1",
+            revision: 1,
+            configured: false,
+            roles: [],
+          }),
+        );
         const context = yield* buildHostLayer({}, {
           ft3: {
             policies: {
               features: { mail: true, planning: true },
               documents: {
                 routingPolicy: { kind: "path", path: `${dir}/routing-policy.md` },
-                roles: { kind: "builtin" },
+                roles: { kind: "path", path: unconfiguredRoles },
                 leadSkills: { kind: "path", path: `${dir}/lead-skills/lead-skills.json` },
               },
             },
@@ -222,7 +232,7 @@ describe("ft3 host startup", () => {
         } as Parameters<typeof ServerSettings.layerTest>[0]);
         const gate = Context.get(context, FeatureGate.FeatureGate);
 
-        // The environment's builtin roles template stays unconfigured, so
+        // The environment's explicit roles fixture stays unconfigured, so
         // planning stays off there; only the restored project scope turns it on.
         const envPlanning = yield* gate.state("planning").pipe(Effect.provide(context));
         assert.isFalse(envPlanning.effectiveEnabled);

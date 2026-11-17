@@ -70,15 +70,15 @@ AppUserModelID переопределяется штатным env `T3CODE_DESKT
 Его MCP-регистрация использует существующие `McpToolAccess` и `toolkitRegistration`;
 host загружает её при построении Layer, чтобы не замкнуть инициализацию модулей сервера.
 
-| Upstream-файл                                         | Правка                                                                                      | Зачем                                                                                              |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `apps/server/src/server.ts`                           | импорт `ft3-host/server`, `Ft3Host.layer` и `Ft3Host.reactorLayer()` в композиции Layer     | подключение серверных возможностей ft3, запуск реактора доски                                      |
-| `apps/server/src/mcp/McpHttpServer.ts`                | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`                   | подключение регистрационных Layer MCP-toolkit'ов ft3                                               |
-| `apps/server/src/provider/AgentContextBudget.test.ts` | добавить in-memory SQLite в слои теста                                                      | регистрация `ft3-orchestration` MCP-инструментов требует `SqlClient`; тест измеряет общий контекст |
-| `apps/server/src/persistence/Sqlite.ts`               | импорт `ft3-host/server`, `Ft3Host.runMigrations()` после core `runMigrations()`            | миграции пакета на той же SQLite-сессии после core                                                 |
-| `apps/server/package.json`                            | зависимость `@t3tools/ft3-host: workspace:*`                                                | разрешение workspace-пакета                                                                        |
-| `pnpm-lock.yaml`                                      | importers `packages/ft3-*` и workspace-зависимости                                          | воспроизводимое подключение пакетов                                                                |
-| `apps/server/src/persistence/ft3Migrations.test.ts`   | ожидаемые записи `Board`, `BoardReactor`, `Architect` и `ArchitectReviewWake` в журнале ft3 | проверка подключения миграций пакетов доски, реактора и архитектора                                |
+| Upstream-файл                                         | Правка                                                                                                                                                      | Зачем                                                                                                            |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `apps/server/src/server.ts`                           | импорт `ft3-host/server`, `Ft3Host.layer` и `Ft3Host.reactorLayer()` в композиции Layer                                                                     | подключение серверных возможностей ft3, запуск реактора доски                                                    |
+| `apps/server/src/mcp/McpHttpServer.ts`                | импорт `ft3-host/server`, spread `Ft3Host.mcpToolkits` в `Layer.mergeAll`                                                                                   | подключение регистрационных Layer MCP-toolkit'ов ft3                                                             |
+| `apps/server/src/provider/AgentContextBudget.test.ts` | добавить in-memory SQLite в слои теста                                                                                                                      | регистрация `ft3-orchestration` MCP-инструментов требует `SqlClient`; тест измеряет общий контекст               |
+| `apps/server/src/persistence/Sqlite.ts`               | импорт `ft3-host/server`; общая обёртка `runMigrations` вызывает core, затем `Ft3Host.runMigrations()`; её используют `layerSetup` и `runMigrationsAsOwner` | миграции пакета после core на той же SQLite-сессии; owner-путь держит upstream lock до завершения обоих прогонов |
+| `apps/server/package.json`                            | зависимость `@t3tools/ft3-host: workspace:*`                                                                                                                | разрешение workspace-пакета                                                                                      |
+| `pnpm-lock.yaml`                                      | importers `packages/ft3-*` и workspace-зависимости                                                                                                          | воспроизводимое подключение пакетов                                                                              |
+| `apps/server/src/persistence/ft3Migrations.test.ts`   | проверка core/ft3 журналов, повторного запуска и сохранения данных через memory и CLI persistence                                                           | проверка подключения миграций пакетов доски, реактора и архитектора                                              |
 
 Журнал пакета — `ft3_migrations`, таблицы пакета имеют префикс `ft3_`.
 Core-журнал `effect_sql_migrations` принадлежит upstream; миграции ft3 его
@@ -563,7 +563,6 @@ Upstream-правки — только подключение (каждая по
 | `apps/web/src/components/Sidebar.tsx`                  | call `useFt3SidebarRows`; preserve the original list renderer unless ft3 rows apply; for ft3 rows consume row props and `afterRowByKey`; run package child-action handling before upstream archive/delete                                        | keep forest, role badges, Working, and child actions in `ft3-web` while preserving upstream fallbacks |
 | `apps/web/src/components/sidebar/SidebarThreadRow.tsx` | add generic `depth`, `decorations`, `leadingDecorations`, `metaDecorations`, `topRightDecorations`, and `statusOverride` props; mark the native status span with `data-ft3-status-override` so ft3 content in the time slot hides it through CSS | upstream status JSX stays verbatim; the row only gains slots and markers                              |
 | `apps/web/src/state/threads.ts`                        | keep generic `useThreadFamilies` mount; use `ThreadFamilyRoot` from `ft3-web`                                                                                                                                                                    | family root selection lives with the sidebar transform                                                |
-| `apps/web/vite.config.ts`                              | keep upstream `new URL(...).pathname` alias for paths without spaces; use `NodeURL.fileURLToPath` only when the checkout path contains spaces                                                                                                    | paths with spaces resolve without rewriting the upstream default                                      |
 
 Тесты порта — `packages/ft3-web/src/sidebar/forest.logic.test.ts` и
 `packages/ft3-web/src/sidebar/familyRoots.test.ts`.
@@ -657,7 +656,6 @@ filter it and use the package preference fallback, while the upstream
 | Upstream file                                             | Connection                                                                                                                                                                                                                                                                                   | Reason                                                                                                     |
 | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `apps/web/src/components/ChatMarkdown.tsx`                | import `useFt3ChatTextExtensions`; spread its remark plugins, pass its renderer, href predicate, `cwd` and `imageBaseDir` into `useChatMarkdownState`, try the renderer in the anchor branch, and route a file chip's panel open through `openFileLink` with upstream's open as the fallback | one mount point for every chip kind, nested resolution and missing-target state without copying link logic |
-| `packages/shared/src/fileLinks.ts`                        | upstream bug fix — drop when upstream fixes: `parseFileUrlHref` rejects a one-letter scheme that is not a drive path; Chromium parses `d:x` as `file:///d:x`, which turned `[unknown](d:alert(1))` into a file chip                                                                          | upstream test «still rejects unsafe schemes» and URL-safety semantics                                      |
 | `apps/web/src/branding.ts`                                | fork-owned branding module (`APP_BASE_NAME` = «Corvis», `APP_DISPLAY_NAME`, desktop-injected overrides)                                                                                                                                                                                      | product name in web copy without rewriting every string                                                    |
 | `apps/web/src/components/settings/scopedSettings.ts`      | `Update ${APP_BASE_NAME} on it.` in the unsupported-setting copy                                                                                                                                                                                                                             | branded product name in one settings message                                                               |
 | `apps/web/src/components/settings/scopedSettings.test.ts` | ожидание копии через `APP_BASE_NAME` из `~/branding`                                                                                                                                                                                                                                         | тест следует шву брендинга                                                                                 |
@@ -838,7 +836,7 @@ Fork-owned tests: `packages/ft3-kimi/src/usage.test.ts`,
 ## Kimi model prices for the usage page
 
 The usage page prices records from the LiteLLM table plus `usagePriceOverrides` from server settings,
-matched against the exact model id (`apps/server/src/usage/usagePricing.ts`, `resolveRate`). Kimi Code
+matched against the exact model id (`apps/server/src/usage/usagePricing.ts`, `priceUsage`). Kimi Code
 writes `kimi-code/<model>` ids (`kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed`,
 `kimi-code/k3.1-pro`, …), and no rate table carries those names, so every Kimi record priced as
 `unpriced`. `packages/ft3-kimi/src/pricing.ts` holds the Moonshot list prices keyed by those ids and
@@ -1021,3 +1019,60 @@ Fork-owned UI and behavior tests: `packages/ft3-web/src/chat/MailNotificationRow
 и `rpc.ts`. Композиция детектора и managed экземпляров — в `src/zavod/service.ts` того же пакета.
 Тесты RPC — в `packages/ft3-host/src/rpc.test.ts`, проверка client guard включена в шаг
 «Test changed contracts files» в `.github/workflows/ft3-gate.yml`.
+
+## Синк upstream 2026-11-17
+
+База синка — `upstream/main` `0058a4abb3adda91313c8e22d9a183cac0c4b8d5`.
+Швы внешнего desktop-сервера перенесены в upstream `startLocalBackend` и
+`bootstrap`. Внешний режим пропускает проверку владельца home, сканирование
+порта и WSL reconcile.
+
+Удалены дубли по §8 п.5. `packages/shared/src/fileLinks.ts` теперь целиком
+upstream с проверкой явной схемы `file:`. Upstream удалил alias
+`@betteroffice/fonts-cjk` из `apps/web/vite.config.ts`, поэтому условный
+Windows-path override и импорт `NodeURL` также удалены.
+Upstream pricing заменяет локальные context tiers и rateModel OpenCode.
+Удалены `apps/server/src/usage/opencodePricing.ts` и его тест, старые catalog
+тесты в `UsageService.test.ts`, `usagePricing.test.ts` и
+`packages/provider-opencode/src/server/usage.test.ts`. Локальный fallback на
+on-disk OpenCode `models.json` удалён по согласованию. Сохраняется таблица Kimi
+через существующий `createOverrideRateTable`. Пользовательские overrides имеют
+приоритет. Источником остальных цен служит upstream LiteLLM.
+
+| Upstream-файл                                                         | Правка                                                                                            | Зачем                                     |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts`    | ранний возврат для `task.completionWake === "none"`                                               | вопрос участника почты не будит lead      |
+| `apps/server/src/orchestration-v2/Orchestrator.control-reads.test.ts` | ft3-тест «ignores a live question from a mail participant» рядом с upstream stale-question тестом | проверка почтового шва                    |
+| `apps/web/index.html`                                                 | title и splash copy Corvis поверх upstream branding script                                        | имя продукта до загрузки приложения       |
+| `apps/web/src/components/chat/TimelineAssistantRows.tsx`              | `APP_BASE_NAME` в заголовке assistant                                                             | имя продукта в таймлайне                  |
+| `apps/web/src/components/settings/SettingsPanels.logic.ts`            | `APP_BASE_NAME` в подписи настройки открытия PR                                                   | имя продукта в списке изменённых настроек |
+
+`settingsSearch.ts` сохраняет `/settings/policies` через upstream `msg`.
+`ChatMarkdown.tsx` добавляет ft3 remark plugins поверх upstream Insight plugins.
+`ThreadRelationshipsControl.tsx` сохраняет pinned rows и upstream instance badges.
+`UsagePage.tsx` добавляет среднюю цену в upstream `dl`.
+
+Разрешённые пары checker — upstream fixture, drop when removed upstream.
+
+- `apps/web/src/filePathDisplay.test.ts` — `mike`.
+- `apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts` — `private`.
+- `apps/server/src/process/externalLauncher.test.ts` — `server`.
+- `apps/server/src/usage/usageTranscriptReader.test.ts` — `User`.
+
+`apps/server/src/mcp/providerConstraints.ts` удалён как дубль upstream inline-функции.
+`apps/server/src/orchestration-v2/Ft3DelegationWakeText.test.ts` добавляет mock
+`refreshRepositoryIdentity` нового upstream-интерфейса. `ws.test.ts` предоставляет
+общие ft3 mock-слои новым upstream harness и исключает fork plan RPC из upstream
+ACP RPC subset. `packages/ft3-docs/src/store.ts` использует `writerWorker` новой
+версии NodeSqliteClient.
+
+| Upstream-файл                                                     | Правка                                              | Зачем                                                                                   |
+| ----------------------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `apps/server/src/mcp/OrchestratorMcpService.ts`                   | экспорт существующей upstream `providerConstraints` | mailParticipantLauncher использует upstream-проверку провайдера; extracted дубль удалён |
+| `apps/web/src/components/usage/UsageModelDialog.browser.test.tsx` | `sessions: 1` в `ModelTotals` fixture               | новое upstream-окно получает существующий шов метрики сессий                            |
+
+- MCP caller-bound tools in ft3-orchestration, ft3-mail, ft3-docs reads and board_list_cards/plan_read use upstream EnabledWhen=hiddenFromOutsideClients. McpToolAccess.test.ts checks all 19 tools for outside-client and thread visibility. Package handler tests exercise thread calls.
+- DesktopExternalBackend owns a URL-only onReady callback. Its separate releaseExternalUpdateMarker helper clears an unchanged marker on URL readiness. Leaving the marker delays SSH launcher adoption/startup by up to 60 seconds (packages/ssh/src/tunnel.ts update wait loop). Native PID/runtime publication checks stay upstream-owned.
+- agentContextBudget.json measured after toolkit registration: 5930 / 7324 / 67518 UTF-8 bytes.
+
+Пакетные MCP-тесты ожидают upstream InvalidParams при вызове скрытого инструмента внешним клиентом. BoardReactor.test.ts ждёт Deferred фактической доставки после run.created. startup.test.ts использует явный unconfigured fixture для environment roles, сохраняя проверку восстановления project scope. Прежнее ожидание builtin roles unconfigured было устаревшим уже на исходном HEAD.

@@ -97,8 +97,22 @@ export const readExternalBootstrapToken = (
 ): Effect.Effect<string, PlatformError.PlatformError> =>
   fileSystem.readFileString(tokenPath).pipe(Effect.map((raw) => raw.trim()));
 
+/** Release the desktop update handoff once the externally owned URL is healthy. */
+export const releaseExternalUpdateMarker = Effect.fn("desktop.externalBackend.releaseUpdateMarker")(
+  function* (fileSystem: FileSystem.FileSystem, markerPath: string) {
+    const marker = yield* fileSystem.readFileString(markerPath).pipe(Effect.option);
+    if (Option.isNone(marker)) return;
+    const current = yield* fileSystem.readFileString(markerPath).pipe(Effect.option);
+    if (Option.isSome(current) && current.value === marker.value) {
+      yield* fileSystem.remove(markerPath, { force: true }).pipe(Effect.ignore);
+    }
+  },
+);
+
 export const makeExternalBackendInstance = Effect.fn("desktop.externalBackend.make")(function* (
-  spec: BackendInstanceSpec,
+  spec: Omit<BackendInstanceSpec, "onReady"> & {
+    readonly onReady?: (httpBaseUrl: URL) => Effect.Effect<void>;
+  },
   options: {
     readonly healthCheck?: (baseUrl: URL) => Effect.Effect<boolean>;
     readonly pollInterval?: Duration.Duration;

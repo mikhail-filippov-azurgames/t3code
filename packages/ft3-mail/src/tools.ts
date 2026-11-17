@@ -1,4 +1,4 @@
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import * as ThreadManagement from "../../../apps/server/src/orchestration-v2/ThreadManagementService.ts";
@@ -22,6 +22,7 @@ const mailTaskCreate = Tool.make("mail_task_create", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Create mail task")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -35,6 +36,7 @@ const mailSend = Tool.make("mail_send", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Send mail letter")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -49,6 +51,7 @@ const mailRead = Tool.make("mail_read", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Read mail letter")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -63,6 +66,7 @@ const mailTaskRead = Tool.make("mail_task_read", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Read mail task")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -76,6 +80,7 @@ const mailMemberSetModel = Tool.make("mail_member_set_model", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Set mail member model")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -89,6 +94,7 @@ const mailLetterSetKind = Tool.make("mail_letter_set_kind", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Set mail letter kind")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -102,6 +108,7 @@ const mailTaskClose = Tool.make("mail_task_close", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Close mail task")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)

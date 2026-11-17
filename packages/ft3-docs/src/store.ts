@@ -1104,7 +1104,7 @@ export const layer = (options: DocsStoreOptions) =>
           NodeSqliteClient.layer({
             filename: NodePath.join(options.root, DOCS_STORE_DATABASE_FILENAME),
             readerWorker: false,
-            checkpointWorker: false,
+            writerWorker: false,
           }),
         ),
       );

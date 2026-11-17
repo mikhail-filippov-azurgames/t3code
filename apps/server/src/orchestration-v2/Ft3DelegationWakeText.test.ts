@@ -119,6 +119,7 @@ const layerTest = Layer.mergeAll(RuntimeLayer.layer, RuntimeLayer.layerEventSink
         }),
       request: () => Effect.void,
       readRepositoryIdentity: () => Effect.succeed(null),
+      refreshRepositoryIdentity: () => Effect.succeed(null),
       getAvailable: () =>
         Effect.succeed({
           repositoryIdentity: null,

@@ -757,10 +757,8 @@ describe("ft3 task toolkit through ft3-host", () => {
         failure(yield* call(name, args, { ...scope, capabilities: new Set() })).code,
         "capability_denied",
       );
-      assert.equal(
-        failure(yield* call(name, args, { ...scope, thread: undefined })).code,
-        "thread_credential_required",
-      );
+      const hidden = yield* call(name, args, { ...scope, thread: undefined }).pipe(Effect.flip);
+      assert.instanceOf(hidden, McpSchema.InvalidParams);
       assert.deepStrictEqual(f.reads, []);
     }).pipe(Effect.provide(f.layer));
   });

@@ -54,6 +54,13 @@ const ALLOWED_USER_NAMES = new Set<string>([
   "zen-user",
 ]);
 
+const UPSTREAM_FIXTURE_USER_NAMES = new Map<string, string>([
+  ["apps/web/src/filePathDisplay.test.ts", "mike"],
+  ["apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts", "private"],
+  ["apps/server/src/process/externalLauncher.test.ts", "server"],
+  ["apps/server/src/usage/usageTranscriptReader.test.ts", "User"],
+]);
+
 export interface Violation {
   readonly file: string;
   readonly line: number;
@@ -70,7 +77,11 @@ export const scanText = (file: string, text: string): ReadonlyArray<Violation> =
       violations.push({ file, line: index + 1, reason, text: lineText.trim().slice(0, 160) });
     for (const pattern of USER_PATHS) {
       for (const match of lineText.matchAll(pattern)) {
-        if (!ALLOWED_USER_NAMES.has(match[1]!)) report("user-specific absolute path");
+        if (
+          !ALLOWED_USER_NAMES.has(match[1]!) &&
+          UPSTREAM_FIXTURE_USER_NAMES.get(file) !== match[1]
+        )
+          report("user-specific absolute path");
       }
     }
     for (const match of lineText.matchAll(DOCUMENT_ID)) {

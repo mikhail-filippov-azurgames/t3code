@@ -197,6 +197,7 @@ const infrastructure = EventSink.layer.pipe(
 
 function fixture() {
   const delivered: Dispatch[] = [];
+  const delivery = Deferred.makeUnsafe<void>();
   const attempts: Dispatch[] = [];
   const control = { failAfterCommit: false };
   const wakeOrdinalByCommand = new Map<string, number>();
@@ -236,7 +237,10 @@ function fixture() {
                 }),
             ),
           );
-        if (committed.committed) delivered.push(command);
+        if (committed.committed) {
+          delivered.push(command);
+          yield* Deferred.succeed(delivery, undefined);
+        }
         if (control.failAfterCommit) {
           control.failAfterCommit = false;
           return yield* new OrchestratorDispatchError({
@@ -319,6 +323,7 @@ function fixture() {
     emit,
     newReactor,
     delivered,
+    delivery,
     attempts,
     control,
     sendRun,
@@ -798,6 +803,7 @@ describe("ft3 board reactor", () => {
         .stream({ afterSequence: event.sequence, eventType: "run.created" })
         .pipe(Stream.take(1), Stream.runCollect);
       assert.equal(wake.length, 1);
+      yield* Deferred.await(f.delivery);
       assert.equal((yield* projections.getThreadRecords(parentId, ["runs"])).runs.length, 1);
       assert.equal(f.delivered.length, 1);
       assert.include(

@@ -7,7 +7,7 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
-import { Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as McpInvocationContext from "../../../apps/server/src/mcp/McpInvocationContext.ts";
 import { toolkitRegistration } from "../../../apps/server/src/mcp/McpHttpServer.ts";
@@ -32,6 +32,7 @@ const docsList = Tool.make("docs_list", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "List documents")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -47,6 +48,7 @@ const docsManifest = Tool.make("docs_manifest", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Manifest documents")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -62,6 +64,7 @@ const docsRead = Tool.make("docs_read", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Read document")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -77,6 +80,7 @@ const docsResolve = Tool.make("docs_resolve", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Resolve document link")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
@@ -92,6 +96,7 @@ const docsSearch = Tool.make("docs_search", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Search documents")
   .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
