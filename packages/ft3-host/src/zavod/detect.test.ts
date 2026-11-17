@@ -291,6 +291,24 @@ base_url = "https://api.openai.com/v1"
         assert.equal(result.state, "on");
         assert.equal(result.baseUrlSource, "codex");
       }
+      for (const [input, source] of [
+        [
+          { claude, codex: codex.replace(`"${gateway}/v1"`, '"http://insecure.zavod.example"') },
+          "claude",
+        ],
+        [{ claude, codex: codex.replace(`"${gateway}/v1"`, "5") }, "claude"],
+        [
+          { codex, claude: '{"env":{"ANTHROPIC_BASE_URL":"invalid"},"apiKeyHelper":"zavod-key"}' },
+          "codex",
+        ],
+        [{ codex, claude: "{" }, "codex"],
+      ] as const) {
+        const { result } = yield* fixture(input);
+        assert.equal(result.state, "unsupported");
+        assert.equal(result.baseUrl, `${gateway}/v1`);
+        assert.equal(result.baseUrlSource, source);
+        assert.notEqual(result.reason, ZAVOD_GATEWAY_NOT_FOUND);
+      }
       for (const input of [
         {},
         { claude: JSON.stringify({ env: { ANTHROPIC_BASE_URL: other } }) },
