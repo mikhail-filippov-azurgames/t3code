@@ -2,8 +2,14 @@ import { AuthOrchestrationReadScope, EnvironmentAuthorizationError } from "@t3to
 import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
-import { MailLetter, MailLetterKind, MailTask, MailTimelineEntry } from "./contracts.ts";
-import { MailMcpFailure } from "./toolContracts.ts";
+import {
+  MailLetter,
+  MailLetterKind,
+  MailMember,
+  MailTask,
+  MailTimelineEntry,
+} from "./contracts.ts";
+import { MailMcpFailure, MailMemberLaunch } from "./toolContracts.ts";
 
 export const FT3_MAIL_WS_METHODS = {
   mailTimeline: "mail.timeline",
@@ -67,6 +73,19 @@ export type MailTasksRpcInput = typeof MailTasksRpcInput.Type;
 export const MailTasksRpcSuccess = Schema.Struct({
   tasks: Schema.Array(MailTask),
   letters: Schema.optional(Schema.Record(Schema.String, Schema.Array(MailTimelineEntry))),
+  members: Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Array(
+        Schema.Struct({
+          roleId: MailMember.fields.roleId,
+          specialization: MailMember.fields.specialization,
+          status: MailMember.fields.status,
+          launch: MailMemberLaunch,
+        }),
+      ),
+    ),
+  ),
 });
 export type MailTasksRpcSuccess = typeof MailTasksRpcSuccess.Type;
 

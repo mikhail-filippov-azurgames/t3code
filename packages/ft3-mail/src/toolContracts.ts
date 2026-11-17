@@ -112,15 +112,27 @@ export const MailNoCandidate = Schema.Struct({
 });
 export type MailNoCandidate = typeof MailNoCandidate.Type;
 
+export const MailMemberLaunch = Schema.Literals(["not_started", "started", "closed"]);
+export type MailMemberLaunch = typeof MailMemberLaunch.Type;
+
+export const mailMemberLaunch = (
+  member: Pick<MailMember, "status" | "participantThreadId">,
+): MailMemberLaunch => {
+  if (member.status === "closed") return "closed";
+  return member.participantThreadId === null ? "not_started" : "started";
+};
+
 export const MailTaskCreateResult = Schema.Struct({
   created: Schema.Boolean,
   task: MailTask,
   members: Schema.Array(
     Schema.Struct({
       member: MailMember,
+      launch: MailMemberLaunch,
       noCandidate: Schema.NullOr(MailNoCandidate),
     }),
   ),
+  next: Schema.NullOr(Schema.String),
 });
 export type MailTaskCreateResult = typeof MailTaskCreateResult.Type;
 

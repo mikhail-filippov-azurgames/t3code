@@ -10,7 +10,7 @@ import {
   type MailTimelineRpcInput,
 } from "./rpc-contracts.ts";
 import { MailService, MailServiceError } from "./service.ts";
-import { MailMcpFailure } from "./toolContracts.ts";
+import { MailMcpFailure, mailMemberLaunch } from "./toolContracts.ts";
 
 export { FT3_MAIL_WS_METHODS, mailRpcs, mailRpcScopes } from "./rpc-contracts.ts";
 export type {
@@ -146,7 +146,28 @@ export const mailRpcHandlers = {
               ),
             ),
           );
-    return { tasks, ...(letters === undefined ? {} : { letters }) };
+    const members = Object.fromEntries(
+      yield* Effect.forEach(tasks, (task) =>
+        repository.listMembers(task.taskId).pipe(
+          Effect.mapError(
+            (error) => new MailMcpFailure({ code: "internal", message: error.message }),
+          ),
+          Effect.map(
+            (stored) =>
+              [
+                task.taskId,
+                stored.map((member) => ({
+                  roleId: member.roleId,
+                  specialization: member.specialization,
+                  status: member.status,
+                  launch: mailMemberLaunch(member),
+                })),
+              ] as const,
+          ),
+        ),
+      ),
+    );
+    return { tasks, ...(letters === undefined ? {} : { letters }), members };
   }),
   [FT3_MAIL_WS_METHODS.mailLetter]: Effect.fn("MailRpc.mailLetter")(function* (
     input: MailLetterRpcInput,
