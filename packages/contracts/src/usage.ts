@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ProviderInstanceId } from "./providerInstance.ts";
 
 /** Bump for incompatible UsageSummary changes; skipped unknown array variants need no bump. */
 export const USAGE_CONTRACT_VERSION = 6 as const;
@@ -92,6 +93,12 @@ export type UsageSourceFingerprint = typeof UsageSourceFingerprint.Type;
 export const UsageSourceStatus = Schema.Literals(["ok", "missing", "partial", "failed"]);
 export type UsageSourceStatus = typeof UsageSourceStatus.Type;
 
+export const UsageSourceInstance = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  displayName: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type UsageSourceInstance = typeof UsageSourceInstance.Type;
+
 export const UsageSource = Schema.Struct({
   fingerprint: UsageSourceFingerprint,
   status: UsageSourceStatus,
@@ -103,6 +110,8 @@ export const UsageSource = Schema.Struct({
   message: Schema.NullOr(TrimmedNonEmptyString),
   /** Cached response during refresh; repeat with awaitRefresh for fresh data. */
   refreshing: Schema.optionalKey(Schema.Literal(true)),
+  /** Instances whose current settings resolve to this directory; labels history by today's config. */
+  instances: Schema.optionalKey(Schema.Array(UsageSourceInstance)),
 });
 export type UsageSource = typeof UsageSource.Type;
 

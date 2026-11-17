@@ -1077,3 +1077,13 @@ ACP RPC subset. `packages/ft3-docs/src/store.ts` использует `writerWor
 - agentContextBudget.json measured after toolkit registration: 5930 / 7324 / 67518 UTF-8 bytes.
 
 Пакетные MCP-тесты ожидают upstream InvalidParams при вызове скрытого инструмента внешним клиентом. BoardReactor.test.ts ждёт Deferred фактической доставки после run.created. startup.test.ts использует явный unconfigured fixture для environment roles, сохраняя проверку восстановления project scope. Прежнее ожидание builtin roles unconfigured было устаревшим уже на исходном HEAD.
+
+## Usage: расход по экземплярам провайдеров
+
+Источник расхода несёт экземпляры, чьи текущие настройки разрешились в его каталог; общий каталог показывает одну сумму и все имена. Метка на истории отражает текущую конфигурацию.
+
+| Upstream-файл                     | Правка                                                         | Зачем                                                             |
+| --------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `packages/contracts/src/usage.ts` | опциональный `UsageSource.instances` (`UsageSourceInstance[]`) | подпись источника именами экземпляров; старые ответы декодируются |
+
+Новый тест форка: `packages/ft3-web/src/usage/usageSourceInstancesContract.test.ts` (старый ответ без поля, новый ответ прежним клиентом).
