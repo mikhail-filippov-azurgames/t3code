@@ -312,6 +312,8 @@ permissions:
     skills: false
   drizzle-kit:
     skills: false
+  e2e:
+    skills: false
   expo-sqlite:
     skills: false
 

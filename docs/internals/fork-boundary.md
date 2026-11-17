@@ -1077,3 +1077,9 @@ ACP RPC subset. `packages/ft3-docs/src/store.ts` использует `writerWor
 - agentContextBudget.json measured after toolkit registration: 5930 / 7324 / 67518 UTF-8 bytes.
 
 Пакетные MCP-тесты ожидают upstream InvalidParams при вызове скрытого инструмента внешним клиентом. BoardReactor.test.ts ждёт Deferred фактической доставки после run.created. startup.test.ts использует явный unconfigured fixture для environment roles, сохраняя проверку восстановления project scope. Прежнее ожидание builtin roles unconfigured было устаревшим уже на исходном HEAD.
+
+## Чистая установка
+
+| Upstream-файл         | Правка                                                   | Зачем                                                                                         |
+| --------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `pnpm-workspace.yaml` | `permissions.e2e.skills: false` рядом с upstream-списком | `pnpm install` не выводит «Agent skills awaiting approval: e2e»; свои skills мы курируем сами |
