@@ -1,6 +1,10 @@
 import { AntigravityDriver, type AntigravityDriverEnv } from "./Drivers/AntigravityDriver.ts";
-import { ClaudeDriver, type ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
-import { CodexDriver, type CodexDriverEnv } from "./Drivers/CodexDriver.ts";
+import type { ClaudeDriverEnv } from "./Drivers/ClaudeDriver.ts";
+import type { CodexDriverEnv } from "./Drivers/CodexDriver.ts";
+import {
+  Ft3ClaudeDriver as ClaudeDriver,
+  Ft3CodexDriver as CodexDriver,
+} from "@t3tools/ft3-host/server";
 import { CursorDriver, type CursorDriverEnv } from "@t3tools/provider-cursor/server";
 import { FxDriver, type FxDriverEnv } from "@t3tools/provider-fx/server";
 import { GrokDriver, type GrokDriverEnv } from "@t3tools/provider-grok/server";

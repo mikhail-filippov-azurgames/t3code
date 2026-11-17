@@ -18,6 +18,7 @@ import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 
 export { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
+export { Ft3ClaudeDriver, Ft3CodexDriver } from "./zavod/drivers.ts";
 
 // The mail stack takes PlanService, which writes plan documents through the
 // store. Same docs root as rpc.ts, created here because a fresh state
