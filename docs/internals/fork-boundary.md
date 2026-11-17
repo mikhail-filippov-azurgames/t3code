@@ -1080,6 +1080,8 @@ ACP RPC subset. `packages/ft3-docs/src/store.ts` использует `writerWor
 
 ## Чистая установка
 
-| Upstream-файл         | Правка                                                   | Зачем                                                                                         |
-| --------------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `pnpm-workspace.yaml` | `permissions.e2e.skills: false` рядом с upstream-списком | `pnpm install` не выводит «Agent skills awaiting approval: e2e»; свои skills мы курируем сами |
+| Upstream-файл                                                            | Правка                                                   | Зачем                                                                                         |
+| ------------------------------------------------------------------------ | -------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `pnpm-workspace.yaml`                                                    | `permissions.e2e.skills: false` рядом с upstream-списком | `pnpm install` не выводит «Agent skills awaiting approval: e2e»; свои skills мы курируем сами |
+| `apps/web/src/components/onboarding/WelcomePage.tsx`                     | заголовок `Welcome to {APP_BASE_NAME}` из `~/branding`   | первый экран называет продукт Corvis, а не T3 Code                                            |
+| `apps/web/src/components/onboarding/WelcomePage.import.browser.test.tsx` | тест заголовка: Corvis без «T3 Code»                     | проверка шва брендинга на первом экране                                                       |

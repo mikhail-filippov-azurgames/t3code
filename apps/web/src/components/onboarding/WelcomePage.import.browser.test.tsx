@@ -446,6 +446,14 @@ it("finishes setup without landing when the imported project never reaches the c
   );
 });
 
+it("welcomes to Corvis, not T3 Code", async () => {
+  using _now = setup();
+  await using _screen = await mountWelcome();
+  const title = document.querySelector("h1")?.textContent ?? "";
+  expect(title).toContain("Corvis");
+  expect(title).not.toContain("T3 Code");
+});
+
 it("waits for a ready agent to start, and Start without an agent still finishes setup", async () => {
   using _now = setup();
   appAtomRegistry.set(state.providers as Atom.Writable<ReadonlyArray<ServerProvider>>, []);
