@@ -19,29 +19,50 @@ export function planningOverrideHint(
   overrides: Parameters<typeof projectTogglesOverrideOf>[0],
 ): string | null {
   if (snapshot.features.planning.requestedEnabled) return null;
-  const missing = new Set<string>();
+  const missingRoles = new Set<string>();
+  let missingSkill = false;
   for (const document of snapshot.documents) {
     for (const issue of document.errors) {
       if (issue.severity !== "error") continue;
-      if (issue.code === "role_missing" && issue.subject === "planner") {
-        if (issue.document === "roles") missing.add("the planner role and its Markdown file");
-        if (issue.document === "routingPolicy") missing.add("the planner routing row");
+      if (issue.code === "role_missing") {
+        if (issue.subject === "planner" && issue.document === "roles") {
+          missingRoles.add("the planner role and its Markdown file");
+        }
+        if (issue.subject === "architect*" && issue.document === "roles") {
+          missingRoles.add("an architect role and its Markdown file");
+        }
+        if (issue.subject === "planner" && issue.document === "routingPolicy") {
+          missingRoles.add("the planner routing row");
+        }
       }
       if (
         issue.code === "lead_skill_missing" &&
         issue.subject === "plan-orchestrator" &&
         issue.document === "leadSkills"
       ) {
-        missing.add("the plan-orchestrator lead skill");
+        missingSkill = true;
       }
     }
   }
-  if (missing.size === 0) return null;
+  if (missingRoles.size === 0 && !missingSkill) return null;
   const names = projects
     .filter((project) => projectTogglesOverrideOf(overrides, project.id)?.planning === true)
     .map((project) => `“${project.title}”`);
   if (names.length === 0) return null;
-  return `Planning is enabled through a project override for ${names.join(", ")}. The environment policy documents are missing ${[...missing].join(", ")}. Add the missing planner role, lead skill or routing row to the environment documents, turn off planning for these projects, or give each project its own policy documents.`;
+  const roleHint =
+    missingRoles.size === 0
+      ? ""
+      : `The environment policy documents are missing ${[...missingRoles].join(", ")}. Add the missing role entries, Markdown files or routing rows to the environment documents, turn off planning for these projects, or give each project its own policy documents.`;
+  const skillHint = missingSkill
+    ? "The environment lead skills are missing plan-orchestrator. Add or restore its entry in lead-skills.json and its plan-orchestrator/SKILL.md file."
+    : "";
+  return [
+    `Planning is enabled through a project override for ${names.join(", ")}.`,
+    roleHint,
+    skillHint,
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**

@@ -265,8 +265,8 @@ export function PoliciesSettingsPanel() {
 
   const onSnapshot = (fresh: PoliciesGetSnapshotResult, projectId: string | null = null) => {
     setCommandResult({ projectId, snapshot: fresh });
-    if (projectId === null) snapshotQuery.refresh();
-    else projectSnapshotQuery.refresh();
+    snapshotQuery.refresh();
+    if (projectId !== null) projectSnapshotQuery.refresh();
   };
 
   /** A banner cause selects its document row, or scrolls to the feature's toggle row. */

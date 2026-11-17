@@ -80,7 +80,7 @@ describe("planningOverrideHint", () => {
   it.each([
     ["role_missing", "planner", "roles", "planner role and its Markdown file"],
     ["role_missing", "planner", "routingPolicy", "planner routing row"],
-    ["lead_skill_missing", "plan-orchestrator", "leadSkills", "plan-orchestrator lead skill"],
+    ["role_missing", "architect*", "roles", "an architect role and its Markdown file"],
   ] as const)("explains %s for %s in %s", (code, subject, document, missing) => {
     const hint = planningOverrideHint(
       snapshotWithIssue(issue({ code, subject, document })),
@@ -93,6 +93,59 @@ describe("planningOverrideHint", () => {
     expect(hint).toContain("own policy documents");
     expect(hint).not.toContain("Inherited");
     expect(hint).not.toContain("deleted");
+  });
+
+  it("gives a file and manifest fix for a missing lead skill", () => {
+    const snapshot = snapshotWithIssue(
+      issue({ code: "lead_skill_missing", subject: "plan-orchestrator", document: "leadSkills" }),
+    );
+    const hint = planningOverrideHint(snapshot, projects, overrides);
+    expect(hint).toContain("“Alpha”, “Beta”");
+    expect(hint).toContain("Add or restore its entry in lead-skills.json");
+    expect(hint).toContain("plan-orchestrator/SKILL.md file");
+    expect(hint).not.toContain("turn off planning");
+  });
+
+  it("ignores a declared skill with no file when planning is off for every project", () => {
+    const snapshot = snapshotWithIssue(
+      issue({
+        code: "lead_skill_missing",
+        subject: "plan-orchestrator",
+        document: "leadSkills",
+        file: "plan-orchestrator/SKILL.md",
+        line: 5,
+        text: '{ "id": "plan-orchestrator", "file": "plan-orchestrator/SKILL.md" }',
+      }),
+    );
+    expect(
+      planningOverrideHint(snapshot, projects, {
+        alpha: { ft3FeatureToggles: { planning: false } },
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the planning alternatives scoped to role errors when a skill is also missing", () => {
+    const snapshot = snapshotOf({
+      documents: [
+        documentStatus({
+          errors: [
+            issue({ code: "role_missing", subject: "architect*", document: "roles" }),
+            issue({
+              code: "lead_skill_missing",
+              subject: "plan-orchestrator",
+              document: "leadSkills",
+            }),
+          ],
+        }),
+      ],
+    });
+    const hint = planningOverrideHint(snapshot, projects, overrides);
+    expect(hint).toContain(
+      "missing an architect role and its Markdown file. Add the missing role entries",
+    );
+    expect(hint).toContain(
+      "or give each project its own policy documents. The environment lead skills are missing plan-orchestrator. Add or restore its entry",
+    );
   });
 
   it.each([
