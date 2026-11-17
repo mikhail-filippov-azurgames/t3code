@@ -123,7 +123,7 @@ function fingerprintKey(fingerprint: UsageSourceFingerprint): string {
 // Sources are one directory when either their legacy key or their physicalSourceId matches.
 // physicalSourceId joins a directory read natively by Windows and through a WSL mount (path
 // and dev:ino both differ); the legacy key still joins installs whose host scopes differ.
-function sourceIdentity(
+export function sourceIdentity(
   environments: readonly EnvironmentUsage[],
 ): (fingerprint: UsageSourceFingerprint) => string {
   const parent = new Map<string, string>();
@@ -145,7 +145,10 @@ function sourceIdentity(
   return (fingerprint) => find(fingerprintKey(fingerprint));
 }
 
-function bucketsForSource(summary: UsageSummary, source: UsageSource): readonly UsageBucket[] {
+export function bucketsForSource(
+  summary: UsageSummary,
+  source: UsageSource,
+): readonly UsageBucket[] {
   const providerSources = summary.sources.filter(
     (entry) => entry.fingerprint.provider === source.fingerprint.provider,
   );
@@ -161,7 +164,7 @@ function bucketKey(bucket: UsageBucket): string {
   return JSON.stringify([bucket.day, bucket.hourStart ?? null, bucket.provider, bucket.model]);
 }
 
-function claimSources(
+export function claimSources(
   environments: readonly EnvironmentUsage[],
   sourceKey: (fingerprint: UsageSourceFingerprint) => string,
 ): {
@@ -247,7 +250,7 @@ function claimSources(
   };
 }
 
-function ownedContribution(
+export function ownedContribution(
   environment: EnvironmentUsage,
   ownerScanByFingerprint: ReadonlyMap<string, { readonly source: UsageSource }>,
   supplementalBuckets: ReadonlySet<UsageBucket>,
