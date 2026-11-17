@@ -101,6 +101,39 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
   });
 }
 
+const ZAVOD_PROVIDER_ID = "zavod";
+const PERSONAL_PROVIDER_LAUNCH_ARG = `-c ${JSON.stringify('model_provider="openai"')}`;
+
+function rootModelProvider(configToml: string): string | undefined {
+  for (const line of configToml.split(/\r?\n/)) {
+    if (/^\s*\[/.test(line)) return undefined;
+    const match = /^\s*model_provider\s*=\s*(["'])([^"']*)\1\s*(?:#.*)?$/.exec(line);
+    if (match) return match[2];
+  }
+  return undefined;
+}
+
+// The Zavod app's gateway switch rewrites ~/.codex; the personal instance stays on the subscription.
+const personalProviderLaunchArgs = Effect.fn("CodexDriver.personalProviderLaunchArgs")(function* (
+  sharedHomePath: string,
+  launchArgs: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
+  const platform = yield* HostProcess.Platform;
+  const normalize = (value: string) => {
+    const resolved = pathService.resolve(value);
+    return platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const userHome = pathService.join(yield* HostProcess.HomeDirectory, ".codex");
+  if (normalize(sharedHomePath) !== normalize(userHome)) return launchArgs;
+  const configToml = yield* fileSystem
+    .readFileString(pathService.join(sharedHomePath, "config.toml"))
+    .pipe(Effect.orElseSucceed(() => ""));
+  if (rootModelProvider(configToml) !== ZAVOD_PROVIDER_ID) return launchArgs;
+  return [PERSONAL_PROVIDER_LAUNCH_ARG, launchArgs.trim()].filter(Boolean).join(" ");
+});
+
 // `codex update` installs this channel's release, which can lag npm's latest tag.
 const CODEX_NATIVE_CHANNEL = "https://releases.openai.com/codex/channels/latest";
 const CodexNativeRelease = Schema.Struct({ tag_name: Schema.String });
@@ -190,11 +223,18 @@ export const CodexDriver: ProviderDriver<
       yield* HostProcess.Environment,
     );
     const environmentHome = processEnv.CODEX_HOME;
-    const homeConfig =
+    const configuredHome =
       !config.homePath.trim() && environmentHome?.trim()
         ? { ...config, homePath: environmentHome }
         : config;
-    const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
+    const homeLayout = yield* resolveCodexHomeLayout(configuredHome);
+    const homeConfig = {
+      ...configuredHome,
+      launchArgs: yield* personalProviderLaunchArgs(
+        homeLayout.sharedHomePath,
+        configuredHome.launchArgs,
+      ),
+    };
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
       instanceId,
@@ -216,6 +256,7 @@ export const CodexDriver: ProviderDriver<
     );
     const effectiveConfig = {
       ...config,
+      launchArgs: homeConfig.launchArgs,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",

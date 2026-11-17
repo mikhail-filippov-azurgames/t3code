@@ -573,6 +573,103 @@ it.layer(layerTest)("CodexDriver", (it) => {
     }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn)),
   );
 
+  it.effect("keeps the personal ~/.codex instance off the Zavod gateway", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig.ServerConfig;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-zavod-" });
+      const userHome = NodePath.join(tempDir, "user");
+      const zavodConfig = [
+        'model_provider = "zavod"',
+        "",
+        "[model_providers.zavod]",
+        'base_url = "https://gateway.example.test/v1"',
+        'wire_api = "responses"',
+        "",
+      ].join("\n");
+      const writeConfig = (home: string, contents: string) =>
+        fs
+          .makeDirectory(home, { recursive: true })
+          .pipe(Effect.andThen(fs.writeFileString(NodePath.join(home, "config.toml"), contents)));
+      const personalHome = NodePath.join(userHome, ".codex");
+      const zavodHome = NodePath.join(tempDir, "zavod-codex");
+      yield* writeConfig(personalHome, zavodConfig);
+      yield* writeConfig(zavodHome, zavodConfig);
+
+      const launch = (instance: string, homePath: string, launchArgs = "") =>
+        Effect.gen(function* () {
+          const launches: Array<
+            Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
+          > = [];
+          const instanceId = ProviderInstanceId.make(instance);
+          const created = yield* CodexDriver.create({
+            instanceId,
+            displayName: instance,
+            enabled: true,
+            environment: [],
+            config: { ...CodexDriver.defaultConfig(), homePath, launchArgs },
+          }).pipe(
+            Effect.provideService(HostProcess.HomeDirectory, userHome),
+            Effect.provideService(
+              CodexAdapterV2.CodexAppServerClientFactory,
+              CodexAdapterV2.CodexAppServerClientFactory.of({
+                open: (input) =>
+                  Effect.sync(() => launches.push(input)).pipe(
+                    Effect.andThen(Effect.die("The fixture stops after recording the launch")),
+                  ),
+              }),
+            ),
+          );
+          yield* created.orchestrationAdapter
+            .openSession({
+              threadId: ThreadId.make(`${instance}-thread`),
+              providerSessionId: ProviderSessionId.make(`${instance}-session`),
+              modelSelection: { instanceId, model: "gpt-5.4" },
+              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                cwd: serverConfig.stateDir,
+              }),
+            })
+            .pipe(Effect.scoped, Effect.exit);
+          expect(launches).toHaveLength(1);
+          return launches[0]!.settings;
+        });
+
+      const personal = yield* launch("personal-default", "");
+      expect(personal.launchArgs).toBe('-c "model_provider=\\"openai\\""');
+      const explicit = yield* launch("personal-explicit", personalHome, "--enable hooks");
+      expect(explicit.launchArgs).toBe('-c "model_provider=\\"openai\\"" --enable hooks');
+      const zavod = yield* launch("zavod-codex", zavodHome);
+      expect(zavod.launchArgs).toBe("");
+      expect(zavod.homePath).toBe(zavodHome);
+
+      yield* fs.writeFileString(
+        NodePath.join(personalHome, "config.toml"),
+        'model = "gpt-5.4"\n\n[model_providers.zavod]\nbase_url = "x"\n',
+      );
+      expect((yield* launch("personal-subscription", "")).launchArgs).toBe("");
+      yield* writeConfig(personalHome, zavodConfig);
+      yield* launch("personal-unchanged", "");
+      expect(yield* fs.readFileString(NodePath.join(personalHome, "config.toml"))).toBe(
+        zavodConfig,
+      );
+      expect(yield* fs.readFileString(NodePath.join(zavodHome, "config.toml"))).toBe(zavodConfig);
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(
+        ChildProcessSpawner.ChildProcessSpawner,
+        ChildProcessSpawner.make(() =>
+          PlatformError.badArgument({
+            module: "ChildProcessSpawner",
+            method: "spawn",
+            description: "The fixture app-server is unavailable",
+          }),
+        ),
+      ),
+    ),
+  );
+
   it.effect.skipIf(windowsHost)(
     "shares state from the environment CODEX_HOME in a shadow home",
     () =>
