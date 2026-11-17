@@ -47,10 +47,16 @@ function hasSecretOverride(environment: ProviderInstanceEnvironment | undefined,
   );
 }
 
-const status = ({ state, baseUrl, baseUrlSource, reason }: ZavodDetection): ZavodStatus => ({
+export const toZavodStatus = ({
   state,
   baseUrl,
   baseUrlSource,
+  reason,
+}: ZavodDetection): ZavodStatus => ({
+  state,
+  baseUrl,
+  baseUrlSource: baseUrlSource === null ? null : baseUrlSource === "state" ? "state" : "default",
+  ...(baseUrlSource === null ? {} : { baseUrlOrigin: baseUrlSource }),
   reason,
 });
 
@@ -105,12 +111,12 @@ const make = Effect.gen(function* () {
 
   return ZavodService.of({
     detect: Effect.fn("ZavodService.detect")(function* () {
-      return status(yield* detection());
+      return toZavodStatus(yield* detection());
     }),
     connect: Effect.fn("ZavodService.connect")(function* () {
       const detected = yield* detection();
       const connected = yield* instances.connect(detected);
-      return { ...status(detected), ...connected };
+      return { ...toZavodStatus(detected), ...connected };
     }),
   });
 });

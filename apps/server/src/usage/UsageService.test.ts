@@ -2592,6 +2592,121 @@ describe("UsageService", () => {
     }),
   );
 
+  it.effect("labels each source with the instances whose settings resolve to it", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const zavodHome = NodePath.join(home, "claude-zavod");
+      const zavodProjects = NodePath.join(zavodHome, "projects", "proj");
+      yield* Effect.promise(async () => {
+        await NodeFSP.writeFile(transcript, claudeLine(1, 5));
+        await NodeFSP.mkdir(zavodProjects, { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(zavodProjects, "zavod.jsonl"),
+          claudeLine(2, 7, "claude-fable-5", "zavod-session"),
+        );
+      });
+      const instancesOf = (summary: UsageSummary) =>
+        summary.sources
+          .filter(
+            (source) => source.fingerprint.provider === "claude" && source.instances !== undefined,
+          )
+          .map((source) => ({
+            dir: source.fingerprint.resolvedHomePath,
+            status: source.status,
+            instances: source.instances,
+          }))
+          .toSorted((left, right) => left.dir.localeCompare(right.dir));
+      const sharedDir = yield* Effect.promise(() =>
+        NodeFSP.realpath(NodePath.join(home, "claude", "projects")),
+      );
+      const zavodDir = yield* Effect.promise(() =>
+        NodeFSP.realpath(NodePath.join(zavodHome, "projects")),
+      );
+      const instance = (homePath: string, displayName?: string) => ({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        config: { homePath },
+        ...(displayName === undefined ? {} : { displayName }),
+      });
+      yield* Effect.gen(function* () {
+        const settingsService = yield* ServerSettings.ServerSettingsService;
+        const service = yield* UsageService.make;
+        const first = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(first), 12);
+        assert.deepStrictEqual(
+          instancesOf(first),
+          [
+            {
+              dir: sharedDir,
+              status: "ok" as const,
+              instances: [
+                { instanceId: ProviderInstanceId.make("claudeAgent") },
+                { instanceId: ProviderInstanceId.make("claudeShared"), displayName: "Shared" },
+              ],
+            },
+            {
+              dir: zavodDir,
+              status: "ok" as const,
+              instances: [
+                { instanceId: ProviderInstanceId.make("claudeZavod"), displayName: "Zavod" },
+              ],
+            },
+          ].toSorted((left, right) => left.dir.localeCompare(right.dir)),
+        );
+        // The driver's default home is not an instance's setting, so it stays unlabeled.
+        assert.deepStrictEqual(
+          first.sources
+            .filter((source) => source.fingerprint.provider === "claude")
+            .filter((source) => source.instances === undefined)
+            .map((source) => source.fingerprint.resolvedHomePath),
+          [NodePath.join(home, ".claude", "projects")],
+        );
+
+        // History keeps its buckets and takes today's name, also once the directory is gone.
+        yield* Effect.promise(() => NodeFSP.rm(zavodHome, { recursive: true }));
+        yield* settingsService.updateSettings({
+          providerInstances: {
+            ...settings.providerInstances,
+            [ProviderInstanceId.make("claudeShared")]: instance(
+              NodePath.join(home, "claude"),
+              "Shared",
+            ),
+            [ProviderInstanceId.make("claudeZavod")]: instance(zavodHome, "Zavod renamed"),
+          },
+        });
+        const renamed = yield* service.readSummary(WINDOW);
+        assert.deepStrictEqual(renamed.buckets, first.buckets);
+        const renamedZavod = instancesOf(renamed).find((source) => source.dir === zavodDir);
+        assert.deepStrictEqual(renamedZavod?.instances, [
+          { instanceId: ProviderInstanceId.make("claudeZavod"), displayName: "Zavod renamed" },
+        ]);
+
+        yield* service.awaitPersisted;
+        const restarted = yield* UsageService.make;
+        const restored = yield* restarted.readSummary(WINDOW);
+        assert.deepStrictEqual(restored.buckets, first.buckets);
+        assert.deepStrictEqual(instancesOf(restored), instancesOf(renamed));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          layerService({
+            prefix: "usage-service-instance-labels",
+            home,
+            settings: {
+              providerInstances: {
+                ...settings.providerInstances,
+                [ProviderInstanceId.make("claudeShared")]: instance(
+                  NodePath.join(home, "claude"),
+                  "Shared",
+                ),
+                [ProviderInstanceId.make("claudeZavod")]: instance(zavodHome, "Zavod"),
+              },
+            },
+          }),
+        ),
+      );
+    }),
+  );
+
   it.effect(
     "uses explicit account settings before environment and default homes, then refreshes them",
     () =>

@@ -6,13 +6,13 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { parse } from "smol-toml";
 
-export const DEFAULT_ZAVOD_BASE_URL =
-  "https://zavod-litellm.infra.prod.aws.eu-central-1.azurgames.dev";
+export const ZAVOD_GATEWAY_NOT_FOUND =
+  "Адрес шлюза Zavod не найден на этой машине. Откройте приложение Zavod и включите его один раз, затем повторите";
 
 export interface ZavodDetection {
   readonly state: "on" | "off" | "mixed" | "unsupported" | "absent";
   readonly baseUrl: string | null;
-  readonly baseUrlSource: "state" | "default" | null;
+  readonly baseUrlSource: "state" | "codex" | "claude" | null;
   readonly helperPath: string | null;
   readonly reason: string | null;
 }
@@ -31,7 +31,7 @@ const decodeState = Schema.decodeUnknownEffect(
     Schema.Struct({ version: Schema.optionalKey(Schema.Unknown), base_url: Schema.String }),
   ),
 );
-const decodeClaude = Schema.decodeUnknownEffect(
+export const decodeClaude = Schema.decodeUnknownEffect(
   fromLenientJson(
     Schema.Struct({
       env: Schema.optionalKey(
@@ -41,7 +41,7 @@ const decodeClaude = Schema.decodeUnknownEffect(
     }),
   ),
 );
-const decodeCodex = Schema.decodeUnknownEffect(
+export const decodeCodex = Schema.decodeUnknownEffect(
   Schema.Struct({
     model_provider: Schema.optionalKey(Schema.String),
     model_providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
@@ -57,14 +57,14 @@ const decodeCodex = Schema.decodeUnknownEffect(
     openai_base_url: Schema.optionalKey(Schema.Unknown),
   }),
 );
-const decodeProvider = Schema.decodeUnknownEffect(
+export const decodeProvider = Schema.decodeUnknownEffect(
   Schema.Struct({
     base_url: Schema.String,
     auth: Schema.optionalKey(Schema.Struct({ command: Schema.optionalKey(Schema.String) })),
   }),
 );
 
-function endpointOrigin(value: string): string | undefined {
+export function endpointOrigin(value: string): string | undefined {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
@@ -76,13 +76,18 @@ function endpointOrigin(value: string): string | undefined {
   }
 }
 
-function expandHome(value: string, home: string, path: Path.Path): string {
+export function expandHome(value: string, home: string, path: Path.Path): string {
   if (value === "~") return home;
   if (/^~[/\\]/.test(value)) return path.join(home, value.slice(2));
   return value;
 }
 
-function helperIsPath(value: string, home: string, path: Path.Path, shellCommand = true): boolean {
+export function helperIsPath(
+  value: string,
+  home: string,
+  path: Path.Path,
+  shellCommand = true,
+): boolean {
   const trimmed = value.trim();
   if (!trimmed || /[\x00-\x1f\x7f$`;&|<>(){}%!^*?[\]]/.test(trimmed)) return false;
   const unquoted = trimmed.replace(/^(["'])(.*)\1$/, "$2");
@@ -91,6 +96,30 @@ function helperIsPath(value: string, home: string, path: Path.Path, shellCommand
   if (unquoted === "zavod-key" || unquoted === "zavod-key.exe") return true;
   return path.isAbsolute(expandHome(unquoted, home, path));
 }
+
+// Another gateway with its own key helper is not Zavod and keeps its catalog.
+export function isZavodKeyHelper(command: string): boolean {
+  const name = command
+    .trim()
+    .replace(/^(["'])(.*)\1$/, "$2")
+    .split(/[\\/]/)
+    .pop()
+    ?.toLowerCase();
+  return name === "zavod-key" || name === "zavod-key.exe";
+}
+
+interface ProviderEndpoint {
+  readonly origin: string | undefined;
+  readonly zavod: boolean;
+}
+
+// A broken source yields its reason instead of hiding the other source's origin.
+const endpointOrReason = <E, R>(effect: Effect.Effect<ProviderEndpoint | string, E, R>) =>
+  effect.pipe(
+    Effect.orElseSucceed((error) =>
+      typeof error === "string" ? error : "Cannot read provider configuration.",
+    ),
+  );
 
 const readOptional = Effect.fn("Zavod.readOptional")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -141,120 +170,108 @@ export const detectZavod = Effect.fn("Zavod.detect")(function* (
     Effect.map((state) => (state === undefined ? undefined : endpointOrigin(state.base_url))),
     Effect.orElseSucceed(() => undefined),
   );
-  const origin = stateOrigin ?? DEFAULT_ZAVOD_BASE_URL;
-  const common = {
-    baseUrl: `${origin}/v1`,
-    baseUrlSource: stateOrigin === undefined ? ("default" as const) : ("state" as const),
-    helperPath,
-  };
+  const claudeHome = path.resolve(
+    expandHome(
+      options.claudeHomePath?.trim() ||
+        claudeEnvironment.CLAUDE_CONFIG_DIR?.trim() ||
+        path.join(home, ".claude"),
+      home,
+      path,
+    ),
+  );
+  const codexHome = path.resolve(
+    expandHome(
+      options.codexHomePath?.trim() ||
+        codexEnvironment.CODEX_HOME?.trim() ||
+        path.join(home, ".codex"),
+      home,
+      path,
+    ),
+  );
 
-  return yield* Effect.gen(function* () {
-    const claudeHome = path.resolve(
-      expandHome(
-        options.claudeHomePath?.trim() ||
-          claudeEnvironment.CLAUDE_CONFIG_DIR?.trim() ||
-          path.join(home, ".claude"),
-        home,
-        path,
-      ),
-    );
-    const codexHome = path.resolve(
-      expandHome(
-        options.codexHomePath?.trim() ||
-          codexEnvironment.CODEX_HOME?.trim() ||
-          path.join(home, ".codex"),
-        home,
-        path,
-      ),
-    );
-    const claudeText = yield* readOptional(path.join(claudeHome, "settings.json"));
-    const claude = yield* decodeClaude(claudeText ?? "{}").pipe(
-      Effect.mapError(() => "Claude settings format is unsupported."),
-    );
-    if (claude.apiKeyHelper !== undefined && !helperIsPath(claude.apiKeyHelper, home, path)) {
-      return {
-        ...common,
-        state: "unsupported",
-        reason: "Claude apiKeyHelper must be a path.",
-      } as const;
-    }
-    const claudeUrl = claude.env?.ANTHROPIC_BASE_URL ?? claudeEnvironment.ANTHROPIC_BASE_URL;
-    const claudeOrigin = claudeUrl?.trim() ? endpointOrigin(claudeUrl) : undefined;
-    if (claudeUrl?.trim() && claudeOrigin === undefined) {
-      return {
-        ...common,
-        state: "unsupported",
-        reason: "Claude endpoint is unsupported.",
-      } as const;
-    }
+  const claude = yield* endpointOrReason(
+    Effect.gen(function* () {
+      const text = yield* readOptional(path.join(claudeHome, "settings.json"));
+      const settings = yield* decodeClaude(text ?? "{}").pipe(
+        Effect.mapError(() => "Claude settings format is unsupported."),
+      );
+      const helperCommand = settings.apiKeyHelper;
+      if (helperCommand !== undefined && !helperIsPath(helperCommand, home, path)) {
+        return "Claude apiKeyHelper must be a path.";
+      }
+      const url = settings.env?.ANTHROPIC_BASE_URL ?? claudeEnvironment.ANTHROPIC_BASE_URL;
+      const origin = url?.trim() ? endpointOrigin(url) : undefined;
+      if (url?.trim() && origin === undefined) return "Claude endpoint is unsupported.";
+      return { origin, zavod: helperCommand !== undefined && isZavodKeyHelper(helperCommand) };
+    }),
+  );
 
-    const codexText = yield* readOptional(path.join(codexHome, "config.toml"));
-    const toml = yield* Effect.try({
-      try: () => parse(codexText ?? ""),
-      catch: () => "Codex TOML format is unsupported.",
-    });
-    const codex = yield* decodeCodex(toml).pipe(
-      Effect.mapError(() => "Codex provider selection is unsupported."),
-    );
-    if (
-      codex.profile !== undefined ||
-      Object.values(codex.profiles ?? {}).some((profile) => profile.model_provider !== undefined) ||
-      codex.openai_base_url !== undefined ||
-      codexEnvironment.OPENAI_BASE_URL !== undefined
-    ) {
-      return {
-        ...common,
-        state: "unsupported",
-        reason: "Codex profile or endpoint overrides are unsupported.",
-      } as const;
-    }
-    const active = codex.model_provider ?? "openai";
-    const provider = codex.model_providers?.[active];
-    let codexOrigin: string | undefined;
-    if (provider !== undefined) {
-      const config = yield* decodeProvider(provider).pipe(
-        Effect.mapError(() => "Active Codex provider format is unsupported."),
+  const codex = yield* endpointOrReason(
+    Effect.gen(function* () {
+      const text = yield* readOptional(path.join(codexHome, "config.toml"));
+      const toml = yield* Effect.try({
+        try: () => parse(text ?? ""),
+        catch: () => "Codex TOML format is unsupported.",
+      });
+      const config = yield* decodeCodex(toml).pipe(
+        Effect.mapError(() => "Codex provider selection is unsupported."),
       );
       if (
-        config.auth?.command !== undefined &&
-        !helperIsPath(config.auth.command, home, path, false)
+        config.profile !== undefined ||
+        Object.values(config.profiles ?? {}).some(
+          (profile) => profile.model_provider !== undefined,
+        ) ||
+        config.openai_base_url !== undefined ||
+        codexEnvironment.OPENAI_BASE_URL !== undefined
       ) {
-        return {
-          ...common,
-          state: "unsupported",
-          reason: "Codex auth.command must be a path.",
-        } as const;
+        return "Codex profile or endpoint overrides are unsupported.";
       }
-      codexOrigin = endpointOrigin(config.base_url);
-      if (codexOrigin === undefined) {
-        return {
-          ...common,
-          state: "unsupported",
-          reason: "Codex endpoint is unsupported.",
-        } as const;
+      const active = config.model_provider ?? "openai";
+      const raw = config.model_providers?.[active];
+      if (raw === undefined) {
+        return active === "openai"
+          ? { origin: undefined, zavod: false }
+          : "Active Codex provider is missing.";
       }
-    } else if (active !== "openai") {
-      return {
-        ...common,
-        state: "unsupported",
-        reason: "Active Codex provider is missing.",
-      } as const;
-    }
-    const claudeOn = claudeOrigin === origin;
-    const codexOn = codexOrigin === origin;
-    if (claudeOn !== codexOn) {
-      return {
-        ...common,
-        state: "mixed",
-        reason: "Claude and Codex use different gateways.",
-      } as const;
-    }
-    return { ...common, state: claudeOn ? "on" : "off", reason: null } as const;
-  }).pipe(
-    Effect.orElseSucceed((error) => ({
-      ...common,
-      state: "unsupported" as const,
-      reason: typeof error === "string" ? error : "Cannot read provider configuration.",
-    })),
+      const provider = yield* decodeProvider(raw).pipe(
+        Effect.mapError(() => "Active Codex provider format is unsupported."),
+      );
+      const command = provider.auth?.command;
+      if (command !== undefined && !helperIsPath(command, home, path, false)) {
+        return "Codex auth.command must be a path.";
+      }
+      const origin = endpointOrigin(provider.base_url);
+      if (origin === undefined) return "Codex endpoint is unsupported.";
+      return { origin, zavod: command !== undefined && isZavodKeyHelper(command) };
+    }),
   );
+
+  const candidate = (endpoint: ProviderEndpoint | string) =>
+    typeof endpoint !== "string" && endpoint.zavod ? endpoint.origin : undefined;
+  const codexCandidate = candidate(codex);
+  const claudeCandidate = candidate(claude);
+  const source =
+    stateOrigin !== undefined
+      ? { origin: stateOrigin, baseUrlSource: "state" as const }
+      : codexCandidate !== undefined
+        ? { origin: codexCandidate, baseUrlSource: "codex" as const }
+        : claudeCandidate !== undefined
+          ? { origin: claudeCandidate, baseUrlSource: "claude" as const }
+          : undefined;
+  const common = {
+    baseUrl: source === undefined ? null : `${source.origin}/v1`,
+    baseUrlSource: source?.baseUrlSource ?? null,
+    helperPath,
+  };
+  if (typeof claude === "string") return { ...common, state: "unsupported", reason: claude };
+  if (typeof codex === "string") return { ...common, state: "unsupported", reason: codex };
+  if (source === undefined) {
+    return { ...common, state: "unsupported", reason: ZAVOD_GATEWAY_NOT_FOUND };
+  }
+  const claudeOn = claude.origin === source.origin;
+  const codexOn = codex.origin === source.origin;
+  if (claudeOn !== codexOn) {
+    return { ...common, state: "mixed", reason: "Claude and Codex use different gateways." };
+  }
+  return { ...common, state: claudeOn ? "on" : "off", reason: null };
 });

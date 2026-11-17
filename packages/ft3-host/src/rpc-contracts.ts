@@ -25,7 +25,9 @@ export const FT3_ZAVOD_WS_METHODS = {
 export const ZavodStatus = Schema.Struct({
   state: Schema.Literals(["on", "off", "mixed", "unsupported", "absent"]),
   baseUrl: Schema.NullOr(Schema.String),
+  // Older clients decode only state/default here; newer ones read baseUrlOrigin.
   baseUrlSource: Schema.NullOr(Schema.Literals(["state", "default"])),
+  baseUrlOrigin: Schema.optionalKey(Schema.Literals(["state", "codex", "claude"])),
   reason: Schema.NullOr(Schema.String),
 });
 export type ZavodStatus = typeof ZavodStatus.Type;

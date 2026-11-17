@@ -75,7 +75,7 @@ const fixture = Effect.fn("test.zavodInstancesFixture")(function* (
   yield* fs.writeFileString(helperPath, sentinel);
   const detection: ZavodDetection = {
     state: "off",
-    baseUrl: "https://gateway.example/v1",
+    baseUrl: "https://zavod.example/v1",
     baseUrlSource: "state",
     helperPath,
     reason: null,
@@ -131,8 +131,13 @@ describe("ZavodInstances", () => {
     Effect.gen(function* () {
       const f = yield* fixture();
       const before = yield* f.settings.getSettings;
-      for (const state of ["unsupported", "absent"] as const) {
-        const error = yield* f.service.connect({ ...f.detection, state }).pipe(Effect.flip);
+      for (const detection of [
+        { ...f.detection, state: "unsupported" },
+        { ...f.detection, state: "absent" },
+        { ...f.detection, state: "unsupported", baseUrl: null, baseUrlSource: null },
+        { ...f.detection, state: "off", baseUrl: null, baseUrlSource: null },
+      ] satisfies ReadonlyArray<ZavodDetection>) {
+        const error = yield* f.service.connect(detection).pipe(Effect.flip);
         assert.equal(error.stage, "state");
       }
       assert.deepEqual(yield* f.settings.getSettings, before);
@@ -154,7 +159,7 @@ describe("ZavodInstances", () => {
         assert.deepEqual(settings.providerInstances[ProviderInstanceId.make(id)], previous);
       const claudeText = yield* f.fs.readFileString(f.path.join(f.root, claudeId, "settings.json"));
       const claude = JSON.parse(claudeText);
-      assert.equal(claude.env.ANTHROPIC_BASE_URL, "https://gateway.example");
+      assert.equal(claude.env.ANTHROPIC_BASE_URL, "https://zavod.example");
       assert.equal(
         claude.apiKeyHelper,
         JSON.stringify(f.detection.helperPath?.replaceAll("\\", "/")),
@@ -165,7 +170,7 @@ describe("ZavodInstances", () => {
         model_providers: {
           zavod: {
             name: "Zavod",
-            base_url: "https://gateway.example/v1",
+            base_url: "https://zavod.example/v1",
             wire_api: "responses",
             auth: { command: f.detection.helperPath!, refresh_interval_ms: 300000 },
             http_headers: { "x-openai-actor-authorization": "zavod" },

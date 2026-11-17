@@ -1,6 +1,12 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
-import { formatUsdPerSession, providersForWindow, UsageModelTable } from "@t3tools/ft3-web/usage";
+import type { ProviderSourceBreakdown } from "@t3tools/shared/usageSourceBreakdown";
+import {
+  formatUsdPerSession,
+  providersForWindow,
+  UsageModelTable,
+  UsageProviderSources,
+} from "@t3tools/ft3-web/usage";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -537,6 +543,7 @@ export function UsagePage() {
             ) : (
               <UsageOverview
                 merged={merged}
+                sourceBreakdown={shown.sources}
                 shownWindow={shownWindow}
                 hour12={hour12}
                 days={days}
@@ -585,6 +592,7 @@ export function UsagePage() {
 
 function UsageOverview({
   merged,
+  sourceBreakdown,
   shownWindow,
   hour12,
   days,
@@ -598,6 +606,7 @@ function UsageOverview({
   onSelectModel,
 }: {
   readonly merged: MergedUsage;
+  readonly sourceBreakdown: ReadonlyMap<UsageProviderKind, ProviderSourceBreakdown>;
   readonly shownWindow: UsageSummaryInput;
   readonly hour12: boolean;
   readonly days: readonly string[];
@@ -769,6 +778,11 @@ function UsageOverview({
                     ? `${formatPercent(share)} of cost · ${formatTokens(totals?.totalTokens ?? 0)} tokens`
                     : `${formatPercent(share)} of tokens · ${formatUsd(totals?.costUsd ?? 0)}`}
                 </p>
+                <UsageProviderSources
+                  breakdown={sourceBreakdown.get(provider)}
+                  metric={metric}
+                  loading={providerLoading}
+                />
               </div>
             );
           })}

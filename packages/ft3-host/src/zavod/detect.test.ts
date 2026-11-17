@@ -13,7 +13,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import { vi } from "vite-plus/test";
 
-import { DEFAULT_ZAVOD_BASE_URL, detectZavod, type DetectZavodOptions } from "./detect.ts";
+import { detectZavod, type DetectZavodOptions, ZAVOD_GATEWAY_NOT_FOUND } from "./detect.ts";
 
 vi.mock("node:child_process", () => {
   const denied = vi.fn(() => {
@@ -30,7 +30,7 @@ vi.mock("node:child_process", () => {
   };
 });
 
-const gateway = "https://gateway.example:8443";
+const gateway = "https://zavod.example:8443";
 const fileInfo: FileSystem.File.Info = {
   type: "File",
   mtime: Option.none(),
@@ -112,7 +112,7 @@ describe("detectZavod", () => {
     Effect.gen(function* () {
       for (const [input, expected] of [
         [throughGateway(), "on"],
-        [{}, "off"],
+        [{ state: throughGateway().state }, "off"],
         [{ ...throughGateway(), codex: "" }, "mixed"],
         [{ ...throughGateway(), claude: "{" }, "unsupported"],
         [{ ...throughGateway(), helper: false }, "absent"],
@@ -235,38 +235,19 @@ base_url = "https://api.openai.com/v1"
     }),
   );
 
-  it.effect("normalizes origins and /v1 and reports the state/default source", () =>
+  it.effect("normalizes origins and /v1 and reports the state source", () =>
     Effect.gen(function* () {
       for (const url of [
         gateway,
         `${gateway}/v1`,
         `${gateway}/v1/`,
-        "https://GATEWAY.EXAMPLE:8443/another/path",
+        "https://ZAVOD.EXAMPLE:8443/another/path",
       ]) {
         const { result } = yield* fixture(throughGateway(url));
         assert.equal(result.state, "on");
         assert.equal(result.baseUrl, `${gateway}/v1`);
         assert.equal(result.baseUrlSource, "state");
       }
-      for (const state of [
-        undefined,
-        "{",
-        "{}",
-        '{"base_url":12}',
-        '{"base_url":"http://unsafe.example"}',
-        '{"base_url":"https://user:secret@gateway.example"}',
-      ]) {
-        const { claude, codex } = throughGateway(DEFAULT_ZAVOD_BASE_URL);
-        const { result } = yield* fixture({
-          claude,
-          codex,
-          ...(state === undefined ? {} : { state }),
-        });
-        assert.equal(result.state, "on");
-        assert.equal(result.baseUrl, `${DEFAULT_ZAVOD_BASE_URL}/v1`);
-        assert.equal(result.baseUrlSource, "default");
-      }
-      assert.equal((yield* fixture()).result.baseUrlSource, "default");
       assert.equal(
         (yield* fixture({
           ...throughGateway(),
@@ -274,6 +255,71 @@ base_url = "https://api.openai.com/v1"
         })).result.baseUrl,
         `${gateway}/v1`,
       );
+    }).pipe(Effect.provide(NodePath.layerPosix)),
+  );
+
+  it.effect("falls back from state to Codex, then Claude, and never to a built-in address", () =>
+    Effect.gen(function* () {
+      const other = "https://other.zavod.example";
+      const { claude, codex } = throughGateway();
+      const cases = [
+        [{ codex }, "mixed", gateway, "codex"],
+        [{ claude }, "mixed", gateway, "claude"],
+        [{ claude, codex }, "on", gateway, "codex"],
+        [{ claude: throughGateway(other).claude, codex }, "mixed", gateway, "codex"],
+        [
+          { claude, codex: codex.replace("'zavod-key'", "'/opt/other/key'") },
+          "on",
+          gateway,
+          "claude",
+        ],
+      ] as const;
+      for (const [input, state, origin, source] of cases) {
+        const { result } = yield* fixture(input);
+        assert.equal(result.state, state);
+        assert.equal(result.baseUrl, `${origin}/v1`);
+        assert.equal(result.baseUrlSource, source);
+      }
+      for (const state of [
+        "{",
+        "{}",
+        '{"base_url":12}',
+        '{"base_url":"http://unsafe.zavod.example"}',
+        '{"base_url":"https://user:secret@zavod.example"}',
+      ]) {
+        const { result } = yield* fixture({ state, claude, codex });
+        assert.equal(result.state, "on");
+        assert.equal(result.baseUrlSource, "codex");
+      }
+      for (const [input, source] of [
+        [
+          { claude, codex: codex.replace(`"${gateway}/v1"`, '"http://insecure.zavod.example"') },
+          "claude",
+        ],
+        [{ claude, codex: codex.replace(`"${gateway}/v1"`, "5") }, "claude"],
+        [
+          { codex, claude: '{"env":{"ANTHROPIC_BASE_URL":"invalid"},"apiKeyHelper":"zavod-key"}' },
+          "codex",
+        ],
+        [{ codex, claude: "{" }, "codex"],
+      ] as const) {
+        const { result } = yield* fixture(input);
+        assert.equal(result.state, "unsupported");
+        assert.equal(result.baseUrl, `${gateway}/v1`);
+        assert.equal(result.baseUrlSource, source);
+        assert.notEqual(result.reason, ZAVOD_GATEWAY_NOT_FOUND);
+      }
+      for (const input of [
+        {},
+        { claude: JSON.stringify({ env: { ANTHROPIC_BASE_URL: other } }) },
+        { codex: codex.replace("'zavod-key'", "'/opt/other/key'") },
+      ]) {
+        const { result } = yield* fixture(input);
+        assert.equal(result.state, "unsupported");
+        assert.isNull(result.baseUrl);
+        assert.isNull(result.baseUrlSource);
+        assert.equal(result.reason, ZAVOD_GATEWAY_NOT_FOUND);
+      }
     }).pipe(Effect.provide(NodePath.layerPosix)),
   );
 

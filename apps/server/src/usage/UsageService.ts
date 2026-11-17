@@ -5,6 +5,7 @@ import {
   type ServerSettings as ServerSettingsValue,
   type UsageProviderKind,
   type UsageSource,
+  type UsageSourceInstance,
   type UsagePricing,
   type UsageSummary,
   type UsageSummaryInput,
@@ -108,6 +109,7 @@ interface TranscriptSource {
   readonly volumeId: string;
   readonly physicalSourceId?: string;
   readonly fileName?: string;
+  readonly instances?: readonly UsageSourceInstance[];
 }
 
 const RatesCacheFile = Schema.Struct({
@@ -395,15 +397,41 @@ export const make = Effect.gen(function* () {
     const dirs: Array<TranscriptSource> = [];
     const pending: Array<ScannedDir> = [];
     const seen = new Set<string>();
+    const labels = new Map<string, Array<UsageSourceInstance>>();
+    // Labels merge before the duplicate skip, so a shared directory names every instance resolving to it.
+    const label = (key: string, instanceId: ProviderInstanceId, configured: boolean) => {
+      if (!configured) return;
+      const list = labels.get(key) ?? [];
+      labels.set(key, list);
+      if (list.some((entry) => entry.instanceId === instanceId)) return;
+      const displayName = settings.providerInstances[instanceId]?.displayName;
+      list.push(displayName === undefined ? { instanceId } : { instanceId, displayName });
+    };
     for (const { driver, reader } of transcriptReaders) {
       const { provider, format } = reader;
       const directories = yield* Effect.forEach(
         yield* usageInstances(driver, settings),
-        (instance) => reader.directories(instance, { awaitRefresh }),
+        (instance) =>
+          reader.directories(instance, { awaitRefresh }).pipe(
+            Effect.map((entries) =>
+              entries.map((entry) => ({
+                ...entry,
+                instanceId: instance.instanceId,
+                configured: instance.configured,
+              })),
+            ),
+          ),
       );
-      for (const { dir: directory, fileName, refreshing } of directories.flat()) {
+      for (const {
+        dir: directory,
+        fileName,
+        refreshing,
+        instanceId,
+        configured,
+      } of directories.flat()) {
         if (refreshing) {
           const key = `${provider}\0${directory}`;
+          label(key, instanceId, configured);
           if (seen.has(key)) continue;
           seen.add(key);
           pending.push({ provider, dir: directory, volumeId: "", files: [], refreshing });
@@ -433,6 +461,7 @@ export const make = Effect.gen(function* () {
           cacheDirty = true;
         }
         const key = `${provider}\0${dir}`;
+        label(key, instanceId, configured);
         if (seen.has(key)) continue;
         seen.add(key);
         const sourceId = yield* physicalSourceId(dir);
@@ -446,7 +475,15 @@ export const make = Effect.gen(function* () {
         });
       }
     }
-    return { dirs, pending };
+    const withLabels = <
+      Source extends { readonly provider: UsageProviderKind; readonly dir: string },
+    >(
+      source: Source,
+    ): Source => {
+      const instances = labels.get(`${source.provider}\0${source.dir}`);
+      return instances === undefined || instances.length === 0 ? source : { ...source, instances };
+    };
+    return { dirs: dirs.map(withLabels), pending: pending.map(withLabels) };
   });
 
   // Share first loads so concurrent readers cannot scan against a still-empty cache.
@@ -695,6 +732,7 @@ export const make = Effect.gen(function* () {
     /** Every transcript path the walk listed, in walk order, whatever its mtime. */
     readonly walked?: readonly string[];
     readonly refreshing?: true;
+    readonly instances?: readonly UsageSourceInstance[];
   }
 
   const scanTranscriptDir = Effect.fn("UsageService.scanTranscriptDir")(function* (
@@ -702,12 +740,13 @@ export const make = Effect.gen(function* () {
     windowStartMs: number,
     fromMemory: boolean,
   ) {
-    const { provider, format, dir, volumeId, physicalSourceId, fileName } = source;
+    const { provider, format, dir, volumeId, physicalSourceId, fileName, instances } = source;
     const identity = {
       provider,
       dir,
       volumeId,
       ...(physicalSourceId === undefined ? {} : { physicalSourceId }),
+      ...(instances === undefined ? {} : { instances }),
     };
     const exists = yield* fileSystem
       .exists(dir)
@@ -1068,6 +1107,7 @@ export const make = Effect.gen(function* () {
         message,
         refreshing,
         hostId: sourceHostId,
+        instances,
       },
     ] of scannedDirs.entries()) {
       let scannedFiles = 0;
@@ -1145,6 +1185,7 @@ export const make = Effect.gen(function* () {
         ...(refreshing || (fromMemory && counted && transcriptFormats.has(provider))
           ? { refreshing: true }
           : {}),
+        ...(instances === undefined ? {} : { instances }),
       });
     }
 

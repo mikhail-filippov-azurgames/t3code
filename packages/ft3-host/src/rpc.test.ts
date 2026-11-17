@@ -35,7 +35,8 @@ import {
   handlers,
   zavodRpcServiceLayer,
 } from "./rpc.ts";
-import { ZavodRpcError, type ZavodStatus } from "./rpc-contracts.ts";
+import { ZavodRpcError, ZavodStatus } from "./rpc-contracts.ts";
+import { toZavodStatus } from "./zavod/service.ts";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 
@@ -190,8 +191,9 @@ const noSnapshot = {
 
 const zavodStatus = {
   state: "off" as const,
-  baseUrl: "https://gateway.example/v1",
+  baseUrl: "https://zavod.example/v1",
   baseUrlSource: "state" as const,
+  baseUrlOrigin: "state" as const,
   reason: null,
 };
 const isZavodRpcError = Schema.is(ZavodRpcError);
@@ -284,6 +286,69 @@ const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
   RpcTest.makeClient(group).pipe(
     Effect.provide(Layer.merge(group.toLayer(stubs), authorizationLayer(scopes))),
   );
+
+describe("Zavod status wire compatibility", () => {
+  // Wire schema released before baseUrlOrigin existed.
+  const PreviousZavodStatus = Schema.Struct({
+    state: Schema.Literals(["on", "off", "mixed", "unsupported", "absent"]),
+    baseUrl: Schema.NullOr(Schema.String),
+    baseUrlSource: Schema.NullOr(Schema.Literals(["state", "default"])),
+    reason: Schema.NullOr(Schema.String),
+  });
+  const current = {
+    encode: Schema.encodeUnknownSync(Schema.toCodecJson(ZavodStatus)),
+    decode: Schema.decodeUnknownSync(Schema.toCodecJson(ZavodStatus)),
+  };
+  const previous = {
+    encode: Schema.encodeUnknownSync(Schema.toCodecJson(PreviousZavodStatus)),
+    decode: Schema.decodeUnknownSync(Schema.toCodecJson(PreviousZavodStatus)),
+  };
+  const detection = {
+    state: "on" as const,
+    baseUrl: "https://zavod.example/v1",
+    helperPath: "/home/user/.zavod/bin/zavod-key",
+    reason: null,
+  };
+
+  it("maps detected origins onto the previous source and the new origin", () => {
+    for (const [source, legacy] of [
+      ["state", "state"],
+      ["codex", "default"],
+      ["claude", "default"],
+    ] as const) {
+      const status = toZavodStatus({ ...detection, baseUrlSource: source });
+      expect(status.baseUrlSource).toBe(legacy);
+      expect(status.baseUrlOrigin).toBe(source);
+      expect(previous.decode(current.encode(status))).toEqual({
+        state: "on",
+        baseUrl: detection.baseUrl,
+        baseUrlSource: legacy,
+        reason: null,
+      });
+    }
+    const missing = toZavodStatus({
+      ...detection,
+      state: "unsupported",
+      baseUrl: null,
+      baseUrlSource: null,
+      reason: "not found",
+    });
+    expect(missing).not.toHaveProperty("baseUrlOrigin");
+    expect(previous.decode(current.encode(missing))).toEqual({
+      state: "unsupported",
+      baseUrl: null,
+      baseUrlSource: null,
+      reason: "not found",
+    });
+  });
+
+  it("decodes a previous server's status with the current schema", () => {
+    for (const baseUrlSource of ["state", "default", null] as const) {
+      const old = { state: "off" as const, baseUrl: null, baseUrlSource, reason: null };
+      expect(current.decode(previous.encode(old))).toEqual(old);
+    }
+  });
+});
 
 describe("FT3 RPC scope map", () => {
   it("declares exactly one scope for every FT3 RPC in the group", () => {
@@ -682,13 +747,13 @@ const zavodFixture = Effect.fn("test.zavodRpcFixture")(function* (
   const state = options.state ?? "off";
   const claudeHome = path.join(home, "custom-claude");
   const codexHome = path.join(home, "custom-codex");
-  const claudeOn = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example" } });
+  const claudeOn = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://zavod.example" } });
   const codexOn =
-    'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://gateway.example/v1"\n';
+    'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://zavod.example/v1"\n';
   for (const [file, text] of [
     [
       path.join(home, ".zavod", "desktop", "state.json"),
-      JSON.stringify({ version: 1, base_url: "https://gateway.example", key }),
+      JSON.stringify({ version: 1, base_url: "https://zavod.example", key }),
     ],
     [path.join(home, ".claude", "settings.json"), claudeOn],
     [path.join(home, ".codex", "config.toml"), codexOn],
@@ -726,7 +791,7 @@ const zavodFixture = Effect.fn("test.zavodRpcFixture")(function* (
                       { name: "CLAUDE_CONFIG_DIR", value: homePath, sensitive: false },
                       {
                         name: "ANTHROPIC_BASE_URL",
-                        value: "https://gateway.example",
+                        value: "https://zavod.example",
                         sensitive: false,
                       },
                       {
@@ -906,13 +971,13 @@ describe("Zavod RPC", () => {
             const before = yield* f.settings.getSettings;
             const detected = yield* client[FT3_WS_METHODS.zavodDetect]({});
             expect(detected.state).toBe(state);
-            expect(Object.keys(detected).sort()).toEqual([
-              "baseUrl",
-              "baseUrlSource",
-              "reason",
-              "state",
-            ]);
+            expect(Object.keys(detected).sort()).toEqual(
+              state === "absent"
+                ? ["baseUrl", "baseUrlSource", "reason", "state"]
+                : ["baseUrl", "baseUrlOrigin", "baseUrlSource", "reason", "state"],
+            );
             expect(detected.baseUrlSource).toBe(state === "absent" ? null : "state");
+            expect(detected.baseUrlOrigin).toBe(state === "absent" ? undefined : "state");
             expect(JSON.stringify(detected)).not.toContain(f.helperPath);
             expect(JSON.stringify(detected)).not.toContain(f.key);
             if (state === "on" || state === "off" || state === "mixed") {
@@ -958,11 +1023,11 @@ describe("Zavod RPC", () => {
       expect((yield* client[FT3_WS_METHODS.zavodDetect]({})).state).toBe("off");
       yield* f.fs.writeFileString(
         f.path.join(f.claudeHome, "settings.json"),
-        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example" } }),
+        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://zavod.example" } }),
       );
       yield* f.fs.writeFileString(
         f.path.join(f.codexHome, "config.toml"),
-        'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://gateway.example/v1"\n',
+        'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://zavod.example/v1"\n',
       );
       expect(yield* client[FT3_WS_METHODS.zavodConnect]({})).toMatchObject({
         state: "on",

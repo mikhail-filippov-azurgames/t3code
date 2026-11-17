@@ -10,3 +10,4 @@ export { formatUsdPerSession } from "./usageSessionCost.ts";
 export { limitPoolDisplayName } from "./usageLimitsPool.ts";
 export { providersForWindow } from "./usageProviders.ts";
 export { modelSortValue, sortModels } from "./usageModelSort.ts";
+export { UsageProviderSources } from "./UsageProviderSources.tsx";
