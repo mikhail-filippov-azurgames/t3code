@@ -10,7 +10,10 @@ import { act, render } from "../../../../apps/web/test/render";
 import { LeadBoardSurface, type LeadBoardSection } from "./LeadBoardSurface.tsx";
 import type { CoordinatorSummaryHistoryEntry } from "./coordinatorSummaryHistory";
 import { addBoardCardPin, removeBoardCardPin } from "./boardCardPins.ts";
-import { resetCardsPanelState } from "./cardsPanelState";
+import { resetCardsPanelState, useCardsPanelState } from "./cardsPanelState";
+import { useBoardCardPins } from "./BoardCardPinnedPanel";
+
+vi.mock("./cardsPanelState", { spy: true });
 
 const mocks = vi.hoisted(() => ({
   listForChatPanel: vi.fn(),
@@ -231,6 +234,22 @@ async function openReading(screen: Awaited<ReturnType<typeof renderSurface>>) {
 }
 
 describe("LeadBoardSurface", () => {
+  it("keeps the pins reference stable until the storage snapshot changes", async () => {
+    using _state = setup({});
+    const observePins = vi.fn();
+    function PinsProbe() {
+      observePins(useBoardCardPins(threadRef));
+      return null;
+    }
+    await using screen = await render(<PinsProbe />);
+    const initialPins = observePins.mock.lastCall![0];
+    await screen.rerender(<PinsProbe />);
+    expect(observePins.mock.lastCall![0]).toBe(initialPins);
+    await act(() => addBoardCardPin(environmentId, threadId, cardId));
+    expect(observePins.mock.lastCall![0]).toEqual([cardId]);
+    expect(observePins.mock.lastCall![0]).not.toBe(initialPins);
+  });
+
   it("declines a thread that is not registered as a lead", async () => {
     using state = setup({ isLead: false });
     await using screen = await renderSurface(state);
@@ -387,11 +406,32 @@ describe("LeadBoardSurface", () => {
     await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
     await expect
       .element(screen.getByRole("status"))
-      .toHaveTextContent("Card unavailable: it may have been deleted.");
+      .toHaveTextContent(
+        "Card 55555555-5555-4555-8555-555555555555 unavailable: it may have been deleted.",
+      );
     const article = screen.container.querySelector("article")!;
     expect(article.querySelectorAll("button")).toHaveLength(1);
     expect(article.querySelector("textarea")).toBeNull();
     expect(article.textContent).not.toContain("Read the plan.");
+    vi.mocked(useCardsPanelState).mockClear();
+    await act(() =>
+      state.registry.set(
+        resolve,
+        AsyncResult.success({ matches: [], details: [] }, { waiting: true }),
+      ),
+    );
+    await expect
+      .element(screen.getByRole("status"))
+      .toHaveTextContent(
+        "Card 55555555-5555-4555-8555-555555555555 unavailable: it may have been deleted.",
+      );
+    expect(screen.container.textContent).not.toContain("Loading card…");
+    expect(screen.container.querySelector("article")).toBe(article);
+    const cardStateCalls = vi
+      .mocked(useCardsPanelState)
+      .mock.calls.filter(([, id]) => id === "55555555-5555-4555-8555-555555555555");
+    expect(cardStateCalls.length).toBeGreaterThan(0);
+    expect(cardStateCalls.every(([, , enabled]) => enabled === false)).toBe(true);
     await act(() => state.registry.set(resolve, AsyncResult.initial(true)));
     expect(screen.container.textContent).not.toContain("Read the plan.");
     await act(() => state.registry.set(resolve, original));

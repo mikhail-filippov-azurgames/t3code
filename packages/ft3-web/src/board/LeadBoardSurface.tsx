@@ -199,16 +199,16 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
   const loading = pinned.isPending;
   const setSelectedPlanId = (selectedPlanId: BoardCardId | null) => updateView({ selectedPlanId });
   const loadError = pinned.error !== null;
-  const settled = pinned.isSuccess && !loading && !loadError;
+  const hasSuccessfulResult = pinned.isSuccess && !loadError;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- removes session registry entries when the server confirms deletion or the selected card is unpinned
   useEffect(() => {
     retainCardsPanelPins(props.threadRef, pins);
-    if (settled) {
+    if (hasSuccessfulResult) {
       for (const cardId of pins) {
         if (!details.has(cardId)) removeCardsPanelCard(props.threadRef, cardId);
       }
     }
-  }, [settled, pins, details, props.threadRef]);
+  }, [hasSuccessfulResult, pins, details, props.threadRef]);
   const pinnedRefresh = pinned.refresh;
   const refresh = useCallback(() => pinnedRefresh(), [pinnedRefresh]);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
@@ -317,7 +317,7 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
                   detail={detail}
                   loading={loading}
                   loadError={loadError}
-                  missing={settled && detail === undefined}
+                  missing={hasSuccessfulResult && detail === undefined}
                   busy={busyCardId === cardId}
                   actionError={actionError}
                   onRetry={refresh}
@@ -335,7 +335,7 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
       )}
       {selectedPlanId !== null &&
       pins.includes(selectedPlanId) &&
-      (!settled || details.has(selectedPlanId)) ? (
+      (!hasSuccessfulResult || details.has(selectedPlanId)) ? (
         <PlanViewerDialog
           key={`plan:${selectedPlanId}`}
           environmentId={environmentId}
@@ -670,7 +670,7 @@ function PinnedCard(props: {
         data-board-card-id={props.cardId}
       >
         <p role="status" className="text-xs text-muted-foreground">
-          Card unavailable: it may have been deleted.
+          Card {props.cardId} unavailable: it may have been deleted.
         </p>
         <Button
           type="button"
@@ -756,7 +756,7 @@ function PinnedCard(props: {
           ) : null}
           {!props.loading && !props.loadError && !props.detail ? (
             <p role="status" className="text-xs text-muted-foreground">
-              Card unavailable: it may have been deleted.
+              Card {props.cardId} unavailable: it may have been deleted.
             </p>
           ) : null}
 
