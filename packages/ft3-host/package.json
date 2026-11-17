@@ -18,6 +18,10 @@
     "./process-output": {
       "types": "./src/processOutput.ts",
       "import": "./src/processOutput.ts"
+    },
+    "./zavod-route": {
+      "types": "./src/zavod/personalRoute.ts",
+      "import": "./src/zavod/personalRoute.ts"
     }
   },
   "scripts": {

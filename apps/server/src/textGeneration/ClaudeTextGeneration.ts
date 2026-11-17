@@ -34,8 +34,8 @@ import {
   claudePersonalRouteSettings,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
-  withClaudePersonalRoute,
 } from "../provider/Drivers/ClaudeHome.ts";
+import { withClaudePersonalRoute } from "@t3tools/ft3-host/zavod-route";
 import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;

@@ -194,8 +194,8 @@ import {
   makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
-  withClaudePersonalRoute,
 } from "../../provider/Drivers/ClaudeHome.ts";
+import { withClaudePersonalRoute } from "@t3tools/ft3-host/zavod-route";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   resolveClaudeCatalogContextWindowTokens,

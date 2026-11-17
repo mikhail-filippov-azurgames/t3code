@@ -53,9 +53,11 @@ import {
   claudeSignedOutMessage,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
+} from "./Drivers/ClaudeHome.ts";
+import {
   withClaudePersonalRoute,
   type ClaudePersonalRouteSettings,
-} from "./Drivers/ClaudeHome.ts";
+} from "@t3tools/ft3-host/zavod-route";
 import {
   customClaudeApiEndpointHost,
   discoverClaudeSkills,

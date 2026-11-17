@@ -32,6 +32,7 @@ import {
   makeCodexSkillsProbe,
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
+import * as Ft3ZavodRoute from "@t3tools/ft3-host/zavod-route";
 import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
@@ -100,39 +101,6 @@ function makeCodexMaintenanceResolver(sharedHomePath: string) {
     },
   });
 }
-
-const ZAVOD_PROVIDER_ID = "zavod";
-const PERSONAL_PROVIDER_LAUNCH_ARG = `-c ${JSON.stringify('model_provider="openai"')}`;
-
-function rootModelProvider(configToml: string): string | undefined {
-  for (const line of configToml.split(/\r?\n/)) {
-    if (/^\s*\[/.test(line)) return undefined;
-    const match = /^\s*model_provider\s*=\s*(["'])([^"']*)\1\s*(?:#.*)?$/.exec(line);
-    if (match) return match[2];
-  }
-  return undefined;
-}
-
-// The Zavod app's gateway switch rewrites ~/.codex; the personal instance stays on the subscription.
-const personalProviderLaunchArgs = Effect.fn("CodexDriver.personalProviderLaunchArgs")(function* (
-  sharedHomePath: string,
-  launchArgs: string,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const pathService = yield* Path.Path;
-  const platform = yield* HostProcess.Platform;
-  const normalize = (value: string) => {
-    const resolved = pathService.resolve(value);
-    return platform === "win32" ? resolved.toLowerCase() : resolved;
-  };
-  const userHome = pathService.join(yield* HostProcess.HomeDirectory, ".codex");
-  if (normalize(sharedHomePath) !== normalize(userHome)) return launchArgs;
-  const configToml = yield* fileSystem
-    .readFileString(pathService.join(sharedHomePath, "config.toml"))
-    .pipe(Effect.orElseSucceed(() => ""));
-  if (rootModelProvider(configToml) !== ZAVOD_PROVIDER_ID) return launchArgs;
-  return [PERSONAL_PROVIDER_LAUNCH_ARG, launchArgs.trim()].filter(Boolean).join(" ");
-});
 
 // `codex update` installs this channel's release, which can lag npm's latest tag.
 const CODEX_NATIVE_CHANNEL = "https://releases.openai.com/codex/channels/latest";
@@ -223,21 +191,22 @@ export const CodexDriver: ProviderDriver<
       yield* HostProcess.Environment,
     );
     const environmentHome = processEnv.CODEX_HOME;
-    const configuredHome =
+    const homeConfig =
       !config.homePath.trim() && environmentHome?.trim()
         ? { ...config, homePath: environmentHome }
         : config;
-    const homeLayout = yield* resolveCodexHomeLayout(configuredHome);
-    const currentLaunchArgs = personalProviderLaunchArgs(
+    const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
+    // ft3: a personal ~/.codex stays off a Zavod gateway, re-read at each launch.
+    const currentLaunchArgs = Ft3ZavodRoute.codexPersonalLaunchArgs(
       homeLayout.sharedHomePath,
-      configuredHome.launchArgs,
+      homeConfig.launchArgs,
     ).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, pathService),
       Effect.provideService(HostProcess.HomeDirectory, yield* HostProcess.HomeDirectory),
       Effect.provideService(HostProcess.Platform, yield* HostProcess.Platform),
     );
-    const homeConfig = { ...configuredHome, launchArgs: yield* currentLaunchArgs };
+    const routedConfig = { ...homeConfig, launchArgs: yield* currentLaunchArgs };
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
       instanceId,
@@ -259,7 +228,7 @@ export const CodexDriver: ProviderDriver<
     );
     const effectiveConfig = {
       ...config,
-      launchArgs: homeConfig.launchArgs,
+      launchArgs: routedConfig.launchArgs,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
       homePath: homeLayout.effectiveHomePath ?? "",
@@ -289,7 +258,7 @@ export const CodexDriver: ProviderDriver<
         accentColor,
         environment,
         enabled,
-        config: homeConfig,
+        config: routedConfig,
       },
       {
         resolveLaunchArgs: currentLaunchArgs,

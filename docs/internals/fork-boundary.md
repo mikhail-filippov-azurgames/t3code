@@ -1019,6 +1019,40 @@ Fork-owned UI and behavior tests: `packages/ft3-web/src/chat/MailNotificationRow
 Тесты RPC — в `packages/ft3-host/src/rpc.test.ts`, проверка client guard включена в шаг
 «Test changed contracts files» в `.github/workflows/ft3-gate.yml`.
 
+## Личные Codex/Claude мимо шлюза Zavod
+
+Переключатель шлюза в приложении Zavod переписывает `~/.codex/config.toml`
+(`model_provider = "zavod"`) и `~/.claude/settings.json` (`apiKeyHelper` = `zavod-key`,
+`env.ANTHROPIC_BASE_URL`). Личные экземпляры, чей home — `~/.codex` или `~/.claude`,
+остаются на подписке: при каждом запуске Codex получает `-c model_provider="openai"`,
+а Claude получает flag settings `apiKeyHelper: ""` и, если шлюз задал endpoint,
+`env.ANTHROPIC_BASE_URL=https://api.anthropic.com`. Экземпляры Zavod со своим home не
+затрагиваются. Распознавание и расчёт override — в
+`packages/ft3-host/src/zavod/personalRoute.ts` (export `@t3tools/ft3-host/zavod-route`),
+тесты — в `personalRoute.test.ts` рядом. Откат шва: убрать вызов хука и import
+`@t3tools/ft3-host/zavod-route` в файле, upstream-поведение возвращается без других правок.
+
+| Upstream-файл                                                       | Правка                                                                                                                                                                            | Зачем                                                                   | Откат                                                                     |
+| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `apps/server/src/provider/Drivers/CodexDriver.ts`                   | эффект `currentLaunchArgs` = `Ft3ZavodRoute.codexPersonalLaunchArgs`; им пользуются адаптер, проба статуса, проба скиллов, `consumeResetCredit` и text generation                 | личный Codex следует переключателю Zavod при каждом запуске codex       | `homeConfig.launchArgs` вместо `currentLaunchArgs`, убрать `routedConfig` |
+| `apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts`       | необязательный хук `resolveLaunchArgs` в options; `openSession` вызывает его, когда managed `resolveRuntime` не задан                                                             | config.toml перечитывается при старте каждой сессии app-server          | убрать поле и ветку `sessionSettings`                                     |
+| `apps/server/src/textGeneration/CodexTextGeneration.ts`             | необязательный 5-й параметр `resolveLaunchArgs`, вычисляется на каждый вызов codex exec                                                                                           | заголовки и сообщения коммитов личного Codex не идут через шлюз         | убрать параметр и ветку `effectiveConfig`                                 |
+| `apps/server/src/provider/Drivers/ClaudeHome.ts`                    | обёртка `claudePersonalRouteSettings(config, env)`: `resolveClaudeHomePath` → `Ft3ZavodRoute.claudePersonalRouteSettings`                                                         | одна точка, где upstream резолвит config dir для шва                    | удалить обёртку и import                                                  |
+| `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts`      | `sdkSettings = withClaudePersonalRoute(launch-arg settings, route)` перед `makeClaudeQueryOptions`                                                                                | flag settings сессии перекрывают шлюз из settings.json                  | вернуть `claudeSdkLaunchArgSettings(launchArgSettings)` в `sdkSettings`   |
+| `apps/server/src/provider/ClaudeProvider.ts`                        | необязательный `personalRoute` в `buildClaudeCapabilitiesProbeQueryOptions`, проба передаёт route                                                                                 | проба статуса и моделей личного Claude идёт на подписку                 | убрать поле и вызов, вернуть `settings: { disableAllHooks: true }`        |
+| `apps/server/src/textGeneration/ClaudeTextGeneration.ts`            | `routedSettings = withClaudePersonalRoute(launchArgSettings, route)`                                                                                                              | text generation личного Claude идёт на подписку                         | вернуть `...launchArgSettings`                                            |
+| `apps/server/src/provider/Drivers/CodexDriver.test.ts`              | тест «keeps the personal ~/.codex instance off the Zavod gateway», включая переключение между сессиями                                                                            | проверка шва драйвера и адаптера                                        | удалить тест                                                              |
+| `apps/server/src/textGeneration/CodexTextGeneration.test.ts`        | `resolveLaunchArgs` в `withFakeCodexEnv`, тест «reads the launch args hook on every generation»                                                                                   | проверка шва text generation                                            | удалить поле и тест                                                       |
+| `apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts` | `homePath` в `startTurnWithLaunchArgs`, тест «keeps the personal ~/.claude instance off the Zavod gateway»; временный `HostProcess.HomeDirectory` в тесте «persists a todo_list…» | проверка шва адаптера; тест не зависит от ~/.claude машины разработчика | удалить тест и параметр; изоляцию дома можно оставить                     |
+| `apps/server/src/provider/ClaudeCapabilitiesProbe.test.ts`          | тест route в опциях пробы                                                                                                                                                         | проверка шва пробы                                                      | удалить тест                                                              |
+| `apps/server/src/textGeneration/ClaudeTextGeneration.test.ts`       | `withFakeClaudeEnv` задаёт `HostProcess.HomeDirectory` во временную папку                                                                                                         | тесты не зависят от ~/.claude с включённым Zavod                        | можно оставить                                                            |
+
+Тесты `ClaudeTextGeneration.test.ts`, `ClaudeCapabilitiesProbe.test.ts` и
+`CodexTextGeneration.test.ts` входят в шаг server-тестов `ft3-gate.yml`.
+`ClaudeAdapterV2.test.ts` и `CodexDriver.test.ts` в гейт не добавлены: на Windows в них
+уже падают upstream-тесты «forks a session from its original directory…» и
+«probes again when auth.json…» (на базе тоже).
+
 ## Синк upstream 2026-11-17
 
 База синка — `upstream/main` `0058a4abb3adda91313c8e22d9a183cac0c4b8d5`.
