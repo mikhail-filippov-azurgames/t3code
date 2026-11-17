@@ -5,11 +5,15 @@ import type {
   MailTask,
   MailTimelineEntry,
 } from "@t3tools/ft3-mail/contracts";
+import type { MailTasksRpcSuccess } from "@t3tools/ft3-mail/rpc-contracts";
+
+type MailTaskMember = NonNullable<MailTasksRpcSuccess["members"]>[string][number];
 
 /** One board mail task with its letters, oldest first for reading. */
 export interface MailTaskGroup {
   readonly task: MailTask;
   readonly entries: ReadonlyArray<MailTimelineEntry>;
+  readonly members: ReadonlyArray<MailTaskMember>;
 }
 
 /**
@@ -21,11 +25,27 @@ export interface MailTaskGroup {
 export function mailTaskGroups(
   tasks: ReadonlyArray<MailTask>,
   letters: Readonly<Record<string, ReadonlyArray<MailTimelineEntry>>>,
+  members?: Readonly<Record<string, ReadonlyArray<MailTaskMember>>>,
 ): ReadonlyArray<MailTaskGroup> {
   return tasks.map((task) => {
     const entries = letters[task.taskId];
-    return { task, entries: entries === undefined ? [] : [...entries].reverse() };
+    return {
+      task,
+      entries: entries === undefined ? [] : [...entries].reverse(),
+      members: members?.[task.taskId] ?? [],
+    };
   });
+}
+
+export function mailMemberLaunchLabel(launch: MailTaskMember["launch"]): string {
+  switch (launch) {
+    case "not_started":
+      return "не запущен";
+    case "started":
+      return "запущен";
+    case "closed":
+      return "закрыт";
+  }
 }
 
 /** Letters older than a full page stay reachable on the server; the tab caps at this many. */

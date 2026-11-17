@@ -22,6 +22,7 @@ import {
   MAIL_TIMELINE_PAGE_LIMIT,
   mailDeliveryBadgeVariant,
   mailLetterSenderLabel,
+  mailMemberLaunchLabel,
   mailPlanPhaseLabel,
   mailRecipientLabel,
   mailTaskGroups,
@@ -77,10 +78,12 @@ export function BoardMailTab(props: {
   const cardGroups = mailTaskGroups(
     tasks.filter((task) => task.cardId !== null),
     letters,
+    tasksQuery.data?.members,
   );
   const cardlessGroups = mailTaskGroups(
     tasks.filter((task) => task.cardId === null),
     letters,
+    tasksQuery.data?.members,
   );
   return (
     <div className="space-y-3">
@@ -192,6 +195,26 @@ function MailTaskGroupItem(props: {
           </Badge>
         </div>
       </div>
+      {group.members.length > 0 ? (
+        <ul aria-label="Участники" className="mt-2 flex flex-wrap gap-x-3 gap-y-1.5">
+          {group.members.map((member, index) => (
+            /* oxlint-disable react/no-array-index-key -- RPC members omit IDs and roles can repeat. */
+            <li
+              key={index}
+              className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+            >
+              <span className="min-w-0 break-words">
+                {member.roleId}
+                {member.specialization === null ? "" : `/${member.specialization}`}
+              </span>
+              <Badge variant="outline" size="sm">
+                {mailMemberLaunchLabel(member.launch)}
+              </Badge>
+            </li>
+            /* oxlint-enable react/no-array-index-key */
+          ))}
+        </ul>
+      ) : null}
       {expanded ? (
         entries.length === 0 ? (
           <p className="mt-2 text-xs text-muted-foreground">No letters yet.</p>

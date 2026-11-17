@@ -1,5 +1,6 @@
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import type { MailTask, MailTimelineEntry } from "@t3tools/ft3-mail/contracts";
+import type { MailTasksRpcSuccess } from "@t3tools/ft3-mail/rpc-contracts";
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
@@ -92,6 +93,7 @@ const entry = (overrides: Record<string, unknown> = {}): MailTimelineEntry => ({
 type MailTasksPage = {
   readonly tasks: MailTask[];
   readonly letters: Record<string, MailTimelineEntry[]>;
+  readonly members?: MailTasksRpcSuccess["members"];
 };
 
 const mailEnabledSnapshot = {
@@ -109,6 +111,7 @@ const mailDisabledSnapshot = {
 function setup(options: {
   readonly tasks?: MailTask[];
   readonly letters?: Record<string, MailTimelineEntry[]>;
+  readonly members?: MailTasksRpcSuccess["members"];
   readonly tasksFailure?: "offline" | "unknown-method";
   readonly snapshot?: unknown;
 }) {
@@ -125,6 +128,7 @@ function setup(options: {
         : AsyncResult.success<MailTasksPage, unknown>({
             tasks: options.tasks ?? [],
             letters: options.letters ?? {},
+            ...(options.members === undefined ? {} : { members: options.members }),
           }),
   );
   mocks.tasks.mockReturnValue(tasksAtom);
@@ -146,6 +150,38 @@ const renderTab = (
   );
 
 describe("BoardMailTab", () => {
+  it("shows participant launch states on a collapsed task and handles an older server", async () => {
+    using state = setup({
+      tasks: [task()],
+      members: {
+        "task:one": [
+          {
+            roleId: "implementation",
+            specialization: null,
+            status: "active",
+            launch: "not_started",
+          },
+          { roleId: "test", specialization: null, status: "active", launch: "started" },
+          { roleId: "review", specialization: "codex", status: "closed", launch: "closed" },
+        ],
+      },
+    });
+    await using screen = await renderTab(state);
+
+    await expect.element(screen.getByRole("list", { name: "Участники" })).toBeVisible();
+    await expect.element(screen.getByText("не запущен", { exact: true })).toBeVisible();
+    await expect.element(screen.getByText("запущен", { exact: true })).toBeVisible();
+    await expect.element(screen.getByText("закрыт", { exact: true })).toBeVisible();
+    await expect.element(screen.getByText("review/codex", { exact: true })).toBeVisible();
+    await expect.element(screen.getByRole("button", { name: "Развернуть задачу" })).toBeVisible();
+
+    await act(() =>
+      state.registry.set(state.tasksAtom, AsyncResult.success({ tasks: [task()], letters: {} })),
+    );
+    await expect.element(screen.getByRole("heading", { name: "Refactor" })).toBeVisible();
+    expect(screen.container.querySelector('ul[aria-label="Участники"]')).toBeNull();
+  });
+
   it("shows one group per task with letters oldest first and delivery badges", async () => {
     using state = setup({
       tasks: [task()],
