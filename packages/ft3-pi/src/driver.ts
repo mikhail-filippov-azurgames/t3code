@@ -31,7 +31,7 @@ import {
   resolvePiInferenceConfigPath,
 } from "./inferenceServer.ts";
 import { applyLocalLlamaExtensionPolicy } from "./localLlamaExtension.ts";
-import { PI_RUNTIME_PACKAGE, resolvePiBinaryPath } from "./piRuntime.ts";
+import { PI_RUNTIME_PACKAGE, resolvePiInstanceRuntime } from "./piRuntime.ts";
 import { defaultCodexImportPaths, importCodexResourcesIntoAgentDir } from "./skills.ts";
 
 export type Ft3PiDriverEnv = PiDriverEnv | FileSystem.FileSystem | Path.Path;
@@ -47,10 +47,11 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
     const agentDir = path.join(host.paths.stateDir, "pi", instanceId, "agent");
     const processEnvironment: NodeJS.ProcessEnv = { ...process.env };
     for (const entry of input.environment) processEnvironment[entry.name] = entry.value;
-    const piRuntime = yield* resolvePiBinaryPath({
+    const { runtime: piRuntime, enabled } = yield* resolvePiInstanceRuntime({
       binaryPath: input.config.binaryPath,
       environment: processEnvironment,
       launcherDir: path.join(host.paths.stateDir, "pi", instanceId, "runtime"),
+      enabled: input.enabled,
     }).pipe(
       Effect.mapError(
         (cause) =>
@@ -132,6 +133,7 @@ export const Ft3PiDriver: ProviderDriver<PiSettings, Ft3PiDriverEnv, Path.Path> 
 
     const instance = yield* PiDriver.create({
       ...input,
+      enabled,
       config: { ...input.config, binaryPath: piRuntime.binaryPath },
       environment,
     });

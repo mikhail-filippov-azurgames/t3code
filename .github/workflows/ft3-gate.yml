@@ -121,7 +121,7 @@ jobs:
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed web files
         working-directory: apps/web
-        run: vp test run src/components/chat/MessagesTimeline.logic.test.ts src/components/chat/MessagesTimeline.browser.test.tsx src/components/chat/ThreadRelationshipsControl.browser.test.tsx src/components/usage/UsageModelDialog.browser.test.tsx src/components/chat/ThreadErrorBanner.test.tsx
+        run: vp test run src/components/chat/MessagesTimeline.logic.test.ts src/components/chat/MessagesTimeline.browser.test.tsx src/components/chat/ThreadRelationshipsControl.browser.test.tsx src/components/usage/UsageModelDialog.browser.test.tsx src/components/chat/ThreadErrorBanner.test.tsx src/components/onboarding/WelcomePage.import.browser.test.tsx
 
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed contracts files

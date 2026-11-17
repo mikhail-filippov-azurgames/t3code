@@ -23,6 +23,7 @@
     "./policies": "./src/policies/index.ts",
     "./lineage": "./src/lineage/index.ts",
     "./planning": "./src/planning/index.ts",
+    "./onboarding": "./src/onboarding/environmentLabel.logic.ts",
     "./mail": "./src/mail/index.ts"
   },
   "scripts": {

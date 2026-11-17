@@ -27,6 +27,7 @@ import {
   ProviderDriverKind,
   ThreadId,
 } from "@t3tools/contracts";
+import { readableEnvironmentLabel } from "@t3tools/ft3-web/onboarding";
 import { Link, useBlocker } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import {
@@ -40,7 +41,7 @@ import {
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 import { TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "../../appearanceFonts";
-import { MOBILE_APP_URL } from "../../branding";
+import { APP_BASE_NAME, MOBILE_APP_URL } from "../../branding";
 import { isElectron } from "../../env";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { usePersistEnvironmentProviderInstanceMutation } from "../../hooks/useSettings";
@@ -131,10 +132,13 @@ export function WelcomePage({
   readonly onDone: (projectRef?: ScopedProjectRef) => void | Promise<void>;
 }) {
   const { environments } = useEnvironments();
-  const label =
-    environments.find((environment) => environment.environmentId === environmentId)?.label ??
-    "this computer";
-  const agentReady = useWelcomeAgents(environmentId).readyCount > 0;
+  const welcomeAgents = useWelcomeAgents(environmentId);
+  const label = readableEnvironmentLabel({
+    label: environments.find((environment) => environment.environmentId === environmentId)?.label,
+    environmentId,
+    hostname: welcomeAgents.serverConfig?.hostname,
+  });
+  const agentReady = welcomeAgents.readyCount > 0;
   // The phone and `t3` on PATH belong to the primary computer, so only it offers them.
   const isPrimary = usePrimaryEnvironmentId() === environmentId;
   // The same access Settings → Sharing & access checks.
@@ -273,7 +277,7 @@ export function WelcomePage({
         <div className="min-h-0 flex-1 overflow-y-auto scrollbar-gutter-both">
           <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-6 pt-12 pb-8 sm:pt-20">
             <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-              Welcome to T3 Code
+              Welcome to {APP_BASE_NAME}
             </h1>
             <p className="mt-1.5 text-sm text-muted-foreground">
               Setting up <span className="text-foreground">{label}</span>.

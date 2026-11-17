@@ -4,6 +4,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
 /**
  * Pinned Pi runtime bundled with FT3: empty `binaryPath` or `"pi"` runs the
@@ -15,12 +16,19 @@ export const PI_RUNTIME_PIN = "0.87.1";
 export const PI_RUNTIME_PACKAGE = "@earendil-works/pi-coding-agent";
 export const PI_RUNTIME_CLI = "dist/bundle/cli.js";
 export const PI_RUNTIME_SENTINEL = "pi";
+const FT3_PI_PACKAGE = "@t3tools/ft3-pi";
 /** Environment override name; the pinned resolver rejects any non-empty value. */
 export const PI_RUNTIME_ENV_VAR = "PI_BUNDLED_PI_BIN";
 
 function piRuntimeError(detail: string, cause?: unknown): Error {
   return new Error(`Pi: ${detail}`, cause === undefined ? undefined : { cause });
 }
+
+/** The pinned bundle is absent, so Pi cannot run. */
+export class PiRuntimeMissingError extends Schema.TaggedError<PiRuntimeMissingError>()(
+  "PiRuntimeMissingError",
+  { message: Schema.String },
+) {}
 
 function parentDir(dir: string): string | undefined {
   const normalized = dir.replace(/[/\\]+$/, "");
@@ -38,8 +46,10 @@ export function isBundledPiBinaryPath(binaryPath: string | undefined): boolean {
 }
 
 /**
- * Candidate bundle paths from `startDir` upward (nearest first). Pure so
- * tests can assert the layout without touching the filesystem.
+ * Candidate bundle paths from `startDir` upward (nearest first). Each level
+ * also looks through the `@t3tools/ft3-pi` workspace link, because the built
+ * server inlines this module while pnpm keeps the bundle in ft3-pi's own
+ * node_modules. Pure so tests can assert the layout without the filesystem.
  */
 export function bundledPiCliCandidates(
   startDir: string,
@@ -50,6 +60,7 @@ export function bundledPiCliCandidates(
   let current: string | undefined = startDir.replace(/[/\\]+$/, "");
   while (current !== undefined) {
     candidates.push(join(current, ...segments));
+    candidates.push(join(current, "node_modules", FT3_PI_PACKAGE, ...segments));
     current = parentDir(current);
   }
   return candidates;
@@ -166,11 +177,9 @@ export const resolvePiBinaryPath = Effect.fn("PiRuntime.resolveBinaryPath")(func
   const fromDir = input.fromDir ?? piModuleDir(path);
   const cliJs = yield* findBundledPiCliJsEffect(fromDir);
   if (cliJs === undefined) {
-    return yield* Effect.fail(
-      piRuntimeError(
-        `bundled Pi ${PI_RUNTIME_PIN} not found in this package. Is ${PI_RUNTIME_PACKAGE} installed?`,
-      ),
-    );
+    return yield* new PiRuntimeMissingError({
+      message: `Pi: bundled Pi ${PI_RUNTIME_PIN} not found in this package. Is ${PI_RUNTIME_PACKAGE} installed?`,
+    });
   }
 
   const binaryPath = yield* ensurePiLauncher({
@@ -185,4 +194,24 @@ export const resolvePiBinaryPath = Effect.fn("PiRuntime.resolveBinaryPath")(func
     cliJs,
     origin: `bundled Pi ${PI_RUNTIME_PIN} (${PI_RUNTIME_PACKAGE})`,
   } satisfies PiBinaryPathResolution;
+});
+
+/**
+ * Instance-level resolution: a missing bundle turns the instance off instead
+ * of failing it, so a checkout without the Pi package shows Pi as disabled.
+ */
+export const resolvePiInstanceRuntime = Effect.fn("PiRuntime.resolveInstanceRuntime")(function* (
+  input: ResolvePiBinaryPathInput & { readonly enabled: boolean },
+) {
+  const missing: PiBinaryPathResolution = {
+    binaryPath: PI_RUNTIME_SENTINEL,
+    bundled: false,
+    origin: `missing bundled Pi ${PI_RUNTIME_PIN}`,
+  };
+  return yield* resolvePiBinaryPath(input).pipe(
+    Effect.map((runtime) => ({ runtime, enabled: input.enabled })),
+    Effect.catchIf(Schema.is(PiRuntimeMissingError), (error) =>
+      Effect.logWarning(error.message).pipe(Effect.as({ runtime: missing, enabled: false })),
+    ),
+  );
 });

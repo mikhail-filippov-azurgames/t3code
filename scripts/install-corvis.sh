@@ -6,7 +6,7 @@ set -eu
 repository_url=https://github.com/mikhail-filippov-azurgames/t3code
 branch=corvis/main
 # Kept aligned with root engines.node by the installer test for standalone use.
-required_node_version=26.12.1
+required_node_version=26.13.1
 
 fail() {
   printf 'Corvis installation failed. %s\n' "$1" >&2
@@ -26,11 +26,11 @@ assert_node_version() {
   node_major=${node_version#v}
   node_major=${node_major%%.*}
   case "$node_major" in
-    ''|*[!0-9]*) fail "Cannot read Node.js version $node_version. Install Node.js 24+ LTS from https://nodejs.org/ and run the installer again." ;;
+    ''|*[!0-9]*) fail "Cannot read Node.js version $node_version. Install Node.js 26 from https://nodejs.org/ and run the installer again." ;;
   esac
-  [ "$node_major" -ge 24 ] || fail "Node.js 24+ LTS is required, found $node_version (engines.node is $1). Install Node.js 24+ LTS from https://nodejs.org/ and run the installer again."
+  [ "$node_major" -ge 26 ] || fail "Node.js 26 is required, found $node_version (engines.node is $1). Install Node.js 26 from https://nodejs.org/ and run the installer again."
   if [ "$node_version" != "v$1" ]; then
-    printf 'Warning: Node.js %s differs from engines.node (%s). Continuing with Node.js 24+ support.\n' "$node_version" "$1" >&2
+    printf 'Warning: Node.js %s differs from engines.node (%s). Continuing with Node.js 26 support.\n' "$node_version" "$1" >&2
   fi
 }
 
@@ -38,7 +38,7 @@ assert_node_version() {
 for tool in node corepack pnpm git; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     case "$tool" in
-      node) hint="Install Node.js 24+ LTS from https://nodejs.org/ (engines.node is $required_node_version)." ;;
+      node) hint="Install Node.js 26 from https://nodejs.org/ (engines.node is $required_node_version)." ;;
       corepack) hint='Install Corepack following https://github.com/nodejs/corepack#installation.' ;;
       pnpm) hint='Prepare pnpm using Corepack following https://pnpm.io/installation#using-corepack.' ;;
       git) hint='Install Git using your OS package manager or https://git-scm.com/downloads.' ;;

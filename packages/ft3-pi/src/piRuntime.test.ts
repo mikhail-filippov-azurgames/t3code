@@ -13,6 +13,7 @@ import {
   PI_RUNTIME_PACKAGE,
   PI_RUNTIME_PIN,
   resolvePiBinaryPath,
+  resolvePiInstanceRuntime,
 } from "./piRuntime.ts";
 
 it("walks up to the bundled cli.js", () => {
@@ -21,6 +22,15 @@ it("walks up to the bundled cli.js", () => {
     present.includes(candidate);
   assert.equal(findBundledPiCliJs("/pkg/apps/server/src", exists([cli])), cli);
   assert.equal(findBundledPiCliJs("/pkg/apps/server/src", exists([])), undefined);
+});
+
+it("finds the bundle through the ft3-pi link from a built server without its own copy", () => {
+  const cli =
+    "/repo/apps/server/node_modules/@t3tools/ft3-pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js";
+  assert.equal(
+    findBundledPiCliJs("/repo/apps/server/dist", (candidate) => candidate === cli),
+    cli,
+  );
 });
 
 it("matches the pinned package layout", () => {
@@ -151,6 +161,41 @@ it.effect("fails closed instead of falling back to an ambient Pi", () =>
       assert.match(String(result.failure), /bundled Pi 0\.87\.1 not found/);
     }
     assert.isFalse(yield* fileSystem.exists(path.join(root, "runtime")));
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("disables the instance instead of failing when the bundle is missing", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "ft3-pi-runtime-" });
+    const resolved = yield* resolvePiInstanceRuntime({
+      binaryPath: "pi",
+      launcherDir: path.join(root, "runtime"),
+      fromDir: path.join(root, "apps", "server", "dist"),
+      enabled: true,
+    });
+
+    assert.isFalse(resolved.enabled);
+    assert.isFalse(resolved.runtime.bundled);
+    assert.isFalse(yield* fileSystem.exists(path.join(root, "runtime")));
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
+
+it.effect("keeps the override rejection fatal at the instance level", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "ft3-pi-runtime-" });
+    const result = yield* resolvePiInstanceRuntime({
+      binaryPath: "pi",
+      environment: { [PI_RUNTIME_ENV_VAR]: "C:/custom/pi.exe" },
+      launcherDir: path.join(root, "runtime"),
+      fromDir: root,
+      enabled: true,
+    }).pipe(Effect.result);
+
+    assert.equal(result._tag, "Failure");
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
 );
 
