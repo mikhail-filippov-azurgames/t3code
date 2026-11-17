@@ -7,6 +7,23 @@ export const resolveCodexLaunchArgs = (
   environment: NodeJS.ProcessEnv = process.env,
 ) => environment[T3CODE_CODEX_LAUNCH_ARGS_ENV]?.trim() || launchArgs?.trim() || "";
 
+/** Final launch args with the environment that resolves back to them. */
+export interface CodexLaunch {
+  readonly launchArgs: string;
+  readonly environment: NodeJS.ProcessEnv;
+}
+
+// ft3: pins args derived from the env override so later resolution keeps them.
+export const pinCodexLaunchArgs = (
+  launchArgs: string,
+  environment: NodeJS.ProcessEnv,
+): CodexLaunch => ({
+  launchArgs,
+  environment: environment[T3CODE_CODEX_LAUNCH_ARGS_ENV]?.trim()
+    ? { ...environment, [T3CODE_CODEX_LAUNCH_ARGS_ENV]: launchArgs }
+    : environment,
+});
+
 const codexLaunchArgv = (launchArgs?: string): ReadonlyArray<string> => tokenizeCliArgs(launchArgs);
 
 // T3 unsubscribes only when it unloads a thread; Codex's own unload delay would stack on that.

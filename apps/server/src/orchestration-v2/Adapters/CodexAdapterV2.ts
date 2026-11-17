@@ -125,7 +125,11 @@ import {
   shouldPersistProviderEvent,
 } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
+import {
+  codexAppServerArgs,
+  resolveCodexLaunchArgs,
+  type CodexLaunch,
+} from "../../provider/codexLaunchArgs.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -1832,7 +1836,7 @@ export const createCodexAdapterV2 = Effect.fn("CodexAdapterV2.createCodexAdapter
   { instanceId, environment, enabled, config }: ProviderAdapterDriverCreateInput<CodexSettings>,
   hooks: Pick<
     CodexAdapterV2Options,
-    "onUsageLimits" | "resolveRuntime" | "resolveLaunchArgs" | "compatibility" | "models"
+    "onUsageLimits" | "resolveRuntime" | "resolveLaunch" | "compatibility" | "models"
   > = {},
 ) {
   const clientFactory = yield* CodexAppServerClientFactory;
@@ -1889,7 +1893,7 @@ export interface CodexAdapterV2Options {
   readonly models?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
   /** Re-read per session so a config switch applies without restarting the instance. */
-  readonly resolveLaunchArgs?: Effect.Effect<string>;
+  readonly resolveLaunch?: (environment: NodeJS.ProcessEnv) => Effect.Effect<CodexLaunch>;
   readonly compatibility?: (
     version: string,
   ) => Effect.Effect<ServerProviderCompatibilityAdvisory | undefined>;
@@ -1941,21 +1945,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     }),
                 ),
               );
+        const sessionLaunch =
+          resolvedRuntime === undefined && adapterOptions.resolveLaunch !== undefined
+            ? yield* adapterOptions.resolveLaunch(adapterOptions.environment)
+            : undefined;
         const sessionSettings =
           resolvedRuntime?.config ??
-          (adapterOptions.resolveLaunchArgs === undefined
+          (sessionLaunch === undefined
             ? adapterOptions.settings
-            : {
-                ...adapterOptions.settings,
-                launchArgs: yield* adapterOptions.resolveLaunchArgs,
-              });
+            : { ...adapterOptions.settings, launchArgs: sessionLaunch.launchArgs });
         const client = yield* clientFactory.open({
           instanceId: adapterOptions.instanceId,
           threadId: input.threadId,
           providerSessionId: input.providerSessionId,
           runtimePolicy: input.runtimePolicy,
           settings: sessionSettings,
-          environment: resolvedRuntime?.environment ?? adapterOptions.environment,
+          environment:
+            resolvedRuntime?.environment ??
+            sessionLaunch?.environment ??
+            adapterOptions.environment,
         });
         const codexZone = codexTimeZone(resolvedRuntime?.environment ?? adapterOptions.environment);
         const additionalContextByThread = yield* Ref.make(

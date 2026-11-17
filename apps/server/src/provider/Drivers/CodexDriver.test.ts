@@ -39,6 +39,7 @@ import {
   resolveLatestProviderVersion,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 import { CodexDriver } from "./CodexDriver.ts";
+import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
 import * as CodexAdapterV2 from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -601,6 +602,7 @@ it.layer(layerTest)("CodexDriver", (it) => {
         homePath: string,
         launchArgs = "",
         betweenSessions?: Effect.Effect<void, PlatformError.PlatformError>,
+        launchArgsOverride?: string,
       ) =>
         Effect.gen(function* () {
           const launches: Array<
@@ -611,7 +613,16 @@ it.layer(layerTest)("CodexDriver", (it) => {
             instanceId,
             displayName: instance,
             enabled: true,
-            environment: [],
+            environment:
+              launchArgsOverride === undefined
+                ? []
+                : [
+                    {
+                      name: "T3CODE_CODEX_LAUNCH_ARGS",
+                      value: launchArgsOverride,
+                      sensitive: false,
+                    },
+                  ],
             config: { ...CodexDriver.defaultConfig(), homePath, launchArgs },
           }).pipe(
             Effect.provideService(HostProcess.HomeDirectory, userHome),
@@ -639,14 +650,16 @@ it.layer(layerTest)("CodexDriver", (it) => {
               })
               .pipe(Effect.scoped, Effect.exit);
           yield* open("first");
-          if (betweenSessions === undefined) {
-            expect(launches).toHaveLength(1);
-            return launches[0]!.settings;
+          if (betweenSessions !== undefined) {
+            yield* betweenSessions;
+            yield* open("second");
           }
-          yield* betweenSessions;
-          yield* open("second");
-          expect(launches).toHaveLength(2);
-          return launches[1]!.settings;
+          expect(launches).toHaveLength(betweenSessions === undefined ? 1 : 2);
+          const recorded = launches.at(-1)!;
+          return {
+            ...recorded.settings,
+            resolved: resolveCodexLaunchArgs(recorded.settings.launchArgs, recorded.environment),
+          };
         });
 
       const personal = yield* launch("personal-default", "");
@@ -685,6 +698,24 @@ it.layer(layerTest)("CodexDriver", (it) => {
         writeConfig(personalHome, subscriptionConfig),
       );
       expect(switchedOff.launchArgs).toBe("");
+
+      yield* writeConfig(personalHome, zavodConfig);
+      const overridden = yield* launch(
+        "personal-env-override",
+        "",
+        "--enable hooks",
+        undefined,
+        "--strict-config",
+      );
+      expect(overridden.resolved).toBe('-c "model_provider=\\"openai\\"" --strict-config');
+      const zavodOverridden = yield* launch(
+        "zavod-env-override",
+        zavodHome,
+        "",
+        undefined,
+        "--strict-config",
+      );
+      expect(zavodOverridden.resolved).toBe("--strict-config");
     }).pipe(
       Effect.provideService(HostProcess.Environment, {}),
       Effect.provideService(

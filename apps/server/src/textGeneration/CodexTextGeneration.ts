@@ -22,6 +22,7 @@ import {
   codexExecLaunchArgs,
   codexMcpListLaunchArgs,
   resolveCodexLaunchArgs,
+  type CodexLaunch,
 } from "../provider/codexLaunchArgs.ts";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
 import {
@@ -70,7 +71,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     import("@t3tools/contracts").ProviderSetupError,
     Scope.Scope
   >,
-  resolveLaunchArgs?: Effect.Effect<string>,
+  resolveLaunch?: (environment: NodeJS.ProcessEnv) => Effect.Effect<CodexLaunch>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -255,12 +256,15 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             ),
           )
         : undefined;
+      const launch =
+        resolved === undefined && resolveLaunch !== undefined
+          ? yield* resolveLaunch(resolvedEnvironment)
+          : undefined;
       const effectiveConfig =
         resolved?.config ??
-        (resolveLaunchArgs === undefined
-          ? codexConfig
-          : { ...codexConfig, launchArgs: yield* resolveLaunchArgs });
-      const effectiveEnvironment = resolved?.environment ?? resolvedEnvironment;
+        (launch === undefined ? codexConfig : { ...codexConfig, launchArgs: launch.launchArgs });
+      const effectiveEnvironment =
+        resolved?.environment ?? launch?.environment ?? resolvedEnvironment;
       const models = yield* getModels;
       const requestedModel = modelSelection.model;
       const listed = models.filter((candidate) => !candidate.isCustom);

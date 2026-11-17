@@ -33,7 +33,7 @@ import {
   withCodexAppServerClient,
 } from "../CodexProvider.ts";
 import * as Ft3ZavodRoute from "@t3tools/ft3-host/zavod-route";
-import { resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
+import { pinCodexLaunchArgs, resolveCodexLaunchArgs } from "../codexLaunchArgs.ts";
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import { applyCodexModelCatalog } from "../codexModelCatalog.ts";
@@ -196,17 +196,24 @@ export const CodexDriver: ProviderDriver<
         ? { ...config, homePath: environmentHome }
         : config;
     const homeLayout = yield* resolveCodexHomeLayout(homeConfig);
-    // ft3: a personal ~/.codex stays off a Zavod gateway, re-read at each launch.
-    const currentLaunchArgs = Ft3ZavodRoute.codexPersonalLaunchArgs(
-      homeLayout.sharedHomePath,
-      homeConfig.launchArgs,
-    ).pipe(
-      Effect.provideService(FileSystem.FileSystem, fileSystem),
-      Effect.provideService(Path.Path, pathService),
-      Effect.provideService(HostProcess.HomeDirectory, yield* HostProcess.HomeDirectory),
-      Effect.provideService(HostProcess.Platform, yield* HostProcess.Platform),
-    );
-    const routedConfig = { ...homeConfig, launchArgs: yield* currentLaunchArgs };
+    // ft3: a personal ~/.codex stays off a Zavod gateway, re-read at each launch after the env override.
+    const hostHome = yield* HostProcess.HomeDirectory;
+    const hostPlatform = yield* HostProcess.Platform;
+    const personalLaunch = (launchEnvironment: NodeJS.ProcessEnv) =>
+      Ft3ZavodRoute.codexPersonalLaunchArgs(
+        homeLayout.sharedHomePath,
+        resolveCodexLaunchArgs(homeConfig.launchArgs, launchEnvironment),
+      ).pipe(
+        Effect.map((launchArgs) => pinCodexLaunchArgs(launchArgs, launchEnvironment)),
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+        Effect.provideService(HostProcess.HomeDirectory, hostHome),
+        Effect.provideService(HostProcess.Platform, hostPlatform),
+      );
+    const routedConfig = {
+      ...homeConfig,
+      launchArgs: (yield* personalLaunch(processEnv)).launchArgs,
+    };
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
       instanceId,
@@ -261,7 +268,7 @@ export const CodexDriver: ProviderDriver<
         config: routedConfig,
       },
       {
-        resolveLaunchArgs: currentLaunchArgs,
+        resolveLaunch: personalLaunch,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         models: Effect.suspend(() => snapshot.getSnapshot).pipe(
           Effect.map((value) => value.models),
@@ -285,8 +292,12 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          Effect.flatMap(currentLaunchArgs, (launchArgs) =>
-            checkCodexProviderStatus({ ...effectiveConfig, launchArgs }, undefined, processEnv),
+          Effect.flatMap(personalLaunch(processEnv), (launch) =>
+            checkCodexProviderStatus(
+              { ...effectiveConfig, launchArgs: launch.launchArgs },
+              undefined,
+              launch.environment,
+            ),
           ),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
@@ -337,7 +348,7 @@ export const CodexDriver: ProviderDriver<
       processEnv,
       snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
       undefined,
-      currentLaunchArgs,
+      personalLaunch,
     );
     const probeSkills = yield* makeCodexSkillsProbe().pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -347,13 +358,13 @@ export const CodexDriver: ProviderDriver<
         ? snapshot.getSnapshot
         : Effect.all([
             snapshot.getSnapshot,
-            Effect.flatMap(currentLaunchArgs, (launchArgs) =>
+            Effect.flatMap(personalLaunch(processEnv), (launch) =>
               probeSkills({
                 binaryPath: effectiveConfig.binaryPath,
                 homePath: effectiveConfig.homePath,
-                launchArgs: resolveCodexLaunchArgs(launchArgs, processEnv),
+                launchArgs: launch.launchArgs,
                 cwd,
-                environment: processEnv,
+                environment: launch.environment,
               }),
             ).pipe(Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv))),
           ]).pipe(
@@ -380,9 +391,8 @@ export const CodexDriver: ProviderDriver<
             const { client } = yield* withCodexAppServerClient({
               binaryPath: effectiveConfig.binaryPath,
               homePath: effectiveConfig.homePath,
-              launchArgs: resolveCodexLaunchArgs(yield* currentLaunchArgs, processEnv),
+              ...(yield* personalLaunch(processEnv)),
               cwd: process.cwd(),
-              environment: processEnv,
             });
             const response = yield* client.request("account/rateLimitResetCredit/consume", {
               idempotencyKey,

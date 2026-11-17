@@ -30,6 +30,11 @@ import { makeProcessProbe, processProbeSource } from "../testUtils/processProbe.
 import * as TextGeneration from "./TextGeneration.ts";
 import * as TextGenerators from "./TextGenerators.ts";
 import { makeCodexTextGeneration } from "./CodexTextGeneration.ts";
+import {
+  pinCodexLaunchArgs,
+  resolveCodexLaunchArgs,
+  type CodexLaunch,
+} from "../provider/codexLaunchArgs.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeCodexSettings = Schema.decodeSync(CodexSettings);
 
@@ -205,7 +210,7 @@ function withFakeCodexEnv<A, E, R>(
     defaultModel?: string;
     customModels?: ReadonlyArray<string>;
     managedRuntime?: boolean;
-    resolveLaunchArgs?: Effect.Effect<string>;
+    resolveLaunch?: (environment: NodeJS.ProcessEnv) => Effect.Effect<CodexLaunch>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
 ) {
@@ -237,7 +242,7 @@ function withFakeCodexEnv<A, E, R>(
             revision: "test",
           })
         : undefined,
-      input.resolveLaunchArgs,
+      input.resolveLaunch,
     );
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
@@ -543,7 +548,7 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
     ),
   );
 
-  it.effect("reads the launch args hook on every generation", () =>
+  it.effect("runs codex exec with the hook's args over T3CODE_CODEX_LAUNCH_ARGS", () =>
     Effect.gen(function* () {
       let reads = 0;
       const generate = (textGeneration: TextGeneration.TextGeneration["Service"]) =>
@@ -557,11 +562,13 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
       yield* withFakeCodexEnv(
         {
           output: JSON.stringify({ subject: "Add important change", body: "" }),
-          launchArgs: "--strict-config",
-          resolveLaunchArgs: Effect.sync(() => {
-            reads += 1;
-            return "--oss --local-provider ollama";
-          }),
+          environment: { T3CODE_CODEX_LAUNCH_ARGS: "--strict-config" },
+          resolveLaunch: (environment) =>
+            Effect.sync(() => {
+              reads += 1;
+              expect(resolveCodexLaunchArgs("", environment)).toBe("--strict-config");
+              return pinCodexLaunchArgs("--oss --local-provider ollama", environment);
+            }),
           requireArg: "--oss --local-provider ollama",
           forbidArg: "--strict-config",
         },
