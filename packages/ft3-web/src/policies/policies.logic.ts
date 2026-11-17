@@ -11,6 +11,38 @@ import {
   type PolicyDocumentSource,
   type PolicyRequirementId,
 } from "@t3tools/ft3-policies/contracts";
+import { projectTogglesOverrideOf } from "@t3tools/ft3-policies/settings";
+
+export function planningOverrideHint(
+  snapshot: Pick<PoliciesGetSnapshotResult, "features" | "documents">,
+  projects: ReadonlyArray<{ readonly id: string; readonly title: string }>,
+  overrides: Parameters<typeof projectTogglesOverrideOf>[0],
+): string | null {
+  if (snapshot.features.planning.requestedEnabled) return null;
+  const missing = new Set<string>();
+  for (const document of snapshot.documents) {
+    for (const issue of document.errors) {
+      if (issue.severity !== "error") continue;
+      if (issue.code === "role_missing" && issue.subject === "planner") {
+        if (issue.document === "roles") missing.add("the planner role and its Markdown file");
+        if (issue.document === "routingPolicy") missing.add("the planner routing row");
+      }
+      if (
+        issue.code === "lead_skill_missing" &&
+        issue.subject === "plan-orchestrator" &&
+        issue.document === "leadSkills"
+      ) {
+        missing.add("the plan-orchestrator lead skill");
+      }
+    }
+  }
+  if (missing.size === 0) return null;
+  const names = projects
+    .filter((project) => projectTogglesOverrideOf(overrides, project.id)?.planning === true)
+    .map((project) => `“${project.title}”`);
+  if (names.length === 0) return null;
+  return `Planning is enabled through a project override for ${names.join(", ")}. The environment policy documents are missing ${[...missing].join(", ")}. Add the missing planner role, lead skill or routing row to the environment documents, turn off planning for these projects, or give each project its own policy documents.`;
+}
 
 /**
  * Pure presentation logic of the Policies settings tab: the status badge of a

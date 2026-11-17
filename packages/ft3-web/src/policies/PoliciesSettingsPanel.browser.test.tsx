@@ -2,7 +2,7 @@ import { DEFAULT_POLICY_SETTINGS } from "@t3tools/ft3-policies/settings";
 import { FEATURE_IDS } from "@t3tools/ft3-policies/contracts";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../../apps/web/test/render";
 
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   readError: null as string | null,
   pendingError: null as string | null,
   policySettings: null as unknown,
+  projectSettingsOverrides: {} as Record<string, unknown>,
   projects: [] as Array<{ id: string; title: string; environmentId: string }>,
   projectSnapshots: {} as Record<string, unknown>,
   snapshotInputs: [] as Array<{ projectId?: string }>,
@@ -110,7 +111,10 @@ vi.mock("~/components/settings/SettingsScopeContext", () => ({
 }));
 
 vi.mock("~/components/settings/useScopedSettings", () => ({
-  useScopedSettings: () => ({ ft3: { policies: mocks.policySettings } }),
+  useScopedSettings: () => ({
+    ft3: { policies: mocks.policySettings },
+    projectSettingsOverrides: mocks.projectSettingsOverrides,
+  }),
 }));
 
 vi.mock("~/components/settings/settingsLayout", () => ({
@@ -241,6 +245,7 @@ function setup() {
   mocks.refreshes = [];
   mocks.queries = [];
   mocks.projects = [];
+  mocks.projectSettingsOverrides = {};
   mocks.projectSnapshots = {};
   mocks.snapshotInputs = [];
   mocks.liveRefreshKeys = [];
@@ -267,6 +272,61 @@ function setup() {
 }
 
 describe("policies settings panel", () => {
+  it("explains planning overrides that invalidate environment documents", async () => {
+    setup();
+    mocks.projects = [
+      { id: "alpha", title: "Alpha", environmentId: "env-1" },
+      { id: "other", title: "Other environment", environmentId: "env-2" },
+    ];
+    mocks.projectSettingsOverrides = {
+      alpha: { ft3FeatureToggles: { planning: true } },
+      other: { ft3FeatureToggles: { planning: true } },
+    };
+    mocks.snapshot = {
+      ...snapshotFixture,
+      documents: snapshotFixture.documents.map((document) => ({
+        ...document,
+        pending: false,
+        kept: true,
+        errors: [
+          document.key === "leadSkills"
+            ? {
+                code: "lead_skill_missing",
+                severity: "error",
+                document: document.key,
+                subject: "plan-orchestrator",
+                message: 'Lead skill "plan-orchestrator" is missing.',
+              }
+            : {
+                code: "role_missing",
+                severity: "error",
+                document: document.key,
+                subject: "planner",
+                message: 'Role "planner" is required by planning.',
+              },
+        ],
+      })),
+    };
+    await using screen = await render(<PoliciesSettingsPanel />, { router: false });
+    const hint = screen.container.querySelector('[role="note"]')?.textContent;
+    expect(hint).toContain("project override for “Alpha”");
+    expect(hint).toContain("planner routing row");
+    expect(hint).toContain("planner role and its Markdown file");
+    expect(hint).toContain("plan-orchestrator lead skill");
+    expect(hint).not.toContain("Other environment");
+    if (import.meta.env.VITE_POLICY_HINT_EVIDENCE === "1") {
+      const wasDark = document.documentElement.classList.contains("dark");
+      try {
+        for (const theme of ["light", "dark"]) {
+          document.documentElement.classList.toggle("dark", theme === "dark");
+          await page.screenshot({ path: `../../../../.t3/evidence/policy-hint-${theme}.png` });
+        }
+      } finally {
+        document.documentElement.classList.toggle("dark", wasDark);
+      }
+    }
+  });
+
   it("lists the policy documents with their status badges", async () => {
     setup();
     await using screen = await render(<PoliciesSettingsPanel />, { router: false });

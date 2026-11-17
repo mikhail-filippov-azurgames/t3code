@@ -11,6 +11,7 @@ import {
   featureOffReasonText,
   issueLines,
   lineStartOffset,
+  planningOverrideHint,
   policyAttentionCauses,
   policyDocumentActionLabel,
   policyDocumentBadge,
@@ -59,6 +60,80 @@ const snapshotOf = (
   features: featuresOf(),
   documents: [],
   ...overrides,
+});
+
+describe("planningOverrideHint", () => {
+  const projects = [
+    { id: "alpha", title: "Alpha" },
+    { id: "beta", title: "Beta" },
+    { id: "inherited", title: "Inherited" },
+  ];
+  const overrides = {
+    alpha: { ft3FeatureToggles: { planning: true } },
+    beta: { ft3FeatureToggles: { planning: true } },
+    inherited: { ft3FeatureToggles: { mail: true } },
+    deleted: { ft3FeatureToggles: { planning: true } },
+  };
+  const snapshotWithIssue = (entry: PolicyIssueSchema) =>
+    snapshotOf({ documents: [documentStatus({ key: entry.document, errors: [entry] })] });
+
+  it.each([
+    ["role_missing", "planner", "roles", "planner role and its Markdown file"],
+    ["role_missing", "planner", "routingPolicy", "planner routing row"],
+    ["lead_skill_missing", "plan-orchestrator", "leadSkills", "plan-orchestrator lead skill"],
+  ] as const)("explains %s for %s in %s", (code, subject, document, missing) => {
+    const hint = planningOverrideHint(
+      snapshotWithIssue(issue({ code, subject, document })),
+      projects,
+      overrides,
+    );
+    expect(hint).toContain("“Alpha”, “Beta”");
+    expect(hint).toContain(missing);
+    expect(hint).toContain("turn off planning");
+    expect(hint).toContain("own policy documents");
+    expect(hint).not.toContain("Inherited");
+    expect(hint).not.toContain("deleted");
+  });
+
+  it.each([
+    { code: "role_missing", subject: "lead" },
+    { code: "lead_skill_missing", subject: "board-orchestrator" },
+    { code: "policy_invalid_kept" },
+    { code: "role_missing", subject: "planner", severity: "warning" },
+    { code: "role_missing", subject: "planner", document: "leadSkills" },
+  ] as const)("ignores unrelated diagnostics %j", (entry) => {
+    expect(planningOverrideHint(snapshotWithIssue(issue(entry)), projects, overrides)).toBeNull();
+  });
+
+  it("requires both a planning error and a project override while the default is off", () => {
+    const snapshot = snapshotWithIssue(
+      issue({ code: "role_missing", subject: "planner", document: "roles" }),
+    );
+    expect(planningOverrideHint(snapshotOf(), projects, overrides)).toBeNull();
+    expect(planningOverrideHint(snapshot, projects, {})).toBeNull();
+    expect(
+      planningOverrideHint(snapshot, projects, {
+        alpha: { ft3FeatureToggles: { planning: false } },
+      }),
+    ).toBeNull();
+    expect(
+      planningOverrideHint(
+        { ...snapshot, features: featuresOf({ planning: { requestedEnabled: true } }) },
+        projects,
+        overrides,
+      ),
+    ).toBeNull();
+  });
+
+  it("lists each missing requirement once across duplicate errors", () => {
+    const entry = issue({ code: "role_missing", subject: "planner", document: "roles" });
+    const snapshot = snapshotOf({ documents: [documentStatus({ errors: [entry, entry] })] });
+    expect(
+      planningOverrideHint(snapshot, projects, overrides)?.match(
+        /planner role and its Markdown file/g,
+      ),
+    ).toHaveLength(1);
+  });
 });
 
 describe("policyDocumentBadge", () => {

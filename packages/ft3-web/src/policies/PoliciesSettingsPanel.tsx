@@ -60,6 +60,7 @@ import {
   type PolicyAttentionCause,
   featureOffReasonText,
   lineStartOffset,
+  planningOverrideHint,
   policyAttentionCauses,
   policyDocumentActionLabel,
   policyDocumentBadge,
@@ -172,6 +173,10 @@ export function PoliciesSettingsPanel() {
         : projectSnapshotQuery.data;
   const selected = snapshot?.documents.find((document) => document.key === selectedKey) ?? null;
   const attentionCauses = snapshot === null ? [] : policyAttentionCauses(snapshot);
+  const overrideHint =
+    snapshot === null
+      ? null
+      : planningOverrideHint(snapshot, projects, settings.projectSettingsOverrides);
   const requestedFeatureDefaults: PoliciesSettings["features"] =
     selectedProjectId === null || toggleSnapshot === null
       ? policySettings.features
@@ -329,6 +334,11 @@ export function PoliciesSettingsPanel() {
                 ))}
               </ul>
             </div>
+          ) : null}
+          {overrideHint !== null ? (
+            <p role="note" className="px-3 py-2 text-sm text-warning sm:px-4">
+              {overrideHint}
+            </p>
           ) : null}
           {snapshot?.documents.map((document) => (
             <PolicyDocumentRow
