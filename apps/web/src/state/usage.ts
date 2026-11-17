@@ -14,6 +14,10 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 
 import { mergeUsage, type EnvironmentUsage, type MergedUsage } from "@t3tools/shared/usageMerge";
+import {
+  answeredSourceBreakdown,
+  type ProviderSourceBreakdown,
+} from "@t3tools/shared/usageSourceBreakdown";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "./presentation";
 import { serverEnvironment } from "./server";
@@ -82,7 +86,12 @@ export interface UsageView {
   readonly environments: readonly EnvironmentUsageStatus[];
   readonly selectedEnvironments: readonly EnvironmentUsageStatus[];
   readonly isPending: boolean;
-  readonly shown: { readonly window: UsageSummaryInput; readonly merged: MergedUsage } | null;
+  readonly shown: {
+    readonly window: UsageSummaryInput;
+    readonly merged: MergedUsage;
+    /** Per-source rows of the same answers as merged, so a kept total keeps its rows. */
+    readonly sources: ReadonlyMap<UsageProviderKind, ProviderSourceBreakdown>;
+  } | null;
   readonly isPartial: boolean;
   readonly refresh: (input?: UsageSummaryInput) => Promise<void>;
 }
@@ -148,6 +157,7 @@ function deriveSelection(
     hiddenProviders,
     selectedEnvironments,
     merged: mergeAnsweredUsage(withoutProviders(selectedEnvironments, hiddenProviders)),
+    sources: answeredSourceBreakdown(selectedEnvironments),
   };
 }
 
@@ -179,7 +189,7 @@ export function useUsage(
     current = deriveSelection(environments, selectedEnvironmentIds, hiddenProviders);
     setDerived(current);
   }
-  const { selectedEnvironments, merged } = current;
+  const { selectedEnvironments, merged, sources } = current;
 
   const refresh = (nextInput?: UsageSummaryInput) =>
     refreshUsage({
@@ -221,6 +231,7 @@ export function useUsage(
     setLastAnswered({
       window: input,
       merged,
+      sources,
       selection: selectedEnvironmentIds,
       hidden: hiddenProviders,
     });
@@ -231,8 +242,8 @@ export function useUsage(
       : null;
   const shown =
     answeredCount > 0
-      ? { window: input, merged }
-      : (kept ?? (isPending ? null : { window: input, merged }));
+      ? { window: input, merged, sources }
+      : (kept ?? (isPending ? null : { window: input, merged, sources }));
 
   return {
     merged,

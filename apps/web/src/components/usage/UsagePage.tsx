@@ -1,7 +1,7 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
+import type { ProviderSourceBreakdown } from "@t3tools/shared/usageSourceBreakdown";
 import {
-  answeredSourceBreakdown,
   formatUsdPerSession,
   providersForWindow,
   UsageModelTable,
@@ -543,6 +543,7 @@ export function UsagePage() {
             ) : (
               <UsageOverview
                 merged={merged}
+                sourceBreakdown={shown.sources}
                 shownWindow={shownWindow}
                 hour12={hour12}
                 days={days}
@@ -591,6 +592,7 @@ export function UsagePage() {
 
 function UsageOverview({
   merged,
+  sourceBreakdown,
   shownWindow,
   hour12,
   days,
@@ -604,6 +606,7 @@ function UsageOverview({
   onSelectModel,
 }: {
   readonly merged: MergedUsage;
+  readonly sourceBreakdown: ReadonlyMap<UsageProviderKind, ProviderSourceBreakdown>;
   readonly shownWindow: UsageSummaryInput;
   readonly hour12: boolean;
   readonly days: readonly string[];
@@ -663,7 +666,6 @@ function UsageOverview({
     0,
   );
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
-  const sourceBreakdown = answeredSourceBreakdown(selectedEnvironments);
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
