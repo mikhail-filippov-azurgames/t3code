@@ -228,15 +228,16 @@ export const CodexDriver: ProviderDriver<
         ? { ...config, homePath: environmentHome }
         : config;
     const homeLayout = yield* resolveCodexHomeLayout(configuredHome);
-    const hostHome = yield* HostProcess.HomeDirectory;
-    const hostPlatform = yield* HostProcess.Platform;
-    const homeConfig = {
-      ...configuredHome,
-      launchArgs: yield* personalProviderLaunchArgs(
-        homeLayout.sharedHomePath,
-        configuredHome.launchArgs,
-      ),
-    };
+    const currentLaunchArgs = personalProviderLaunchArgs(
+      homeLayout.sharedHomePath,
+      configuredHome.launchArgs,
+    ).pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+      Effect.provideService(HostProcess.HomeDirectory, yield* HostProcess.HomeDirectory),
+      Effect.provideService(HostProcess.Platform, yield* HostProcess.Platform),
+    );
+    const homeConfig = { ...configuredHome, launchArgs: yield* currentLaunchArgs };
     const continuationIdentity = codexContinuationIdentity(homeLayout);
     const stampIdentity = withInstanceIdentity({
       instanceId,
@@ -291,15 +292,7 @@ export const CodexDriver: ProviderDriver<
         config: homeConfig,
       },
       {
-        resolveLaunchArgs: personalProviderLaunchArgs(
-          homeLayout.sharedHomePath,
-          configuredHome.launchArgs,
-        ).pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, pathService),
-          Effect.provideService(HostProcess.HomeDirectory, hostHome),
-          Effect.provideService(HostProcess.Platform, hostPlatform),
-        ),
+        resolveLaunchArgs: currentLaunchArgs,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         models: Effect.suspend(() => snapshot.getSnapshot).pipe(
           Effect.map((value) => value.models),
@@ -323,7 +316,9 @@ export const CodexDriver: ProviderDriver<
     const checkProvider = modelCatalog.refreshInBackground.pipe(
       Effect.andThen(
         Effect.zipWith(
-          checkCodexProviderStatus(effectiveConfig, undefined, processEnv),
+          Effect.flatMap(currentLaunchArgs, (launchArgs) =>
+            checkCodexProviderStatus({ ...effectiveConfig, launchArgs }, undefined, processEnv),
+          ),
           currentCatalog,
           (draft, catalog) => stampIdentity(applyCodexModelCatalog(draft, catalog)),
           { concurrent: true },
@@ -372,6 +367,8 @@ export const CodexDriver: ProviderDriver<
       effectiveConfig,
       processEnv,
       snapshot.getSnapshot.pipe(Effect.map((value) => value.models)),
+      undefined,
+      currentLaunchArgs,
     );
     const probeSkills = yield* makeCodexSkillsProbe().pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -381,13 +378,15 @@ export const CodexDriver: ProviderDriver<
         ? snapshot.getSnapshot
         : Effect.all([
             snapshot.getSnapshot,
-            probeSkills({
-              binaryPath: effectiveConfig.binaryPath,
-              homePath: effectiveConfig.homePath,
-              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
-              cwd,
-              environment: processEnv,
-            }).pipe(Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv))),
+            Effect.flatMap(currentLaunchArgs, (launchArgs) =>
+              probeSkills({
+                binaryPath: effectiveConfig.binaryPath,
+                homePath: effectiveConfig.homePath,
+                launchArgs: resolveCodexLaunchArgs(launchArgs, processEnv),
+                cwd,
+                environment: processEnv,
+              }),
+            ).pipe(Effect.timeout(resolveProviderProbeTimeoutMs("codex", 20_000, processEnv))),
           ]).pipe(
             Effect.map(([machineSnapshot, skills]) => ({ ...machineSnapshot, skills })),
             Effect.mapError(
@@ -412,7 +411,7 @@ export const CodexDriver: ProviderDriver<
             const { client } = yield* withCodexAppServerClient({
               binaryPath: effectiveConfig.binaryPath,
               homePath: effectiveConfig.homePath,
-              launchArgs: resolveCodexLaunchArgs(effectiveConfig.launchArgs, processEnv),
+              launchArgs: resolveCodexLaunchArgs(yield* currentLaunchArgs, processEnv),
               cwd: process.cwd(),
               environment: processEnv,
             });

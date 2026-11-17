@@ -205,6 +205,7 @@ function withFakeCodexEnv<A, E, R>(
     defaultModel?: string;
     customModels?: ReadonlyArray<string>;
     managedRuntime?: boolean;
+    resolveLaunchArgs?: Effect.Effect<string>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
 ) {
@@ -236,6 +237,7 @@ function withFakeCodexEnv<A, E, R>(
             revision: "test",
           })
         : undefined,
+      input.resolveLaunchArgs,
     );
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
@@ -539,6 +541,34 @@ it.layer(layerCodexTextGenerationTest)("CodexTextGeneration", (it) => {
           modelSelection: DEFAULT_TEST_MODEL_SELECTION,
         }),
     ),
+  );
+
+  it.effect("reads the launch args hook on every generation", () =>
+    Effect.gen(function* () {
+      let reads = 0;
+      const generate = (textGeneration: TextGeneration.TextGeneration["Service"]) =>
+        textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+        });
+      yield* withFakeCodexEnv(
+        {
+          output: JSON.stringify({ subject: "Add important change", body: "" }),
+          launchArgs: "--strict-config",
+          resolveLaunchArgs: Effect.sync(() => {
+            reads += 1;
+            return "--oss --local-provider ollama";
+          }),
+          requireArg: "--oss --local-provider ollama",
+          forbidArg: "--strict-config",
+        },
+        (textGeneration) => generate(textGeneration).pipe(Effect.andThen(generate(textGeneration))),
+      );
+      expect(reads).toBe(2);
+    }),
   );
 
   it.effect("generates branch names even when the ambient scope is already closed", () =>

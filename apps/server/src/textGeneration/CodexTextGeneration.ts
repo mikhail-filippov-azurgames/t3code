@@ -70,6 +70,7 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
     import("@t3tools/contracts").ProviderSetupError,
     Scope.Scope
   >,
+  resolveLaunchArgs?: Effect.Effect<string>,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -254,7 +255,11 @@ export const makeCodexTextGeneration = Effect.fn("makeCodexTextGeneration")(func
             ),
           )
         : undefined;
-      const effectiveConfig = resolved?.config ?? codexConfig;
+      const effectiveConfig =
+        resolved?.config ??
+        (resolveLaunchArgs === undefined
+          ? codexConfig
+          : { ...codexConfig, launchArgs: yield* resolveLaunchArgs });
       const effectiveEnvironment = resolved?.environment ?? resolvedEnvironment;
       const models = yield* getModels;
       const requestedModel = modelSelection.model;
