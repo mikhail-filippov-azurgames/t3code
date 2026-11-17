@@ -454,6 +454,14 @@ it("welcomes to Corvis, not T3 Code", async () => {
   expect(title).not.toContain("T3 Code");
 });
 
+it("names the computer by its host name when the label is only its id", async () => {
+  using _now = setup();
+  appAtomRegistry.set(state.config as Atom.Writable<unknown>, { hostname: "WS-CORVIS" });
+  await using _screen = await mountWelcome();
+  expect(pageText()).toContain("Setting up WS-CORVIS.");
+  expect(pageText()).not.toContain(`Setting up ${primaryId}`);
+});
+
 it("waits for a ready agent to start, and Start without an agent still finishes setup", async () => {
   using _now = setup();
   appAtomRegistry.set(state.providers as Atom.Writable<ReadonlyArray<ServerProvider>>, []);

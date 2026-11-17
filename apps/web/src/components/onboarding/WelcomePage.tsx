@@ -27,6 +27,7 @@ import {
   ProviderDriverKind,
   ThreadId,
 } from "@t3tools/contracts";
+import { readableEnvironmentLabel } from "@t3tools/ft3-web/onboarding";
 import { Link, useBlocker } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import {
@@ -131,10 +132,13 @@ export function WelcomePage({
   readonly onDone: (projectRef?: ScopedProjectRef) => void | Promise<void>;
 }) {
   const { environments } = useEnvironments();
-  const label =
-    environments.find((environment) => environment.environmentId === environmentId)?.label ??
-    "this computer";
-  const agentReady = useWelcomeAgents(environmentId).readyCount > 0;
+  const welcomeAgents = useWelcomeAgents(environmentId);
+  const label = readableEnvironmentLabel({
+    label: environments.find((environment) => environment.environmentId === environmentId)?.label,
+    environmentId,
+    hostname: welcomeAgents.serverConfig?.hostname,
+  });
+  const agentReady = welcomeAgents.readyCount > 0;
   // The phone and `t3` on PATH belong to the primary computer, so only it offers them.
   const isPrimary = usePrimaryEnvironmentId() === environmentId;
   // The same access Settings → Sharing & access checks.
