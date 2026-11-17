@@ -31,8 +31,10 @@ import {
   scopeClaudeModelCatalog,
 } from "../provider/ClaudeModelCatalog.ts";
 import {
+  claudePersonalRouteSettings,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
+  withClaudePersonalRoute,
 } from "../provider/Drivers/ClaudeHome.ts";
 import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
@@ -213,8 +215,12 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
       ),
     );
+    const routedSettings = withClaudePersonalRoute(
+      launchArgSettings,
+      yield* claudePersonalRouteSettings(claudeSettings, claudeEnvironment),
+    );
     const settings = {
-      ...launchArgSettings,
+      ...routedSettings,
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),

@@ -49,9 +49,12 @@ import {
 } from "@t3tools/provider-core/server/snapshotProbe";
 import { resolveClaudeSdkExecutablePath } from "./Drivers/ClaudeExecutable.ts";
 import {
+  claudePersonalRouteSettings,
   claudeSignedOutMessage,
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
+  withClaudePersonalRoute,
+  type ClaudePersonalRouteSettings,
 } from "./Drivers/ClaudeHome.ts";
 import {
   customClaudeApiEndpointHost,
@@ -275,6 +278,7 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
   readonly cwd: string | undefined;
   readonly managedMcpConfig: boolean;
   readonly spawnVia: "env" | "launcher-thread" | undefined;
+  readonly personalRoute?: ClaudePersonalRouteSettings | undefined;
 }): ClaudeQueryOptions {
   return {
     ...(input.spawnVia === "env" ? { spawnClaudeCodeProcess: spawnClaudeProbeThroughEnv } : {}),
@@ -286,7 +290,7 @@ export function buildClaudeCapabilitiesProbeQueryOptions(input: {
     abortController: input.abortController,
     settingSources: [...CLAUDE_CAPABILITIES_PROBE_SETTING_SOURCES],
     // Keep settings for slash-command discovery, but disable hooks so health checks do not run SessionStart repeatedly.
-    settings: { disableAllHooks: true },
+    settings: withClaudePersonalRoute({ disableAllHooks: true }, input.personalRoute),
     allowedTools: [],
     // Exclude filesystem MCP servers; omit strict mode when managed-mcp.json already excludes them and forbids the flag.
     mcpServers: {},
@@ -503,6 +507,7 @@ const probeClaudeCapabilities = (
       claudeEnvironment,
     );
     const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+    const personalRoute = yield* claudePersonalRouteSettings(claudeSettings, claudeEnvironment);
     // Workspace probes (no usage) discard models; the machine probe refreshes the shared cache.
     const graceMs = includeStatus
       ? claudeGatewayDiscoveryGraceMs({
@@ -531,6 +536,7 @@ const probeClaudeCapabilities = (
             cwd,
             managedMcpConfig,
             spawnVia,
+            personalRoute,
           }),
         });
         const init = await q.initializationResult();

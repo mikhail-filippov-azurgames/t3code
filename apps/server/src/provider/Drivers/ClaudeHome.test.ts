@@ -6,7 +6,10 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import * as HostProcess from "@t3tools/shared/HostProcess";
+
 import {
+  claudePersonalRouteSettings,
   makeClaudeCapabilitiesCacheKey,
   makeClaudeContinuationGroupKey,
   makeClaudeEnvironment,
@@ -99,5 +102,46 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
             .CLAUDE_CODE_ENTRYPOINT,
         ).toBe("custom");
       }),
+  );
+
+  it.effect("neutralizes only a Zavod key helper in the personal ~/.claude settings", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-route-" });
+      const userDir = path.join(home, ".claude");
+      yield* fileSystem.makeDirectory(userDir);
+      const route = (settings: unknown, config = { homePath: "" }, environment = {}) =>
+        fileSystem
+          .writeFileString(path.join(userDir, "settings.json"), JSON.stringify(settings))
+          .pipe(
+            Effect.andThen(claudePersonalRouteSettings(config, environment)),
+            Effect.provideService(HostProcess.HomeDirectory, home),
+          );
+      const gatewayEnv = { ANTHROPIC_BASE_URL: "https://gateway.example.test" };
+
+      expect(
+        yield* route({ env: gatewayEnv, apiKeyHelper: "/home/me/.zavod/bin/zavod-key" }),
+      ).toEqual({ apiKeyHelper: "", env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" } });
+      expect(yield* route({ apiKeyHelper: '"C:\\Users\\me\\.zavod\\bin\\zavod-key.exe"' })).toEqual(
+        {
+          apiKeyHelper: "",
+        },
+      );
+      expect(yield* route({ env: gatewayEnv, apiKeyHelper: "/opt/bin/my-key" })).toBeUndefined();
+      expect(yield* route({ env: gatewayEnv })).toBeUndefined();
+      expect(
+        yield* route({ apiKeyHelper: "zavod-key" }, { homePath: path.join(home, "zavod") }),
+      ).toBeUndefined();
+      expect(
+        yield* route(
+          { apiKeyHelper: "zavod-key" },
+          { homePath: "" },
+          {
+            CLAUDE_CONFIG_DIR: path.join(home, "other"),
+          },
+        ),
+      ).toBeUndefined();
+    }),
   );
 });

@@ -39,6 +39,31 @@ it("drops strict MCP mode, and only that, next to an administrator's managed-mcp
   assert.equal(options.env?.ENABLE_CLAUDEAI_MCP_SERVERS, "false");
 });
 
+it("probes a personal instance with the Zavod gateway settings neutralized", () => {
+  const base = {
+    executablePath: "/usr/bin/claude",
+    abortController: new AbortController(),
+    environment: { HOME: "/home/user" },
+    cwd: undefined,
+    managedMcpConfig: false,
+    spawnVia: undefined,
+  } as const;
+  assert.deepEqual(buildClaudeCapabilitiesProbeQueryOptions(base).settings, {
+    disableAllHooks: true,
+  });
+  assert.deepEqual(
+    buildClaudeCapabilitiesProbeQueryOptions({
+      ...base,
+      personalRoute: { apiKeyHelper: "", env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" } },
+    }).settings,
+    {
+      disableAllHooks: true,
+      apiKeyHelper: "",
+      env: { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
+    },
+  );
+});
+
 // A shell trampoline would not do: dash drops the exported function, and the launcher exits 127.
 it.live.skipIf(HostProcess.Platform.defaultValue() !== "linux")(
   "starts a Bash launcher that calls an exported function in the probe's workspace",

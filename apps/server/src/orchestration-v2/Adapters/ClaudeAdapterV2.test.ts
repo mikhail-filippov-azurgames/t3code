@@ -1229,12 +1229,16 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
 });
 
 describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
-  const startTurnWithLaunchArgs = Effect.fnUntraced(function* (launchArgs: string, cwd: string) {
+  const startTurnWithLaunchArgs = Effect.fnUntraced(function* (
+    launchArgs: string,
+    cwd: string,
+    homePath = "",
+  ) {
     const fileSystem = yield* FileSystem.FileSystem;
     const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
     const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
       instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-      settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs },
+      settings: { ...DEFAULT_CLAUDE_SETTINGS, launchArgs, homePath },
       environment: {},
       attachmentsDir: yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-append-" }),
       fileSystem,
@@ -1385,6 +1389,57 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         showThinkingSummaries: true,
       });
       assert.isUndefined(opened[0]!.extraArgs?.["settings"]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("keeps the personal ~/.claude instance off the Zavod gateway", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-zavod-" });
+      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-claude-zavod-cwd-" });
+      const zavodSettings = JSON.stringify({
+        model: "opus",
+        env: { ANTHROPIC_BASE_URL: "https://gateway.example.test", KEEP: "1" },
+        apiKeyHelper: '"C:/Users/me/.zavod/bin/zavod-key.exe"',
+      });
+      const personalHome = NodePath.join(home, ".claude");
+      const zavodHome = NodePath.join(home, "zavod-claude");
+      for (const directory of [personalHome, zavodHome]) {
+        yield* fileSystem.makeDirectory(directory);
+        yield* fileSystem.writeFileString(NodePath.join(directory, "settings.json"), zavodSettings);
+      }
+      const start = (launchArgs: string, homePath = "") =>
+        startTurnWithLaunchArgs(launchArgs, cwd, homePath).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.tap(({ exit }) => Effect.sync(() => assert.isTrue(Exit.isSuccess(exit)))),
+          Effect.map(({ opened }) => opened[0]!.settings as Record<string, unknown>),
+        );
+
+      const personal = yield* start(`--settings '{"env":{"OTHER":"2"}}'`);
+      assert.strictEqual(personal.apiKeyHelper, "");
+      assert.deepStrictEqual(personal.env, {
+        OTHER: "2",
+        ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+      });
+      assert.isUndefined(personal.model);
+      const zavod = yield* start("", zavodHome);
+      assert.isUndefined(zavod.apiKeyHelper);
+      assert.isUndefined(zavod.env);
+      for (const directory of [personalHome, zavodHome]) {
+        assert.strictEqual(
+          yield* fileSystem.readFileString(NodePath.join(directory, "settings.json")),
+          zavodSettings,
+        );
+      }
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

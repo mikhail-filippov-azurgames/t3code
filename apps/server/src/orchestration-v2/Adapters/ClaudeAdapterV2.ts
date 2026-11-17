@@ -189,10 +189,12 @@ import { spawnAndCollect } from "@t3tools/provider-core/server/snapshotProbe";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import {
   claudeLocalSettingsDirectory,
+  claudePersonalRouteSettings,
   claudeSignedOutMessage,
   makeClaudeEnvironment,
   mergeClaudeProcessEnvironment,
   resolveClaudeHomePath,
+  withClaudePersonalRoute,
 } from "../../provider/Drivers/ClaudeHome.ts";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
@@ -12832,6 +12834,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          const sdkSettings = withClaudePersonalRoute(
+            launchArgSettings === undefined
+              ? undefined
+              : claudeSdkLaunchArgSettings(launchArgSettings),
+            yield* claudePersonalRouteSettings(
+              adapterOptions.settings,
+              adapterOptions.environment,
+            ).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+            ),
+          );
           const queryOptions = makeClaudeQueryOptions({
             modelSelection: turnInput.modelSelection,
             modelCatalog: catalog,
@@ -12845,9 +12859,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             // Delegated threads have no one typing, so they never ask for suggestions.
             promptSuggestions:
               !isDelegatedAppThread(turnInput.appThread) && (yield* promptSuggestionsEnabled),
-            ...(launchArgSettings === undefined
-              ? {}
-              : { sdkSettings: claudeSdkLaunchArgSettings(launchArgSettings) }),
+            ...(sdkSettings === undefined ? {} : { sdkSettings }),
             environment: claudeQueryEnvironment(
               adapterOptions.environment,
               turnInput.appThread,
