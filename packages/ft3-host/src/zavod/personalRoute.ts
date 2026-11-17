@@ -5,6 +5,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { isZavodKeyHelper } from "./detect.ts";
+
 // The Zavod app's gateway switch rewrites ~/.codex and ~/.claude; personal instances stay on the subscription.
 
 const ZAVOD_CODEX_PROVIDER_ID = "zavod";
@@ -80,10 +82,7 @@ export const claudePersonalRouteSettings = Effect.fn("Ft3Zavod.claudePersonalRou
     if (settings._tag === "None" || typeof settings.value.apiKeyHelper !== "string") {
       return undefined;
     }
-    const helper = settings.value.apiKeyHelper.trim().replace(/^(["'])(.*)\1$/, "$2");
-    if (!/^zavod-key(\.exe)?$/i.test(path.basename(helper.replaceAll("\\", "/")))) {
-      return undefined;
-    }
+    if (!isZavodKeyHelper(settings.value.apiKeyHelper)) return undefined;
     return settings.value.env?.ANTHROPIC_BASE_URL === undefined
       ? { apiKeyHelper: "" }
       : { apiKeyHelper: "", env: { ANTHROPIC_BASE_URL: ANTHROPIC_API_URL } };
