@@ -209,16 +209,31 @@ export interface MailTaskCreated {
 }
 
 const mailTaskCreateNext = (members: ReadonlyArray<MailMemberRoute>): string | null => {
-  const pending = members
-    .filter(({ launch }) => launch === "not_started")
-    .map(({ member }) =>
+  const pending = new Set<string>();
+  const unavailable = new Set<string>();
+  for (const { member, noCandidate } of members.filter(({ launch }) => launch === "not_started")) {
+    const address =
       member.specialization === null
         ? `role:${member.roleId}`
-        : `role:${member.roleId}/${member.specialization}`,
+        : `role:${member.roleId}/${member.specialization}`;
+    if (noCandidate === null) {
+      pending.add(address);
+    } else {
+      unavailable.add(address);
+    }
+  }
+  const messages = [];
+  if (pending.size > 0) {
+    messages.push(
+      `Participants ${[...pending].join(", ")} have not started. Send mail_send to start them.`,
     );
-  return pending.length === 0
-    ? null
-    : `Participants ${pending.join(", ")} have not started. Send mail_send to start them.`;
+  }
+  for (const address of unavailable) {
+    messages.push(
+      `${address} has no route/model available. mail_send cannot start this participant.`,
+    );
+  }
+  return messages.join(" ") || null;
 };
 
 export interface MailPlanSend {

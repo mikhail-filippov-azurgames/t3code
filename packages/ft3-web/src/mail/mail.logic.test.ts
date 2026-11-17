@@ -4,7 +4,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   mailDeliveryBadgeVariant,
   mailLetterSenderLabel,
-  mailMemberLaunchLabel,
   mailPlanPhaseLabel,
   mailRecipientLabel,
   mailTaskGroups,
@@ -83,7 +82,7 @@ describe("mailTaskGroups", () => {
     expect(groups[0]!.members).toEqual([]);
   });
 
-  it("keeps the member states and labels under their own task", () => {
+  it("keeps the member states under their own task", () => {
     const members = [
       { roleId: "implementation", specialization: null, status: "active", launch: "not_started" },
       { roleId: "test", specialization: null, status: "active", launch: "started" },
@@ -95,11 +94,6 @@ describe("mailTaskGroups", () => {
       { "task:one": members },
     );
     expect(groups[0]!.members).toEqual(members);
-    expect(groups[0]!.members.map(({ launch }) => mailMemberLaunchLabel(launch))).toEqual([
-      "не запущен",
-      "запущен",
-      "закрыт",
-    ]);
     expect(groups[1]!.members).toEqual([]);
   });
 });

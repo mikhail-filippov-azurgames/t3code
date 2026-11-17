@@ -168,8 +168,45 @@ it.effect("keeps a member without a route and reports the cell and the skipped c
       created.members[1]?.noCandidate?.skipped.map((skip) => skip.reason),
       ["unavailable"],
     );
+    assert.include(
+      created.next!,
+      "Participants role:implementation have not started. Send mail_send to start them.",
+    );
+    assert.include(
+      created.next!,
+      "role:test has no route/model available. mail_send cannot start this participant.",
+    );
+    const replay = yield* teamOf([{ role: "implementation" }, { role: "test" }]);
+    assert.equal(replay.next, created.next);
+
+    yield* sendAs(LEAD, created.task.taskId, "role:implementation", "request");
+    const blocked = yield* teamOf([{ role: "implementation" }, { role: "test" }]);
+    assert.notInclude(blocked.next!, "Send mail_send");
+    assert.include(blocked.next!, "role:test has no route/model available");
   }).pipe(Effect.provide(harness.layer));
 });
+
+it.effect.each([true, false])(
+  "lists each pending address once with a route available: %s",
+  (routable) => {
+    const harness = mailHarness({ routable: routable ? ALL_ROUTING_ROLES : [] });
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const members = [
+        { role: "implementation" },
+        { role: "implementation" },
+        { role: "review", specialization: "codex" },
+        { role: "review", specialization: "codex" },
+      ];
+      const created = yield* teamOf(members);
+      assert.lengthOf(created.members, 4);
+      const addresses = ["role:implementation", "role:review/codex"];
+      assert.deepStrictEqual(created.next?.match(/role:[\w/]+/g)?.toSorted(), addresses);
+      const replay = yield* teamOf(members);
+      assert.deepStrictEqual(replay.next?.match(/role:[\w/]+/g)?.toSorted(), addresses);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect("routes review specializations while preserving the stored member role", () => {
   const harness = mailHarness({ routable: ["review", "review-claude", "review-codex"] });
