@@ -117,6 +117,13 @@ it.effect(
 
       assert.isTrue(created.created);
       assert.deepStrictEqual(
+        created.members.map((route) => route.launch),
+        ["not_started", "not_started"],
+      );
+      assert.include(created.next!, "role:implementation");
+      assert.include(created.next!, "role:test");
+      assert.include(created.next!, "mail_send");
+      assert.deepStrictEqual(
         created.members.map((route) => route.member.roleId),
         ["implementation", "test"],
       );
@@ -261,8 +268,62 @@ it.effect("replays a repeated create without routing or writing the team again",
       replay.members.map((route) => route.member.memberId).toSorted(),
       first.members.map((route) => route.member.memberId).toSorted(),
     );
+    assert.deepStrictEqual(
+      replay.members.map((route) => route.launch),
+      ["not_started", "not_started"],
+    );
+    assert.include(replay.next!, "role:implementation");
+    assert.include(replay.next!, "role:test");
+
+    yield* sendAs(LEAD, first.task.taskId, "role:implementation", "request");
+    const partial = yield* teamOf([{ role: "implementation" }, { role: "test" }]);
+    assert.equal(
+      partial.members.find(({ member }) => member.roleId === "implementation")?.launch,
+      "started",
+    );
+    assert.equal(
+      partial.members.find(({ member }) => member.roleId === "test")?.launch,
+      "not_started",
+    );
+    assert.notInclude(partial.next!, "role:implementation");
+    assert.include(partial.next!, "role:test");
+
+    yield* sendAs(LEAD, first.task.taskId, "role:test", "request", "Start.", "request:test");
+    const started = yield* teamOf([{ role: "implementation" }, { role: "test" }]);
+    assert.deepStrictEqual(
+      started.members.map((route) => route.launch),
+      ["started", "started"],
+    );
+    assert.isNull(started.next);
   }).pipe(Effect.provide(harness.layer));
 });
+
+it.effect.each([false, true])(
+  "excludes a closed member from next with a thread bound: %s",
+  (started) => {
+    const harness = mailHarness();
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const members = [{ role: "review", specialization: "codex" }, { role: "implementation" }];
+      const first = yield* teamOf(members);
+      assert.include(first.next!, "role:review/codex");
+      const memberId = idsOf(first, "review")[0]!;
+      if (started) {
+        yield* bindParticipant(memberId, CONSULTANT);
+      }
+      yield* finishMember(memberId);
+      const replay = yield* teamOf(members);
+      const closed = replay.members.find(({ member }) => member.memberId === memberId)!;
+      assert.equal(closed.launch, "closed");
+      assert.equal(closed.member.participantThreadId !== null, started);
+      assert.notInclude(replay.next!, "role:review/codex");
+      assert.include(replay.next!, "role:implementation");
+
+      yield* finishMember(idsOf(first, "implementation")[0]!);
+      assert.isNull((yield* teamOf(members)).next);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
 
 it.effect("stores the policy snapshot on the card a task belongs to, once", () => {
   const harness = mailHarness();

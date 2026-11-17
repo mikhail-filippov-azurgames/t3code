@@ -52,6 +52,7 @@ import {
   type TimeoutNoticeLetter,
 } from "./repository.ts";
 import { MailParticipantLauncher, type MailParticipantLaunchInput } from "./participantLauncher.ts";
+import { mailMemberLaunch, type MailMemberLaunch } from "./toolContracts.ts";
 
 const encodeModelSelectionJson = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
 const decodeModelOverride = Schema.decodeEffect(ModelSelection);
@@ -196,6 +197,7 @@ export interface MailNoCandidate {
 
 export interface MailMemberRoute {
   readonly member: MailMember;
+  readonly launch: MailMemberLaunch;
   readonly noCandidate: MailNoCandidate | null;
 }
 
@@ -203,7 +205,21 @@ export interface MailTaskCreated {
   readonly task: MailTask;
   readonly created: boolean;
   readonly members: ReadonlyArray<MailMemberRoute>;
+  readonly next: string | null;
 }
+
+const mailTaskCreateNext = (members: ReadonlyArray<MailMemberRoute>): string | null => {
+  const pending = members
+    .filter(({ launch }) => launch === "not_started")
+    .map(({ member }) =>
+      member.specialization === null
+        ? `role:${member.roleId}`
+        : `role:${member.roleId}/${member.specialization}`,
+    );
+  return pending.length === 0
+    ? null
+    : `Participants ${pending.join(", ")} have not started. Send mail_send to start them.`;
+};
 
 export interface MailPlanSend {
   readonly phase: PlanPhase;
@@ -760,10 +776,15 @@ const make = Effect.gen(function* () {
     const stored = yield* repository.listMembers(task.taskId);
     const members = yield* Effect.forEach(stored, (member) =>
       noCandidateFor(member.roleId, member.level ?? task.level, member.specialization).pipe(
-        Effect.map((noCandidate) => ({ member, noCandidate })),
+        Effect.map((noCandidate) => ({ member, launch: mailMemberLaunch(member), noCandidate })),
       ),
     );
-    return { task, created: false, members } satisfies MailTaskCreated;
+    return {
+      task,
+      created: false,
+      members,
+      next: mailTaskCreateNext(members),
+    } satisfies MailTaskCreated;
   });
 
   const createTask = Effect.fn("MailService.createTask")(function* (input: CreateMailTaskInput) {
@@ -864,7 +885,11 @@ const make = Effect.gen(function* () {
           createdAt: now,
         })
         .pipe(
-          Effect.map((member) => ({ member, noCandidate: routes[index]?.noCandidate ?? null })),
+          Effect.map((member) => ({
+            member,
+            launch: mailMemberLaunch(member),
+            noCandidate: routes[index]?.noCandidate ?? null,
+          })),
         ),
     );
     if (cardId !== null) {
@@ -873,7 +898,12 @@ const make = Effect.gen(function* () {
         snapshotJson: yield* evidence.snapshotJson,
       });
     }
-    return { task: result.task, created: true, members: stored } satisfies MailTaskCreated;
+    return {
+      task: result.task,
+      created: true,
+      members: stored,
+      next: mailTaskCreateNext(stored),
+    } satisfies MailTaskCreated;
   });
 
   const resolveTargets = Effect.fn("MailService.resolveTargets")(function* (
