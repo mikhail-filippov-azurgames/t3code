@@ -1,5 +1,5 @@
 import { EnvironmentId, ThreadId, type ScopedThreadRef } from "@t3tools/contracts";
-import { BoardCardId } from "@t3tools/ft3-board/contracts";
+import { BoardCardId, type BoardCardResolveResult } from "@t3tools/ft3-board/contracts";
 import { RegistryContext } from "@effect/atom-react";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import * as Cause from "effect/Cause";
@@ -210,7 +210,7 @@ describe("LeadBoardSurface", () => {
       .toBeVisible();
   });
 
-  it("keeps the plan open when a pinned card disappears and its last pin is removed", async () => {
+  it("preserves card reading state across refreshes, failures, remounts and deletion", async () => {
     const planCardId = "33333333-3333-4333-8333-333333333333";
     using state = setup({ pin: { cardId: planCardId, body: "Read the plan." } });
     window.localStorage.setItem(
@@ -253,10 +253,75 @@ describe("LeadBoardSurface", () => {
       ),
     );
     await using screen = await renderSurface(state);
+    await userEvent.click(screen.getByRole("button", { name: "Description", exact: true }));
+    await userEvent.click(screen.getByRole("button", { name: "History", exact: true }));
+    await userEvent.fill(
+      screen.getByRole("textbox", { name: "Request to orchestrator" }),
+      "Keep my draft",
+    );
+    const descriptionNode = screen.getByText("Read the plan.").element();
+    const historyNode = screen.getByText("Card created.").element();
     await userEvent.click(screen.getByRole("button", { name: "Plan", exact: true }));
     const plan = page.getByRole("dialog", { name: "Plan: Pinned work" });
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    const leads = mocks.orchestratorsList.mock.results.at(-1)!.value as Atom.Writable<
+      AsyncResult.AsyncResult<{ orchestrators: Array<{ threadId: ThreadId }> }, Error>
+    >;
+    await act(() => {
+      const previous = state.registry.get(leads);
+      state.registry.set(leads, AsyncResult.waiting(previous));
+    });
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    await act(() => state.registry.set(leads, AsyncResult.initial(true)));
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    await act(() =>
+      state.registry.set(leads, AsyncResult.failure(Cause.fail(new Error("Offline")))),
+    );
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    await act(() => {
+      state.registry.set(leads, AsyncResult.success({ orchestrators: [{ threadId }] }));
+    });
     const resolve = mocks.resolve.mock.results.at(-1)!.value;
+    const original = state.registry.get(resolve) as AsyncResult.Success<BoardCardResolveResult>;
+    for (const result of [
+      AsyncResult.initial(true),
+      AsyncResult.failure(Cause.fail(new Error("Offline"))),
+      AsyncResult.success({ matches: [], details: [] }),
+      AsyncResult.success({
+        ...original.value,
+        details: original.value.details.map((detail) => ({
+          ...detail,
+          card: { ...detail.card, body: "Updated description." },
+          events: detail.events.map((event) => ({ ...event, body: "Updated history." })),
+        })),
+      }),
+    ]) {
+      await act(() => state.registry.set(resolve, result));
+      await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+      expect(screen.container.contains(descriptionNode)).toBe(true);
+      expect(screen.container.contains(historyNode)).toBe(true);
+    }
+    expect(descriptionNode.textContent).toBe("Updated description.");
+    expect(historyNode.textContent).toBe("Updated history.");
+    await act(() => {
+      state.registry.set(leads, AsyncResult.initial(true));
+      state.registry.set(resolve, AsyncResult.initial(true));
+    });
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface key="remounted" threadRef={threadRef} visible section="cards" />
+      </RegistryContext.Provider>,
+    );
+    await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
+    for (const label of ["Description", "History"]) {
+      const button = Array.from(screen.container.querySelectorAll("button")).find(
+        (node) => node.textContent === label,
+      );
+      expect(button?.getAttribute("aria-expanded")).toBe("true");
+    }
+    expect((screen.container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(
+      "Keep my draft",
+    );
     await act(() => {
       state.registry.set(resolve, AsyncResult.success({ matches: [], details: [] }));
       for (const query of [mocks.planGet, mocks.readDoc]) {
@@ -281,6 +346,7 @@ describe("LeadBoardSurface", () => {
       )
       .toBeVisible();
     await expect.element(plan.getByRole("button", { name: "Plan accepted" })).toBeDisabled();
+    expect(screen.container.textContent).toContain("Card unavailable: it may have been deleted.");
     await act(() => removeBoardCardPin(environmentId, threadId, planCardId));
     await expect.element(plan.getByText("Pinned plan text")).toBeVisible();
     (
@@ -311,6 +377,68 @@ describe("LeadBoardSurface", () => {
     await expect.element(screen.getByText("Full card description.")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "History" }));
     await expect.element(screen.getByText("Card created.")).toBeVisible();
+    await userEvent.fill(
+      screen.getByRole("textbox", { name: "Request to orchestrator" }),
+      "Unsent request",
+    );
+    screen.container.dataset.cardsScrollTest = "true";
+    const style = document.createElement("style");
+    style.textContent =
+      '[data-cards-scroll-test] [aria-label="Cards"] { height: 180px; overflow-y: auto; }';
+    screen.container.append(style);
+    const panel = screen.container.querySelector('[aria-label="Cards"]') as HTMLDivElement;
+    await act(() => {
+      panel.scrollTop = 40;
+      panel.dispatchEvent(new Event("scroll"));
+    });
+    expect(panel.scrollTop).toBe(40);
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={threadRef} visible section="history" />
+      </RegistryContext.Provider>,
+    );
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={threadRef} visible section="cards" />
+      </RegistryContext.Provider>,
+    );
+    expect(screen.container.querySelector('[aria-label="Cards"]')?.scrollTop).toBe(40);
+    await userEvent.click(screen.getByRole("button", { name: "Pinned work", exact: true }));
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={threadRef} visible section="history" />
+      </RegistryContext.Provider>,
+    );
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={threadRef} visible section="cards" />
+      </RegistryContext.Provider>,
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Pinned work", exact: true }))
+      .toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Pinned work", exact: true }));
+    await expect.element(screen.getByText("Full card description.")).toBeVisible();
+    await expect.element(screen.getByText("Card created.")).toBeVisible();
+    await expect
+      .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
+      .toHaveValue("Unsent request");
+    const otherRef = { environmentId: EnvironmentId.make("other-env"), threadId };
+    window.localStorage.setItem(
+      `t3code:board-card-pins:v1:${otherRef.environmentId}:${threadId}`,
+      JSON.stringify([detailCardId]),
+    );
+    await screen.rerender(
+      <RegistryContext.Provider value={state.registry}>
+        <LeadBoardSurface threadRef={otherRef} visible section="cards" />
+      </RegistryContext.Provider>,
+    );
+    await expect
+      .element(screen.getByRole("button", { name: "Description" }))
+      .toHaveAttribute("aria-expanded", "false");
+    await expect
+      .element(screen.getByRole("textbox", { name: "Request to orchestrator" }))
+      .toHaveValue("");
   });
 
   it("shows summaries on the History surface", async () => {
