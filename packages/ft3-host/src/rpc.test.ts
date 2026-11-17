@@ -190,7 +190,7 @@ const noSnapshot = {
 
 const zavodStatus = {
   state: "off" as const,
-  baseUrl: "https://gateway.example/v1",
+  baseUrl: "https://zavod.example/v1",
   baseUrlSource: "state" as const,
   reason: null,
 };
@@ -682,13 +682,13 @@ const zavodFixture = Effect.fn("test.zavodRpcFixture")(function* (
   const state = options.state ?? "off";
   const claudeHome = path.join(home, "custom-claude");
   const codexHome = path.join(home, "custom-codex");
-  const claudeOn = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example" } });
+  const claudeOn = JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://zavod.example" } });
   const codexOn =
-    'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://gateway.example/v1"\n';
+    'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://zavod.example/v1"\n';
   for (const [file, text] of [
     [
       path.join(home, ".zavod", "desktop", "state.json"),
-      JSON.stringify({ version: 1, base_url: "https://gateway.example", key }),
+      JSON.stringify({ version: 1, base_url: "https://zavod.example", key }),
     ],
     [path.join(home, ".claude", "settings.json"), claudeOn],
     [path.join(home, ".codex", "config.toml"), codexOn],
@@ -726,7 +726,7 @@ const zavodFixture = Effect.fn("test.zavodRpcFixture")(function* (
                       { name: "CLAUDE_CONFIG_DIR", value: homePath, sensitive: false },
                       {
                         name: "ANTHROPIC_BASE_URL",
-                        value: "https://gateway.example",
+                        value: "https://zavod.example",
                         sensitive: false,
                       },
                       {
@@ -958,11 +958,11 @@ describe("Zavod RPC", () => {
       expect((yield* client[FT3_WS_METHODS.zavodDetect]({})).state).toBe("off");
       yield* f.fs.writeFileString(
         f.path.join(f.claudeHome, "settings.json"),
-        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.example" } }),
+        JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://zavod.example" } }),
       );
       yield* f.fs.writeFileString(
         f.path.join(f.codexHome, "config.toml"),
-        'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://gateway.example/v1"\n',
+        'model_provider = "zavod"\n[model_providers.zavod]\nbase_url = "https://zavod.example/v1"\n',
       );
       expect(yield* client[FT3_WS_METHODS.zavodConnect]({})).toMatchObject({
         state: "on",

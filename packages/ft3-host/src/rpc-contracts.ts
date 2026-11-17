@@ -25,7 +25,7 @@ export const FT3_ZAVOD_WS_METHODS = {
 export const ZavodStatus = Schema.Struct({
   state: Schema.Literals(["on", "off", "mixed", "unsupported", "absent"]),
   baseUrl: Schema.NullOr(Schema.String),
-  baseUrlSource: Schema.NullOr(Schema.Literals(["state", "default"])),
+  baseUrlSource: Schema.NullOr(Schema.Literals(["state", "codex", "claude"])),
   reason: Schema.NullOr(Schema.String),
 });
 export type ZavodStatus = typeof ZavodStatus.Type;
