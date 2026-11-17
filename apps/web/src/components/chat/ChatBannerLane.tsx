@@ -5,6 +5,7 @@ import type {
   ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
+import { useZavodFailureKind, ZavodFailureNotice } from "@t3tools/ft3-web/zavod";
 import type { Dispatch, SetStateAction } from "react";
 import {
   dismissProviderStatusBannerForSession,
@@ -41,6 +42,18 @@ export function ChatBannerLane(props: {
     setThreadError,
     setThreadErrorBannerDismissTick,
   } = props;
+  const threadRef = { environmentId: props.environmentId, threadId };
+  const zavodFailureKind = useZavodFailureKind({
+    threadRef,
+    error: threadError,
+    errorClass: threadErrorClass,
+    errorCode: threadErrorCode,
+  });
+  const dismissThreadError = () => {
+    setThreadError(threadId, null);
+    dismissThreadErrorBannerForSession(threadErrorBannerKey);
+    setThreadErrorBannerDismissTick((tick) => tick + 1);
+  };
   return (
     <div className="chat-banner-lane pointer-events-none absolute top-0 z-30 flex flex-col">
       <ProviderStatusBanner
@@ -49,16 +62,21 @@ export function ChatBannerLane(props: {
         onDismiss={() => dismissProviderStatusBannerForSession(providerStatusDismissalKey)}
         onOpenProviderSetup={onOpenProviderSetup}
       />
-      <ThreadErrorBanner
-        error={threadError}
-        errorClass={threadErrorClass}
-        errorCode={threadErrorCode}
-        onDismiss={() => {
-          setThreadError(threadId, null);
-          dismissThreadErrorBannerForSession(threadErrorBannerKey);
-          setThreadErrorBannerDismissTick((tick) => tick + 1);
-        }}
-      />
+      {zavodFailureKind !== null && threadError !== null ? (
+        <ZavodFailureNotice
+          threadRef={threadRef}
+          kind={zavodFailureKind}
+          error={threadError}
+          onDismiss={dismissThreadError}
+        />
+      ) : (
+        <ThreadErrorBanner
+          error={threadError}
+          errorClass={threadErrorClass}
+          errorCode={threadErrorCode}
+          onDismiss={dismissThreadError}
+        />
+      )}
     </div>
   );
 }
