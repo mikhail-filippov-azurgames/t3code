@@ -1,3 +1,4 @@
+import { DESKTOP_UPDATE_IN_PROGRESS_TTL_MS } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -7,6 +8,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
 import type {
@@ -97,11 +99,31 @@ export const readExternalBootstrapToken = (
 ): Effect.Effect<string, PlatformError.PlatformError> =>
   fileSystem.readFileString(tokenPath).pipe(Effect.map((raw) => raw.trim()));
 
-/** Release the desktop update handoff once the externally owned URL is healthy. */
+const decodeExternalRuntime = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ port: Schema.Number })),
+);
+
+/** Wait for the external server to publish its endpoint before releasing the update handoff. */
 export const releaseExternalUpdateMarker = Effect.fn("desktop.externalBackend.releaseUpdateMarker")(
-  function* (fileSystem: FileSystem.FileSystem, markerPath: string) {
+  function* (
+    fileSystem: FileSystem.FileSystem,
+    markerPath: string,
+    serverRuntimePath: string,
+    httpBaseUrl: URL,
+  ) {
     const marker = yield* fileSystem.readFileString(markerPath).pipe(Effect.option);
     if (Option.isNone(marker)) return;
+    const port = Number(httpBaseUrl.port || (httpBaseUrl.protocol === "https:" ? "443" : "80"));
+    yield* fileSystem.readFileString(serverRuntimePath).pipe(
+      Effect.flatMap(decodeExternalRuntime),
+      Effect.map((runtime) => runtime.port === port),
+      Effect.orElseSucceed(() => false),
+      Effect.repeat({
+        until: (published) => published,
+        schedule: Schedule.spaced(Duration.millis(100)),
+      }),
+      Effect.timeoutOption(Duration.millis(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS)),
+    );
     const current = yield* fileSystem.readFileString(markerPath).pipe(Effect.option);
     if (Option.isSome(current) && current.value === marker.value) {
       yield* fileSystem.remove(markerPath, { force: true }).pipe(Effect.ignore);

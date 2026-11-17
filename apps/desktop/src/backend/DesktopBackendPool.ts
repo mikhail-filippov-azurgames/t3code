@@ -262,7 +262,15 @@ export const layer = Layer.effect(
       ? yield* DesktopExternalBackend.makeExternalBackendInstance({
           ...primarySpec,
           onReady: (httpBaseUrl) =>
-            DesktopExternalBackend.releaseExternalUpdateMarker(fileSystem, updateMarkerPath).pipe(
+            FiberHandle.run(
+              updateMarkerWait,
+              DesktopExternalBackend.releaseExternalUpdateMarker(
+                fileSystem,
+                updateMarkerPath,
+                serverRuntimePath,
+                httpBaseUrl,
+              ),
+            ).pipe(
               Effect.andThen(reloadStaleMain),
               Effect.andThen(desktopWindow.handleBackendReady(httpBaseUrl)),
               Effect.andThen(SubscriptionRef.set(primaryBackendStartup, { _tag: "Ready" })),

@@ -1,8 +1,10 @@
+import { DESKTOP_UPDATE_IN_PROGRESS_TTL_MS } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
@@ -205,8 +207,14 @@ it.effect.each([false, true])(
       const fileSystem = yield* FileSystem.FileSystem.pipe(
         Effect.provide(
           FileSystem.layerNoop({
-            readFileString: () =>
-              Effect.sync(() => (++reads === 1 || !replaced ? "first" : "replacement")),
+            readFileString: (path) =>
+              Effect.sync(() =>
+                path.endsWith("server-runtime.json")
+                  ? JSON.stringify({ port: 3774 })
+                  : ++reads === 1 || !replaced
+                    ? "first"
+                    : "replacement",
+              ),
             remove: () =>
               Effect.sync(() => {
                 removed = true;
@@ -217,7 +225,102 @@ it.effect.each([false, true])(
       yield* DesktopExternalBackend.releaseExternalUpdateMarker(
         fileSystem,
         "/runtime/desktop-update-in-progress",
+        "/runtime/server-runtime.json",
+        new URL("http://127.0.0.1:3774"),
       );
       assert.equal(removed, !replaced);
     }),
+);
+
+it.effect(
+  "keeps the update marker after HTTP readiness until the matching runtime is published",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let runtime = "";
+        let removed = false;
+        const runtimeRead = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        const fileSystem = yield* FileSystem.FileSystem.pipe(
+          Effect.provide(
+            FileSystem.layerNoop({
+              readFileString: (path) =>
+                path.endsWith("server-runtime.json")
+                  ? Deferred.succeed(runtimeRead, undefined).pipe(
+                      Effect.andThen(Effect.sync(() => runtime)),
+                    )
+                  : Effect.succeed("marker"),
+              remove: () =>
+                Effect.sync(() => {
+                  removed = true;
+                }).pipe(Effect.andThen(Deferred.succeed(released, undefined)), Effect.asVoid),
+            }),
+          ),
+        );
+        const instance = yield* DesktopExternalBackend.makeExternalBackendInstance(
+          {
+            ...makeSpec(
+              () => Effect.void,
+              () => Effect.void,
+            ),
+            onReady: (url) =>
+              DesktopExternalBackend.releaseExternalUpdateMarker(
+                fileSystem,
+                "/runtime/desktop-update-in-progress",
+                "/runtime/server-runtime.json",
+                url,
+              ),
+          },
+          { healthCheck: () => Effect.succeed(true) },
+        );
+        yield* instance.start;
+        yield* Deferred.await(runtimeRead);
+        assert.isTrue((yield* instance.snapshot).ready);
+        assert.isFalse(removed);
+        runtime = JSON.stringify({ port: 3775 });
+        yield* TestClock.adjust("100 millis");
+        assert.isFalse(removed);
+        runtime = JSON.stringify({ port: 3774 });
+        yield* TestClock.adjust("100 millis");
+        yield* Deferred.await(released);
+        assert.isTrue(removed);
+      }).pipe(
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("unused in external readiness test")),
+        ),
+      ),
+    ),
+);
+
+it.effect("bounds the external runtime wait by the desktop update marker TTL", () =>
+  Effect.gen(function* () {
+    let removed = false;
+    const runtimeRead = yield* Deferred.make<void>();
+    const fileSystem = yield* FileSystem.FileSystem.pipe(
+      Effect.provide(
+        FileSystem.layerNoop({
+          readFileString: (path) =>
+            path.endsWith("server-runtime.json")
+              ? Deferred.succeed(runtimeRead, undefined).pipe(Effect.as(""))
+              : Effect.succeed("marker"),
+          remove: () =>
+            Effect.sync(() => {
+              removed = true;
+            }),
+        }),
+      ),
+    );
+    const release = yield* DesktopExternalBackend.releaseExternalUpdateMarker(
+      fileSystem,
+      "/runtime/desktop-update-in-progress",
+      "/runtime/server-runtime.json",
+      new URL("http://127.0.0.1:3774"),
+    ).pipe(Effect.forkChild);
+    yield* Deferred.await(runtimeRead);
+    assert.isFalse(removed);
+    yield* TestClock.adjust(Duration.millis(DESKTOP_UPDATE_IN_PROGRESS_TTL_MS));
+    yield* Fiber.join(release);
+    assert.isTrue(removed);
+  }),
 );
