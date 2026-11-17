@@ -1,6 +1,12 @@
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
-import { formatUsdPerSession, providersForWindow, UsageModelTable } from "@t3tools/ft3-web/usage";
+import {
+  answeredSourceBreakdown,
+  formatUsdPerSession,
+  providersForWindow,
+  UsageModelTable,
+  UsageProviderSources,
+} from "@t3tools/ft3-web/usage";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
@@ -657,6 +663,7 @@ function UsageOverview({
     0,
   );
   const rankedProviders = rankProvidersByMetric(activeProviders, merged.providers, metric);
+  const sourceBreakdown = answeredSourceBreakdown(selectedEnvironments);
 
   return (
     <div aria-busy={loadingPartial} className="flex flex-col gap-6">
@@ -769,6 +776,11 @@ function UsageOverview({
                     ? `${formatPercent(share)} of cost · ${formatTokens(totals?.totalTokens ?? 0)} tokens`
                     : `${formatPercent(share)} of tokens · ${formatUsd(totals?.costUsd ?? 0)}`}
                 </p>
+                <UsageProviderSources
+                  breakdown={sourceBreakdown.get(provider)}
+                  metric={metric}
+                  loading={providerLoading}
+                />
               </div>
             );
           })}
