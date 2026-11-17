@@ -16,6 +16,7 @@ import {
   endpointOrigin,
   expandHome,
   helperIsPath,
+  isZavodKeyHelper,
 } from "./detect.ts";
 
 export type ModelFamily = "claude" | "codex";
@@ -55,12 +56,6 @@ const readOptional = Effect.fn("Zavod.readGatewayFile")(function* (file: string)
     ),
   );
 });
-
-// Another gateway with its own key helper is not Zavod and keeps its catalog.
-function isZavodKeyHelper(command: string): boolean {
-  const name = command.split(/[\\/]/).pop()?.toLowerCase();
-  return name === "zavod-key" || name === "zavod-key.exe";
-}
 
 /** Gateway origin and key helper of a Claude or Codex home, or null when the home is not on a gateway. */
 export const readZavodGatewayConfig = Effect.fn("Zavod.readGatewayConfig")(function* (input: {
