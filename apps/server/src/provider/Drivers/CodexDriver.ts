@@ -228,6 +228,8 @@ export const CodexDriver: ProviderDriver<
         ? { ...config, homePath: environmentHome }
         : config;
     const homeLayout = yield* resolveCodexHomeLayout(configuredHome);
+    const hostHome = yield* HostProcess.HomeDirectory;
+    const hostPlatform = yield* HostProcess.Platform;
     const homeConfig = {
       ...configuredHome,
       launchArgs: yield* personalProviderLaunchArgs(
@@ -289,6 +291,15 @@ export const CodexDriver: ProviderDriver<
         config: homeConfig,
       },
       {
+        resolveLaunchArgs: personalProviderLaunchArgs(
+          homeLayout.sharedHomePath,
+          configuredHome.launchArgs,
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, pathService),
+          Effect.provideService(HostProcess.HomeDirectory, hostHome),
+          Effect.provideService(HostProcess.Platform, hostPlatform),
+        ),
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         models: Effect.suspend(() => snapshot.getSnapshot).pipe(
           Effect.map((value) => value.models),

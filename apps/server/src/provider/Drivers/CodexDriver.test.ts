@@ -596,7 +596,12 @@ it.layer(layerTest)("CodexDriver", (it) => {
       yield* writeConfig(personalHome, zavodConfig);
       yield* writeConfig(zavodHome, zavodConfig);
 
-      const launch = (instance: string, homePath: string, launchArgs = "") =>
+      const launch = (
+        instance: string,
+        homePath: string,
+        launchArgs = "",
+        betweenSessions?: Effect.Effect<void, PlatformError.PlatformError>,
+      ) =>
         Effect.gen(function* () {
           const launches: Array<
             Parameters<CodexAdapterV2.CodexAppServerClientFactoryShape["open"]>[0]
@@ -620,20 +625,28 @@ it.layer(layerTest)("CodexDriver", (it) => {
               }),
             ),
           );
-          yield* created.orchestrationAdapter
-            .openSession({
-              threadId: ThreadId.make(`${instance}-thread`),
-              providerSessionId: ProviderSessionId.make(`${instance}-session`),
-              modelSelection: { instanceId, model: "gpt-5.4" },
-              runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                cwd: serverConfig.stateDir,
-              }),
-            })
-            .pipe(Effect.scoped, Effect.exit);
-          expect(launches).toHaveLength(1);
-          return launches[0]!.settings;
+          const open = (session: string) =>
+            created.orchestrationAdapter
+              .openSession({
+                threadId: ThreadId.make(`${instance}-${session}-thread`),
+                providerSessionId: ProviderSessionId.make(`${instance}-${session}-session`),
+                modelSelection: { instanceId, model: "gpt-5.4" },
+                runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  cwd: serverConfig.stateDir,
+                }),
+              })
+              .pipe(Effect.scoped, Effect.exit);
+          yield* open("first");
+          if (betweenSessions === undefined) {
+            expect(launches).toHaveLength(1);
+            return launches[0]!.settings;
+          }
+          yield* betweenSessions;
+          yield* open("second");
+          expect(launches).toHaveLength(2);
+          return launches[1]!.settings;
         });
 
       const personal = yield* launch("personal-default", "");
@@ -655,6 +668,23 @@ it.layer(layerTest)("CodexDriver", (it) => {
         zavodConfig,
       );
       expect(yield* fs.readFileString(NodePath.join(zavodHome, "config.toml"))).toBe(zavodConfig);
+
+      const subscriptionConfig = 'model = "gpt-5.4"\n';
+      yield* writeConfig(personalHome, subscriptionConfig);
+      const switchedOnLater = yield* launch(
+        "personal-switched-on-later",
+        "",
+        "",
+        writeConfig(personalHome, zavodConfig),
+      );
+      expect(switchedOnLater.launchArgs).toBe('-c "model_provider=\\"openai\\""');
+      const switchedOff = yield* launch(
+        "personal-switched-off",
+        "",
+        "",
+        writeConfig(personalHome, subscriptionConfig),
+      );
+      expect(switchedOff.launchArgs).toBe("");
     }).pipe(
       Effect.provideService(HostProcess.Environment, {}),
       Effect.provideService(
