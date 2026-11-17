@@ -818,10 +818,9 @@ stays visible instead of vanishing when the range changes.
 | `apps/web/src/components/usage/usageProviders.ts`        | add only the `kimi` presentation entry                                                                                                           | the presentation map is exhaustive over the contract                             |
 | `apps/web/src/components/usage/UsagePage.tsx`            | build the active provider set from `providersForWindow` (imported from `@t3tools/ft3-web/usage`) and the summaries' sources                      | a zero-usage or failed provider must not disappear with the selected range       |
 | `apps/web/src/components/chat/ProviderInstanceIcon.tsx`  | early-return `KimiProviderInstanceIcon` from `@t3tools/ft3-web/kimi` when `isKimiProviderInstance` matches; the Kimi shell and glyph live there  | the driver kind alone is generic ACP                                             |
-| `apps/mobile/src/features/usage/usageProviders.ts`       | add kimi to the ordered kinds, labels and colors; local `poolDisplayName`                                                                        | mobile has no ft3-web dependency; both pools need the instance name              |
+| `apps/mobile/src/features/usage/usageProviders.ts`       | add kimi to the ordered kinds, labels and colors                                                                                                 | mobile has no ft3-web dependency                                                 |
 | `packages/ft3-host/src/import/importProviderSettings.ts` | imported kimi instances get `displayName: "Kimi"`                                                                                                | V1 named the provider, the ACP driver does not                                   |
 | `apps/web/src/components/usage/UsageLimitsPooled.tsx`    | mount `UsageLimitsPoolHeading` from `@t3tools/ft3-web/usage` before the upstream `<h2>`; `[data-ft3-pool-heading] + h2` hides the native heading | the limits card says Kimi, not ACP Registry while upstream markup stays verbatim |
-| `apps/mobile/src/features/usage/UsageLimitsPooled.tsx`   | the same fallback with the local helper, and the pool name is passed to `ProviderIcon`                                                           | mobile limits match web                                                          |
 | `apps/mobile/src/components/ProviderIcon.tsx`            | optional `displayName`; a Kimi ACP instance renders the Kimi glyph                                                                               | mobile has no `ProviderInstanceIcon`                                             |
 
 `KimiIcon`, `isKimiProviderInstance` and `limitPoolDisplayName` live in `packages/ft3-web`
@@ -1038,6 +1037,7 @@ Upstream pricing заменяет локальные context tiers и rateModel 
 on-disk OpenCode `models.json` удалён по согласованию. Сохраняется таблица Kimi
 через существующий `createOverrideRateTable`. Пользовательские overrides имеют
 приоритет. Источником остальных цен служит upstream LiteLLM.
+Список pricing-lost в отчёте синка host-specific, получен из локального каталога этой машины на 2026-11-17, а free-модели без rate теперь тоже unpriced, если нет явного reportedCostUsd или пользовательского override.
 
 | Upstream-файл                                                         | Правка                                                                                            | Зачем                                     |
 | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------- |
