@@ -1,5 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import type { ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import type { BoardCard, BoardCardId, BoardCardLookupDetail } from "@t3tools/ft3-board/contracts";
 import type { Ft3PanelProps } from "../panels.tsx";
 import { AsyncResult } from "effect/reactivity";
@@ -39,6 +39,13 @@ import { useExpandCoordinatorHistoryByDefault } from "./boardPreferences";
 import { removeBoardCardPin } from "./boardCardPins";
 import { pinnedCardsQuery, useBoardCardPins } from "./BoardCardPinnedPanel";
 import { BoardCardPlanButton } from "./BoardCardPlanButton";
+import {
+  readCardsPanelDetail,
+  removeCardsPanelCard,
+  retainCardsPanelPins,
+  useCardsPanelState,
+  useRetainedCardDetail,
+} from "./cardsPanelState";
 import { PlanViewerDialog } from "../planning/PlanViewerDialog.tsx";
 import {
   coordinatorSummaryExecutorLabel,
@@ -90,9 +97,18 @@ export function LeadBoardSurface({
   const leads = useEnvironmentQuery(
     boardEnvironment.orchestratorsList({ environmentId: threadRef.environmentId, input: {} }),
   );
-  const isLead = leads.data?.orchestrators.some((entry) => entry.threadId === threadRef.threadId);
+  const { entry: panelEntry } = useCardsPanelState(threadRef);
+  const currentMembership = leads.data?.orchestrators.some(
+    (entry) => entry.threadId === threadRef.threadId,
+  );
+  const isLead = currentMembership ?? panelEntry.getLeadMembership();
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains resolved lead membership in the session registry while the query reloads or the panel remounts
+  useEffect(() => {
+    if (currentMembership !== undefined) panelEntry.retainLeadMembership(currentMembership);
+  }, [panelEntry, currentMembership]);
+  const { restoreScroll, onScroll } = panelEntry;
 
-  if (leads.isPending) {
+  if (leads.isPending && isLead === undefined) {
     return (
       <p role="status" className="p-4 text-sm text-muted-foreground">
         Loading lead surface…
@@ -109,10 +125,18 @@ export function LeadBoardSurface({
 
   return (
     <div
+      key={`${threadRef.environmentId}:${threadRef.threadId}:${section}`}
+      ref={section === "cards" ? restoreScroll : undefined}
+      onScroll={section === "cards" ? onScroll : undefined}
       className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3"
       aria-label={SECTION_LABELS[section]}
     >
-      {section === "cards" ? <BoardCardsSection threadRef={threadRef} /> : null}
+      {section === "cards" ? (
+        <BoardCardsSection
+          key={`${threadRef.environmentId}:${threadRef.threadId}`}
+          threadRef={threadRef}
+        />
+      ) : null}
       {section === "history" ? <BoardHistorySection threadRef={threadRef} /> : null}
       {section === "mail" ? <BoardMailSection threadRef={threadRef} /> : null}
     </div>
@@ -158,7 +182,8 @@ function SectionRefreshButton(props: {
 
 function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
   const { environmentId, threadId } = props.threadRef;
-  const [selectedPlanId, setSelectedPlanId] = useState<BoardCardId | null>(null);
+  const { state: view, update: updateView } = useCardsPanelState(props.threadRef);
+  const selectedPlanId = view.selectedPlanId;
   const navigate = useNavigate();
   const pins = useBoardCardPins(props.threadRef);
   const pinned = useEnvironmentQuery(
@@ -172,25 +197,27 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
     [pinned.data],
   );
   const loading = pinned.isPending;
+  const setSelectedPlanId = (selectedPlanId: BoardCardId | null) => updateView({ selectedPlanId });
   const loadError = pinned.error !== null;
+  const hasSuccessfulResult = pinned.isSuccess && !loadError;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- removes session registry entries when the server confirms deletion or the selected card is unpinned
+  useEffect(() => {
+    retainCardsPanelPins(props.threadRef, pins);
+    if (hasSuccessfulResult) {
+      for (const cardId of pins) {
+        if (!details.has(cardId)) removeCardsPanelCard(props.threadRef, cardId);
+      }
+    }
+  }, [hasSuccessfulResult, pins, details, props.threadRef]);
   const pinnedRefresh = pinned.refresh;
   const refresh = useCallback(() => pinnedRefresh(), [pinnedRefresh]);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
-  const [collapsedCardIds, setCollapsedCardIds] = useState<ReadonlySet<string>>(new Set());
   const [actionError, setActionError] = useState<string | null>(null);
   const startCard = useAtomCommand(boardEnvironment.start, { reportFailure: false });
   const updateCard = useAtomCommand(boardEnvironment.update, { reportFailure: false });
   const requestOrchestrator = useAtomCommand(boardEnvironment.requestOrchestrator, {
     reportFailure: false,
   });
-
-  const toggleCardCollapsed = useCallback((cardId: string) => {
-    setCollapsedCardIds((current) => {
-      const next = new Set(current);
-      if (!next.delete(cardId)) next.add(cardId);
-      return next;
-    });
-  }, []);
 
   const openThread = useCallback(
     (targetThreadId: ThreadId) => {
@@ -285,14 +312,13 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
               return (
                 <PinnedCard
                   key={cardId}
-                  environmentId={environmentId}
+                  threadRef={props.threadRef}
                   cardId={cardId}
                   detail={detail}
                   loading={loading}
                   loadError={loadError}
+                  missing={hasSuccessfulResult && detail === undefined}
                   busy={busyCardId === cardId}
-                  collapsed={collapsedCardIds.has(cardId)}
-                  onToggleCollapsed={() => toggleCardCollapsed(cardId)}
                   actionError={actionError}
                   onRetry={refresh}
                   onRemove={() => removeBoardCardPin(environmentId, threadId, cardId)}
@@ -307,12 +333,17 @@ function BoardCardsSection(props: { readonly threadRef: ScopedThreadRef }) {
           </div>
         </ThreadDetailsSection>
       )}
-      {selectedPlanId !== null ? (
+      {selectedPlanId !== null &&
+      pins.includes(selectedPlanId) &&
+      (!hasSuccessfulResult || details.has(selectedPlanId)) ? (
         <PlanViewerDialog
           key={`plan:${selectedPlanId}`}
           environmentId={environmentId}
           cardId={selectedPlanId}
-          title={details.get(selectedPlanId)?.card.title}
+          title={
+            (details.get(selectedPlanId) ?? readCardsPanelDetail(props.threadRef, selectedPlanId))
+              ?.card.title
+          }
           onClose={() => setSelectedPlanId(null)}
         />
       ) : null}
@@ -607,14 +638,13 @@ function HistoryEntry(props: {
 }
 
 function PinnedCard(props: {
-  readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
   readonly cardId: string;
   readonly detail: BoardCardLookupDetail | undefined;
   readonly loading: boolean;
   readonly loadError: boolean;
+  readonly missing: boolean;
   readonly busy: boolean;
-  readonly collapsed: boolean;
-  readonly onToggleCollapsed: () => void;
   readonly actionError: string | null;
   readonly onRetry: () => void;
   readonly onRemove: () => void;
@@ -624,32 +654,58 @@ function PinnedCard(props: {
   readonly onRequest: (card: BoardCard, text: string) => Promise<void>;
   readonly onOpenPlan: (cardId: BoardCardId) => void;
 }) {
-  const [requestText, setRequestText] = useState("");
-  const [descriptionExpanded, setDescriptionExpanded] = useState(false);
-  const [historyExpanded, setHistoryExpanded] = useState(false);
-  const { card, events, orchestratorThreadTitle } = props.detail ?? {};
+  const {
+    state: view,
+    update,
+    entry,
+  } = useCardsPanelState(props.threadRef, props.cardId, !props.missing);
+  const { requestText, descriptionExpanded, historyExpanded, collapsed } = view;
+  const detail = useRetainedCardDetail(entry, props.detail, props.loading || props.loadError);
+  const { card, events, orchestratorThreadTitle } = detail ?? {};
+
+  if (props.missing) {
+    return (
+      <article
+        className="rounded-lg border border-border bg-card p-3"
+        data-board-card-id={props.cardId}
+      >
+        <p role="status" className="text-xs text-muted-foreground">
+          Card {props.cardId} unavailable: it may have been deleted.
+        </p>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Unpin card ${props.cardId}`}
+          onClick={props.onRemove}
+        >
+          <XIcon className="size-4" aria-hidden="true" />
+        </Button>
+      </article>
+    );
+  }
 
   return (
     <article
       className="rounded-lg border border-border bg-card p-3"
       data-board-card-id={props.cardId}
     >
-      <div className={cn("flex gap-2", props.collapsed ? "items-center" : "mb-2 items-start")}>
+      <div className={cn("flex gap-2", collapsed ? "items-center" : "mb-2 items-start")}>
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold leading-snug">
             <button
               type="button"
               className={cn(
                 "w-full min-w-0 cursor-pointer rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                props.collapsed ? "truncate" : "break-words",
+                collapsed ? "truncate" : "break-words",
               )}
-              aria-expanded={!props.collapsed}
-              onClick={props.onToggleCollapsed}
+              aria-expanded={!collapsed}
+              onClick={() => update({ collapsed: !collapsed })}
             >
               {card?.title ?? props.cardId}
             </button>
           </h3>
-          {card && !props.collapsed ? (
+          {card && !collapsed ? (
             <>
               <p className="mt-1 text-xs text-muted-foreground">
                 {boardStatusLabel(card.status)} · {boardExecutorRoleLabel(card.executorRole)}
@@ -685,9 +741,9 @@ function PinnedCard(props: {
         </Button>
       </div>
 
-      {props.collapsed ? null : (
+      {collapsed ? null : (
         <>
-          {props.loading && !props.detail ? (
+          {props.loading && !detail ? (
             <p className="text-xs text-muted-foreground">Loading card…</p>
           ) : null}
           {props.loadError ? (
@@ -700,11 +756,11 @@ function PinnedCard(props: {
           ) : null}
           {!props.loading && !props.loadError && !props.detail ? (
             <p role="status" className="text-xs text-muted-foreground">
-              Card unavailable: it may have been deleted.
+              Card {props.cardId} unavailable: it may have been deleted.
             </p>
           ) : null}
 
-          {card && props.detail ? (
+          {card && detail ? (
             <>
               <p className="mb-2 text-xs text-muted-foreground">
                 Orchestrator: {orchestratorThreadTitle ?? card.orchestratorThreadId}
@@ -715,7 +771,7 @@ function PinnedCard(props: {
                     type="button"
                     className="flex cursor-pointer items-center gap-1 rounded-sm text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-expanded={descriptionExpanded}
-                    onClick={() => setDescriptionExpanded((value) => !value)}
+                    onClick={() => update({ descriptionExpanded: !descriptionExpanded })}
                   >
                     {descriptionExpanded ? (
                       <ChevronDownIcon className="size-3.5" aria-hidden="true" />
@@ -753,7 +809,7 @@ function PinnedCard(props: {
                   </Button>
                 ) : null}
                 <BoardCardPlanButton
-                  environmentId={props.environmentId}
+                  environmentId={props.threadRef.environmentId}
                   cardId={card.cardId}
                   size="sm"
                   onOpenPlan={props.onOpenPlan}
@@ -803,7 +859,7 @@ function PinnedCard(props: {
                   id={`board-request-${props.cardId}`}
                   className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   value={requestText}
-                  onChange={(event) => setRequestText(event.currentTarget.value)}
+                  onChange={(event) => update({ requestText: event.currentTarget.value })}
                   placeholder="Describe what to check or clarify"
                 />
                 <Button
@@ -826,7 +882,7 @@ function PinnedCard(props: {
                   type="button"
                   className="flex cursor-pointer items-center gap-1 rounded-sm text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-expanded={historyExpanded}
-                  onClick={() => setHistoryExpanded((value) => !value)}
+                  onClick={() => update({ historyExpanded: !historyExpanded })}
                 >
                   {historyExpanded ? (
                     <ChevronDownIcon className="size-3.5" aria-hidden="true" />

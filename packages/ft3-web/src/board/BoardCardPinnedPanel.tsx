@@ -7,7 +7,7 @@ import {
 } from "@t3tools/ft3-board/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useState, useSyncExternalStore } from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { Button } from "~/components/ui/button";
 import { useEnvironmentQuery } from "~/state/query";
 import {
@@ -65,7 +65,7 @@ export function useBoardCardPins(ref: ScopedThreadRef): readonly string[] {
     () => JSON.stringify(readBoardCardPins(ref.environmentId, ref.threadId)),
     () => "[]",
   );
-  return JSON.parse(snapshot) as string[];
+  return useMemo(() => JSON.parse(snapshot) as string[], [snapshot]);
 }
 
 export function BoardCardPinnedPanel(props: {
