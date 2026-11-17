@@ -31,7 +31,7 @@ const decodeState = Schema.decodeUnknownEffect(
     Schema.Struct({ version: Schema.optionalKey(Schema.Unknown), base_url: Schema.String }),
   ),
 );
-const decodeClaude = Schema.decodeUnknownEffect(
+export const decodeClaude = Schema.decodeUnknownEffect(
   fromLenientJson(
     Schema.Struct({
       env: Schema.optionalKey(
@@ -41,7 +41,7 @@ const decodeClaude = Schema.decodeUnknownEffect(
     }),
   ),
 );
-const decodeCodex = Schema.decodeUnknownEffect(
+export const decodeCodex = Schema.decodeUnknownEffect(
   Schema.Struct({
     model_provider: Schema.optionalKey(Schema.String),
     model_providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
@@ -57,14 +57,14 @@ const decodeCodex = Schema.decodeUnknownEffect(
     openai_base_url: Schema.optionalKey(Schema.Unknown),
   }),
 );
-const decodeProvider = Schema.decodeUnknownEffect(
+export const decodeProvider = Schema.decodeUnknownEffect(
   Schema.Struct({
     base_url: Schema.String,
     auth: Schema.optionalKey(Schema.Struct({ command: Schema.optionalKey(Schema.String) })),
   }),
 );
 
-function endpointOrigin(value: string): string | undefined {
+export function endpointOrigin(value: string): string | undefined {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
@@ -76,13 +76,18 @@ function endpointOrigin(value: string): string | undefined {
   }
 }
 
-function expandHome(value: string, home: string, path: Path.Path): string {
+export function expandHome(value: string, home: string, path: Path.Path): string {
   if (value === "~") return home;
   if (/^~[/\\]/.test(value)) return path.join(home, value.slice(2));
   return value;
 }
 
-function helperIsPath(value: string, home: string, path: Path.Path, shellCommand = true): boolean {
+export function helperIsPath(
+  value: string,
+  home: string,
+  path: Path.Path,
+  shellCommand = true,
+): boolean {
   const trimmed = value.trim();
   if (!trimmed || /[\x00-\x1f\x7f$`;&|<>(){}%!^*?[\]]/.test(trimmed)) return false;
   const unquoted = trimmed.replace(/^(["'])(.*)\1$/, "$2");
