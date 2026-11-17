@@ -454,17 +454,8 @@ describe("ft3 board toolkit through ft3-host", () => {
             failure(yield* call(name, args, asThread(architectId))).code,
             "architect_denied",
           );
-          if (name === "board_list_cards") {
-            const hidden = yield* call(name, args, { ...scope, thread: undefined }).pipe(
-              Effect.flip,
-            );
-            assert.instanceOf(hidden, McpSchema.InvalidParams);
-          } else {
-            assert.equal(
-              failure(yield* call(name, args, { ...scope, thread: undefined })).code,
-              "thread_credential_required",
-            );
-          }
+          const hidden = yield* call(name, args, { ...scope, thread: undefined }).pipe(Effect.flip);
+          assert.instanceOf(hidden, McpSchema.InvalidParams);
           assert.equal(
             failure(yield* call(name, args, asThread(ThreadId.make("missing")))).code,
             "thread_not_found",

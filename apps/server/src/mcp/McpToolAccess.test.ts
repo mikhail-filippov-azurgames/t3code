@@ -536,7 +536,11 @@ it.effect("hides fork caller-bound tools from outside clients and enables them i
       "docs_read",
       "docs_resolve",
       "docs_search",
+      "board_create_card",
       "board_list_cards",
+      "board_update_card",
+      "board_delete_card",
+      "plan_submit_for_discussion",
       "plan_read",
     ];
     const tools = {

@@ -27,6 +27,7 @@ const boardCreateCard = Tool.make("board_create_card", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Create board card")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -56,6 +57,7 @@ const boardUpdateCard = Tool.make("board_update_card", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Update board card")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
@@ -70,6 +72,7 @@ const boardDeleteCard = Tool.make("board_delete_card", {
   failureMode: "return",
   dependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Delete board card")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, true)
@@ -100,6 +103,7 @@ const planSubmitForDiscussion = Tool.make("plan_submit_for_discussion", {
   failureMode: "return",
   dependencies: planDependencies,
 })
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients)
   .annotate(Tool.Title, "Submit plan for discussion")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)

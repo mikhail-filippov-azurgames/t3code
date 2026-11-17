@@ -1071,7 +1071,7 @@ ACP RPC subset. `packages/ft3-docs/src/store.ts` использует `writerWor
 | `apps/server/src/mcp/OrchestratorMcpService.ts`                   | экспорт существующей upstream `providerConstraints` | mailParticipantLauncher использует upstream-проверку провайдера; extracted дубль удалён |
 | `apps/web/src/components/usage/UsageModelDialog.browser.test.tsx` | `sessions: 1` в `ModelTotals` fixture               | новое upstream-окно получает существующий шов метрики сессий                            |
 
-- MCP caller-bound tools in ft3-orchestration, ft3-mail, ft3-docs reads and board_list_cards/plan_read use upstream EnabledWhen=hiddenFromOutsideClients. McpToolAccess.test.ts checks all 19 tools for outside-client and thread visibility. Package handler tests exercise thread calls.
+- MCP caller-bound tools in ft3-orchestration, ft3-mail, ft3-docs reads and all six board/plan tools use upstream EnabledWhen=hiddenFromOutsideClients. McpToolAccess.test.ts checks all 23 tools for outside-client and thread visibility. Package handler tests exercise thread calls.
 - DesktopExternalBackend owns a URL-only onReady callback. Its separate releaseExternalUpdateMarker helper waits for server-runtime.json to publish the external URL port, bounded by the upstream update TTL, then clears an unchanged marker. Leaving the marker delays SSH launcher adoption/startup by up to 60 seconds (packages/ssh/src/tunnel.ts update wait loop). Native PID/runtime publication checks stay upstream-owned.
 - agentContextBudget.json measured after toolkit registration: 5930 / 7324 / 67518 UTF-8 bytes.
 
