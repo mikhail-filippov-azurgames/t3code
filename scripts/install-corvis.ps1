@@ -15,7 +15,7 @@ $repositoryUrl = 'https://github.com/mikhail-filippov-azurgames/t3code'
 $branch = 'corvis/main'
 # Standalone downloads have no adjacent package.json. The test keeps this fallback
 # aligned with the root engines.node. The cloned manifest is checked again below.
-$requiredNodeVersion = '26.12.1'
+$requiredNodeVersion = '26.13.1'
 
 function Invoke-Checked {
     param([string] $Command, [string[]] $Arguments)
@@ -28,13 +28,13 @@ function Invoke-Checked {
 function Assert-NodeVersion {
     param([string] $RequiredVersion, [string] $ActualVersion)
     if ($ActualVersion -notmatch '^v(\d+)\.') {
-        throw "Cannot read Node.js version $ActualVersion. Install Node.js 24+ LTS from https://nodejs.org/ and run the installer again."
+        throw "Cannot read Node.js version $ActualVersion. Install Node.js 26 from https://nodejs.org/ and run the installer again."
     }
-    if ([int] $Matches[1] -lt 24) {
-        throw "Node.js 24+ LTS is required, found $ActualVersion (engines.node is $RequiredVersion). Install Node.js 24+ LTS from https://nodejs.org/ and run the installer again."
+    if ([int] $Matches[1] -lt 26) {
+        throw "Node.js 26 is required, found $ActualVersion (engines.node is $RequiredVersion). Install Node.js 26 from https://nodejs.org/ and run the installer again."
     }
     if ($ActualVersion -ne "v$RequiredVersion") {
-        Write-Warning "Node.js $ActualVersion differs from engines.node ($RequiredVersion). Continuing with Node.js 24+ support."
+        Write-Warning "Node.js $ActualVersion differs from engines.node ($RequiredVersion). Continuing with Node.js 26 support."
     }
 }
 
@@ -79,7 +79,7 @@ try {
     }
 
     $prerequisites = [ordered]@{
-        node = "Install Node.js 24+ LTS from https://nodejs.org/ (engines.node is $requiredNodeVersion)."
+        node = "Install Node.js 26 from https://nodejs.org/ (engines.node is $requiredNodeVersion)."
         corepack = 'Install Corepack following https://github.com/nodejs/corepack#installation.'
         pnpm = 'Prepare pnpm using Corepack following https://pnpm.io/installation#using-corepack.'
         git = 'Install Git for Windows from https://git-scm.com/download/win.'

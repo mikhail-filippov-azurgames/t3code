@@ -235,20 +235,23 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Corvis Windows
     },
   );
 
-  it.each(["v22.21.0", "v23.11.0"])("rejects Node.js %s before cloning", async (nodeVersion) => {
-    const test = await fixture();
-    try {
-      const result = await test.run({ nodeVersion });
-      expect(result.code, result.output).toBe(1);
-      expect(result.output).toContain("Node.js 24+ LTS is required");
-      expect(result.output).toContain(`engines.node is ${rootManifest.engines.node}`);
-      expect(result.commands).toEqual([{ tool: "node", arguments: ["--version"] }]);
-    } finally {
-      await test.cleanup();
-    }
-  });
+  it.each(["v22.21.0", "v24.19.0", "v25.0.0"])(
+    "rejects Node.js %s before cloning",
+    async (nodeVersion) => {
+      const test = await fixture();
+      try {
+        const result = await test.run({ nodeVersion });
+        expect(result.code, result.output).toBe(1);
+        expect(result.output).toContain("Node.js 26 is required");
+        expect(result.output).toContain(`engines.node is ${rootManifest.engines.node}`);
+        expect(result.commands).toEqual([{ tool: "node", arguments: ["--version"] }]);
+      } finally {
+        await test.cleanup();
+      }
+    },
+  );
 
-  it.each(["v24.19.0", "v25.0.0", "v27.0.0", `v${rootManifest.engines.node}`])(
+  it.each(["v26.0.0", "v27.0.0", `v${rootManifest.engines.node}`])(
     "continues on Node.js %s and warns only on engines.node mismatch",
     async (nodeVersion) => {
       const test = await fixture();

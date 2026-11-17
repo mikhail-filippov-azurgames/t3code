@@ -237,20 +237,23 @@ describe.skipIf(!shellAvailable)("Corvis shell installer", () => {
     },
   );
 
-  it.each(["v22.21.0", "v23.11.0"])("rejects Node.js %s before cloning", async (nodeVersion) => {
-    const test = await fixture();
-    try {
-      const result = await test.run({ nodeVersion });
-      expect(result.code, result.output).toBe(1);
-      expect(result.output).toContain("Node.js 24+ LTS is required");
-      expect(result.output).toContain(`engines.node is ${manifest.engines.node}`);
-      expect(result.commands).toBe("");
-    } finally {
-      await test.cleanup();
-    }
-  });
+  it.each(["v22.21.0", "v24.19.0", "v25.0.0"])(
+    "rejects Node.js %s before cloning",
+    async (nodeVersion) => {
+      const test = await fixture();
+      try {
+        const result = await test.run({ nodeVersion });
+        expect(result.code, result.output).toBe(1);
+        expect(result.output).toContain("Node.js 26 is required");
+        expect(result.output).toContain(`engines.node is ${manifest.engines.node}`);
+        expect(result.commands).toBe("");
+      } finally {
+        await test.cleanup();
+      }
+    },
+  );
 
-  it.each(["v24.19.0", "v25.0.0", "v27.0.0", `v${manifest.engines.node}`])(
+  it.each(["v26.0.0", "v27.0.0", `v${manifest.engines.node}`])(
     "continues on Node.js %s and warns only on engines.node mismatch",
     async (nodeVersion) => {
       const test = await fixture();
