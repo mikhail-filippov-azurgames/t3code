@@ -3,6 +3,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Migrator from "effect/sql/Migrator";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
 import type { CreateTaskInput, AppendLetterInput } from "./repository.ts";
@@ -94,6 +95,28 @@ it.effect("lists board tasks with their recent letters in one call", () =>
         createdAt: "2026-01-01T00:00:01.000Z",
       }),
     );
+    for (const [memberId, participantThreadId] of [
+      ["member:waiting", null],
+      ["member:completed-turn", "thread:completed-turn"],
+      ["member:closed", "thread:closed"],
+    ] as const) {
+      yield* repository.addMember({
+        memberId,
+        taskId: "task:one",
+        roleId: "review",
+        specialization: memberId,
+        level: null,
+        responseBudgetSeconds: null,
+        documentsWrite: false,
+        modelOverrideJson: null,
+        humanInstruction: null,
+        participantThreadId,
+        route: null,
+        createdAt: "2026-01-01T00:00:01.000Z",
+      });
+    }
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE ft3_mail_members SET status = 'closed' WHERE member_id = 'member:closed'`;
     yield* repository.appendLetter(letterInput());
     yield* repository.appendLetter(
       letterInput({
@@ -115,6 +138,27 @@ it.effect("lists board tasks with their recent letters in one call", () =>
       ["task:two", "task:one"],
     );
     assert.isUndefined(withoutLetters.letters);
+    assert.deepStrictEqual(
+      withoutLetters.members?.["task:one"]?.toSorted((a, b) =>
+        a.specialization!.localeCompare(b.specialization!),
+      ),
+      [
+        { roleId: "review", specialization: "member:closed", status: "closed", launch: "closed" },
+        {
+          roleId: "review",
+          specialization: "member:completed-turn",
+          status: "active",
+          launch: "started",
+        },
+        {
+          roleId: "review",
+          specialization: "member:waiting",
+          status: "active",
+          launch: "not_started",
+        },
+      ],
+    );
+    assert.deepStrictEqual(withoutLetters.members?.["task:two"], []);
 
     const withLetters = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a"],
@@ -127,6 +171,7 @@ it.effect("lists board tasks with their recent letters in one call", () =>
     ]);
     assert.equal(withLetters.letters?.["task:one"]?.[0]?.letter.body, "Start.");
     assert.equal(withLetters.letters?.["task:two"]?.[0]?.letter.body, "Second task letter.");
+    assert.deepStrictEqual(withLetters.members, withoutLetters.members);
 
     const refused = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a"],
@@ -176,6 +221,7 @@ it.effect("scopes card tasks to the calling lead thread", () =>
       ["task:one"],
     );
     assert.deepStrictEqual(Object.keys(own.letters ?? {}), ["task:one"]);
+    assert.deepStrictEqual(Object.keys(own.members ?? {}), ["task:one"]);
 
     const other = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a", "card-b"],
@@ -241,6 +287,7 @@ it.effect("lists only the calling lead's open card-less tasks when withoutCard i
       result.tasks.map((task) => task.taskId),
       ["task:own-open"],
     );
+    assert.deepStrictEqual(result.members, { "task:own-open": [] });
 
     const withCards = yield* mailRpcHandlers[FT3_MAIL_WS_METHODS.mailTasks]({
       cardIds: ["card-a"],
