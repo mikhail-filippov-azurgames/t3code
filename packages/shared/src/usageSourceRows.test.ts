@@ -1,8 +1,12 @@
 import type { EnvironmentId, UsageSourceFingerprint } from "@t3tools/contracts";
-import type { ProviderSourceBreakdown } from "@t3tools/shared/usageSourceBreakdown";
+import type { ProviderSourceBreakdown } from "./usageSourceBreakdown.ts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { sourceRowLabel, UNATTRIBUTED_SOURCE_LABEL, usageSourceRows } from "./usageSourceRows";
+import {
+  sourceRowLabel,
+  UNATTRIBUTED_SOURCE_LABEL,
+  usageSourceRows,
+} from "./usageSourceBreakdown.ts";
 
 const fingerprint: UsageSourceFingerprint = {
   hostId: "host",

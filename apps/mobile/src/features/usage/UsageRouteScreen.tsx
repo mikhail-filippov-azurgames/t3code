@@ -15,6 +15,11 @@ import {
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 import {
+  answeredSourceBreakdown,
+  type ProviderSourceBreakdown,
+  usageSourceRows,
+} from "@t3tools/shared/usageSourceBreakdown";
+import {
   enumerateDays,
   enumerateHourStarts,
   formatCount,
@@ -179,7 +184,14 @@ function UsageScreen(props: {
     isPast24Hours,
     timeZone: window.timeZone,
   };
-  const providers = <ProviderSection merged={merged} metric={metric} compact={wide} />;
+  const providers = (
+    <ProviderSection
+      merged={merged}
+      metric={metric}
+      compact={wide}
+      sources={answeredSourceBreakdown(selectedEnvironments)}
+    />
+  );
 
   const showEnvironmentFilter = environments.length > 0 || selectedEnvironmentIds !== null;
   const selectEnvironment = (value: string) => {
@@ -516,6 +528,7 @@ function ProviderSection(props: {
   readonly metric: UsageChartMetric;
   /** Drops the share bar so the list fits beside the chart. */
   readonly compact: boolean;
+  readonly sources: ReadonlyMap<UsageProviderKind, ProviderSourceBreakdown>;
 }) {
   const { merged, metric } = props;
   const colors = useProviderColors();
@@ -578,6 +591,16 @@ function ProviderSection(props: {
                 ? `${formatPercent(share)} of cost · ${formatTokens(provider.totalTokens)} tokens`
                 : `${formatPercent(share)} of tokens · ${formatUsd(provider.costUsd)}`}
             </Text>
+            {usageSourceRows(props.sources.get(provider.provider)).map((row) => (
+              <View key={row.key} className="flex-row items-baseline justify-between gap-3 pl-4">
+                <Text className="shrink text-sm text-foreground-muted" numberOfLines={1}>
+                  {`${row.label} · ${formatCount(row.sessions)} ${row.sessions === 1 ? "session" : "sessions"}`}
+                </Text>
+                <Text className="text-sm tabular-nums text-foreground-muted">
+                  {metric === "cost" ? formatUsd(row.costUsd) : formatTokens(row.totalTokens)}
+                </Text>
+              </View>
+            ))}
           </View>
         );
       })}

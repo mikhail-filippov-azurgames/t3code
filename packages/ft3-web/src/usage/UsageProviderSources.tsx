@@ -1,9 +1,10 @@
 import { formatCount, formatTokens, formatUsd } from "@t3tools/shared/usageFormat";
-import type { ProviderSourceBreakdown } from "@t3tools/shared/usageSourceBreakdown";
+import {
+  type ProviderSourceBreakdown,
+  usageSourceRows,
+} from "@t3tools/shared/usageSourceBreakdown";
 
 import { cn } from "~/lib/utils";
-
-import { usageSourceRows } from "./usageSourceRows.ts";
 
 /** Per-source rows under a provider's total, shown only when a source names its instances. */
 export function UsageProviderSources(props: {

@@ -11,4 +11,4 @@ export { limitPoolDisplayName } from "./usageLimitsPool.ts";
 export { providersForWindow } from "./usageProviders.ts";
 export { modelSortValue, sortModels } from "./usageModelSort.ts";
 export { UsageProviderSources } from "./UsageProviderSources.tsx";
-export { answeredSourceBreakdown } from "./usageSourceRows.ts";
+export { answeredSourceBreakdown } from "@t3tools/shared/usageSourceBreakdown";
