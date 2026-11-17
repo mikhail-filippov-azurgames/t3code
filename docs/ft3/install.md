@@ -20,11 +20,28 @@ T3, на которой основан Corvis. Версия Corvis растёт 
   его без окон. Если установка не удалась, поставьте его вручную по этой ссылке.
 - Corepack и pnpm. После установки Corepack выполните команды ниже.
 - CLI `claude` и `codex`. Они должны быть доступны приложению в окружении запуска.
+  Claude Code ставьте нативным установщиком, а не через npm: npm 11.19+ блокирует его
+  postinstall, и `claude` не запускается. Codex ставится через npm.
 - Zavod, настроенный по корпоративной инструкции, вместе с помощником `zavod-key`.
+  Zavod ищет `claude` и `codex` при запуске. Если CLI поставлены после Zavod,
+  перезапустите приложение Zavod, иначе он покажет Claude Code как не установленный.
 
 ```sh
 corepack enable
 corepack install --global pnpm@12.14.0
+npm install --global @openai/codex
+```
+
+Claude Code на Windows (PowerShell):
+
+```powershell
+irm https://claude.ai/install.ps1 | iex
+```
+
+Claude Code на macOS и Linux:
+
+```sh
+curl -fsSL https://claude.ai/install.sh | bash
 ```
 
 Откройте новый терминал после установки инструментов. Установщик проверяет наличие
