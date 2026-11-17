@@ -38,6 +38,33 @@ function Assert-NodeVersion {
     }
 }
 
+function Test-VcRuntime {
+    $systemDirectory = [Environment]::SystemDirectory
+    (Test-Path -LiteralPath (Join-Path $systemDirectory 'vcruntime140.dll') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $systemDirectory 'vcruntime140_1.dll') -PathType Leaf)
+}
+
+function Assert-VcRuntime {
+    if (Test-VcRuntime) { return }
+    $url = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    $failure = "Microsoft Visual C++ Redistributable (x64) is required. Install it from $url and run the installer again."
+    $installer = Join-Path ([IO.Path]::GetTempPath()) 'corvis-vc_redist.x64.exe'
+    Write-Host 'Installing Microsoft Visual C++ Redistributable (x64)...'
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+        $process = Start-Process -FilePath $installer -ArgumentList '/install', '/quiet', '/norestart' -Wait -PassThru
+    } catch {
+        throw "$failure $($_.Exception.Message)"
+    } finally {
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    }
+    # 3010 asks for a reboot, 1638 means a newer version is present.
+    if (@(0, 3010, 1638) -notcontains $process.ExitCode -or -not (Test-VcRuntime)) {
+        throw "$failure (vc_redist exit $($process.ExitCode))"
+    }
+}
+
 try {
     if (-not $PSBoundParameters.ContainsKey('InstallDirectory')) {
         $temporaryDirectory = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\', '/')
@@ -67,6 +94,7 @@ try {
     Invoke-Checked corepack @('--version') | Out-Host
     Invoke-Checked pnpm @('--version') | Out-Host
     Invoke-Checked git @('--version') | Out-Host
+    Assert-VcRuntime
     Write-Host 'Environment checks passed.'
 
     $existingDirectory = Test-Path -LiteralPath $InstallDirectory

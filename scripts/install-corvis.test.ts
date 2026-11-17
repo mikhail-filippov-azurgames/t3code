@@ -65,6 +65,22 @@ function git {
         & $gitExecutable @args
     }
 }
+$global:vcRuntimePresent = $config.vcRuntime
+function Test-Path {
+    param([string] $LiteralPath, [string] $PathType)
+    if ($LiteralPath -like '*\vcruntime140*.dll') { return $global:vcRuntimePresent }
+    Microsoft.PowerShell.Management\Test-Path @PSBoundParameters
+}
+function Invoke-WebRequest {
+    param($Uri, $OutFile, [switch] $UseBasicParsing)
+    Write-Invocation 'Invoke-WebRequest' @($Uri)
+}
+function Start-Process {
+    param($FilePath, $ArgumentList, [switch] $Wait, [switch] $PassThru)
+    Write-Invocation (Split-Path -Leaf $FilePath) $ArgumentList
+    $global:vcRuntimePresent = $config.redistInstalls
+    [pscustomobject]@{ ExitCode = $config.redistExitCode }
+}
 function New-Object {
     param($ComObject)
     if ($ComObject -ne 'WScript.Shell') { throw 'Unexpected COM object' }
@@ -135,6 +151,9 @@ async function fixture() {
         failAt?: string;
         outputCodePage?: number;
         useDefaultDirectory?: boolean;
+        vcRuntime?: boolean;
+        redistInstalls?: boolean;
+        redistExitCode?: number;
       } = {},
     ) {
       await NodeFSP.writeFile(
@@ -144,6 +163,9 @@ async function fixture() {
           repositoryUrl,
           installDirectory,
           nodeVersion: `v${rootManifest.engines.node}`,
+          vcRuntime: true,
+          redistInstalls: true,
+          redistExitCode: 0,
           ...options,
         }),
       );
@@ -245,6 +267,60 @@ describe.skipIf(HostProcess.Platform.defaultValue() !== "win32")("Corvis Windows
       }
     },
   );
+
+  it("skips the Visual C++ runtime when it is present", async () => {
+    const test = await fixture();
+    try {
+      const result = await test.run();
+      expect(result.code, result.output).toBe(0);
+      expect(result.commands.map((command) => command.tool)).not.toContain("Invoke-WebRequest");
+    } finally {
+      await test.cleanup();
+    }
+  });
+
+  it("installs a missing Visual C++ runtime quietly before dependencies", async () => {
+    const test = await fixture();
+    try {
+      const result = await test.run({ vcRuntime: false, redistExitCode: 3010 });
+      expect(result.code, result.output).toBe(0);
+      const redist = result.commands.findIndex((command) =>
+        command.tool.endsWith("vc_redist.x64.exe"),
+      );
+      const clone = result.commands.findIndex((command) => command.arguments.includes("clone"));
+      expect(result.commands).toContainEqual({
+        tool: "Invoke-WebRequest",
+        arguments: ["https://aka.ms/vs/17/release/vc_redist.x64.exe"],
+      });
+      expect(result.commands).toContainEqual({
+        tool: "corvis-vc_redist.x64.exe",
+        arguments: ["/install", "/quiet", "/norestart"],
+      });
+      expect(redist).toBeGreaterThanOrEqual(0);
+      expect(redist).toBeLessThan(clone);
+    } finally {
+      await test.cleanup();
+    }
+  });
+
+  it.each([
+    { redistExitCode: 1603, redistInstalls: false },
+    { redistExitCode: 0, redistInstalls: false },
+  ])("stops when the Visual C++ runtime install fails (%o)", async (options) => {
+    const test = await fixture();
+    try {
+      const result = await test.run({ vcRuntime: false, ...options });
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain("Microsoft Visual C++ Redistributable (x64) is required");
+      expect(result.output).toContain("https://aka.ms/vs/17/release/vc_redist.x64.exe");
+      expect(result.commands).not.toContainEqual({ tool: "pnpm", arguments: ["install"] });
+      expect(await NodeFSP.readdir(test.root)).not.toContain(
+        NodePath.basename(test.installDirectory),
+      );
+    } finally {
+      await test.cleanup();
+    }
+  });
 
   it("clones, builds and updates a Cyrillic checkout with OEM console encoding", async () => {
     const test = await fixture();
