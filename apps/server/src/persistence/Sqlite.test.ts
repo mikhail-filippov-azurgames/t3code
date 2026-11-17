@@ -7,6 +7,7 @@ import type * as NodeWorkerThreads from "node:worker_threads";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Ft3Host from "@t3tools/ft3-host/server";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -196,6 +197,7 @@ const migrateTo = (toMigrationInclusive?: number) =>
   Effect.gen(function* () {
     const { dbPath } = yield* ServerConfig.ServerConfig;
     yield* runMigrations({ toMigrationInclusive }).pipe(
+      Effect.andThen(Ft3Host.runMigrations()),
       Effect.provide(NodeSqliteClient.layer({ filename: dbPath })),
     );
   });
@@ -231,6 +233,35 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("layerCliConfig",
         assert.instanceOf(opened.failure, SqlitePersistence.ServerOwnsDatabaseError);
       }
     }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
+  );
+
+  it.effect(
+    "refuses a pending ft3 migration while a running server owns the current core schema",
+    () =>
+      Effect.gen(function* () {
+        yield* migrateTo();
+        const { dbPath } = yield* ServerConfig.ServerConfig;
+        const pending = Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM ft3_migrations WHERE migration_id = (SELECT MAX(migration_id) FROM ft3_migrations)`;
+          return yield* sql`SELECT * FROM ft3_migrations ORDER BY migration_id`;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+        const before = yield* pending;
+        yield* ownT3Home();
+        const opened = yield* Effect.void.pipe(
+          Effect.provide(SqlitePersistence.layerCliConfig),
+          Effect.result,
+        );
+        assert.equal(opened._tag, "Failure");
+        if (opened._tag === "Failure") {
+          assert.instanceOf(opened.failure, SqlitePersistence.ServerOwnsDatabaseError);
+        }
+        const after = yield* Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          return yield* sql`SELECT * FROM ft3_migrations ORDER BY migration_id`;
+        }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: dbPath })));
+        assert.deepStrictEqual(after, before);
+      }).pipe(Effect.scoped, Effect.provide(layerT3Home)),
   );
 
   it.effect("opens a current T3 home while a running server owns it", () =>

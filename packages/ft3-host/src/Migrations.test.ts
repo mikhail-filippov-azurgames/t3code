@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { runMigrations } from "./server.ts";
+import { hasPendingMigrations, runMigrations } from "./server.ts";
 
 describe("ft3 migrations", () => {
   it.effect("uses its own journal without creating the core journal", () =>
@@ -184,3 +184,19 @@ describe("ft3 migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
+
+it.effect("detects a missing ft3 journal and a pending tail without changing it", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    assert.isTrue(yield* hasPendingMigrations());
+    yield* runMigrations();
+    assert.isFalse(yield* hasPendingMigrations());
+    const before = yield* sql`SELECT * FROM ft3_migrations ORDER BY migration_id`;
+    yield* sql`DELETE FROM ft3_migrations WHERE migration_id = (SELECT MAX(migration_id) FROM ft3_migrations)`;
+    assert.isTrue(yield* hasPendingMigrations());
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM ft3_migrations ORDER BY migration_id`,
+      before.slice(0, -1),
+    );
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);

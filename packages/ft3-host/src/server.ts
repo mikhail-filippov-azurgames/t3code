@@ -16,7 +16,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "../../../apps/server/src/config.ts";
 import * as ServerSettings from "../../../apps/server/src/serverSettings.ts";
 
-export { runMigrations } from "./Migrations.ts";
+export { hasPendingMigrations, runMigrations } from "./Migrations.ts";
 export { drainProcessOutput, type ProcessOutput } from "./processOutput.ts";
 
 // The mail stack takes PlanService, which writes plan documents through the
