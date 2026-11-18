@@ -33,8 +33,7 @@ describe("planFailureView", () => {
     const view = planFailureView(
       new BoardMcpFailure({
         code: "invalid_request",
-        message:
-          'Plan for card "c" line 4: step ids must be unique. Fix the plan and accept again.',
+        message: 'Plan for card "c" line 4: step ids must be unique. Fix the plan and try again.',
       }),
     );
     expect(view.changed).toBe(false);

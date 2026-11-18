@@ -60,7 +60,7 @@ export class PlanError extends Schema.TaggedError<PlanError>()("PlanError", {
       case "plan_not_accepted":
         return `Plan for card "${this.cardId}" is not accepted: there is no accepted version to work from.`;
       case "plan_invalid":
-        return `Plan for card "${this.cardId}" line ${this.line ?? 1}: ${this.reason ?? "invalid"}. Fix the plan and accept again.`;
+        return `Plan for card "${this.cardId}" line ${this.line ?? 1}: ${this.reason ?? "invalid"}. Fix the plan and try again.`;
       case "plan_document_denied":
         return `The plan document of card "${this.cardId}" cannot be written by this thread.`;
       case "plan_document_failed":

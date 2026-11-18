@@ -341,8 +341,7 @@ describe("PlanViewerDialog", () => {
       Cause.fail(
         new BoardMcpFailure({
           code: "invalid_request",
-          message:
-            'Plan for card "c" line 4: step ids must be unique. Fix the plan and accept again.',
+          message: 'Plan for card "c" line 4: step ids must be unique. Fix the plan and try again.',
         }),
       ),
     );
@@ -353,7 +352,7 @@ describe("PlanViewerDialog", () => {
     await expect
       .element(screen.getByRole("alert"))
       .toHaveTextContent(
-        'Plan for card "c" line 4: step ids must be unique. Fix the plan and accept again.',
+        'Plan for card "c" line 4: step ids must be unique. Fix the plan and try again.',
       );
     expect(mocks.refreshes).toEqual([]);
   });
