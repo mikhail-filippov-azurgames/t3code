@@ -334,7 +334,7 @@ function TelemetryNotice({ environmentId }: { readonly environmentId: Environmen
   return (
     <p className="mt-auto pt-12 text-2xs leading-relaxed text-muted-foreground/70">
       {telemetryOff === undefined ? (
-        "Corvis не отправляет данные об использовании."
+        "Corvis sends no usage data unless the server owner turns it on."
       ) : (
         <>
           {telemetryOff} See the{" "}
