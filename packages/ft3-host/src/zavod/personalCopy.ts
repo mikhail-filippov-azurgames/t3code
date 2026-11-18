@@ -359,6 +359,7 @@ interface PersonalCopyPlan extends PersonalCopyReport {
 
 const MAX_LINK_HOPS = 40;
 const UNREADABLE = Symbol("unreadable");
+const BROKEN_LINK = Symbol("broken link");
 const NO_BYTES = new Uint8Array();
 
 // A link that loops or points nowhere is a link problem; anything else is not ours to read.
@@ -419,10 +420,20 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
   const readText = (file: string) =>
     fs.readFileString(file).pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
   // Read errors on the personal side are per element: the element is skipped, the copy goes on.
+  // Not found is "no such config" unless a link sits there, which points nowhere.
   const readPersonalText = (file: string) =>
     fs.readFileString(file).pipe(
-      Effect.catchIf(isNotFound, () => Effect.undefined),
-      Effect.orElseSucceed((): typeof UNREADABLE => UNREADABLE),
+      Effect.catch(
+        (error): Effect.Effect<string | undefined | typeof UNREADABLE | typeof BROKEN_LINK> =>
+          isNotFound(error)
+            ? fs.lstat(file).pipe(
+                Effect.map((): typeof BROKEN_LINK => BROKEN_LINK),
+                Effect.catch((lstatError): Effect.Effect<undefined | typeof UNREADABLE> =>
+                  Effect.succeed(isNotFound(lstatError) ? undefined : UNREADABLE),
+                ),
+              )
+            : Effect.succeed(UNREADABLE),
+      ),
     );
   const readBytes = (file: string) => fs.readFile(file).pipe(Effect.catch(() => Effect.undefined));
   const listDirectory = (dir: string) =>
@@ -604,16 +615,32 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       items.push({ family, path: rel, action: existed ? "merge" : "create" });
     });
 
+    const loadPersonalConfig = Effect.fn("ZavodPersonalCopy.loadPersonalConfig")(function* (
+      file: string,
+      rel: string,
+      parseText: (text: string) => Table | undefined,
+    ) {
+      const read = yield* readPersonalText(file);
+      if (read === undefined) return undefined;
+      if (read === UNREADABLE) skip(rel, "invalid");
+      else if (read === BROKEN_LINK) skip(rel, "link");
+      else {
+        const parsed = parseText(read);
+        if (parsed === undefined) skip(rel, "invalid");
+        return parsed;
+      }
+      return undefined;
+    });
+
     if (family === "claude") {
       const claude = personalCopySpec.claude;
-      const personalRead = homeUsable
-        ? yield* readPersonalText(path.join(source.sourceHome, claude.config))
+      const personal = homeUsable
+        ? yield* loadPersonalConfig(
+            path.join(source.sourceHome, claude.config),
+            claude.config,
+            parseJsonTable,
+          )
         : undefined;
-      const personalText = personalRead === UNREADABLE ? undefined : personalRead;
-      const personal = personalText === undefined ? undefined : parseJsonTable(personalText);
-      if (personalRead === UNREADABLE || (personalText !== undefined && personal === undefined)) {
-        skip(claude.config, "invalid");
-      }
       if (personal !== undefined) {
         const existingText = yield* readText(path.join(source.targetHome, claude.config));
         const contents = yield* guarded(() =>
@@ -621,13 +648,10 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         );
         yield* addWrite(claude.config, contents, existingText !== undefined);
       }
-      const jsonRead =
-        source.claudeJson === undefined ? undefined : yield* readPersonalText(source.claudeJson);
-      const jsonText = jsonRead === UNREADABLE ? undefined : jsonRead;
-      const json = jsonText === undefined ? undefined : parseJsonTable(jsonText);
-      if (jsonRead === UNREADABLE || (jsonText !== undefined && json === undefined)) {
-        skip(claude.mcpFile, "invalid");
-      }
+      const json =
+        source.claudeJson === undefined
+          ? undefined
+          : yield* loadPersonalConfig(source.claudeJson, claude.mcpFile, parseJsonTable);
       if (json !== undefined) {
         const filtered = filterClaudeMcpServers(json.mcpServers);
         for (const server of filtered.skipped) {
@@ -641,14 +665,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       }
     } else {
       const codex = personalCopySpec.codex;
-      const personalRead = homeUsable
-        ? yield* readPersonalText(path.join(source.sourceHome, codex.config))
+      const personal = homeUsable
+        ? yield* loadPersonalConfig(
+            path.join(source.sourceHome, codex.config),
+            codex.config,
+            parseTomlTable,
+          )
         : undefined;
-      const personalText = personalRead === UNREADABLE ? undefined : personalRead;
-      const personal = personalText === undefined ? undefined : parseTomlTable(personalText);
-      if (personalRead === UNREADABLE || (personalText !== undefined && personal === undefined)) {
-        skip(codex.config, "invalid");
-      }
       if (personal !== undefined) {
         const filtered = filterCodexConfig(personal);
         for (const server of filtered.skipped) {

@@ -1037,6 +1037,33 @@ describe("personal copy on disk", () => {
       }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect("reports a dangling personal config link instead of treating it as absent", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const missing = f.path.join(f.root, "nowhere");
+      const links = [
+        [f.s("settings.json"), "claude", "settings.json"],
+        [f.homes.claudeJson, "claude", ".claude.json"],
+        [f.c("config.toml"), "codex", "config.toml"],
+      ] as const;
+      for (const [link] of links) yield* f.fs.remove(link, { force: true });
+      const linked = yield* Effect.promise(async () => {
+        for (const [link] of links) await NodeFSP.symlink(missing, link, "file");
+      }).pipe(
+        Effect.as(true),
+        // Windows without the symlink privilege cannot build this fixture.
+        Effect.catchCause(() => Effect.succeed(false)),
+      );
+      if (!linked) return;
+      const report = yield* f.run(false);
+      assert.includeDeepMembers(
+        [...report.skipped],
+        links.map(([, family, file]) => ({ family, path: file, reason: "link" as const })),
+      );
+      assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("refuses a personal home that is the Zavod home", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
