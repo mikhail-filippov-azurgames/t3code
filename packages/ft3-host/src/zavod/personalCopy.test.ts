@@ -754,6 +754,34 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect("counts merged configs against the byte limit before writing", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      yield* f.put(f.s("settings.json"), JSON.stringify({ theme: "x".repeat(2000) }));
+      const before = yield* f.snapshot(f.homes.claudeTarget);
+      for (const dryRun of [true, false]) {
+        const error = yield* f.run(dryRun, { maxFiles: 100, maxBytes: 1500 }).pipe(Effect.flip);
+        assert.strictEqual(error.stage, "limit");
+      }
+      assert.deepStrictEqual(yield* f.snapshot(f.homes.claudeTarget), before);
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("counts configs together with copied files against the file limit", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      // Eight copied files plus settings.json, .claude.json and config.toml.
+      const exact = { maxFiles: 11, maxBytes: 1_000_000 };
+      assert.strictEqual((yield* f.run(true, exact)).items.length, 10);
+      const tight = { ...exact, maxFiles: 10 };
+      for (const dryRun of [true, false]) {
+        const error = yield* f.run(dryRun, tight).pipe(Effect.flip);
+        assert.strictEqual(error.stage, "limit");
+      }
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("refuses a personal home that is the Zavod home", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();

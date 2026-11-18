@@ -518,10 +518,16 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         try: compute,
         catch: (cause) => new ZavodPersonalCopyError({ stage: "copy", cause }),
       });
-    const addWrite = (rel: string, contents: string, existed: boolean) => {
+    // A merged config is written like any copied file, so it spends the same budget.
+    const addWrite = Effect.fn("ZavodPersonalCopy.addWrite")(function* (
+      rel: string,
+      contents: string,
+      existed: boolean,
+    ) {
+      yield* count(new TextEncoder().encode(contents).length);
       plan.writes.push({ rel, target: path.join(source.targetHome, rel), contents });
       items.push({ family, path: rel, action: existed ? "merge" : "create" });
-    };
+    });
 
     if (family === "claude") {
       const claude = personalCopySpec.claude;
@@ -533,7 +539,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         const contents = yield* guarded(() =>
           claudeSettingsContents(existingText, personal, input.baseUrl, input.helperPath, windows),
         );
-        addWrite(claude.config, contents, existingText !== undefined);
+        yield* addWrite(claude.config, contents, existingText !== undefined);
       }
       const jsonText =
         source.claudeJson === undefined ? undefined : yield* readText(source.claudeJson);
@@ -547,7 +553,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         if (Object.keys(filtered.servers).length > 0) {
           const existingText = yield* readText(path.join(source.targetHome, claude.mcpFile));
           const contents = yield* guarded(() => claudeJsonContents(existingText, filtered.servers));
-          addWrite(claude.mcpFile, contents, existingText !== undefined);
+          yield* addWrite(claude.mcpFile, contents, existingText !== undefined);
         }
       }
     } else {
@@ -570,7 +576,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
             windows,
           ),
         );
-        addWrite(codex.config, contents, existingText !== undefined);
+        yield* addWrite(codex.config, contents, existingText !== undefined);
       }
     }
   }
