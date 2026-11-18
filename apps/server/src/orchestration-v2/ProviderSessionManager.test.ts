@@ -444,6 +444,7 @@ function unimplemented(detail: string) {
 const makeProviderAdapter = Effect.fnUntraced(function* (
   state: Ref.Ref<TestProviderRuntimeState>,
   options: {
+    readonly instanceId?: ProviderInstanceId;
     readonly failEventStream?: boolean;
     readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
     readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -487,7 +488,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     ).pipe(Effect.andThen(Effect.never)),
   );
   return ProviderAdapter.ProviderAdapterV2.of({
-    instanceId: ProviderInstanceId.make("codex"),
+    instanceId: options.instanceId ?? modelSelection.instanceId,
     driver: CODEX_DRIVER,
     getCapabilities: () => Effect.succeed(options.capabilities ?? CodexCapabilities),
     planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
@@ -535,7 +536,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
         }
 
         return {
-          instanceId: ProviderInstanceId.make("codex"),
+          instanceId: options.instanceId ?? modelSelection.instanceId,
           driver: CODEX_DRIVER,
           providerSessionId: input.providerSessionId,
           ...(options.normalizeThreadLoadModelSelection === undefined
@@ -617,6 +618,7 @@ function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
+  readonly secondInstanceId?: ProviderInstanceId;
   readonly failEventStream?: boolean;
   readonly normalizeThreadLoadModelSelection?: (selection: ModelSelection) => ModelSelection;
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
@@ -698,7 +700,16 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    }).pipe(
+      Effect.flatMap((adapter) =>
+        input.secondInstanceId === undefined
+          ? Effect.succeed([adapter])
+          : makeProviderAdapter(input.state, { instanceId: input.secondInstanceId }).pipe(
+              Effect.map((second) => [adapter, second]),
+            ),
+      ),
+      Effect.map(ProviderAdapterRegistry.layerFromAdapters),
+    ),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -2971,6 +2982,53 @@ it.effect(
         Effect.provide(
           layerTest({ state, idleTimeoutMs: 60_000, pauseResolve: { armed, paused } }),
         ),
+      );
+    }),
+);
+
+// regression: a thread moved to another instance's shared session kept that instance's MCP credential
+it.effect(
+  "ProviderSessionManagerV2 reissues the MCP credential for the instance that runs the next turn",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const instanceB = ProviderInstanceId.make("codex-second");
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-instance-switch");
+        const sessionA = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const sessionB = idAllocator.derive.providerSession({ providerInstanceId: instanceB });
+        const selectionB = { instanceId: instanceB, model: "gpt-5.4" } satisfies ModelSelection;
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const credentialInstance = Effect.gen(function* () {
+          const config = yield* mcpSessions.read(threadId);
+          assert.isDefined(config);
+          const token = config!.authorizationHeader.replace(/^Bearer\s+/, "");
+          return (yield* registry.resolve(token))?.thread.providerInstanceId;
+        });
+        const openOn = (providerSessionId: ProviderSessionId, selection: ModelSelection) =>
+          manager.open({ threadId, providerSessionId, modelSelection: selection, runtimePolicy });
+
+        yield* openOn(sessionA, modelSelection);
+        yield* openOn(sessionB, selectionB);
+        assert.equal(yield* credentialInstance, instanceB);
+
+        yield* openOn(sessionA, modelSelection);
+        assert.equal(yield* credentialInstance, modelSelection.instanceId);
+
+        yield* openOn(sessionB, selectionB);
+        assert.equal(yield* credentialInstance, instanceB);
+      }).pipe(
+        Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, secondInstanceId: instanceB })),
       );
     }),
 );
