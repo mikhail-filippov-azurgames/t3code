@@ -727,6 +727,16 @@ const make = Effect.fn("PlanService.make")(function* () {
     return rows[0]?.sha256 ?? null;
   });
 
+  /** Refuses a plan document that accept would refuse, reporting its first problem. */
+  const requireValidPlan = (cardId: Contracts.BoardCardId, content: string) => {
+    const issue = validatePlan(content, cardId)[0];
+    return issue === undefined
+      ? Effect.void
+      : Effect.fail(
+          new PlanError({ code: "plan_invalid", cardId, line: issue.line, reason: issue.reason }),
+        );
+  };
+
   const submitForDiscussion = Effect.fn("PlanService.submitForDiscussion")(function* (
     cardId: Contracts.BoardCardId,
   ) {
@@ -738,12 +748,14 @@ const make = Effect.fn("PlanService.make")(function* () {
       const doc = yield* readPlanDocument(record);
       const latest = yield* latestVersionSha(cardId, "discussion");
       if (latest === null || latest !== doc.sha256) {
+        yield* requireValidPlan(cardId, doc.content);
         next = { ...record, updatedAt: yield* nowIso };
         yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });
       }
     } else {
       yield* requireState(record, ["drafting", "reviewing", "accepted"]);
       const doc = yield* readPlanDocument(record);
+      yield* requireValidPlan(cardId, doc.content);
       next = { ...record, state: "discussion" as const, updatedAt: yield* nowIso };
       yield* commit(next, { phase: "discussion", sha256: doc.sha256, content: doc.content });
     }
@@ -795,15 +807,7 @@ const make = Effect.fn("PlanService.make")(function* () {
     if (doc.sha256 !== input.sha256) {
       return yield* new PlanError({ code: "plan_changed", cardId: input.cardId });
     }
-    const issue = validatePlan(doc.content, input.cardId)[0];
-    if (issue !== undefined) {
-      return yield* new PlanError({
-        code: "plan_invalid",
-        cardId: input.cardId,
-        line: issue.line,
-        reason: issue.reason,
-      });
-    }
+    yield* requireValidPlan(input.cardId, doc.content);
     const at = yield* nowIso;
     const next: PlanningContracts.PlanRecord = {
       ...record,

@@ -629,6 +629,12 @@ describe("PlanService", () => {
     ),
   );
 
+  const duplicatedStepPlan = (planDocId: string) =>
+    Testkit.validPlan(planDocId).replace(
+      "| P1 | add the table | ft3-board | migration test |",
+      "| P1 | add the table | ft3-board | migration test |\n| P1 | again | ft3-board | migration test |",
+    );
+
   const dispatched: Array<unknown> = [];
 
   it.effect("refuses a retried accept once the accepted document has changed", () =>
@@ -686,17 +692,71 @@ describe("PlanService", () => {
         const service = yield* plans;
         const record = yield* service.require({ cardId, requiredBy: "lead" });
         yield* service.beginDraft(cardId);
-        const duplicated = Testkit.validPlan(record.planDocId).replace(
-          "| P1 | add the table | ft3-board | migration test |",
-          "| P1 | add the table | ft3-board | migration test |\n| P1 | again | ft3-board | migration test |",
-        );
-        yield* Testkit.editPlan(record.planDocId, duplicated);
+        // Submit refuses an invalid plan, so the plan breaks while in discussion.
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
         yield* service.submitForDiscussion(cardId);
+        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
         const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
         const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
         assert.equal(error.code, "plan_invalid");
         assert.equal(error.line, 20);
         assert.include(error.reason ?? "", 'step id "P1" is repeated');
+      }),
+    ),
+  );
+
+  const cardReadiness = Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      readonly readiness: string | null;
+      readonly readiness_note: string | null;
+    }>`SELECT readiness, readiness_note FROM ft3_board_cards WHERE card_id = ${cardId}`;
+    return rows[0];
+  });
+
+  it.effect("refuses to submit a plan whose step id is not P<n> and changes nothing", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        const nested = Testkit.validPlan(record.planDocId).replace("| P1 |", "| P1.1 |");
+        yield* Testkit.editPlan(record.planDocId, nested);
+        const readinessBefore = yield* cardReadiness;
+        const error = yield* service.submitForDiscussion(cardId).pipe(Effect.flip);
+        assert.equal(error.code, "plan_invalid");
+        assert.equal(error.line, 19);
+        assert.equal(error.reason, 'step id "P1.1" must look like P1');
+        assert.equal((yield* service.get(cardId))?.state, "drafting");
+        assert.deepStrictEqual(yield* cardReadiness, readinessBefore);
+        assert.deepStrictEqual(yield* versionPhases, []);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        const submitted = yield* service.submitForDiscussion(cardId);
+        assert.equal(submitted.state, "discussion");
+        assert.equal((yield* cardReadiness)?.readiness, "needs_human");
+        assert.deepStrictEqual(yield* versionPhases, ["discussion"]);
+      }),
+    ),
+  );
+
+  it.effect("refuses to resubmit a plan broken in discussion and keeps the last version", () =>
+    Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        const first = yield* service.submitForDiscussion(cardId);
+        const unchanged = yield* service.submitForDiscussion(cardId);
+        assert.equal(unchanged.updatedAt, first.updatedAt);
+        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
+        const error = yield* service.submitForDiscussion(cardId).pipe(Effect.flip);
+        assert.equal(error.code, "plan_invalid");
+        assert.include(error.reason ?? "", 'step id "P1" is repeated');
+        assert.equal((yield* service.get(cardId))?.state, "discussion");
+        assert.deepStrictEqual(yield* versionPhases, ["discussion"]);
       }),
     ),
   );
@@ -721,12 +781,6 @@ describe("PlanService", () => {
     return { events, failures, state, options };
   };
 
-  const duplicatedStepPlan = (planDocId: string) =>
-    Testkit.validPlan(planDocId).replace(
-      "| P1 | add the table | ft3-board | migration test |",
-      "| P1 | add the table | ft3-board | migration test |\n| P1 | again | ft3-board | migration test |",
-    );
-
   it.effect("tells the lead when an accept of an invalid plan is refused", () => {
     const lead = leadEvents();
     return Testkit.withPlanning(
@@ -735,8 +789,9 @@ describe("PlanService", () => {
         const service = yield* plans;
         const record = yield* service.require({ cardId, requiredBy: "lead" });
         yield* service.beginDraft(cardId);
-        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
         yield* service.submitForDiscussion(cardId);
+        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
         const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
         const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
         assert.equal(error.code, "plan_invalid");
@@ -816,8 +871,9 @@ describe("PlanService", () => {
         const service = yield* plans;
         const record = yield* service.require({ cardId, requiredBy: "lead" });
         yield* service.beginDraft(cardId);
-        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
         yield* service.submitForDiscussion(cardId);
+        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
         const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
         const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
         assert.equal(error.code, "plan_invalid");

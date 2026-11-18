@@ -96,7 +96,7 @@ const planRead = Tool.make("plan_read", {
   .annotate(Tool.OpenWorld, false);
 const planSubmitForDiscussion = Tool.make("plan_submit_for_discussion", {
   description:
-    "Snapshot the current draft and put the plan up for human review: the plan moves to discussion and the card moves to readiness needs_human, so the human sees it in the card thread. Repeat calls are safe: resubmitting an unchanged plan succeeds without recording another version. The human accepts with board.planAccept outside MCP; the Plan accepted lead event carries the doc reference and revision to implement against.",
+    "Snapshot the current draft and put the plan up for human review: the plan moves to discussion and the card moves to readiness needs_human, so the human sees it in the card thread. Repeat calls are safe: resubmitting an unchanged plan succeeds without recording another version. The plan format is checked first (frontmatter, the ## Steps table, unique flat step ids P1, P2…): an invalid plan is refused as invalid_request naming the line and reason, and the plan and card stay as they were. The human accepts with board.planAccept outside MCP; the Plan accepted lead event carries the doc reference and revision to implement against.",
   parameters: Contracts.BoardPlanSubmitInput,
   success: Contracts.BoardPlanSubmitResult,
   failure: Contracts.BoardMcpFailure,
