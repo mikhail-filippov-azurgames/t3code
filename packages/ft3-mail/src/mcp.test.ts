@@ -4,6 +4,7 @@ import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as McpHttpServer from "../../../apps/server/src/mcp/McpHttpServer.ts";
@@ -230,6 +231,104 @@ describe("mail MCP tools", () => {
       ).pipe(Effect.flip);
       assert.instanceOf(hidden, McpSchema.InvalidParams);
     }).pipe(Effect.provide(fixture(true).layer)),
+  );
+
+  it.effect(
+    "tells the lead when a participant's mail_send is refused by the caller check or the service",
+    () => {
+      const workerId = ThreadId.make("thread:mail-worker");
+      const harness = mailHarness({
+        enabled: true,
+        threadProjects: { [leadId]: "project:mcp-test", [workerId]: "project:mcp-test" },
+      });
+      const layer = mailMcpLayerFrom(harness.layer, gateLayer(true, true)).pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provide(SqlitePersistence.layerMemory),
+        Layer.provideMerge(harness.threadLayer),
+        Layer.provide(cryptoLayer),
+        Layer.provideMerge(databaseLayer),
+      );
+      const worker = (providerInstanceId: string): McpInvocationContext.McpInvocationScope => ({
+        ...scope,
+        thread: {
+          threadId: workerId,
+          providerSessionId: "session:mail-worker",
+          providerInstanceId: ProviderInstanceId.make(providerInstanceId),
+        },
+      });
+      return Effect.gen(function* () {
+        yield* migrateMail;
+        const task = taskOf(
+          structured(
+            yield* call("mail_task_create", {
+              title: "Refactor",
+              brief: "Split the module.",
+              level: "medium",
+              members: [{ role: "implementation" }],
+              clientRequestId: "request:team",
+            }),
+          ),
+        );
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE ft3_mail_members SET participant_thread_id = ${workerId}
+        WHERE task_id = ${task.taskId}`;
+        const notices = Effect.map(call("mail_task_read", { taskId: task.taskId }), (result) =>
+          (
+            structured(result).entries as ReadonlyArray<{
+              readonly letter: {
+                readonly senderThreadId: string;
+                readonly kind: string;
+                readonly body: string;
+              };
+            }>
+          )
+            .map((entry) => entry.letter)
+            .filter((letter) => letter.senderThreadId === "system"),
+        );
+
+        // The thread runs on another instance than the credential, as in the incident.
+        const stale = decodeFailure(
+          yield* call(
+            "mail_send",
+            {
+              taskId: task.taskId,
+              to: "lead",
+              kind: "answer",
+              body: "P2 done.",
+              clientRequestId: "request:stale",
+            },
+            worker("claude"),
+          ),
+        );
+        assert.equal(stale.code, "parent_not_active");
+        const first = yield* notices;
+        assert.lengthOf(first, 1);
+        assert.equal(first[0]!.kind, "blocked");
+        assert.include(first[0]!.body, `parent_not_active: ${stale.message}`);
+        assert.include(first[0]!.body, "P2 done.");
+
+        const denied = decodeFailure(
+          yield* call(
+            "mail_send",
+            {
+              taskId: task.taskId,
+              to: "lead",
+              kind: "request",
+              body: "Do it.",
+              clientRequestId: "request:kind",
+            },
+            worker("codex"),
+          ),
+        );
+        assert.equal(denied.code, "kind_denied");
+        const second = yield* notices;
+        assert.lengthOf(second, 2);
+        assert.isTrue(
+          second.some((letter) => letter.body.includes(`kind_denied: ${denied.message}`)),
+        );
+      }).pipe(Effect.provide(layer));
+    },
   );
 
   it.effect("checks a mail MCP caller's project independently of the task project", () => {
