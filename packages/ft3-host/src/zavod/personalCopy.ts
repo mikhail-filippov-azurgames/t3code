@@ -356,6 +356,8 @@ interface PersonalCopyPlan extends PersonalCopyReport {
   readonly families: ReadonlyArray<FamilyPlan>;
 }
 
+const MAX_LINK_HOPS = 40;
+
 const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
 
 const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
@@ -586,6 +588,26 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
     return target === base || target.startsWith(base.endsWith(path.sep) ? base : base + path.sep);
   };
 
+  // The atomic write follows links, so the check has to end where the write ends: a missing
+  // leaf resolves through its nearest existing parent.
+  const resolveWriteTarget = Effect.fn("ZavodPersonalCopy.resolveWriteTarget")(function* (
+    file: string,
+    hops = 0,
+  ): Effect.fn.Return<string, ZavodPersonalCopyError | PlatformError.PlatformError> {
+    if (hops > MAX_LINK_HOPS) return yield* new ZavodPersonalCopyError({ stage: "copy" });
+    const info = yield* fs.lstat(file).pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
+    if (info === undefined) {
+      const parent = path.dirname(file);
+      if (parent === file) return file;
+      return path.join(yield* resolveWriteTarget(parent, hops), path.basename(file));
+    }
+    if (info.type === "SymbolicLink") {
+      const link = yield* fs.readLink(file);
+      return yield* resolveWriteTarget(path.resolve(path.dirname(file), link), hops + 1);
+    }
+    return yield* fs.realPath(file);
+  });
+
   for (const family of plan.families) {
     if (family.units.length === 0 && family.writes.length === 0) continue;
     yield* Effect.scoped(
@@ -638,10 +660,7 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
         }
 
         for (const write of family.writes) {
-          const real = yield* fs
-            .realPath(write.target)
-            .pipe(Effect.catchIf(isNotFound, () => fs.realPath(path.dirname(write.target))));
-          yield* guard(real);
+          yield* guard(yield* resolveWriteTarget(write.target));
           yield* writeFileStringAtomically({ filePath: write.target, contents: write.contents });
         }
       }),

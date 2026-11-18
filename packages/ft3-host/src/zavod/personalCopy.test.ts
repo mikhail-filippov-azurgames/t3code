@@ -780,6 +780,53 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect("never writes a merged config through a dangling link out of the Zavod home", () =>
+    Effect.gen(function* () {
+      for (const [family, file] of [
+        ["claude", "settings.json"],
+        ["claude", ".claude.json"],
+        ["codex", "config.toml"],
+      ] as const) {
+        const f = yield* copyFixture();
+        const home = family === "claude" ? f.homes.claudeTarget : f.homes.codexTarget;
+        const target = f.path.join(home, file);
+        const outside = f.path.join(f.root, "outside", `created-${file}`);
+        yield* f.fs.remove(target, { force: true });
+        const linked = yield* Effect.promise(() => NodeFSP.symlink(outside, target, "file")).pipe(
+          Effect.as(true),
+          // Windows without the symlink privilege cannot build this fixture.
+          Effect.catchCause(() => Effect.succeed(false)),
+        );
+        if (!linked) return;
+        const error = yield* f.run(false).pipe(Effect.flip);
+        assert.strictEqual(error.stage, "copy", file);
+        assert.isFalse(yield* f.fs.exists(outside), file);
+        assert.isFalse(yield* f.fs.exists(f.path.dirname(outside)), file);
+      }
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("follows a chain of links to its end before writing a config", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const target = f.path.join(f.homes.claudeTarget, "settings.json");
+      const hop = f.path.join(f.homes.claudeTarget, "hop.json");
+      const outside = f.path.join(f.root, "outside", "chain-settings.json");
+      yield* f.fs.remove(target, { force: true });
+      const linked = yield* Effect.promise(async () => {
+        await NodeFSP.symlink(outside, hop, "file");
+        await NodeFSP.symlink(hop, target, "file");
+      }).pipe(
+        Effect.as(true),
+        Effect.catchCause(() => Effect.succeed(false)),
+      );
+      if (!linked) return;
+      const error = yield* f.run(false).pipe(Effect.flip);
+      assert.strictEqual(error.stage, "copy");
+      assert.isFalse(yield* f.fs.exists(outside));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("skips unreadable personal configs instead of failing", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
