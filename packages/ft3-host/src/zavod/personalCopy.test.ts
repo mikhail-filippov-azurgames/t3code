@@ -1066,6 +1066,55 @@ describe("ZavodService", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
+  it.effect("copyPersonal skips unreadable personal configs and still copies skills", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      yield* f.service.connect();
+      yield* f.put(f.path.join(f.home, ".claude", "settings.json"), "[broken json");
+      yield* f.put(f.path.join(f.home, ".codex", "config.toml"), "not = = toml");
+      yield* f.put(f.path.join(f.home, ".claude", "skills", "alpha", "SKILL.md"), "updated alpha");
+      const report = yield* f.service.copyPersonal({ dryRun: false });
+      assert.deepStrictEqual(
+        report.skipped.filter((entry) => entry.reason === "invalid"),
+        [
+          { family: "claude", path: "settings.json", reason: "invalid" },
+          { family: "codex", path: "config.toml", reason: "invalid" },
+        ],
+      );
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.claudeTarget, "skills/alpha/SKILL.md")),
+        "updated alpha",
+      );
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("copyPersonal still needs a usable Zavod route", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      yield* f.service.connect();
+      yield* f.fs.remove(f.path.join(f.home, ".zavod", "bin"), { recursive: true });
+      const error = yield* f.service.copyPersonal({ dryRun: true }).pipe(Effect.flip);
+      assert.isTrue(isCopyError(error) && error.stage === "state");
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("copyPersonal refuses secret provider environment overrides", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      yield* f.service.connect();
+      yield* f.settings.updateProviderInstance({
+        operation: "upsert",
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        instance: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          environment: [{ name: "CLAUDE_CONFIG_DIR", value: "hidden", sensitive: true }],
+        },
+      });
+      const error = yield* f.service.copyPersonal({ dryRun: true }).pipe(Effect.flip);
+      assert.isTrue(isCopyError(error) && error.stage === "state");
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.effect("only a family whose instance is created gets the first copy", () =>
     Effect.gen(function* () {
       const f = yield* serviceFixture();

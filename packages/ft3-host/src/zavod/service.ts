@@ -100,13 +100,13 @@ const make = Effect.gen(function* () {
   });
   type PersonalContext = Effect.Success<ReturnType<typeof personalContext>>;
 
-  const detectWith = Effect.fn("ZavodService.detection")(function* ({
+  const detectRaw = Effect.fn("ZavodService.detectRaw")(function* ({
     claude,
     codex,
     claudeEnvironment,
     codexEnvironment,
   }: PersonalContext) {
-    const detected = yield* detectZavod({
+    return yield* detectZavod({
       claudeHomePath: configuredHome(claude?.config),
       codexHomePath: configuredHome(codex?.config),
       homeDirectory,
@@ -118,11 +118,13 @@ const make = Effect.gen(function* () {
       Effect.provideService(Path.Path, path),
       Effect.provideService(HostProcess.Platform, platform),
     );
-    if (
-      detected.state !== "absent" &&
-      (hasSecretOverride(claude?.environment, platform === "win32") ||
-        hasSecretOverride(codex?.environment, platform === "win32"))
-    ) {
+  });
+  const hasSecretOverrides = ({ claude, codex }: PersonalContext) =>
+    hasSecretOverride(claude?.environment, platform === "win32") ||
+    hasSecretOverride(codex?.environment, platform === "win32");
+  const detectWith = Effect.fn("ZavodService.detection")(function* (context: PersonalContext) {
+    const detected = yield* detectRaw(context);
+    if (detected.state !== "absent" && hasSecretOverrides(context)) {
       return {
         ...detected,
         state: "unsupported" as const,
@@ -138,12 +140,13 @@ const make = Effect.gen(function* () {
     readonly only?: ReadonlySet<PersonalFamily>;
   }) {
     const context = yield* personalContext();
-    const detected = yield* detectWith(context);
+    // Unreadable personal files are the copier's to skip, so only the route and secret overrides gate it.
+    const detected = yield* detectRaw(context);
     if (
-      detected.state === "unsupported" ||
       detected.state === "absent" ||
       detected.baseUrl === null ||
-      detected.helperPath === null
+      detected.helperPath === null ||
+      hasSecretOverrides(context)
     ) {
       return yield* new ZavodPersonalCopyError({ stage: "state" });
     }
