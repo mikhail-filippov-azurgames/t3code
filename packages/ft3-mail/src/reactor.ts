@@ -28,7 +28,11 @@ import {
   participantReplyLine,
 } from "./participantLauncher.ts";
 import { projectIdOfMailTask } from "./projectContext.ts";
-import { MailRepository, layer as mailRepositoryLayer } from "./repository.ts";
+import {
+  MailRepository,
+  type MailRepositoryError,
+  layer as mailRepositoryLayer,
+} from "./repository.ts";
 import { MAIL_URGENT_LETTER_WAKE_REASON, MailService } from "./service.ts";
 
 export class MailReactorError extends Schema.TaggedError<MailReactorError>()("MailReactorError", {
@@ -144,6 +148,8 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     };
     /** A lead override: the next dispatch on this thread runs on the new model. */
     readonly modelSelection?: ModelSelection;
+    /** Runs after the last read, right before the send; false abandons the wake. */
+    readonly claim: Effect.Effect<boolean, MailRepositoryError>;
   }) {
     const records = yield* threads.getThreadRecords(input.senderThreadId ?? input.threadId, [
       "runs",
@@ -159,6 +165,7 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
           ? { type: "start_immediately" }
           : { type: "steer_active", targetRunId: active.id };
     }
+    if (!(yield* input.claim)) return false;
     // The fallback gets its own command id: the refused steer already claimed the first one.
     const send = (mode: MailWakeDispatchMode, suffix = "") =>
       threads
@@ -192,6 +199,7 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
     yield* input.urgent
       ? send(dispatchMode).pipe(Effect.catch(() => send({ type: "queue_after_active" }, ":queued")))
       : send(dispatchMode);
+    return true;
   });
 
   const deliver = Effect.fn("MailDeliveryReactor.deliver")(function* (input: {
@@ -289,7 +297,10 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
         : `
 
 ${participantReplyLine({ taskId: task.taskId, letterId: letter.letterId })}`;
-    yield* wake({
+    const sent = yield* wake({
+      claim: repository
+        .claimPendingDelivery({ deliveryId: delivery.deliveryId, at })
+        .pipe(Effect.map((claimed) => claimed !== null)),
       threadId: ThreadId.make(input.participantThreadId),
       key: input.key,
       text: `New ${letter.kind} letter${from} in mail task "${task.title}":
@@ -311,6 +322,11 @@ ${letter.body}${replyLine}`,
         : { senderThreadId: senderParticipantThreadId }),
       ...(modelSelection === undefined ? {} : { modelSelection }),
     });
+    if (!sent) {
+      // A transition won between the first check and the send.
+      yield* dead();
+      return;
+    }
     yield* repository.markWakeDelivered({ wakeId: input.wakeId, at });
     yield* repository.markDeliveryDelivered({ deliveryId: delivery.deliveryId, at });
   });

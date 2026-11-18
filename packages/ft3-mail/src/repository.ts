@@ -634,6 +634,11 @@ export class MailRepository extends Context.Service<
     readonly setLetterClassifier: (
       input: SetLetterClassifierInput,
     ) => Effect.Effect<MailLetter | null, MailRepositoryError>;
+    /** One statement that succeeds only while the delivery is still pending; null means a transition won. */
+    readonly claimPendingDelivery: (input: {
+      readonly deliveryId: string;
+      readonly at: string;
+    }) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
     readonly markDeliveryDelivered: (input: {
       readonly deliveryId: string;
       readonly at: string;
@@ -1117,6 +1122,15 @@ const make = Effect.gen(function* () {
           if (row !== undefined) return toDelivery(row);
           return yield* findDelivery(input.deliveryId);
         }),
+      ),
+    ),
+    claimPendingDelivery: Effect.fn("MailRepository.claimPendingDelivery")((input) =>
+      mapError("claimPendingDelivery")(
+        sql<DeliveryRow>`UPDATE ft3_mail_deliveries SET updated_at = ${input.at}
+          WHERE delivery_id = ${input.deliveryId} AND state = 'pending'
+          RETURNING ${sql.literal(DELIVERY_COLUMNS)}`.pipe(
+          Effect.map((rows) => (rows[0] === undefined ? null : toDelivery(rows[0]))),
+        ),
       ),
     ),
     markDeliveryDelivered: Effect.fn("MailRepository.markDeliveryDelivered")((input) =>

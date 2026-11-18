@@ -17,7 +17,9 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -160,6 +162,7 @@ function fixture(
   // Faults are injected at the service boundary: the wrapper builds the real
   // repository and replaces exactly the methods a test drives.
   let recoverAfterDelivery: (() => Effect.Effect<void, never, never>) | null = null;
+  let beforeLetterLookup: (() => Effect.Effect<void, never, never>) | null = null;
   const repositoryLayer = Layer.unwrap(
     Effect.map(
       Effect.provide(
@@ -181,6 +184,13 @@ function fixture(
           : real;
         return Layer.succeed(MailRepository, {
           ...withFaults,
+          getLetter: (letterId) =>
+            Effect.gen(function* () {
+              const hook = beforeLetterLookup;
+              beforeLetterLookup = null;
+              if (hook !== null) yield* hook();
+              return yield* withFaults.getLetter(letterId);
+            }),
           recordDelivery: (input) =>
             withFaults
               .recordDelivery(input)
@@ -284,6 +294,9 @@ function fixture(
     },
     setRecoverAfterDelivery: (run: (() => Effect.Effect<void, never, never>) | null) => {
       recoverAfterDelivery = run;
+    },
+    setBeforeLetterLookup: (run: (() => Effect.Effect<void, never, never>) | null) => {
+      beforeLetterLookup = run;
     },
   };
 }
@@ -895,6 +908,49 @@ it.effect("kills a stale wake for a delivery already answered", () => {
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "answered");
   }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("skips a wake whose delivery is answered while the reactor is mid-delivery", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: leadId,
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    const lookedUp = yield* Deferred.make<void>();
+    const resume = yield* Deferred.make<void>();
+    harness.setBeforeLetterLookup(() =>
+      Deferred.succeed(lookedUp, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+    );
+    const draining = yield* (yield* MailDeliveryReactor).recover.pipe(Effect.forkScoped);
+    yield* Deferred.await(lookedUp);
+    yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: "Done.",
+      clientRequestId: "request:answer-during-drain",
+      replyToLetterId: sent.letter.letterId,
+    });
+    const repository = yield* MailRepository;
+    const deliveryId = sent.deliveries[0]!.deliveryId;
+    assert.equal((yield* repository.getDelivery(deliveryId))?.state, "answered");
+    yield* Deferred.succeed(resume, undefined);
+    yield* Fiber.join(draining);
+
+    assert.equal(harness.dispatched.filter((command) => command.threadId === childId).length, 0);
+    assert.equal((yield* repository.getDelivery(deliveryId))?.state, "answered");
+  }).pipe(Effect.scoped, Effect.provide(harness.layer));
 });
 
 it.effect("kills a stale wake for a delivery that failed", () => {
