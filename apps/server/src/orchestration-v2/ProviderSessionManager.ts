@@ -147,6 +147,8 @@ const activeTurnItemStatuses: ReadonlyArray<OrchestrationV2TurnItem["status"]> =
   "running",
   "waiting",
 ];
+const RELOAD_BLOCKED_BY_BACKGROUND_WORK_MESSAGE =
+  "Thread has background work; its MCP credential changed and the thread cannot reload until that work ends. Retry after it finishes.";
 
 export class ProviderSessionOpenError extends Schema.TaggedError<ProviderSessionOpenError>()(
   "ProviderSessionOpenError",
@@ -2192,6 +2194,15 @@ export const layerWithOptions = (
                       includeSubagents: true,
                     })
                     .pipe(Effect.catchCause(() => Effect.succeed(true)));
+            // ft3: resuming would keep the revoked MCP header; this tag stops a fresh-session fallback.
+            if (hasPendingWork && credentialReissued) {
+              return yield* new ProviderAdapter.ProviderAdapterThreadInUseError({
+                driver: entry.runtime.driver,
+                providerThreadId: input.providerThread.id,
+                detail: RELOAD_BLOCKED_BY_BACKGROUND_WORK_MESSAGE,
+                cause: "mcp_credential_reissued",
+              });
+            }
             if (hasPendingWork) return;
             // Forget the load first so a timed-out unload still resumes natively next turn.
             const unloading = yield* Ref.modify(sessions, (current) => {

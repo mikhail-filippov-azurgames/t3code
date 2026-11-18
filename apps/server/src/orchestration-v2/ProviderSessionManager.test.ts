@@ -3107,6 +3107,7 @@ it.effect(
       const resumedMcpConfigs = yield* Ref.make<
         ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
       >([]);
+      const backgroundWork = yield* Ref.make<"none" | "running" | "probe_failed">("none");
       const instanceB = ProviderInstanceId.make("codex-second");
       yield* Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
@@ -3151,6 +3152,16 @@ it.effect(
           runtimePolicy,
         });
 
+        // Unloading would end the background work, so the resume refuses instead of keeping the revoked header.
+        for (const work of ["running", "probe_failed"] as const) {
+          yield* Ref.set(backgroundWork, work);
+          const refused = yield* Effect.flip(resumeOnA);
+          assert.equal(refused._tag, "ProviderAdapterThreadInUseError");
+        }
+        assert.lengthOf(yield* Ref.get(resumedMcpConfigs), 1);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        yield* Ref.set(backgroundWork, "none");
+
         yield* resumeOnA;
 
         const current = yield* mcpSessions.read(threadId);
@@ -3174,6 +3185,13 @@ it.effect(
             idleTimeoutMs: 60_000,
             secondInstanceId: instanceB,
             resumedMcpConfigs,
+            hasPendingBackgroundWorkForThread: Ref.get(backgroundWork).pipe(
+              Effect.flatMap((work) =>
+                work === "probe_failed"
+                  ? Effect.die("probe failed")
+                  : Effect.succeed(work !== "none"),
+              ),
+            ),
           }),
         ),
       );
@@ -3276,6 +3294,7 @@ it.live.skipIf(LIVE_CODEX_BINARY === undefined)(
         });
       }).pipe(Effect.provide(IdAllocator.layer));
       const state = yield* Ref.make(emptyState);
+      const backgroundRunning = yield* Ref.make(false);
       const instanceB = ProviderInstanceId.make("codex-second");
       yield* Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
@@ -3319,19 +3338,26 @@ it.live.skipIf(LIVE_CODEX_BINARY === undefined)(
           modelSelection: { instanceId: instanceB, model: "gpt-5.4" },
           runtimePolicy: liveRuntimePolicy,
         });
-        yield* runtimeA.resumeThread({
+        const resumeOnA = runtimeA.resumeThread({
           threadId,
           providerThread,
           modelSelection,
           runtimePolicy: liveRuntimePolicy,
         });
+        yield* Ref.set(backgroundRunning, true);
+        const refused = yield* Effect.flip(resumeOnA);
+        assert.equal(refused._tag, "ProviderAdapterThreadInUseError");
+        yield* callProbe;
+        yield* Ref.set(backgroundRunning, false);
+        yield* resumeOnA;
         yield* callProbe;
 
         const current = yield* mcpSessions.read(threadId);
         assert.isDefined(current);
-        assert.lengthOf(toolCallHeaders, 2);
+        assert.lengthOf(toolCallHeaders, 3);
         assert.notEqual(toolCallHeaders[0], current!.authorizationHeader);
-        assert.equal(toolCallHeaders[1], current!.authorizationHeader);
+        assert.equal(toolCallHeaders[1], toolCallHeaders[0]);
+        assert.equal(toolCallHeaders[2], current!.authorizationHeader);
         const token = current!.authorizationHeader.replace(/^Bearer\s+/, "");
         assert.equal(
           (yield* registry.resolve(token))?.thread.providerInstanceId,
@@ -3343,7 +3369,29 @@ it.live.skipIf(LIVE_CODEX_BINARY === undefined)(
             state,
             idleTimeoutMs: 60_000,
             secondInstanceId: instanceB,
-            firstAdapter: codexAdapter,
+            // Stands in for a background terminal, which needs a signed-in model turn.
+            firstAdapter: codexAdapter.pipe(
+              Effect.map((adapter) => ({
+                ...adapter,
+                openSession: (openInput) =>
+                  adapter.openSession(openInput).pipe(
+                    Effect.map((runtime) => ({
+                      ...runtime,
+                      hasPendingBackgroundWorkForThread: (thread, probeOptions) =>
+                        Ref.get(backgroundRunning).pipe(
+                          Effect.flatMap((running) =>
+                            running
+                              ? Effect.succeed(true)
+                              : (runtime.hasPendingBackgroundWorkForThread?.(
+                                  thread,
+                                  probeOptions,
+                                ) ?? Effect.succeed(false)),
+                          ),
+                        ),
+                    })),
+                  ),
+              })),
+            ),
             mcpPort,
           }),
         ),
