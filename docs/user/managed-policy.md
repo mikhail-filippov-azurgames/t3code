@@ -251,8 +251,9 @@ so restart T3 Code after that.
 - `browserCookieImport: false`: users cannot import cookies from another browser into T3 Code's
   browser.
 - `telemetry: false`: the server and desktop app send no [product usage data](./telemetry.md) or
-  relay connection traces. A policy cannot turn them on. A browser that opens the server, such as
-  app.t3.codes, still sends its own relay traces.
+  relay connection traces. A policy cannot turn them on. The policy does not control a browser
+  that opens the server, such as app.t3.codes: it sends its own relay traces only if it was built
+  with relay tracing credentials and `T3CODE_TELEMETRY_ENABLED=true`.
 
 ### Providers
 
