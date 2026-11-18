@@ -45,7 +45,11 @@ function WelcomeZavod({
   );
   const status = query.data;
   if (query.error !== null || status === null || status.state === "absent") return null;
-  const supported = status.state === "on" || status.state === "off" || status.state === "mixed";
+  // A reason on a mixed status means it needs attention before connecting, as for unsupported.
+  const supported =
+    status.state === "on" ||
+    status.state === "off" ||
+    (status.state === "mixed" && status.reason === null);
 
   return (
     <div className="flex min-h-10 flex-wrap items-center gap-x-3 gap-y-1 py-1">

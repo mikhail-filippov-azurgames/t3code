@@ -133,11 +133,17 @@ describe("Zavod welcome row", () => {
         <ZavodWelcomeRow environmentId={environmentId} onConnected={vi.fn()} />,
       );
       await expect.element(screen.getByText("Configuration needs attention.")).toBeVisible();
-      const button = screen.getByRole("button", { name: "Connect Zavod" });
-      if (state === "unsupported") await expect.element(button).toBeDisabled();
-      else await expect.element(button).toBeEnabled();
+      await expect.element(screen.getByRole("button", { name: "Connect Zavod" })).toBeDisabled();
     },
   );
+
+  it("keeps connect available for a mixed status without a reason", async () => {
+    mocks.status = { ...mocks.status!, state: "mixed", reason: null };
+    await using screen = await render(
+      <ZavodWelcomeRow environmentId={environmentId} onConnected={vi.fn()} />,
+    );
+    await expect.element(screen.getByRole("button", { name: "Connect Zavod" })).toBeEnabled();
+  });
 
   it("offers reconnect and copy once connected", async () => {
     mocks.providerInstances = connectedInstances;
