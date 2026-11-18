@@ -1769,7 +1769,14 @@ export const layerWithOptions = (
               Effect.tap((runtime) => Effect.sync(() => (attachedTo = runtime))),
               Effect.uninterruptible,
             );
-            if (attached !== undefined) {
+            // ft3: another instance's session may have reissued this thread's credential since it attached.
+            const alreadyAttached =
+              attached === undefined &&
+              ((yield* Ref.get(sessions))
+                .get(sessionKey(input.providerSessionId))
+                ?.attachedThreadIds.has(input.threadId) ??
+                false);
+            if (attached !== undefined || alreadyAttached) {
               const prepared = yield* prepareMcpSession(input.threadId, input.providerInstanceId);
               preparedForCleanup = prepared;
               if (prepared.mcpCredentialId !== undefined) {
@@ -1785,6 +1792,8 @@ export const layerWithOptions = (
                   return updated;
                 });
               }
+            }
+            if (attached !== undefined) {
               const entry = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
               if (entry !== undefined) {
                 yield* withActivityError(
