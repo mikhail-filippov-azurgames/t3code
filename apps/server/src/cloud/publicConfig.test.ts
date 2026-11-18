@@ -80,3 +80,21 @@ it("product opt-out disables relay tracing with either built-in or runtime crede
     null,
   );
 });
+
+it("relay tracing stays off unless T3CODE_TELEMETRY_ENABLED is true", () => {
+  const fallback = {
+    tracesUrl: "https://embedded.example.test/v1/traces",
+    tracesDataset: "embedded-dataset",
+    tracesToken: "embedded-token",
+  };
+
+  assert.equal(resolveRelayClientTracingConfig({}, fallback), null);
+  assert.deepEqual(
+    resolveRelayClientTracingConfig({ T3CODE_TELEMETRY_ENABLED: "true" }, fallback),
+    {
+      tracesUrl: "https://embedded.example.test/v1/traces",
+      tracesDataset: "embedded-dataset",
+      tracesToken: "embedded-token",
+    },
+  );
+});
