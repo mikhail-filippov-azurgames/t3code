@@ -2351,7 +2351,7 @@ export function AboutSettingsPanel() {
           {...searchableSetting("privacy-policy")}
           description={
             telemetryOff === undefined
-              ? `How we handle your data, including the anonymous usage data ${APP_BASE_NAME} collects.`
+              ? `How we handle your data. ${APP_BASE_NAME} sends no usage data unless the server owner turns it on.`
               : `How we handle your data. ${telemetryOff}`
           }
           control={
