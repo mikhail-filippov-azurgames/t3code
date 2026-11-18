@@ -116,6 +116,9 @@ try {
         }
     }
     if ($existingDirectory -and (Get-ChildItem -LiteralPath $InstallDirectory -Force | Select-Object -First 1)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $InstallDirectory '.git'))) {
+            throw "$InstallDirectory is not empty and is not a Corvis checkout. Delete it (cmd /c 'rd /s /q \?\$InstallDirectory') or choose another InstallDirectory."
+        }
         $parentPath = (Invoke-Checked git @('-C', $InstallDirectory, 'rev-parse', '--show-cdup') | Out-String).Trim()
         if ($parentPath) {
             throw 'The installation directory must be the root of its own Git checkout.'

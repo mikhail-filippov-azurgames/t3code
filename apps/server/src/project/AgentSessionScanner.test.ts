@@ -991,7 +991,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
-    it.effect("excludes the home directory, temporary root, and T3 data directory", () =>
+    it.effect("offers the home and temporary folders and excludes only the T3 data directory", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
         const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
@@ -1014,7 +1014,10 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
 
         const result = yield* runScan({ claudeHomePath, codexHomePath, configBaseDir });
 
-        expect(result.candidates.map((candidate) => candidate.path)).toEqual([workspace]);
+        // ft3: every folder with chat history is offered, so the user picks what to import.
+        expect(result.candidates.map((candidate) => candidate.path).toSorted()).toEqual(
+          [NodeOS.homedir(), NodeOS.tmpdir(), workspace].toSorted(),
+        );
       }),
     );
 

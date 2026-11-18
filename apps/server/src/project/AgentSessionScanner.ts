@@ -855,29 +855,29 @@ export const make = Effect.gen(function* () {
   const hostEnvironment = yield* HostProcess.Environment;
   const homeDir = yield* HostProcess.HomeDirectory;
   // `/private/tmp` is what macOS reports for sessions started in `/tmp`.
-  const excludedProjectRoots = new Set(
+  const scratchProjectRoots = new Set(
     [homeDir, NodeOS.tmpdir(), "/tmp", "/private/tmp"].map((directory) =>
       normalizeProjectPathForComparison(path.resolve(directory)),
     ),
   );
-  const excludedProjectAncestors = [
+  const scratchProjectAncestors = [
     path.join(homeDir, "Downloads"),
     path.join(homeDir, "Documents", "Codex"),
-    // ft3: an elevated PowerShell starts agents in the Windows folder, which is never a project.
-    ...(isWindows ? [hostEnvironment.SystemRoot ?? "C:\\Windows"] : []),
   ];
-
-  const isExcludedProjectPath = (candidatePath: string) =>
-    excludedProjectRoots.has(normalizeProjectPathForComparison(candidatePath)) ||
-    excludedProjectAncestors.some((ancestor) =>
+  // ft3: scratch folders are still offered for import, so the user picks; only a chat Codex filed
+  // under a project takes that project's root instead.
+  const isScratchProjectPath = (candidatePath: string) =>
+    scratchProjectRoots.has(normalizeProjectPathForComparison(candidatePath)) ||
+    scratchProjectAncestors.some((ancestor) =>
       normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
         normalizeForWorktreeMatch(ancestor, foldWorktreeCase),
       ),
-    ) ||
+    );
+
+  const isExcludedProjectPath = (candidatePath: string) =>
     normalizeForWorktreeMatch(candidatePath, foldWorktreeCase).startsWith(
       normalizeForWorktreeMatch(baseDir, foldWorktreeCase),
-    ) ||
-    isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
+    ) || isT3ManagedWorktree(candidatePath, worktreesDir, foldWorktreeCase);
 
   const listDirectory = (directory: string) =>
     fileSystem.readDirectory(directory).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => []));
@@ -1505,7 +1505,7 @@ export const make = Effect.gen(function* () {
   // Only chats left in an excluded folder, such as Codex's scratch folder, take their project's root.
   const projectCwd = (cwd: string, projectRoots: ReadonlyArray<string> | undefined) =>
     projectRoots !== undefined &&
-    isExcludedProjectPath(path.resolve(expandHomePath(cwd.trim(), homeDir)))
+    isScratchProjectPath(path.resolve(expandHomePath(cwd.trim(), homeDir)))
       ? projectRoots[0]!
       : cwd;
 
