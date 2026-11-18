@@ -23,7 +23,7 @@ import { zavodEnvironment } from "./state.ts";
 const FAMILY_LABEL = { claude: "Claude", codex: "Codex" } as const;
 const ACTION_GROUPS = [
   { action: "create", title: "Will be created" },
-  { action: "overwrite", title: "Will be overwritten" },
+  { action: "overwrite", title: "Will be replaced" },
   { action: "merge", title: "Will be merged into the existing settings" },
 ] as const;
 const SKIP_REASON = {
@@ -131,8 +131,7 @@ function CopyPlanDialog({
               />
               {plan.items.some((item) => item.action === "overwrite") ? (
                 <p className="text-muted-foreground text-xs">
-                  Files with the same name are overwritten; nothing in the Zavod instance is
-                  deleted.
+                  Replaced items lose any changes made to them inside the Zavod instance.
                 </p>
               ) : null}
             </div>
