@@ -1007,8 +1007,8 @@ Fork-owned UI and behavior tests: `packages/ft3-web/src/chat/MailNotificationRow
 
 | Upstream-файл                                                | Правка                                                                                                                                 | Зачем                                                                                                      |
 | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `packages/contracts/src/clientRpcPermissions.ts`             | `"zavod.connect": AuthProvidersManageScope` в `FT3_CLIENT_GUARDED_RPC_SCOPES`                                                          | клиентский guard подключения провайдеров                                                                   |
-| `packages/contracts/src/clientRpcPermissions.test.ts`        | проверка scope подключения и отсутствия guard у `zavod.detect`                                                                         | чтение статуса доступно query-клиенту, запись требует `providers:manage`                                   |
+| `packages/contracts/src/clientRpcPermissions.ts`             | `"zavod.connect"` и `"zavod.copyPersonal"`: `AuthProvidersManageScope` в `FT3_CLIENT_GUARDED_RPC_SCOPES`                               | клиентский guard подключения провайдеров и копии личных настроек                                           |
+| `packages/contracts/src/clientRpcPermissions.test.ts`        | проверка scope подключения, копии личных настроек и отсутствия guard у `zavod.detect`                                                  | чтение статуса доступно query-клиенту, запись требует `providers:manage`                                   |
 | `apps/server/src/ws.test.ts`                                 | stub `ZavodService` в общем `layerUnusedConfigRpcServices` четырёх harness                                                             | существующие тесты WebSocket получают новую зависимость handlers                                           |
 | `apps/web/src/components/settings/ProviderSettingsPanel.tsx` | import `ZavodSettingsSection` из `@t3tools/ft3-web/zavod` и один слот с выбранным `environmentId`                                      | статус Zavod и подключение экземпляров с проверкой прав                                                    |
 | `apps/server/src/provider/builtInDrivers.ts`                 | импорт `Ft3ClaudeDriver as ClaudeDriver`, `Ft3CodexDriver as CodexDriver` из `@t3tools/ft3-host/server`                                | Zavod-экземпляры показывают только модели своего семейства и из `/v1/models` ключа; откат — вернуть импорт |
@@ -1018,6 +1018,9 @@ Fork-owned UI and behavior tests: `packages/ft3-web/src/chat/MailNotificationRow
 
 Контракты, серверная авторизация и handlers находятся в `packages/ft3-host/src/rpc-contracts.ts`
 и `rpc.ts`. Композиция детектора и managed экземпляров — в `src/zavod/service.ts` того же пакета.
+Копия личных инструкций, skills и MCP в home Zavod-экземпляров (`zavod.copyPersonal`, первый
+`zavod.connect`) — `src/zavod/personalCopy.ts`: копируется только allowlist, маршрут и секреты
+не переносятся, ответ содержит пути относительно home.
 Тесты RPC — в `packages/ft3-host/src/rpc.test.ts`, проверка client guard включена в шаг
 «Test changed contracts files» в `.github/workflows/ft3-gate.yml`.
 

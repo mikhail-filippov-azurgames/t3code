@@ -280,6 +280,13 @@ const stubs = {
       claudeInstanceId: ProviderInstanceId.make("zavod-claude"),
       codexInstanceId: ProviderInstanceId.make("zavod-codex"),
     }),
+  [FT3_WS_METHODS.zavodCopyPersonal]: () =>
+    Effect.succeed({
+      items: [{ family: "claude" as const, path: "CLAUDE.md", action: "create" as const }],
+      skipped: [
+        { family: "claude" as const, path: ".claude.json:mcpServers.x", reason: "secret" as const },
+      ],
+    }),
 };
 
 const clientWith = (scopes: ReadonlyArray<AuthEnvironmentScope>) =>
@@ -523,6 +530,10 @@ describe("FT3 RPC authorization", () => {
         claudeInstanceId: "zavod-claude",
         codexInstanceId: "zavod-codex",
       });
+      expect(yield* client[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: true })).toEqual({
+        items: [{ family: "claude", path: "CLAUDE.md", action: "create" }],
+        skipped: [{ family: "claude", path: ".claude.json:mcpServers.x", reason: "secret" }],
+      });
     }).pipe(Effect.scoped),
   );
 
@@ -712,6 +723,12 @@ describe("FT3 RPC authorization", () => {
         _tag: "EnvironmentAuthorizationError",
         requiredPermission: AuthProvidersManageScope,
       });
+      expect(
+        yield* client[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: true }).pipe(Effect.flip),
+      ).toMatchObject({
+        _tag: "EnvironmentAuthorizationError",
+        requiredPermission: AuthProvidersManageScope,
+      });
     }).pipe(Effect.scoped),
   );
 });
@@ -853,6 +870,7 @@ const zavodFixture = Effect.fn("test.zavodRpcFixture")(function* (
       ...stubs,
       [FT3_WS_METHODS.zavodDetect]: handlers[FT3_WS_METHODS.zavodDetect],
       [FT3_WS_METHODS.zavodConnect]: handlers[FT3_WS_METHODS.zavodConnect],
+      [FT3_WS_METHODS.zavodCopyPersonal]: handlers[FT3_WS_METHODS.zavodCopyPersonal],
     })
     .pipe(Layer.provide(Layer.succeedContext(context)));
 
@@ -929,6 +947,40 @@ describe("Zavod RPC", () => {
       expect((yield* client[FT3_WS_METHODS.zavodDetect]({})).state).toBe("absent");
     }).pipe(Effect.scoped, Effect.provide(zavodTestLayer)),
   );
+  it.effect("copies personal settings through the RPC and never returns absolute paths", () =>
+    Effect.gen(function* () {
+      const f = yield* zavodFixture();
+      const client = yield* f.client([AuthOrchestrationReadScope, AuthProvidersManageScope]);
+      expect(
+        yield* client[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: true }).pipe(Effect.flip),
+      ).toMatchObject({ _tag: "ZavodRpcError", operation: "copy", stage: "state" });
+
+      yield* client[FT3_WS_METHODS.zavodConnect]({});
+      const skill = f.path.join(f.claudeHome, "skills", "alpha", "SKILL.md");
+      yield* f.fs.makeDirectory(f.path.dirname(skill), { recursive: true });
+      yield* f.fs.writeFileString(skill, "alpha");
+      const target = f.path.join(f.root, "zavod-claude", "skills", "alpha", "SKILL.md");
+      yield* f.fs.remove(f.path.join(f.root, "zavod-claude", "skills"), {
+        recursive: true,
+        force: true,
+      });
+
+      const planned = yield* client[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: true });
+      expect(yield* f.fs.exists(target)).toBe(false);
+      expect(planned.items).toContainEqual({
+        family: "claude",
+        path: "skills/alpha",
+        action: "create",
+      });
+      const applied = yield* client[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: false });
+      expect(applied).toEqual(planned);
+      expect(yield* f.fs.readFileString(target)).toBe("alpha");
+      for (const entry of [...applied.items, ...applied.skipped]) {
+        expect(entry.path).not.toMatch(/^(?:[A-Za-z]:|[\/])/);
+      }
+      expect(JSON.stringify(applied)).not.toContain(f.key);
+    }).pipe(Effect.scoped, Effect.provide(zavodTestLayer)),
+  );
   it.effect("authorizes before reading settings or writing managed instances", () =>
     Effect.gen(function* () {
       const f = yield* zavodFixture();
@@ -939,12 +991,18 @@ describe("Zavod RPC", () => {
       expect(yield* denied[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip)).toMatchObject({
         requiredPermission: AuthProvidersManageScope,
       });
+      expect(
+        yield* denied[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: false }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
       expect(f.reads).toBe(0);
       const readOnly = yield* f.client([AuthOrchestrationReadScope]);
       expect(yield* readOnly[FT3_WS_METHODS.zavodDetect]({})).toEqual(zavodStatus);
       expect(yield* readOnly[FT3_WS_METHODS.zavodConnect]({}).pipe(Effect.flip)).toMatchObject({
         requiredPermission: AuthProvidersManageScope,
       });
+      expect(
+        yield* readOnly[FT3_WS_METHODS.zavodCopyPersonal]({ dryRun: false }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
       expect(f.reads).toBe(1);
       expect(f.mutations).toEqual([]);
       expect(yield* f.fs.exists(f.root)).toBe(false);

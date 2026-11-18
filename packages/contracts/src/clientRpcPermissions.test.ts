@@ -46,13 +46,16 @@ describe("clientRpcRequiredScopes", () => {
       "policies.setFeature",
       "policies.browseServerDirectory",
       "zavod.connect",
+      "zavod.copyPersonal",
     ]);
   });
 
-  it("guards Zavod connect with providers:manage and leaves detection queryable", () => {
+  it("guards Zavod connect and personal copy with providers:manage and leaves detection queryable", () => {
     expect(clientRpcRequiredScopes("zavod.connect", {})).toEqual([AuthProvidersManageScope]);
+    expect(clientRpcRequiredScopes("zavod.copyPersonal", {})).toEqual([AuthProvidersManageScope]);
     expect(clientRpcRequiredScopes("zavod.detect", {})).toEqual([]);
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("zavod.connect");
+    expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("zavod.copyPersonal");
     expect(Object.keys(CLIENT_GUARDED_RPC_SCOPES)).not.toContain("zavod.detect");
   });
 });

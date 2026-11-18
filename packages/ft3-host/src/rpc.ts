@@ -57,6 +57,7 @@ import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
 import { FT3_ZAVOD_WS_METHODS, ZavodRpcError, zavodRpcScopes, zavodRpcs } from "./rpc-contracts.ts";
 import * as Zavod from "./zavod/service.ts";
 import * as ZavodInstances from "./zavod/instances.ts";
+import * as ZavodPersonalCopy from "./zavod/personalCopy.ts";
 
 export { BoardService } from "@t3tools/ft3-board/service";
 export { BoardDelegationService } from "@t3tools/ft3-board/delegation";
@@ -127,7 +128,10 @@ export const group = RpcGroup.make(
 
 const zavodRpcError = (
   operation: ZavodRpcError["operation"],
-  error: ServerSettingsError | ZavodInstances.ZavodInstancesError,
+  error:
+    | ServerSettingsError
+    | ZavodInstances.ZavodInstancesError
+    | ZavodPersonalCopy.ZavodPersonalCopyError,
 ) =>
   new ZavodRpcError({
     operation,
@@ -151,6 +155,10 @@ export const handlers = {
   [FT3_ZAVOD_WS_METHODS.zavodConnect]: () =>
     Effect.flatMap(Zavod.ZavodService, (service) => service.connect()).pipe(
       Effect.mapError((error) => zavodRpcError("connect", error)),
+    ),
+  [FT3_ZAVOD_WS_METHODS.zavodCopyPersonal]: ({ dryRun }: { readonly dryRun: boolean }) =>
+    Effect.flatMap(Zavod.ZavodService, (service) => service.copyPersonal({ dryRun })).pipe(
+      Effect.mapError((error) => zavodRpcError("copy", error)),
     ),
 };
 
