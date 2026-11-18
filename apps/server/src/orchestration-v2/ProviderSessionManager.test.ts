@@ -1,9 +1,13 @@
+// @effect-diagnostics nodeBuiltinImport:off -- the live Codex case serves a real MCP endpoint.
+import * as NodeHttp from "node:http";
+import type * as NodeNet from "node:net";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
+  CodexSettings,
   EnvironmentId,
   type ModelSelection,
   type OrchestrationV2AppThread,
@@ -36,6 +40,10 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
 import { HttpServer } from "effect/http";
+import * as Digest from "effect/crypto/Digest";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as Schema from "effect/Schema";
+import * as CodexClient from "effect-codex-app-server/client";
 
 import { ProviderWorkspaceMissingError } from "../provider/Errors.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -47,8 +55,10 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
   CodexProviderCapabilitiesV2,
+  makeCodexAdapterV2,
   normalizeCodexThreadLoadModelSelection,
 } from "./Adapters/CodexAdapterV2.ts";
+import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -473,6 +483,11 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
   } = {},
 ) {
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+  // Like Codex app-server, a loaded native thread keeps the MCP config it was loaded with.
+  const loadedMcpConfigs = new Map<
+    string,
+    McpProviderSession.McpProviderSessionConfig | undefined
+  >();
   const countClose = Effect.addFinalizer(() =>
     Ref.update(state, (current) => ({
       ...current,
@@ -585,13 +600,19 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
                   const resumedMcpConfigs = options.resumedMcpConfigs;
                   const threadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
                   if (resumedMcpConfigs === undefined || threadId === null) return Effect.void;
-                  return mcpSessions
-                    .read(threadId)
-                    .pipe(
-                      Effect.flatMap((config) =>
-                        Ref.update(resumedMcpConfigs, (configs) => [...configs, config]),
-                      ),
-                    );
+                  const nativeId = threadInput.providerThread.nativeThreadRef?.nativeId ?? "";
+                  return (
+                    loadedMcpConfigs.has(nativeId)
+                      ? Effect.succeed(loadedMcpConfigs.get(nativeId))
+                      : mcpSessions.read(threadId)
+                  ).pipe(
+                    Effect.tap((config) =>
+                      Effect.sync(() => loadedMcpConfigs.set(nativeId, config)),
+                    ),
+                    Effect.flatMap((config) =>
+                      Ref.update(resumedMcpConfigs, (configs) => [...configs, config]),
+                    ),
+                  );
                 }),
               ),
               Effect.as(threadInput.providerThread),
@@ -605,6 +626,11 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             })).pipe(Effect.andThen(options.interruptTurn ?? Effect.void)),
           unloadThread: ({ providerThread, archive }) =>
             (options.beforeUnload ?? Effect.void).pipe(
+              Effect.andThen(
+                Effect.sync(() =>
+                  loadedMcpConfigs.delete(providerThread.nativeThreadRef?.nativeId ?? ""),
+                ),
+              ),
               Effect.andThen(
                 Ref.update(state, (current) => ({
                   ...current,
@@ -675,6 +701,13 @@ function layerTest(input: {
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
   readonly installationGateLayer?: Layer.Layer<ProviderInstallationGate.ProviderInstallationGate>;
+  /** Replaces the first fake adapter, e.g. with a real Codex adapter. */
+  readonly firstAdapter?: Effect.Effect<
+    ProviderAdapter.ProviderAdapterV2["Service"],
+    never,
+    McpProviderSessions.McpProviderSessions
+  >;
+  readonly mcpPort?: number;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -726,6 +759,7 @@ function layerTest(input: {
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
     }).pipe(
+      Effect.flatMap((adapter) => input.firstAdapter ?? Effect.succeed(adapter)),
       Effect.flatMap((adapter) =>
         input.secondInstanceId === undefined
           ? Effect.succeed([adapter])
@@ -740,9 +774,11 @@ function layerTest(input: {
     ),
   );
   const layerConfiguredMcpRegistry =
-    input.pauseResolve === undefined
-      ? layerTestMcpRegistry
-      : layerPausingMcpRegistry(input.pauseResolve);
+    input.mcpPort !== undefined
+      ? layerTestMcpRegistryAt(input.mcpPort)
+      : input.pauseResolve === undefined
+        ? layerTestMcpRegistry
+        : layerPausingMcpRegistry(input.pauseResolve);
   const layerProviderEventIngestorTest = ProviderEventIngestor.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -789,24 +825,25 @@ function layerTest(input: {
   ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 }
 
-const fakeHttpServer = HttpServer.HttpServer.of({
-  address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
-  serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
-});
+const fakeHttpServerAt = (port: number) =>
+  HttpServer.HttpServer.of({
+    address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", port),
+    serve: (() => Effect.void) as HttpServer.HttpServer["Service"]["serve"],
+  });
 
 const fakeEnvironment = ServerEnvironment.ServerEnvironment.of({
   getEnvironmentId: Effect.succeed(EnvironmentId.make("environment-provider-session-manager")),
   getDescriptor: Effect.die("unused"),
 });
 
-const layerTestMcpRegistry = Layer.effect(
-  McpSessionRegistry.McpSessionRegistry,
-  McpSessionRegistry.__testing.make(),
-).pipe(
-  Layer.provide(Layer.succeed(HttpServer.HttpServer, fakeHttpServer)),
-  Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
-  Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
-);
+const layerTestMcpRegistryAt = (port: number) =>
+  Layer.effect(McpSessionRegistry.McpSessionRegistry, McpSessionRegistry.__testing.make()).pipe(
+    Layer.provide(Layer.succeed(HttpServer.HttpServer, fakeHttpServerAt(port))),
+    Layer.provide(Layer.succeed(ServerEnvironment.ServerEnvironment, fakeEnvironment)),
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+  );
+
+const layerTestMcpRegistry = layerTestMcpRegistryAt(43123);
 
 const layerPausingMcpRegistry = (pause: {
   readonly armed: Ref.Ref<boolean>;
@@ -3061,9 +3098,9 @@ it.effect(
     }),
 );
 
-// regression: a natively loaded thread skipped resume after a reissue and kept the revoked header
+// regression: a resume of a loaded Codex thread kept the revoked MCP header
 it.effect(
-  "ProviderSessionManagerV2 resumes a loaded native thread with the credential reissued for its instance",
+  "ProviderSessionManagerV2 reloads a native thread whose MCP credential was reissued",
   () =>
     Effect.gen(function* () {
       const state = yield* Ref.make(emptyState);
@@ -3120,7 +3157,11 @@ it.effect(
         assert.isDefined(current);
         const resumed = yield* Ref.get(resumedMcpConfigs);
         assert.lengthOf(resumed, 2);
+        assert.notEqual(resumed[0]?.authorizationHeader, current!.authorizationHeader);
         assert.equal(resumed[1]?.authorizationHeader, current!.authorizationHeader);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, [
+          "native-reissue-resume",
+        ]);
         const token = current!.authorizationHeader.replace(/^Bearer\s+/, "");
         assert.equal(
           (yield* registry.resolve(token))?.thread.providerInstanceId,
@@ -3137,6 +3178,177 @@ it.effect(
         ),
       );
     }),
+);
+
+// Path to an installed Codex app-server binary; the case needs no OpenAI sign-in.
+const LIVE_CODEX_BINARY = process.env.T3_LIVE_CODEX_BINARY;
+const LIVE_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
+
+it.live.skipIf(LIVE_CODEX_BINARY === undefined)(
+  "ProviderSessionManagerV2 sends a reissued MCP credential from a reloaded Codex thread",
+  () =>
+    Effect.gen(function* () {
+      const toolCallHeaders: Array<string | undefined> = [];
+      const mcpServer = NodeHttp.createServer((request, response) => {
+        let body = "";
+        request.on("data", (chunk: Buffer) => (body += chunk.toString()));
+        request.on("end", () => {
+          const message = JSON.parse(body || "{}") as {
+            readonly id?: number;
+            readonly method?: string;
+            readonly params?: { readonly protocolVersion?: string };
+          };
+          if (message.method === "tools/call") toolCallHeaders.push(request.headers.authorization);
+          if (message.id === undefined) {
+            response.writeHead(202).end();
+            return;
+          }
+          const result =
+            message.method === "initialize"
+              ? {
+                  protocolVersion: message.params?.protocolVersion,
+                  capabilities: { tools: {} },
+                  serverInfo: { name: "credential-probe", version: "1" },
+                }
+              : message.method === "tools/list"
+                ? { tools: [{ name: "probe", inputSchema: { type: "object", properties: {} } }] }
+                : message.method === "tools/call"
+                  ? { content: [{ type: "text", text: "ok" }] }
+                  : {};
+          response
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+        });
+      });
+      yield* Effect.acquireRelease(
+        Effect.callback<void>((resume) => {
+          mcpServer.listen(0, "127.0.0.1", () => resume(Effect.void));
+        }),
+        () => Effect.sync(() => mcpServer.close()),
+      );
+      const mcpPort = (mcpServer.address() as NodeNet.AddressInfo).port;
+      const fileSystem = yield* FileSystem.FileSystem;
+      // Best effort: Windows can keep Codex's home locked after the session closes.
+      const codexHome = yield* Effect.acquireRelease(
+        fileSystem.makeTempDirectory({ prefix: "t3-psm-live-codex-" }),
+        (directory) => fileSystem.remove(directory, { recursive: true }).pipe(Effect.ignore),
+      );
+      const serverConfig = yield* ProviderReplayHarness.makeReplayServerConfig("psm-live-codex");
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const digest = yield* Digest.Digest;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-psm-live-cwd-" });
+      const liveRuntimePolicy = { ...runtimePolicy, cwd: workspace };
+      let codexClient: CodexClient.CodexAppServerClient["Service"] | undefined;
+      const codexAdapter = Effect.gen(function* () {
+        return yield* makeCodexAdapterV2({
+          instanceId: modelSelection.instanceId,
+          settings: LIVE_CODEX_SETTINGS,
+          environment: {},
+          clientFactory: {
+            open: (openInput) =>
+              spawner
+                .spawn(
+                  ChildProcess.make(LIVE_CODEX_BINARY!, ["app-server", "--listen", "stdio://"], {
+                    env: { ...process.env, CODEX_HOME: codexHome },
+                    forceKillAfter: "2 seconds",
+                  }),
+                )
+                .pipe(
+                  Effect.flatMap((handle) => Layer.build(CodexClient.layerChildProcess(handle))),
+                  Effect.flatMap((context) =>
+                    Effect.service(CodexClient.CodexAppServerClient).pipe(Effect.provide(context)),
+                  ),
+                  Effect.tap((client) => Effect.sync(() => (codexClient = client))),
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapter.ProviderAdapterOpenSessionError({
+                        driver: CODEX_DRIVER,
+                        providerSessionId: openInput.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                ),
+          },
+          digest,
+          fileSystem,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          serverConfig,
+        });
+      }).pipe(Effect.provide(IdAllocator.layer));
+      const state = yield* Ref.make(emptyState);
+      const instanceB = ProviderInstanceId.make("codex-second");
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-live-codex");
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtimeA = yield* manager.open({
+          threadId,
+          providerSessionId: idAllocator.derive.providerSession({
+            providerInstanceId: modelSelection.instanceId,
+          }),
+          modelSelection,
+          runtimePolicy: liveRuntimePolicy,
+        });
+        const providerThread = yield* runtimeA.ensureThread({
+          threadId,
+          modelSelection,
+          runtimePolicy: liveRuntimePolicy,
+        });
+        // Codex resumes only a thread with a rollout, and an empty thread writes none.
+        yield* codexClient!.raw.request("thread/inject_items", {
+          threadId: providerThread.nativeThreadRef!.nativeId,
+          items: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+        });
+        const callProbe = runtimeA.mcpApps!.callTool({
+          providerThread,
+          server: "t3-code",
+          tool: "probe",
+          arguments: {},
+        });
+        yield* callProbe;
+        yield* manager.open({
+          threadId,
+          providerSessionId: idAllocator.derive.providerSession({ providerInstanceId: instanceB }),
+          modelSelection: { instanceId: instanceB, model: "gpt-5.4" },
+          runtimePolicy: liveRuntimePolicy,
+        });
+        yield* runtimeA.resumeThread({
+          threadId,
+          providerThread,
+          modelSelection,
+          runtimePolicy: liveRuntimePolicy,
+        });
+        yield* callProbe;
+
+        const current = yield* mcpSessions.read(threadId);
+        assert.isDefined(current);
+        assert.lengthOf(toolCallHeaders, 2);
+        assert.notEqual(toolCallHeaders[0], current!.authorizationHeader);
+        assert.equal(toolCallHeaders[1], current!.authorizationHeader);
+        const token = current!.authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.equal(
+          (yield* registry.resolve(token))?.thread.providerInstanceId,
+          modelSelection.instanceId,
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            secondInstanceId: instanceB,
+            firstAdapter: codexAdapter,
+            mcpPort,
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect("ProviderSessionManagerV2 duplicate detach preserves replacement MCP credentials", () =>

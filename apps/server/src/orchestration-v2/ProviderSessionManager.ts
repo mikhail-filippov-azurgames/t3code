@@ -299,6 +299,8 @@ interface LiveSessionEntry {
   readonly linkedEnvironmentsByThread: ReadonlyMap<ThreadId, boolean | null>;
   /** Scope revocation to recorded credential ids so superseded sessions cannot revoke replacements opened before detach. */
   readonly mcpCredentialIdByThread: ReadonlyMap<ThreadId, string>;
+  /** ft3: Codex keeps the MCP header a native thread was loaded with until it is unloaded. */
+  readonly loadedMcpCredentialIdByThread: ReadonlyMap<ThreadId, string>;
   readonly supportsMultipleProviderThreads: boolean;
   readonly runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
   readonly exposedRuntime: ProviderAdapter.ProviderAdapterV2SessionRuntime;
@@ -1666,12 +1668,15 @@ export const layerWithOptions = (
           loadedProviderThreadKeyByThread.delete(input.threadId);
           const linkedEnvironmentsByThread = new Map(entry.linkedEnvironmentsByThread);
           linkedEnvironmentsByThread.delete(input.threadId);
+          const loadedMcpCredentialIdByThread = new Map(entry.loadedMcpCredentialIdByThread);
+          loadedMcpCredentialIdByThread.delete(input.threadId);
           const updated = new Map(current);
           updated.set(key, {
             ...entry,
             attachedThreadIds,
             loadedProviderThreadKeyByThread,
             linkedEnvironmentsByThread,
+            loadedMcpCredentialIdByThread,
           });
           return updated;
         });
@@ -1731,11 +1736,18 @@ export const layerWithOptions = (
           ) {
             linkedEnvironmentsByThread.set(input.threadId, input.linkedEnvironments);
           }
+          // Kept until an unload succeeds: a resume of a loaded Codex thread keeps its old header.
+          const loadedMcpCredentialIdByThread = new Map(entry.loadedMcpCredentialIdByThread);
+          const mcpCredentialId = entry.mcpCredentialIdByThread.get(input.threadId);
+          if (mcpCredentialId !== undefined && !loadedMcpCredentialIdByThread.has(input.threadId)) {
+            loadedMcpCredentialIdByThread.set(input.threadId, mcpCredentialId);
+          }
           const updated = new Map(current);
           updated.set(key, {
             ...entry,
             loadedProviderThreadKeyByThread,
             linkedEnvironmentsByThread,
+            loadedMcpCredentialIdByThread,
           });
           return updated;
         });
@@ -1787,19 +1799,8 @@ export const layerWithOptions = (
                   if (entry === undefined) return current;
                   const mcpCredentialIdByThread = new Map(entry.mcpCredentialIdByThread);
                   mcpCredentialIdByThread.set(input.threadId, mcpCredentialId);
-                  // ft3: Codex takes the MCP header only on thread start/resume, so a new credential forces a native resume.
-                  const loadedProviderThreadKeyByThread = new Map(
-                    entry.loadedProviderThreadKeyByThread,
-                  );
-                  if (entry.mcpCredentialIdByThread.get(input.threadId) !== mcpCredentialId) {
-                    loadedProviderThreadKeyByThread.delete(input.threadId);
-                  }
                   const updated = new Map(current);
-                  updated.set(key, {
-                    ...entry,
-                    mcpCredentialIdByThread,
-                    loadedProviderThreadKeyByThread,
-                  });
+                  updated.set(key, { ...entry, mcpCredentialIdByThread });
                   return updated;
                 });
               }
@@ -2115,7 +2116,15 @@ export const layerWithOptions = (
                     if (latest?.runtime !== entry.runtime) return current;
                     const linkedEnvironmentsByThread = new Map(latest.linkedEnvironmentsByThread);
                     linkedEnvironmentsByThread.delete(input.threadId);
-                    return new Map(current).set(key, { ...latest, linkedEnvironmentsByThread });
+                    const loadedMcpCredentialIdByThread = new Map(
+                      latest.loadedMcpCredentialIdByThread,
+                    );
+                    loadedMcpCredentialIdByThread.delete(input.threadId);
+                    return new Map(current).set(key, {
+                      ...latest,
+                      linkedEnvironmentsByThread,
+                      loadedMcpCredentialIdByThread,
+                    });
                   }),
                 ),
                 Effect.catchCause((cause) =>
@@ -2149,18 +2158,27 @@ export const layerWithOptions = (
         const key = sessionKey(input.providerSessionId);
         const entry = (yield* Ref.get(sessions)).get(key);
         const loadedWith = entry?.linkedEnvironmentsByThread.get(input.threadId);
+        // ft3: a credential reissued since the native load also needs a reload to reach Codex.
+        const loadedCredential = entry?.loadedMcpCredentialIdByThread.get(input.threadId);
+        const credentialReissued =
+          loadedCredential !== undefined &&
+          loadedCredential !== entry?.mcpCredentialIdByThread.get(input.threadId);
         const unloadThread = entry?.runtime.unloadThread;
         if (
           entry === undefined ||
           !entry.supportsMultipleProviderThreads ||
           unloadThread === undefined ||
-          loadedWith === undefined ||
+          (loadedWith === undefined && !credentialReissued) ||
           input.providerThread.nativeThreadRef === null
         ) {
           return;
         }
         const linkedEnvironments = yield* readLinkedEnvironments;
-        if (typeof linkedEnvironments !== "boolean" || linkedEnvironments === loadedWith) return;
+        const linksChanged =
+          loadedWith !== undefined &&
+          typeof linkedEnvironments === "boolean" &&
+          linkedEnvironments !== loadedWith;
+        if (!linksChanged && !credentialReissued) return;
         yield* threadAttachment.withLock(
           threadAttachmentKey(input),
           Effect.gen(function* () {
@@ -2181,6 +2199,7 @@ export const layerWithOptions = (
               if (
                 latest?.runtime !== entry.runtime ||
                 latest.linkedEnvironmentsByThread.get(input.threadId) !== loadedWith ||
+                latest.loadedMcpCredentialIdByThread.get(input.threadId) !== loadedCredential ||
                 hasBusyTurn(latest, input.providerThread.id)
               ) {
                 return [false, current] as const;
@@ -2203,7 +2222,15 @@ export const layerWithOptions = (
                   if (latest?.runtime !== entry.runtime) return current;
                   const linkedEnvironmentsByThread = new Map(latest.linkedEnvironmentsByThread);
                   linkedEnvironmentsByThread.delete(input.threadId);
-                  return new Map(current).set(key, { ...latest, linkedEnvironmentsByThread });
+                  const loadedMcpCredentialIdByThread = new Map(
+                    latest.loadedMcpCredentialIdByThread,
+                  );
+                  loadedMcpCredentialIdByThread.delete(input.threadId);
+                  return new Map(current).set(key, {
+                    ...latest,
+                    linkedEnvironmentsByThread,
+                    loadedMcpCredentialIdByThread,
+                  });
                 }),
               ),
               Effect.catchCause((cause) =>
@@ -3138,6 +3165,7 @@ export const layerWithOptions = (
                   mcpCredentialId === undefined
                     ? new Map()
                     : new Map([[input.threadId, mcpCredentialId]]),
+                loadedMcpCredentialIdByThread: new Map(),
                 supportsMultipleProviderThreads:
                   runtime.providerSession.capabilities.sessions
                     .supportsMultipleProviderThreadsPerSession,
@@ -3366,6 +3394,8 @@ export const layerWithOptions = (
               loadedProviderThreadKeyByThread.delete(input.threadId);
               const linkedEnvironmentsByThread = new Map(entry.linkedEnvironmentsByThread);
               linkedEnvironmentsByThread.delete(input.threadId);
+              const loadedMcpCredentialIdByThread = new Map(entry.loadedMcpCredentialIdByThread);
+              loadedMcpCredentialIdByThread.delete(input.threadId);
               const mcpCredentialIdByThread =
                 input.revokeMcpCredential === true
                   ? (() => {
@@ -3381,6 +3411,7 @@ export const layerWithOptions = (
                 attachedThreadIds,
                 loadedProviderThreadKeyByThread,
                 linkedEnvironmentsByThread,
+                loadedMcpCredentialIdByThread,
                 mcpCredentialIdByThread,
                 idleThreadUnloads,
               };
