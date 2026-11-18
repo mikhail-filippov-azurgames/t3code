@@ -213,6 +213,17 @@ export interface SettleMemberNotice {
   readonly wakeId: string;
 }
 
+export interface SendRefusalNotice {
+  readonly taskId: string;
+  readonly memberId: string;
+  readonly letterId: string;
+  readonly body: string;
+  readonly clientRequestId: string;
+  readonly requestFingerprint: string;
+  readonly deliveryId: string;
+  readonly at: string;
+}
+
 export interface RecordKindFeedbackInput {
   readonly letterId: string;
   readonly senderKind: MailLetterKind;
@@ -700,6 +711,14 @@ export class MailRepository extends Context.Service<
       } | null,
       MailRepositoryError | MailIdempotencyConflict
     >;
+    /**
+     * Writes the lead a `blocked` system letter, with its delivery and wake, in
+     * one transaction while the member is active in the open task. The letter
+     * reuses its request key, so a retried report never duplicates it.
+     */
+    readonly applySendRefusalNotice: (
+      input: SendRefusalNotice,
+    ) => Effect.Effect<MailLetter | null, MailRepositoryError | MailIdempotencyConflict>;
     readonly getDelivery: (
       deliveryId: string,
     ) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
@@ -1399,6 +1418,79 @@ const make = Effect.gen(function* () {
                 'member-settled', ${`mail:wake:${leadDeliveryId}`}, ${input.at}
               ) ON CONFLICT(idempotency_key) DO NOTHING`;
             return { member, failed, letter };
+          }),
+        ),
+      ),
+    ),
+    applySendRefusalNotice: Effect.fn("MailRepository.applySendRefusalNotice")((input) =>
+      mapIdempotentError("applySendRefusalNotice")(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const task = yield* findTask(input.taskId);
+            if (task === null || task.status !== "open") return null;
+            const members = yield* sql<MemberRow>`SELECT ${sql.literal(MEMBER_COLUMNS)}
+              FROM ft3_mail_members WHERE member_id = ${input.memberId}`;
+            const member = members[0] === undefined ? null : toMember(members[0]);
+            if (member === null || member.taskId !== task.taskId || member.status !== "active") {
+              return null;
+            }
+            const key = {
+              taskId: task.taskId,
+              senderThreadId: "system",
+              clientRequestId: input.clientRequestId,
+            };
+            const existing = yield* findLetterByKey(key);
+            let letter: MailLetter;
+            if (existing !== null) {
+              if (existing.requestFingerprint !== input.requestFingerprint) {
+                return yield* new MailIdempotencyConflict({
+                  operation: "applySendRefusalNotice",
+                  key: `${task.taskId}:system:${input.clientRequestId}`,
+                });
+              }
+              letter = existing;
+            } else {
+              const last = yield* sql<{
+                readonly sequence: number;
+              }>`SELECT COALESCE(MAX(sequence), 0) AS sequence
+                FROM ft3_mail_letters WHERE task_id = ${task.taskId}`;
+              const sequence = (last[0]?.sequence ?? 0) + 1;
+              yield* sql`INSERT INTO ft3_mail_letters (
+                  letter_id, task_id, sequence, sender_thread_id, recipient, kind, body,
+                  reply_to_letter_id, source_letter_id, plan_phase, plan_step, plan_sha256,
+                  plan_doc_id, classifier_kind, classifier_confidence, kind_disputed, lead_kind,
+                  client_request_id, request_fingerprint, created_at
+                ) VALUES (
+                  ${input.letterId}, ${task.taskId}, ${sequence}, 'system', 'lead', 'blocked',
+                  ${input.body}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL,
+                  ${input.clientRequestId}, ${input.requestFingerprint}, ${input.at}
+                )`;
+              const inserted = yield* findLetterByKey(key);
+              if (inserted === null) {
+                return yield* Effect.die(
+                  new Error("the inserted refusal notice letter is missing"),
+                );
+              }
+              letter = inserted;
+            }
+            yield* sql`INSERT INTO ft3_mail_deliveries (
+                delivery_id, task_id, letter_id, member_id, recipient, participant_thread_id,
+                state, created_at, updated_at
+              ) VALUES (
+                ${input.deliveryId}, ${task.taskId}, ${letter.letterId}, NULL, 'lead',
+                ${task.createdByThreadId}, 'pending', ${input.at}, ${input.at}
+              ) ON CONFLICT(letter_id, recipient) DO NOTHING`;
+            const leadDeliveries = yield* sql<{ readonly deliveryId: string }>`SELECT
+                delivery_id AS "deliveryId" FROM ft3_mail_deliveries
+              WHERE letter_id = ${letter.letterId} AND recipient = 'lead'`;
+            const leadDeliveryId = leadDeliveries[0]?.deliveryId ?? input.deliveryId;
+            yield* sql`INSERT INTO ft3_mail_wakes (
+                wake_id, task_id, target_thread_id, reason, idempotency_key, created_at
+              ) VALUES (
+                ${`mail:wake:${leadDeliveryId}`}, ${task.taskId}, ${task.createdByThreadId},
+                'send-refused', ${`mail:wake:${leadDeliveryId}`}, ${input.at}
+              ) ON CONFLICT(idempotency_key) DO NOTHING`;
+            return letter;
           }),
         ),
       ),

@@ -812,6 +812,105 @@ it.effect(
   },
 );
 
+const reportRefusal = (
+  callerThreadId: string,
+  taskId: string,
+  overrides: {
+    readonly code?: string;
+    readonly body?: string;
+    readonly clientRequestId?: string;
+  } = {},
+) =>
+  Effect.gen(function* () {
+    const mail = yield* MailService;
+    return yield* mail.reportSendRefusal({
+      callerThreadId,
+      taskId,
+      clientRequestId: overrides.clientRequestId ?? "request:answer",
+      code: overrides.code ?? "parent_not_active",
+      message: "The calling provider no longer owns an active thread run.",
+      to: "lead",
+      kind: "answer",
+      body: overrides.body ?? "Done.",
+    });
+  });
+
+const leadLetters = (taskId: string) =>
+  Effect.gen(function* () {
+    const mail = yield* MailService;
+    const read = yield* mail.readTask({ taskId, callerThreadId: LEAD, limit: 50 });
+    return read.entries.filter((entry) => entry.letter.senderThreadId === "system");
+  });
+
+it.effect(
+  "tells the lead once, with the refused text, when a participant's mail_send is refused",
+  () => {
+    const harness = mailHarness();
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const created = yield* teamOf([{ role: "implementation" }]);
+      const taskId = created.task.taskId;
+      yield* bindParticipant(idsOf(created, "implementation")[0]!, WORKER);
+      const body = `HEAD${"x".repeat(2500)}TAIL`;
+
+      const letter = yield* reportRefusal(WORKER, taskId, { body });
+      assert.isNotNull(letter);
+      assert.equal(letter!.kind, "blocked");
+      assert.equal(letter!.senderThreadId, "system");
+      assert.equal(letter!.recipient, "lead");
+      assert.include(
+        letter!.body,
+        "Written by the server: mail_send from participant implementation was refused: parent_not_active: The calling provider no longer owns an active thread run.",
+      );
+      assert.include(letter!.body, "to: lead, kind: answer");
+      assert.isTrue(letter!.body.endsWith(body.slice(-2000)));
+      assert.notInclude(letter!.body, "HEAD");
+
+      const again = yield* reportRefusal(WORKER, taskId, { body: "Retry." });
+      assert.equal(again!.letterId, letter!.letterId);
+      const letters = yield* leadLetters(taskId);
+      assert.lengthOf(letters, 1);
+      assert.deepStrictEqual(
+        letters[0]!.deliveries.map((delivery) => [
+          delivery.recipient,
+          delivery.participantThreadId,
+        ]),
+        [["lead", LEAD]],
+      );
+      const repository = yield* MailRepository;
+      assert.deepStrictEqual(
+        (yield* repository.listUndeliveredWakes({ limit: 10 }))
+          .filter((wake) => wake.reason === "send-refused")
+          .map((wake) => wake.targetThreadId),
+        [LEAD],
+      );
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
+it.effect(
+  "writes no refusal letter for a stranger, the lead, mail_disabled or a closed task",
+  () => {
+    const harness = mailHarness();
+    return Effect.gen(function* () {
+      yield* migrateMail;
+      const created = yield* teamOf([{ role: "implementation" }]);
+      const taskId = created.task.taskId;
+      yield* bindParticipant(idsOf(created, "implementation")[0]!, WORKER);
+
+      assert.isNull(yield* reportRefusal("thread:stranger", taskId));
+      assert.isNull(yield* reportRefusal(LEAD, taskId));
+      assert.isNull(yield* reportRefusal(WORKER, taskId, { code: "mail_disabled" }));
+      assert.isNull(yield* reportRefusal(WORKER, "task:missing"));
+      assert.lengthOf(yield* leadLetters(taskId), 0);
+
+      yield* closeAs(LEAD, created.task);
+      assert.isNull(yield* reportRefusal(WORKER, taskId));
+      assert.lengthOf(yield* leadLetters(taskId), 0);
+    }).pipe(Effect.provide(harness.layer));
+  },
+);
+
 it.effect("refuses a sender outside the task, an unknown task and an unknown reply target", () => {
   const harness = mailHarness();
   return Effect.gen(function* () {
