@@ -1776,6 +1776,12 @@ const make = Effect.gen(function* () {
     if (input.code === "mail_disabled") return null;
     const task = yield* repository.getTask(input.taskId);
     if (task === null || task.status !== "open") return null;
+    // Mail turned off after the task was created must not still write a letter.
+    const mailOn = yield* requireMailForTask(task).pipe(
+      Effect.as(true),
+      Effect.catchTags({ MailServiceError: () => Effect.succeed(false) }),
+    );
+    if (!mailOn) return null;
     const member = (yield* repository.listMembers(task.taskId)).find(
       (candidate) =>
         candidate.participantThreadId === input.callerThreadId && candidate.status === "active",

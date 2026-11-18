@@ -889,7 +889,7 @@ it.effect(
 );
 
 it.effect(
-  "writes no refusal letter for a stranger, the lead, mail_disabled or a closed task",
+  "writes no refusal letter for a stranger, the lead, mail_disabled, mail turned off or a closed task",
   () => {
     const harness = mailHarness();
     return Effect.gen(function* () {
@@ -902,6 +902,9 @@ it.effect(
       assert.isNull(yield* reportRefusal(LEAD, taskId));
       assert.isNull(yield* reportRefusal(WORKER, taskId, { code: "mail_disabled" }));
       assert.isNull(yield* reportRefusal(WORKER, "task:missing"));
+      harness.setEnvironmentEnabled(false);
+      assert.isNull(yield* reportRefusal(WORKER, taskId));
+      harness.setEnvironmentEnabled(true);
       assert.lengthOf(yield* leadLetters(taskId), 0);
 
       yield* closeAs(LEAD, created.task);
