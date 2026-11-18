@@ -814,6 +814,69 @@ it.effect("catches up a pending delivery after restart without relaunching", () 
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("kills a stale wake for a delivery already answered", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    // The member answers before the wake drains; the stale wake row must not
+    // redispatch the letter.
+    const repository = yield* MailRepository;
+    yield* repository.markDeliveryAnswered({
+      deliveryId: sent.deliveries[0]!.deliveryId,
+      at: DateTime.formatIso(now),
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 0);
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "answered");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("kills a stale wake for a delivery that failed", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    const repository = yield* MailRepository;
+    yield* repository.failDelivery({
+      deliveryId: sent.deliveries[0]!.deliveryId,
+      at: DateTime.formatIso(now),
+      reason: "forced failure",
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 0);
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "failed");
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("steers an urgent letter into the participant's active run", () => {
   const harness = fixture();
   return Effect.gen(function* () {

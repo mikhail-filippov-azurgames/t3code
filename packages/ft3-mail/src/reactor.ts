@@ -212,6 +212,12 @@ const make = Effect.fn("MailDeliveryReactor.make")(function* () {
       yield* dead();
       return;
     }
+    if (delivery.state !== "pending") {
+      // The recipient already got this letter or the delivery is terminal;
+      // only the stale wake row is left, so there is nothing to dispatch.
+      yield* dead();
+      return;
+    }
     const letter = yield* repository.getLetter(delivery.letterId);
     const task = yield* repository.getTask(delivery.taskId);
     if (letter === null || task === null || task.status !== "open") {
