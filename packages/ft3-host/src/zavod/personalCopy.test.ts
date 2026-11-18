@@ -7,7 +7,9 @@ import { assert, describe, it } from "@effect/vitest";
 import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -896,7 +898,9 @@ describe("ZavodService", () => {
             Effect.andThen(fs.readDirectory(directory, options)),
           ),
     };
-    const context = yield* Layer.build(Service.layer.pipe(Layer.provide(Instances.layer))).pipe(
+    const context = yield* Layer.build(
+      Service.layer.pipe(Layer.provideMerge(Instances.layer)),
+    ).pipe(
       Effect.provideService(HostProcess.HomeDirectory, home),
       Effect.provideService(HostProcess.Environment, {}),
       Effect.provideService(FileSystem.FileSystem, watched),
@@ -909,6 +913,7 @@ describe("ZavodService", () => {
       put,
       observed,
       service: Context.get(context, Service.ZavodService),
+      instances: Context.get(context, Instances.ZavodInstances),
       claudeTarget: path.join(config.stateDir, "zavod", "zavod-claude"),
       codexTarget: path.join(config.stateDir, "zavod", "zavod-codex"),
     };
@@ -997,6 +1002,39 @@ describe("ZavodService", () => {
       assert.isDefined(providers[connected.claudeInstanceId]);
       assert.isDefined(providers[connected.codexInstanceId]);
       assert.deepStrictEqual(yield* f.fs.readDirectory(outside, { recursive: true }), ["keep.md"]);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("an overlapping connect that creates nothing keeps local Zavod edits", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const delayed = Instances.ZavodInstances.of({
+        connect: (detected) =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(release);
+            return yield* f.instances.connect(detected);
+          }),
+      });
+      const context = yield* Layer.build(Service.layer).pipe(
+        Effect.provideService(Instances.ZavodInstances, delayed),
+        Effect.provideService(HostProcess.HomeDirectory, f.home),
+        Effect.provideService(HostProcess.Environment, {}),
+      );
+      const slow = Context.get(context, Service.ZavodService);
+      const pending = yield* slow.connect().pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      yield* f.service.connect();
+      const target = f.path.join(f.claudeTarget, "CLAUDE.md");
+      yield* f.put(target, "Zavod local edits");
+      yield* f.put(f.path.join(f.home, ".claude", "CLAUDE.md"), "changed personal notes");
+      yield* Deferred.succeed(release, undefined);
+      const result = yield* Fiber.join(pending);
+      assert.strictEqual(yield* f.fs.readFileString(target), "Zavod local edits");
+      assert.isFalse("personalCopy" in result);
+      assert.isFalse("created" in result);
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 

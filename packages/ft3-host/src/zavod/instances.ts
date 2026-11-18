@@ -40,6 +40,8 @@ export class ZavodInstancesError extends Schema.TaggedError<
 interface ConnectedInstances {
   readonly claudeInstanceId: ProviderInstanceId;
   readonly codexInstanceId: ProviderInstanceId;
+  /** Families whose instance this call created, decided under the connect lock. */
+  readonly created: ReadonlyArray<"claude" | "codex">;
 }
 
 export class ZavodInstances extends Context.Service<
@@ -314,7 +316,12 @@ const make = Effect.gen(function* () {
               ),
             );
           }
-          return managedIds;
+          return {
+            ...managedIds,
+            created: candidates
+              .filter((candidate) => candidate.previous === undefined)
+              .map((candidate) => (candidate.claude ? ("claude" as const) : ("codex" as const))),
+          };
         });
         const outcome = yield* Effect.exit(mutation);
         if (Exit.isSuccess(outcome)) return outcome.value;

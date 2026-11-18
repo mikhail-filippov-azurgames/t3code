@@ -151,7 +151,11 @@ describe("ZavodInstances", () => {
       const f = yield* fixture();
       const before = yield* f.settings.getSettings;
       const connected = yield* f.service.connect({ ...f.detection, state: "on" });
-      assert.deepEqual(connected, { claudeInstanceId: claudeId, codexInstanceId: codexId });
+      assert.deepEqual(connected, {
+        claudeInstanceId: claudeId,
+        codexInstanceId: codexId,
+        created: ["claude", "codex"],
+      });
       const settings = yield* f.settings.getSettings;
       assert.equal(settings.providerInstances[claudeId]?.displayName, "Claude (Zavod)");
       assert.equal(settings.providerInstances[codexId]?.displayName, "Codex (Zavod)");
@@ -205,14 +209,20 @@ describe("ZavodInstances", () => {
   it.effect("is idempotent across concurrent connects and on, off and mixed transitions", () =>
     Effect.gen(function* () {
       const f = yield* fixture();
-      yield* f.service.connect({ ...f.detection, state: "on" });
+      const first = yield* f.service.connect({ ...f.detection, state: "on" });
+      assert.deepEqual(first.created, ["claude", "codex"]);
       const secondContext = yield* Layer.build(Instances.layer).pipe(
         Effect.provideService(ServerSettings.ServerSettingsService, f.wrapped),
       );
       const secondService = Context.get(secondContext, Instances.ZavodInstances);
-      yield* Effect.all([f.service.connect(f.detection), secondService.connect(f.detection)], {
-        concurrency: "unbounded",
-      });
+      const racing = yield* Effect.all(
+        [f.service.connect(f.detection), secondService.connect(f.detection)],
+        { concurrency: "unbounded" },
+      );
+      assert.deepEqual(
+        racing.map((result) => result.created),
+        [[], []],
+      );
       const before = yield* f.settings.getSettings;
       const files = yield* Effect.all([
         f.fs.readFileString(f.path.join(f.root, claudeId, "settings.json")),
@@ -246,6 +256,7 @@ describe("ZavodInstances", () => {
       assert.deepEqual(yield* f.service.connect(f.detection), {
         claudeInstanceId: claudeId,
         codexInstanceId: codexId,
+        created: ["claude", "codex"],
       });
       assert.equal(f.writes.filter((mutation) => mutation.operation === "create").length, 4);
       for (const id of [claudeId, codexId]) {

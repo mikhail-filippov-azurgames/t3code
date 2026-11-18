@@ -216,19 +216,12 @@ const make = Effect.gen(function* () {
     connect: Effect.fn("ZavodService.connect")(function* () {
       const context = yield* personalContext();
       const detected = yield* detectWith(context);
-      // Only a family whose instance is created now gets the first copy; reconnect never copies.
-      const created = new Set<PersonalFamily>(
-        (["claude", "codex"] as const).filter(
-          (family) =>
-            context.current.providerInstances[ProviderInstanceId.make(`zavod-${family}`)] ===
-            undefined,
-        ),
-      );
-      const connected = yield* instances.connect(detected);
-      const status = { ...toZavodStatus(detected), ...connected };
-      if (created.size === 0) return status;
+      const { created, ...ids } = yield* instances.connect(detected);
+      const status = { ...toZavodStatus(detected), ...ids };
+      // Only a family this call created gets the first copy; reconnect and a lost race never copy.
+      if (created.length === 0) return status;
       // The connection is already committed, so a failed copy only changes the reported outcome.
-      const copy = yield* Effect.exit(copyLocked({ dryRun: false, only: created }));
+      const copy = yield* Effect.exit(copyLocked({ dryRun: false, only: new Set(created) }));
       return {
         ...status,
         personalCopy: Exit.isSuccess(copy) ? ("copied" as const) : ("failed" as const),
