@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { parse, stringify } from "smol-toml";
 
@@ -559,6 +560,29 @@ const copyFixture = Effect.fn("test.personalCopyFixture")(function* () {
   return { fs, path, root, homes, put, s, c, run, listing, snapshot };
 });
 
+const denyReads = (
+  fs: FileSystem.FileSystem,
+  denied: ReadonlySet<string>,
+): FileSystem.FileSystem => {
+  const refuse = (method: string, file: string) =>
+    PlatformError.systemError({
+      _tag: "PermissionDenied",
+      module: "FileSystem",
+      method,
+      pathOrDescriptor: file,
+      description: "fixture access denied",
+    });
+  return {
+    ...fs,
+    readFileString: (file, encoding) =>
+      denied.has(file)
+        ? Effect.fail(refuse("readFileString", file))
+        : fs.readFileString(file, encoding),
+    readFile: (file) =>
+      denied.has(file) ? Effect.fail(refuse("readFile", file)) : fs.readFile(file),
+  };
+};
+
 const junction = (target: string, link: string) =>
   Effect.promise(() => NodeFSP.symlink(target, link, "junction"));
 
@@ -779,6 +803,75 @@ describe("personal copy on disk", () => {
         assert.strictEqual(error.stage, "limit");
       }
       assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("skips a personal config it may not read and keeps copying", () =>
+    Effect.gen(function* () {
+      for (const [family, file] of [
+        ["claude", "settings.json"],
+        ["claude", ".claude.json"],
+        ["codex", "config.toml"],
+      ] as const) {
+        const f = yield* copyFixture();
+        const blocked =
+          file === ".claude.json"
+            ? f.homes.claudeJson
+            : f.path.join(family === "claude" ? f.homes.claudeSource : f.homes.codexSource, file);
+        const report = yield* f
+          .run(false)
+          .pipe(Effect.provideService(FileSystem.FileSystem, denyReads(f.fs, new Set([blocked]))));
+        assert.includeDeepMembers([...report.skipped], [{ family, path: file, reason: "invalid" }]);
+        assert.strictEqual(
+          yield* f.fs.readFileString(f.path.join(f.homes.codexTarget, "AGENTS.md")),
+          "personal codex notes",
+          file,
+        );
+        assert.isTrue(
+          yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("skips a copied file it may not read and keeps copying the rest", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const denied = new Set([f.s("CLAUDE.md"), f.s("skills/alpha/bin/run.sh")]);
+      const report = yield* f
+        .run(false)
+        .pipe(Effect.provideService(FileSystem.FileSystem, denyReads(f.fs, denied)));
+      assert.includeDeepMembers(
+        [...report.skipped],
+        [
+          { family: "claude", path: "CLAUDE.md", reason: "invalid" },
+          { family: "claude", path: "skills/alpha/bin/run.sh", reason: "invalid" },
+        ],
+      );
+      assert.isFalse(report.items.some((item) => item.path === "CLAUDE.md"));
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "CLAUDE.md")));
+      assert.isFalse(
+        yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/bin/run.sh")),
+      );
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
+        "alpha v1",
+      );
+      assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("still fails when the existing Zavod config cannot be read", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const blocked = f.path.join(f.homes.claudeTarget, "settings.json");
+      const error = yield* f
+        .run(false)
+        .pipe(
+          Effect.provideService(FileSystem.FileSystem, denyReads(f.fs, new Set([blocked]))),
+          Effect.flip,
+        );
+      assert.strictEqual(error.stage, "copy");
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 

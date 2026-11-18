@@ -326,17 +326,18 @@ type Probe =
 
 interface TreeEntry {
   readonly sub: string;
-  readonly source: string;
   readonly type: "File" | "Directory";
   readonly mode: number;
+  readonly bytes: Uint8Array;
 }
 
+// File bytes are read while planning, so an unreadable file is skipped before anything is written.
 interface CopyUnit {
   readonly rel: string;
-  readonly source: string;
   readonly target: string;
   readonly type: "File" | "Directory";
   readonly mode: number;
+  readonly bytes: Uint8Array;
   readonly tree: ReadonlyArray<TreeEntry>;
 }
 
@@ -357,6 +358,8 @@ interface PersonalCopyPlan extends PersonalCopyReport {
 }
 
 const MAX_LINK_HOPS = 40;
+const UNREADABLE = Symbol("unreadable");
+const NO_BYTES = new Uint8Array();
 
 const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
 
@@ -403,6 +406,18 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
     );
   const readText = (file: string) =>
     fs.readFileString(file).pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
+  // Read errors on the personal side are per element: the element is skipped, the copy goes on.
+  const readPersonalText = (file: string) =>
+    fs.readFileString(file).pipe(
+      Effect.catchIf(isNotFound, () => Effect.undefined),
+      Effect.orElseSucceed((): typeof UNREADABLE => UNREADABLE),
+    );
+  const readBytes = (file: string) => fs.readFile(file).pipe(Effect.catch(() => Effect.undefined));
+  const listDirectory = (dir: string) =>
+    fs.readDirectory(dir).pipe(
+      Effect.map((names) => names.toSorted()),
+      Effect.catch(() => Effect.undefined),
+    );
   const count = (size: number) => {
     budget.files += 1;
     budget.bytes += size;
@@ -459,7 +474,12 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       ZavodPersonalCopyError | PlatformError.PlatformError,
       FileSystem.FileSystem | Path.Path
     > {
-      for (const name of (yield* fs.readDirectory(dir)).toSorted()) {
+      const names = yield* listDirectory(dir);
+      if (names === undefined) {
+        skip(rel, "invalid");
+        return;
+      }
+      for (const name of names) {
         const child = path.join(dir, name);
         const childRel = `${rel}/${name}`;
         const childSub = sub === "" ? name : `${sub}/${name}`;
@@ -467,12 +487,14 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         if (found.kind === "missing" || !usable(childRel, found)) continue;
         if (found.kind === "file") {
           yield* count(found.size);
-          tree.push({ sub: childSub, source: child, type: "File", mode: found.mode });
+          const bytes = yield* readBytes(child);
+          if (bytes === undefined) skip(childRel, "invalid");
+          else tree.push({ sub: childSub, type: "File", mode: found.mode, bytes });
           continue;
         }
         const next = yield* descend(child, childRel, ancestors);
         if (next === undefined) continue;
-        tree.push({ sub: childSub, source: child, type: "Directory", mode: 0o755 });
+        tree.push({ sub: childSub, type: "Directory", mode: 0o755, bytes: NO_BYTES });
         yield* walk(child, childRel, childSub, next, tree);
       }
     });
@@ -487,13 +509,25 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       const action = (yield* exists(target)) ? "overwrite" : "create";
       if (found.kind === "file") {
         yield* count(found.size);
-        plan.units.push({ rel, source: file, target, type: "File", mode: found.mode, tree: [] });
+        const bytes = yield* readBytes(file);
+        if (bytes === undefined) {
+          skip(rel, "invalid");
+          return;
+        }
+        plan.units.push({ rel, target, type: "File", mode: found.mode, bytes, tree: [] });
       } else {
         const next = yield* descend(file, rel, ancestors);
         if (next === undefined) return;
         const tree: Array<TreeEntry> = [];
         yield* walk(file, rel, "", next, tree);
-        plan.units.push({ rel, source: file, target, type: "Directory", mode: 0o755, tree });
+        plan.units.push({
+          rel,
+          target,
+          type: "Directory",
+          mode: 0o755,
+          bytes: NO_BYTES,
+          tree,
+        });
       }
       items.push({ family, path: rel, action });
     });
@@ -508,7 +542,12 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       }
       const next = yield* descend(entry, name, new Set());
       if (next === undefined) continue;
-      for (const child of (yield* fs.readDirectory(entry)).toSorted()) {
+      const children = yield* listDirectory(entry);
+      if (children === undefined) {
+        skip(name, "invalid");
+        continue;
+      }
+      for (const child of children) {
         yield* planUnit(`${name}/${child}`, path.join(entry, child), next);
       }
     }
@@ -531,9 +570,12 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
 
     if (family === "claude") {
       const claude = personalCopySpec.claude;
-      const personalText = yield* readText(path.join(source.sourceHome, claude.config));
+      const personalRead = yield* readPersonalText(path.join(source.sourceHome, claude.config));
+      const personalText = personalRead === UNREADABLE ? undefined : personalRead;
       const personal = personalText === undefined ? undefined : parseJsonTable(personalText);
-      if (personalText !== undefined && personal === undefined) skip(claude.config, "invalid");
+      if (personalRead === UNREADABLE || (personalText !== undefined && personal === undefined)) {
+        skip(claude.config, "invalid");
+      }
       if (personal !== undefined) {
         const existingText = yield* readText(path.join(source.targetHome, claude.config));
         const contents = yield* guarded(() =>
@@ -541,10 +583,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         );
         yield* addWrite(claude.config, contents, existingText !== undefined);
       }
-      const jsonText =
-        source.claudeJson === undefined ? undefined : yield* readText(source.claudeJson);
+      const jsonRead =
+        source.claudeJson === undefined ? undefined : yield* readPersonalText(source.claudeJson);
+      const jsonText = jsonRead === UNREADABLE ? undefined : jsonRead;
       const json = jsonText === undefined ? undefined : parseJsonTable(jsonText);
-      if (jsonText !== undefined && json === undefined) skip(claude.mcpFile, "invalid");
+      if (jsonRead === UNREADABLE || (jsonText !== undefined && json === undefined)) {
+        skip(claude.mcpFile, "invalid");
+      }
       if (json !== undefined) {
         const filtered = filterClaudeMcpServers(json.mcpServers);
         for (const server of filtered.skipped) {
@@ -558,9 +603,12 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       }
     } else {
       const codex = personalCopySpec.codex;
-      const personalText = yield* readText(path.join(source.sourceHome, codex.config));
+      const personalRead = yield* readPersonalText(path.join(source.sourceHome, codex.config));
+      const personalText = personalRead === UNREADABLE ? undefined : personalRead;
       const personal = personalText === undefined ? undefined : parseTomlTable(personalText);
-      if (personalText !== undefined && personal === undefined) skip(codex.config, "invalid");
+      if (personalRead === UNREADABLE || (personalText !== undefined && personal === undefined)) {
+        skip(codex.config, "invalid");
+      }
       if (personal !== undefined) {
         const filtered = filterCodexConfig(personal);
         for (const server of filtered.skipped) {
@@ -630,12 +678,8 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
           fs.makeTempDirectory({ directory: family.targetHome, prefix: ".zavod-copy-" }),
           (directory) => fs.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore),
         );
-        const copyFile = (from: string, to: string, mode: number) =>
-          fs
-            .readFile(from)
-            .pipe(
-              Effect.flatMap((bytes) => fs.writeFile(to, bytes, windows ? undefined : { mode })),
-            );
+        const copyFile = (bytes: Uint8Array, to: string, mode: number) =>
+          fs.writeFile(to, bytes, windows ? undefined : { mode });
 
         for (const [index, unit] of family.units.entries()) {
           const parent = path.dirname(unit.target);
@@ -643,13 +687,13 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
           yield* guard(yield* fs.realPath(parent));
           const stage = path.join(staging, String(index));
           if (unit.type === "File") {
-            yield* copyFile(unit.source, stage, unit.mode);
+            yield* copyFile(unit.bytes, stage, unit.mode);
           } else {
             yield* fs.makeDirectory(stage);
             for (const entry of unit.tree) {
               const to = path.join(stage, ...entry.sub.split("/"));
               if (entry.type === "Directory") yield* fs.makeDirectory(to);
-              else yield* copyFile(entry.source, to, entry.mode);
+              else yield* copyFile(entry.bytes, to, entry.mode);
             }
           }
           const current = yield* fs
