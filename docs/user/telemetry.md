@@ -23,8 +23,9 @@ timings, environment identifiers and the connected machine's name. Failed spans 
 messages and stack traces; error text can quote a value the app was handling.
 
 To enable product events and relay tracing from the server, set
-`T3CODE_TELEMETRY_ENABLED=true` in its environment before starting it. Without it, or with any
-other value, the server sends neither. Relay tracing also stops
+`T3CODE_TELEMETRY_ENABLED=true` in its environment before starting it (`1`, `yes`, `on` and `y`
+also enable it). Without the variable, or with `false`, `0`, `no`, `off` or `n`, the server sends
+neither. Relay tracing also stops
 when `T3CODE_OTEL_SDK_DISABLED` or `OTEL_SDK_DISABLED` turns OpenTelemetry export off.
 
 An administrator can turn product events and relay tracing off in the server and desktop app with
