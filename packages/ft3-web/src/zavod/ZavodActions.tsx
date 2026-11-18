@@ -106,7 +106,7 @@ function CopyPlanDialog({
             kept.
           </AlertDialogDescription>
           {plan === null ? null : (
-            <div className="flex flex-col gap-3">
+            <div className="flex max-h-[min(20rem,45dvh)] min-h-0 flex-col gap-3 overflow-y-auto overscroll-contain text-left">
               {plan.items.length === 0 ? (
                 <p className="text-muted-foreground text-sm">Nothing to copy.</p>
               ) : null}
