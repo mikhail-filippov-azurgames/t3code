@@ -95,6 +95,7 @@ export const FT3_CLIENT_GUARDED_RPC_SCOPES = {
   // The server-file picker reads the server's filesystem to write a policy source.
   "policies.browseServerDirectory": AuthSettingsWriteScope,
   "zavod.connect": AuthProvidersManageScope,
+  "zavod.copyPersonal": AuthProvidersManageScope,
 } as const;
 export type Ft3ClientGuardedRpcTag = keyof typeof FT3_CLIENT_GUARDED_RPC_SCOPES;
 

@@ -20,6 +20,7 @@ export { FT3_MAIL_WS_METHODS } from "@t3tools/ft3-mail/rpc-contracts";
 export const FT3_ZAVOD_WS_METHODS = {
   zavodDetect: "zavod.detect",
   zavodConnect: "zavod.connect",
+  zavodCopyPersonal: "zavod.copyPersonal",
 } as const;
 
 export const ZavodStatus = Schema.Struct({
@@ -36,15 +37,43 @@ export const ZavodConnectResult = Schema.Struct({
   ...ZavodStatus.fields,
   claudeInstanceId: ProviderInstanceId,
   codexInstanceId: ProviderInstanceId,
+  personalCopy: Schema.optionalKey(Schema.Literals(["copied", "failed"])),
 });
 export type ZavodConnectResult = typeof ZavodConnectResult.Type;
+
+export const ZavodCopyPersonalResult = Schema.Struct({
+  items: Schema.Array(
+    Schema.Struct({
+      family: Schema.Literals(["claude", "codex"]),
+      path: Schema.String,
+      action: Schema.Literals(["create", "overwrite", "merge", "delete"]),
+    }),
+  ),
+  skipped: Schema.Array(
+    Schema.Struct({
+      family: Schema.Literals(["claude", "codex"]),
+      path: Schema.String,
+      reason: Schema.Literals(["secret", "invalid", "link"]),
+    }),
+  ),
+});
+export type ZavodCopyPersonalResult = typeof ZavodCopyPersonalResult.Type;
 
 export class ZavodRpcError extends Schema.TaggedError<
   ZavodRpcError,
   { readonly brand: unique symbol }
 >()("ZavodRpcError", {
-  operation: Schema.Literals(["detect", "connect"]),
-  stage: Schema.Literals(["settings", "state", "conflict", "configuration", "write", "rollback"]),
+  operation: Schema.Literals(["detect", "connect", "copy"]),
+  stage: Schema.Literals([
+    "settings",
+    "state",
+    "conflict",
+    "configuration",
+    "write",
+    "rollback",
+    "limit",
+    "copy",
+  ]),
   instanceId: Schema.optionalKey(ProviderInstanceId),
 }) {
   override get message(): string {
@@ -63,11 +92,17 @@ export const zavodRpcs = [
     success: ZavodConnectResult,
     error: Schema.Union([EnvironmentAuthorizationError, ZavodRpcError]),
   }),
+  Rpc.make(FT3_ZAVOD_WS_METHODS.zavodCopyPersonal, {
+    payload: Schema.Struct({ dryRun: Schema.Boolean }),
+    success: ZavodCopyPersonalResult,
+    error: Schema.Union([EnvironmentAuthorizationError, ZavodRpcError]),
+  }),
 ] as const;
 
 export const zavodRpcScopes = {
   [FT3_ZAVOD_WS_METHODS.zavodDetect]: AuthOrchestrationReadScope,
   [FT3_ZAVOD_WS_METHODS.zavodConnect]: AuthProvidersManageScope,
+  [FT3_ZAVOD_WS_METHODS.zavodCopyPersonal]: AuthProvidersManageScope,
 } as const;
 
 export const group = RpcGroup.make(
