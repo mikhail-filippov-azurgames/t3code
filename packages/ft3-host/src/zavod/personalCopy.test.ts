@@ -1013,6 +1013,30 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect(
+    "copies MCP servers from the outer .claude.json when the personal home is missing",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* copyFixture();
+        yield* f.fs.remove(f.homes.claudeSource, { recursive: true });
+        const report = yield* f.run(false);
+        assert.includeDeepMembers(
+          [...report.items],
+          [{ family: "claude", path: ".claude.json", action: "create" }],
+        );
+        assert.includeDeepMembers(
+          [...report.skipped],
+          [{ family: "claude", path: ".claude.json:mcpServers.leaky", reason: "secret" }],
+        );
+        assert.deepStrictEqual(
+          JSON.parse(yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, ".claude.json"))),
+          { mcpServers: { ok: { command: "node", args: ["server.js"] } } },
+        );
+        assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "CLAUDE.md")));
+        assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("refuses a personal home that is the Zavod home", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();

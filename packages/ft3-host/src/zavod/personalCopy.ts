@@ -452,12 +452,17 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         return Effect.undefined;
       }),
     );
-    if (sourceReal === undefined) continue;
-    const targetReal = yield* fs
-      .realPath(source.targetHome)
-      .pipe(Effect.catchIf(isNotFound, () => Effect.succeed(source.targetHome)));
-    if (normalize(sourceReal) === normalize(targetReal)) {
-      return yield* new ZavodPersonalCopyError({ stage: "state" });
+    // Without a personal home there are no entries or home configs, but the outer .claude.json
+    // can still hold MCP servers.
+    const homeUsable = sourceReal !== undefined;
+    const sourceRoot = sourceReal ?? source.sourceHome;
+    if (homeUsable) {
+      const targetReal = yield* fs
+        .realPath(source.targetHome)
+        .pipe(Effect.catchIf(isNotFound, () => Effect.succeed(source.targetHome)));
+      if (normalize(sourceReal) === normalize(targetReal)) {
+        return yield* new ZavodPersonalCopyError({ stage: "state" });
+      }
     }
     const plan: FamilyPlan = { targetHome: source.targetHome, units: [], writes: [] };
     familyPlans.push(plan);
@@ -483,7 +488,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         }),
       );
       if (real === undefined) return undefined;
-      if (ancestors.has(real) || contains(real, sourceReal)) {
+      if (ancestors.has(real) || contains(real, sourceRoot)) {
         skip(rel, "link");
         return undefined;
       }
@@ -563,7 +568,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       items.push({ family, path: rel, action });
     });
 
-    for (const name of spec.entries) {
+    for (const name of homeUsable ? spec.entries : []) {
       const entry = path.join(source.sourceHome, name);
       const found = yield* probe(entry);
       if (found.kind === "missing" || !usable(name, found)) continue;
@@ -601,7 +606,9 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
 
     if (family === "claude") {
       const claude = personalCopySpec.claude;
-      const personalRead = yield* readPersonalText(path.join(source.sourceHome, claude.config));
+      const personalRead = homeUsable
+        ? yield* readPersonalText(path.join(source.sourceHome, claude.config))
+        : undefined;
       const personalText = personalRead === UNREADABLE ? undefined : personalRead;
       const personal = personalText === undefined ? undefined : parseJsonTable(personalText);
       if (personalRead === UNREADABLE || (personalText !== undefined && personal === undefined)) {
@@ -634,7 +641,9 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       }
     } else {
       const codex = personalCopySpec.codex;
-      const personalRead = yield* readPersonalText(path.join(source.sourceHome, codex.config));
+      const personalRead = homeUsable
+        ? yield* readPersonalText(path.join(source.sourceHome, codex.config))
+        : undefined;
       const personalText = personalRead === UNREADABLE ? undefined : personalRead;
       const personal = personalText === undefined ? undefined : parseTomlTable(personalText);
       if (personalRead === UNREADABLE || (personalText !== undefined && personal === undefined)) {
