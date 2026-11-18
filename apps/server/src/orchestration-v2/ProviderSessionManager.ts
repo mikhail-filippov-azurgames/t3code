@@ -149,6 +149,8 @@ const activeTurnItemStatuses: ReadonlyArray<OrchestrationV2TurnItem["status"]> =
 ];
 const RELOAD_BLOCKED_BY_BACKGROUND_WORK_MESSAGE =
   "Thread has background work; its MCP credential changed and the thread cannot reload until that work ends. Retry after it finishes.";
+const RELOAD_FAILED_MESSAGE =
+  "Thread's MCP credential changed and unloading it failed, so it still holds the old one. Retry the turn.";
 
 export class ProviderSessionOpenError extends Schema.TaggedError<ProviderSessionOpenError>()(
   "ProviderSessionOpenError",
@@ -2249,7 +2251,21 @@ export const layerWithOptions = (
                   providerSessionId: input.providerSessionId,
                   threadId: input.threadId,
                   cause,
-                }),
+                }).pipe(
+                  // ft3: the loaded credential id stays, so the next resume retries the unload.
+                  Effect.andThen(
+                    credentialReissued
+                      ? Effect.fail(
+                          new ProviderAdapter.ProviderAdapterThreadInUseError({
+                            driver: entry.runtime.driver,
+                            providerThreadId: input.providerThread.id,
+                            detail: RELOAD_FAILED_MESSAGE,
+                            cause: "mcp_credential_reissued",
+                          }),
+                        )
+                      : Effect.void,
+                  ),
+                ),
               ),
             );
           }),

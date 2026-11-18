@@ -3108,6 +3108,7 @@ it.effect(
         ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
       >([]);
       const backgroundWork = yield* Ref.make<"none" | "running" | "probe_failed">("none");
+      const failUnload = yield* Ref.make(false);
       const instanceB = ProviderInstanceId.make("codex-second");
       yield* Effect.gen(function* () {
         const eventSink = yield* EventSink.EventSinkV2;
@@ -3162,6 +3163,14 @@ it.effect(
         assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
         yield* Ref.set(backgroundWork, "none");
 
+        // A failed unload leaves the old header loaded, so the resume refuses and the next one retries.
+        yield* Ref.set(failUnload, true);
+        const unloadFailed = yield* Effect.flip(resumeOnA);
+        assert.equal(unloadFailed._tag, "ProviderAdapterThreadInUseError");
+        assert.lengthOf(yield* Ref.get(resumedMcpConfigs), 1);
+        assert.deepEqual((yield* Ref.get(state)).unloadedNativeThreadIds, []);
+        yield* Ref.set(failUnload, false);
+
         yield* resumeOnA;
 
         const current = yield* mcpSessions.read(threadId);
@@ -3185,6 +3194,9 @@ it.effect(
             idleTimeoutMs: 60_000,
             secondInstanceId: instanceB,
             resumedMcpConfigs,
+            beforeUnload: Ref.get(failUnload).pipe(
+              Effect.flatMap((fails) => (fails ? Effect.die("unload failed") : Effect.void)),
+            ),
             hasPendingBackgroundWorkForThread: Ref.get(backgroundWork).pipe(
               Effect.flatMap((work) =>
                 work === "probe_failed"
