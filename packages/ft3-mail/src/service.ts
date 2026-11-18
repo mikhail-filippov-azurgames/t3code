@@ -1187,7 +1187,7 @@ const make = Effect.gen(function* () {
     // policy is fixed; an overridden member launches on its override instead.
     const launched: MailMemberLaunched[] = [];
     const launchFailures: MailMemberLaunchFailed[] = [];
-    const launchedThreads = new Map<string, string>();
+    const memberThreads = new Map<string, string>();
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
@@ -1206,7 +1206,7 @@ const make = Effect.gen(function* () {
                 threadId: member.participantThreadId,
               })
               .pipe(Effect.mapError(planFailure));
-            launchedThreads.set(member.memberId, member.participantThreadId);
+            memberThreads.set(member.memberId, member.participantThreadId);
           }
           continue;
         }
@@ -1221,7 +1221,7 @@ const make = Effect.gen(function* () {
               participantThreadId: claim.threadId,
               at: yield* nowIso,
             });
-            launchedThreads.set(current.memberId, claim.threadId);
+            memberThreads.set(current.memberId, claim.threadId);
             continue;
           }
           if (claim._tag === "Pending") {
@@ -1275,13 +1275,39 @@ const make = Effect.gen(function* () {
           launchFailures.push({ memberId: current.memberId, reason: outcome.reason });
           continue;
         }
-        yield* repository.setParticipantThread({
-          memberId: current.memberId,
-          participantThreadId: outcome.threadId,
-          at: yield* nowIso,
-        });
+        // The thread becomes visible to a drain only together with this letter's
+        // delivered row, so a resend never leaves it pending behind the new thread.
+        const memberId = current.memberId;
+        const deliveryId = yield* newId;
+        yield* repository.transaction(
+          Effect.gen(function* () {
+            const recorded = yield* repository.recordDelivery({
+              deliveryId,
+              taskId: task.taskId,
+              letterId: appended.letter.letterId,
+              memberId,
+              recipient: target.recipient,
+              participantThreadId: outcome.threadId,
+              initialState: "delivered",
+              createdAt: now,
+            });
+            if (recorded.participantThreadId === null && recorded.state === "pending") {
+              yield* repository.bindDeliveryThread({
+                deliveryId: recorded.deliveryId,
+                participantThreadId: outcome.threadId,
+                at: now,
+                deliveredAt: now,
+              });
+            }
+            yield* repository.setParticipantThread({
+              memberId,
+              participantThreadId: outcome.threadId,
+              at: now,
+            });
+          }),
+        );
         launched.push({ memberId: current.memberId, participantThreadId: outcome.threadId });
-        launchedThreads.set(current.memberId, outcome.threadId);
+        memberThreads.set(current.memberId, outcome.threadId);
         if (plannerCardId !== null) {
           yield* planGate
             .bindPlanner({
@@ -1293,56 +1319,25 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.
-    const recordedDeliveries = yield* Effect.forEach(targets, (target) =>
+    // Recording is idempotent per (letter, recipient), so a replay heals a letter whose
+    // deliveries never landed; a member launched above already has its delivered row.
+    const deliveries = yield* Effect.forEach(targets, (target) =>
       newId.pipe(
         Effect.flatMap((deliveryId) =>
-          repository
-            .recordDelivery({
-              deliveryId,
-              taskId: task.taskId,
-              letterId: appended.letter.letterId,
-              memberId: target.memberId,
-              recipient: target.recipient,
-              participantThreadId:
-                (target.memberId !== null ? launchedThreads.get(target.memberId) : undefined) ??
-                target.participantThreadId,
-              createdAt: now,
-            })
-            .pipe(
-              Effect.flatMap((recorded) => {
-                const launched =
-                  target.memberId !== null ? launchedThreads.get(target.memberId) : undefined;
-                if (
-                  launched === undefined ||
-                  recorded.participantThreadId !== null ||
-                  recorded.state !== "pending"
-                ) {
-                  return Effect.succeed(recorded);
-                }
-                // A resend after the policy was fixed launches the member, but the
-                // delivery row already exists without a thread: bind it instead of
-                // dropping the launch, so the wake below reaches the thread.
-                return repository
-                  .bindDeliveryThread({
-                    deliveryId: recorded.deliveryId,
-                    participantThreadId: launched,
-                    at: now,
-                  })
-                  .pipe(Effect.map((bound) => bound ?? recorded));
-              }),
-            ),
+          repository.recordDelivery({
+            deliveryId,
+            taskId: task.taskId,
+            letterId: appended.letter.letterId,
+            memberId: target.memberId,
+            recipient: target.recipient,
+            participantThreadId:
+              (target.memberId !== null ? memberThreads.get(target.memberId) : undefined) ??
+              target.participantThreadId,
+            initialState: "pending",
+            createdAt: now,
+          }),
         ),
       ),
-    );
-    // A member launched by this letter already received it in its first prompt, so its delivery is
-    // delivered and gets no wake; only a pending delivery with a thread is woken.
-    const deliveries = yield* Effect.forEach(recordedDeliveries, (delivery) =>
-      launched.some((member) => member.memberId === delivery.memberId)
-        ? repository
-            .markDeliveryDelivered({ deliveryId: delivery.deliveryId, at: now })
-            .pipe(Effect.map((marked) => marked ?? delivery))
-        : Effect.succeed(delivery),
     );
     // An agent thread gets a durable wake; the reactor drains it and marks the delivery.
     yield* Effect.forEach(

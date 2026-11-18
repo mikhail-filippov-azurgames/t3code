@@ -17,7 +17,9 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -50,6 +52,7 @@ import {
 } from "./mail.testkit.ts";
 import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
 import type { FeatureId } from "@t3tools/ft3-policies/contracts";
+import type { RoutingRoleId } from "@t3tools/ft3-policies/routingPolicy";
 import { layer as mailServiceLayer } from "./service.ts";
 import { MailDeliveryReactor, layer as mailReactorLayer } from "./reactor.ts";
 
@@ -150,22 +153,25 @@ function fixture(
   failParticipantLookup = false,
   failSteer = false,
   projectOverrides: Record<string, Partial<Record<FeatureId, boolean>>> = {},
+  routable?: Array<RoutingRoleId>,
 ) {
   const dispatched: Array<Dispatch> = [];
-  const routing = routingFake({});
+  const routing = routingFake(routable === undefined ? {} : { routable });
   const evidence = policyEvidenceFake();
   const launcher = launcherFake();
-  // The lookup fault is injected at the service boundary: the wrapper builds
-  // the real repository and replaces exactly one method.
-  const repositoryLayer = failParticipantLookup
-    ? Layer.unwrap(
-        Effect.map(
-          Effect.provide(
-            Effect.service(MailRepository),
-            mailRepositoryLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
-          ),
-          (real) =>
-            Layer.succeed(MailRepository, {
+  // Faults are injected at the service boundary: the wrapper builds the real
+  // repository and replaces exactly the methods a test drives.
+  let recoverAfterDelivery: (() => Effect.Effect<void, never, never>) | null = null;
+  let beforeLetterLookup: (() => Effect.Effect<void, never, never>) | null = null;
+  const repositoryLayer = Layer.unwrap(
+    Effect.map(
+      Effect.provide(
+        Effect.service(MailRepository),
+        mailRepositoryLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+      ),
+      (real) => {
+        const withFaults = failParticipantLookup
+          ? {
               ...real,
               findParticipantByThread: () =>
                 Effect.fail(
@@ -174,10 +180,29 @@ function fixture(
                     cause: new Error("forced lookup failure"),
                   }),
                 ),
+            }
+          : real;
+        return Layer.succeed(MailRepository, {
+          ...withFaults,
+          getLetter: (letterId) =>
+            Effect.gen(function* () {
+              const hook = beforeLetterLookup;
+              beforeLetterLookup = null;
+              if (hook !== null) yield* hook();
+              return yield* withFaults.getLetter(letterId);
             }),
-        ),
-      )
-    : mailRepositoryLayer;
+          recordDelivery: (input) =>
+            withFaults
+              .recordDelivery(input)
+              .pipe(
+                Effect.tap(() =>
+                  recoverAfterDelivery === null ? Effect.void : recoverAfterDelivery(),
+                ),
+              ),
+        });
+      },
+    ),
+  );
   const managedThreads = Layer.unwrap(
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -266,6 +291,12 @@ function fixture(
     launcher,
     setProjectFeature: (projectId: string, feature: FeatureId, value: boolean) => {
       projectOverrides[projectId] = { ...projectOverrides[projectId], [feature]: value };
+    },
+    setRecoverAfterDelivery: (run: (() => Effect.Effect<void, never, never>) | null) => {
+      recoverAfterDelivery = run;
+    },
+    setBeforeLetterLookup: (run: (() => Effect.Effect<void, never, never>) | null) => {
+      beforeLetterLookup = run;
     },
   };
 }
@@ -736,6 +767,84 @@ it.effect("marks a launched member's delivery delivered without a wake", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("keeps a launched member's delivery single when a drain runs mid-send", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const mail = yield* MailService;
+    const reactor = yield* MailDeliveryReactor;
+    // A drain between recording the delivery and closing the send used to see
+    // the pending row already bound to the launched thread and dispatch a
+    // second copy of the letter.
+    harness.setRecoverAfterDelivery(() => reactor.recover.pipe(Effect.ignore));
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    harness.setRecoverAfterDelivery(null);
+
+    assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.dispatched.length, 0);
+    const repository = yield* MailRepository;
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "delivered");
+    yield* reactor.recover;
+    assert.equal(harness.dispatched.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps a resent letter single when a drain runs while its member launches", () => {
+  const routable: Array<RoutingRoleId> = [];
+  const harness = fixture(true, false, false, {}, routable);
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const mail = yield* MailService;
+    const reactor = yield* MailDeliveryReactor;
+    const letter = {
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request" as const,
+      body: "Start.",
+      clientRequestId: "request:letter",
+    };
+    const first = yield* mail.sendLetter(letter);
+    assert.deepStrictEqual(
+      first.deliveries.map((delivery) => [delivery.participantThreadId, delivery.state]),
+      [[null, "pending"]],
+    );
+    const member = yield* memberOf(created.task.taskId);
+    const launchedId = ThreadId.make(`thread:participant:${member.memberId}`);
+    yield* harness.emit({
+      ...base(launchedId),
+      type: "thread.created",
+      payload: appThread(launchedId),
+    });
+    // The resend after the routing fix launches the member with this letter; a
+    // drain that sees the member's thread before the old delivery moves on
+    // used to dispatch a second copy.
+    routable.push("implementation");
+    harness.setRecoverAfterDelivery(() => reactor.recover.pipe(Effect.orDie));
+    const resent = yield* mail.sendLetter(letter);
+    harness.setRecoverAfterDelivery(null);
+
+    assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.dispatched.length, 0);
+    assert.deepStrictEqual(
+      resent.deliveries.map((delivery) => [delivery.participantThreadId, delivery.state]),
+      [[launchedId, "delivered"]],
+    );
+    yield* reactor.recover;
+    assert.equal(harness.dispatched.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("catches up a pending delivery after restart without relaunching", () => {
   const harness = fixture();
   return Effect.gen(function* () {
@@ -766,6 +875,112 @@ it.effect("catches up a pending delivery after restart without relaunching", () 
     const repository = yield* MailRepository;
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "delivered");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("kills a stale wake for a delivery already answered", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    // The member answers before the wake drains; the stale wake row must not
+    // redispatch the letter.
+    const repository = yield* MailRepository;
+    yield* repository.markDeliveryAnswered({
+      deliveryId: sent.deliveries[0]!.deliveryId,
+      at: DateTime.formatIso(now),
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 0);
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "answered");
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("skips a wake whose delivery is answered while the reactor is mid-delivery", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: leadId,
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    const lookedUp = yield* Deferred.make<void>();
+    const resume = yield* Deferred.make<void>();
+    harness.setBeforeLetterLookup(() =>
+      Deferred.succeed(lookedUp, undefined).pipe(Effect.andThen(Deferred.await(resume))),
+    );
+    const draining = yield* (yield* MailDeliveryReactor).recover.pipe(Effect.forkScoped);
+    yield* Deferred.await(lookedUp);
+    yield* mail.sendLetter({
+      callerThreadId: childId,
+      taskId: created.task.taskId,
+      to: "lead",
+      kind: "answer",
+      body: "Done.",
+      clientRequestId: "request:answer-during-drain",
+      replyToLetterId: sent.letter.letterId,
+    });
+    const repository = yield* MailRepository;
+    const deliveryId = sent.deliveries[0]!.deliveryId;
+    assert.equal((yield* repository.getDelivery(deliveryId))?.state, "answered");
+    yield* Deferred.succeed(resume, undefined);
+    yield* Fiber.join(draining);
+
+    assert.equal(harness.dispatched.filter((command) => command.threadId === childId).length, 0);
+    assert.equal((yield* repository.getDelivery(deliveryId))?.state, "answered");
+  }).pipe(Effect.scoped, Effect.provide(harness.layer));
+});
+
+it.effect("kills a stale wake for a delivery that failed", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const member = yield* memberOf(created.task.taskId);
+    yield* bindChild(member.memberId);
+    const mail = yield* MailService;
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    const repository = yield* MailRepository;
+    yield* repository.failDelivery({
+      deliveryId: sent.deliveries[0]!.deliveryId,
+      at: DateTime.formatIso(now),
+      reason: "forced failure",
+    });
+    yield* (yield* MailDeliveryReactor).recover;
+
+    assert.equal(harness.dispatched.length, 0);
+    assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "failed");
   }).pipe(Effect.provide(harness.layer));
 });
 

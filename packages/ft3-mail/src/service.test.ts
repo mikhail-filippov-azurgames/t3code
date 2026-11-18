@@ -1482,11 +1482,17 @@ it.effect("starts one planner thread per card and reuses it in later tasks", () 
       plan: { phase: "draft" },
     });
     assert.lengthOf(harness.launches, 1);
+    // The reused planner was not launched with this letter, so it gets a wake.
     assert.deepStrictEqual(
-      draftTwo.deliveries.map((delivery) => delivery.participantThreadId),
-      [plannerThread],
+      draftTwo.deliveries.map((delivery) => [delivery.participantThreadId, delivery.state]),
+      [[plannerThread, "pending"]],
     );
     assert.equal(harness.planBoundThread(), plannerThread);
+    const wakes = yield* (yield* MailRepository).listUndeliveredWakes({ limit: 10 });
+    assert.include(
+      wakes.map((wake) => wake.idempotencyKey),
+      `mail:wake:${draftTwo.deliveries[0]!.deliveryId}`,
+    );
   }).pipe(Effect.provide(harness.layer));
 });
 

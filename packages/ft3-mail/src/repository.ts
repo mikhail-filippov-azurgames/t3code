@@ -147,6 +147,12 @@ export interface RecordDeliveryInput {
   readonly recipient: string;
   readonly participantThreadId: string | null;
   readonly createdAt: string;
+  /**
+   * A member launched by this letter already received it in its first prompt:
+   * the row is born delivered, so a concurrent drain never sees it pending
+   * with a thread.
+   */
+  readonly initialState: "pending" | "delivered";
 }
 
 export interface CreateRoundInput {
@@ -598,12 +604,15 @@ export class MailRepository extends Context.Service<
     ) => Effect.Effect<MailDelivery, MailRepositoryError>;
     /**
      * Points an existing pending delivery at the launched participant thread;
-     * a delivery that already has a thread or moved on is left alone.
+     * a delivery that already has a thread or moved on is left alone. When
+     * `deliveredAt` is set, the bind and the delivered transition happen in
+     * this one conditional update.
      */
     readonly bindDeliveryThread: (input: {
       readonly deliveryId: string;
       readonly participantThreadId: string;
       readonly at: string;
+      readonly deliveredAt?: string;
     }) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
     readonly createRound: (
       input: CreateRoundInput,
@@ -625,6 +634,11 @@ export class MailRepository extends Context.Service<
     readonly setLetterClassifier: (
       input: SetLetterClassifierInput,
     ) => Effect.Effect<MailLetter | null, MailRepositoryError>;
+    /** One statement that succeeds only while the delivery is still pending; null means a transition won. */
+    readonly claimPendingDelivery: (input: {
+      readonly deliveryId: string;
+      readonly at: string;
+    }) => Effect.Effect<MailDelivery | null, MailRepositoryError>;
     readonly markDeliveryDelivered: (input: {
       readonly deliveryId: string;
       readonly at: string;
@@ -1074,11 +1088,12 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           yield* sql`INSERT INTO ft3_mail_deliveries (
               delivery_id, task_id, letter_id, member_id, recipient, participant_thread_id,
-              state, created_at, updated_at
+              state, delivered_at, created_at, updated_at
             ) VALUES (
               ${input.deliveryId}, ${input.taskId}, ${input.letterId}, ${input.memberId},
-              ${input.recipient}, ${input.participantThreadId}, 'pending', ${input.createdAt},
-              ${input.createdAt}
+              ${input.recipient}, ${input.participantThreadId}, ${input.initialState},
+              ${input.initialState === "delivered" ? input.createdAt : null},
+              ${input.createdAt}, ${input.createdAt}
             ) ON CONFLICT(letter_id, recipient) DO NOTHING`;
           const rows = yield* sql<DeliveryRow>`SELECT ${sql.literal(DELIVERY_COLUMNS)}
             FROM ft3_mail_deliveries
@@ -1095,7 +1110,11 @@ const make = Effect.gen(function* () {
       mapError("bindDeliveryThread")(
         Effect.gen(function* () {
           const bound = yield* sql<DeliveryRow>`UPDATE ft3_mail_deliveries
-            SET participant_thread_id = ${input.participantThreadId}, updated_at = ${input.at}
+            SET participant_thread_id = ${input.participantThreadId},
+              state = CASE WHEN ${input.deliveredAt ?? null} IS NULL THEN state ELSE 'delivered' END,
+              delivered_at = CASE WHEN ${input.deliveredAt ?? null} IS NULL THEN delivered_at
+                ELSE COALESCE(delivered_at, ${input.deliveredAt ?? null}) END,
+              updated_at = ${input.at}
             WHERE delivery_id = ${input.deliveryId} AND state = 'pending'
               AND participant_thread_id IS NULL
             RETURNING ${sql.literal(DELIVERY_COLUMNS)}`;
@@ -1103,6 +1122,15 @@ const make = Effect.gen(function* () {
           if (row !== undefined) return toDelivery(row);
           return yield* findDelivery(input.deliveryId);
         }),
+      ),
+    ),
+    claimPendingDelivery: Effect.fn("MailRepository.claimPendingDelivery")((input) =>
+      mapError("claimPendingDelivery")(
+        sql<DeliveryRow>`UPDATE ft3_mail_deliveries SET updated_at = ${input.at}
+          WHERE delivery_id = ${input.deliveryId} AND state = 'pending'
+          RETURNING ${sql.literal(DELIVERY_COLUMNS)}`.pipe(
+          Effect.map((rows) => (rows[0] === undefined ? null : toDelivery(rows[0]))),
+        ),
       ),
     ),
     markDeliveryDelivered: Effect.fn("MailRepository.markDeliveryDelivered")((input) =>
