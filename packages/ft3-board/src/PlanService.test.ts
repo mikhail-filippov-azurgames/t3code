@@ -701,6 +701,134 @@ describe("PlanService", () => {
     ),
   );
 
+  /** Records lead events, failing every dispatch while `down` is set. */
+  const leadEvents = () => {
+    const events: Array<{
+      readonly type?: string;
+      readonly threadId?: string;
+      readonly messageId?: string;
+      readonly text?: string;
+    }> = [];
+    const state = { down: false };
+    const options = {
+      onDispatch: (command: unknown) => {
+        if (state.down) throw new Error("dispatch down");
+        events.push(command as (typeof events)[number]);
+      },
+    };
+    const failures = () =>
+      events.filter((event) => (event.text ?? "").startsWith("Plan acceptance failed"));
+    return { events, failures, state, options };
+  };
+
+  const duplicatedStepPlan = (planDocId: string) =>
+    Testkit.validPlan(planDocId).replace(
+      "| P1 | add the table | ft3-board | migration test |",
+      "| P1 | add the table | ft3-board | migration test |\n| P1 | again | ft3-board | migration test |",
+    );
+
+  it.effect("tells the lead when an accept of an invalid plan is refused", () => {
+    const lead = leadEvents();
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard("Storage plan");
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_invalid");
+        const failures = lead.failures();
+        assert.lengthOf(failures, 1);
+        const event = failures[0]!;
+        assert.equal(event.type, "message.dispatch");
+        assert.equal(event.threadId, Testkit.LEAD_THREAD_ID);
+        assert.equal(
+          event.text,
+          `Plan acceptance failed for card "Storage plan" (${cardId}): ${error.message}`,
+        );
+        assert.equal(
+          event.messageId,
+          `ft3:plan:accept-failed:${cardId}:${sha256.slice(0, 12)}:plan_invalid`,
+        );
+      }),
+      lead.options,
+    );
+  });
+
+  it.effect("tells the lead when an accept of a stale digest is refused, keyed for dedupe", () => {
+    const lead = leadEvents();
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const stale = "0".repeat(64);
+        const error = yield* service.accept({ cardId, sha256: stale }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_changed");
+        yield* service.accept({ cardId, sha256: stale }).pipe(Effect.flip);
+        const failures = lead.failures();
+        assert.lengthOf(failures, 2);
+        assert.equal(failures[0]?.threadId, Testkit.LEAD_THREAD_ID);
+        assert.include(failures[0]?.text ?? "", error.message);
+        assert.equal(failures[0]?.messageId, failures[1]?.messageId);
+        assert.equal(
+          failures[0]?.messageId,
+          `ft3:plan:accept-failed:${cardId}:${stale.slice(0, 12)}:plan_changed`,
+        );
+      }),
+      lead.options,
+    );
+  });
+
+  it.effect("sends no failure event for an idempotent accept retry", () => {
+    const lead = leadEvents();
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, Testkit.validPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        yield* service.accept({ cardId, sha256 });
+        const retry = yield* service.accept({ cardId, sha256 });
+        assert.equal(retry.state, "accepted");
+        assert.isEmpty(lead.failures());
+        assert.lengthOf(lead.events, 1);
+      }),
+      lead.options,
+    );
+  });
+
+  it.effect("keeps the refusal when the failure event cannot be dispatched", () => {
+    const lead = leadEvents();
+    lead.state.down = true;
+    return Testkit.withPlanning(
+      Effect.gen(function* () {
+        yield* Testkit.seedCard();
+        const service = yield* plans;
+        const record = yield* service.require({ cardId, requiredBy: "lead" });
+        yield* service.beginDraft(cardId);
+        yield* Testkit.editPlan(record.planDocId, duplicatedStepPlan(record.planDocId));
+        yield* service.submitForDiscussion(cardId);
+        const sha256 = (yield* Testkit.liveSha256Of(record.planDocId)) ?? "";
+        const error = yield* service.accept({ cardId, sha256 }).pipe(Effect.flip);
+        assert.equal(error.code, "plan_invalid");
+        assert.include(error.reason ?? "", 'step id "P1" is repeated');
+        assert.equal((yield* service.get(cardId))?.state, "discussion");
+        assert.isEmpty(lead.events);
+      }),
+      lead.options,
+    );
+  });
+
   it.effect("finds the plan of a bound planner thread and of no other thread", () =>
     Testkit.withPlanning(
       Effect.gen(function* () {

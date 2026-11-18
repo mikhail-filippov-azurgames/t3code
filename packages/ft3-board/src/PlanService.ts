@@ -320,6 +320,32 @@ const acceptedLeadEvent = (input: {
   } as const;
 };
 
+/**
+ * The lead event for one refused accept. Its id is the dedupe key, so the
+ * human repeating the same refused click does not post it again.
+ */
+const planAcceptanceFailedLeadEvent = (input: {
+  readonly cardId: string;
+  readonly sha256: string;
+  readonly code: PlanErrorCode;
+  readonly reason: string;
+  readonly orchestratorThreadId: string;
+  readonly title: string;
+}) => {
+  const id = `ft3:plan:accept-failed:${input.cardId}:${input.sha256.slice(0, 12)}:${input.code}`;
+  return {
+    type: "message.dispatch",
+    commandId: CommandId.make(id),
+    threadId: ThreadId.make(input.orchestratorThreadId),
+    messageId: MessageId.make(id),
+    text: `Plan acceptance failed for card "${input.title}" (${input.cardId}): ${input.reason}`,
+    attachments: [],
+    createdBy: "agent",
+    creationSource: "server",
+    dispatchMode: { type: "start_immediately" },
+  } as const;
+};
+
 /** Undelivered accepted events of one card, or of every card when `cardId` is null. */
 const pendingAccepts = (sql: SqlClient.SqlClient, cardId: string | null) =>
   sql<{
@@ -725,7 +751,31 @@ const make = Effect.fn("PlanService.make")(function* () {
     return next;
   });
 
-  const accept = Effect.fn("PlanService.accept")(function* (input: {
+  /** Tells the card's lead that an accept was refused. */
+  const reportAcceptFailure = Effect.fn("PlanService.reportAcceptFailure")(function* (
+    input: { readonly cardId: Contracts.BoardCardId; readonly sha256: string },
+    failure: PlanError,
+  ) {
+    const rows = yield* sql<{
+      readonly orchestrator_thread_id: string;
+      readonly title: string;
+    }>`SELECT orchestrator_thread_id, title FROM ft3_board_cards WHERE card_id = ${input.cardId}`;
+    const card = rows[0];
+    if (card === undefined) return;
+    yield* threads.dispatch(
+      planAcceptanceFailedLeadEvent({
+        cardId: input.cardId,
+        sha256: input.sha256,
+        code: failure.code,
+        reason: failure.message,
+        orchestratorThreadId: card.orchestrator_thread_id,
+        title: card.title,
+      }),
+    );
+  });
+
+  /** Checks and records the acceptance; the accepted event is delivered by `accept` afterwards. */
+  const acceptChecked = Effect.fn("PlanService.acceptChecked")(function* (input: {
     readonly cardId: Contracts.BoardCardId;
     readonly sha256: string;
   }) {
@@ -735,7 +785,6 @@ const make = Effect.fn("PlanService.make")(function* () {
       if (live.sha256 !== input.sha256) {
         return yield* new PlanError({ code: "plan_changed", cardId: input.cardId });
       }
-      yield* deliverPendingAccepts(sql, threads, record.cardId);
       return record;
     }
     if (record.state === "accepted") {
@@ -779,8 +828,30 @@ const make = Effect.fn("PlanService.make")(function* () {
         }),
       )
       .pipe(Effect.mapError(storeFailure(input.cardId)));
-    yield* deliverPendingAccepts(sql, threads, input.cardId);
     return next;
+  });
+
+  // A failed accepted-event delivery is not a refused accept; the outbox redelivers it.
+  const accept = Effect.fn("PlanService.accept")(function* (input: {
+    readonly cardId: Contracts.BoardCardId;
+    readonly sha256: string;
+  }) {
+    const record = yield* acceptChecked(input).pipe(
+      // Best-effort: a lost failure event must not replace the refusal itself.
+      Effect.tapError((failure) =>
+        reportAcceptFailure(input, failure).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Plan acceptance failure event was not delivered", {
+              cardId: input.cardId,
+              code: failure.code,
+              cause: String(cause),
+            }),
+          ),
+        ),
+      ),
+    );
+    yield* deliverPendingAccepts(sql, threads, record.cardId);
+    return record;
   });
 
   const withdraw = Effect.fn("PlanService.withdraw")(function* (cardId: Contracts.BoardCardId) {
