@@ -430,13 +430,17 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       Effect.map((names) => names.toSorted()),
       Effect.catch(() => Effect.undefined),
     );
-  const count = (size: number) => {
-    budget.files += 1;
-    budget.bytes += size;
+  const charge = (files: number, bytes: number) => {
+    budget.files += files;
+    budget.bytes += bytes;
     return budget.files > input.limits.maxFiles || budget.bytes > input.limits.maxBytes
       ? Effect.fail(new ZavodPersonalCopyError({ stage: "limit" }))
       : Effect.void;
   };
+  const count = (size: number) => charge(1, size);
+  // The size seen by stat stops big files early; the bytes read are what the plan really keeps.
+  const countGrowth = (statSize: number, bytes: Uint8Array) =>
+    charge(0, Math.max(0, bytes.byteLength - statSize));
 
   for (const source of input.families) {
     const { family } = source;
@@ -510,8 +514,12 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         if (found.kind === "file") {
           yield* count(found.size);
           const bytes = yield* readBytes(child);
-          if (bytes === undefined) skip(childRel, "invalid");
-          else tree.push({ sub: childSub, type: "File", mode: found.mode, bytes });
+          if (bytes === undefined) {
+            skip(childRel, "invalid");
+            continue;
+          }
+          yield* countGrowth(found.size, bytes);
+          tree.push({ sub: childSub, type: "File", mode: found.mode, bytes });
           continue;
         }
         const next = yield* descend(child, childRel, ancestors);
@@ -536,6 +544,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
           skip(rel, "invalid");
           return;
         }
+        yield* countGrowth(found.size, bytes);
         plan.units.push({ rel, target, type: "File", mode: found.mode, bytes, tree: [] });
       } else {
         const next = yield* descend(file, rel, ancestors);

@@ -982,6 +982,37 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect("counts the bytes actually read when a file grows after its size was checked", () =>
+    Effect.gen(function* () {
+      for (const file of ["CLAUDE.md", "skills/a/SKILL.md"]) {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-personal-copy-grow-" });
+        const sourceHome = path.join(root, "personal");
+        const targetHome = path.join(root, "zavod");
+        const grown = path.join(sourceHome, ...file.split("/"));
+        yield* fs.makeDirectory(path.dirname(grown), { recursive: true });
+        yield* fs.writeFileString(grown, "tiny");
+        const growing: FileSystem.FileSystem = {
+          ...fs,
+          readFile: (target) =>
+            target === grown ? Effect.succeed(new Uint8Array(500).fill(120)) : fs.readFile(target),
+        };
+        for (const dryRun of [true, false]) {
+          const error = yield* copyPersonalSettings({
+            families: [{ family: "claude", sourceHome, targetHome }],
+            baseUrl,
+            helperPath,
+            dryRun,
+            limits: { maxFiles: 10, maxBytes: 100 },
+          }).pipe(Effect.provideService(FileSystem.FileSystem, growing), Effect.flip);
+          assert.strictEqual(error.stage, "limit", file);
+        }
+        assert.isFalse(yield* fs.exists(targetHome), file);
+      }
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("refuses a personal home that is the Zavod home", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
