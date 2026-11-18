@@ -144,10 +144,14 @@ const ProbeToolkit = Toolkit.make(
   Tool.make("writes_environment", probe),
 );
 const ran = Effect.succeed({ ran: "ran" });
+// What `acts_as_caller`'s onRefused saw in the current case.
+const refusals: Array<string> = [];
 const probeHandlers: McpToolAccess.Handlers<typeof ProbeToolkit.tools> = {
   reads: McpToolAccess.reads(() => ran),
   reads_as_caller: McpToolAccess.readsAsCaller(() => ran),
-  acts_as_caller: McpToolAccess.actsAsCaller(() => ran),
+  acts_as_caller: McpToolAccess.actsAsCaller(() => ran, {
+    onRefused: (_, error) => Effect.sync(() => refusals.push(error.code)),
+  }),
   writes: McpToolAccess.writes(() => ran),
   writes_with_capability: McpToolAccess.writesWithCapability(() => ran),
   writes_threads: McpToolAccess.writesThreads(
@@ -327,8 +331,12 @@ it.effect.each([
   ["writes_environment", fullAccessClient, {}, "ran"],
   ["writes_environment", supervisedClient, {}, "capability_denied"],
 ] as const)("%s from %o with %o: %s", ([tool, scope, args, expected]) =>
-  call(tool, scope, args).pipe(
-    Effect.map((outcome) => expect(outcome).toBe(expected)),
+  Effect.sync(() => refusals.splice(0)).pipe(
+    Effect.andThen(call(tool, scope, args)),
+    Effect.map((outcome) => {
+      expect(outcome).toBe(expected);
+      if (tool === "acts_as_caller") expect(refusals).toEqual(outcome === "ran" ? [] : [outcome]);
+    }),
     Effect.provide(
       probeServer(
         Layer.mock(ThreadManagement.ThreadManagementService)({
@@ -488,16 +496,57 @@ it.effect.each(["reads_as_caller", "acts_as_caller"] as const)(
   "%s refuses an outside client behind discovery",
   (tool) =>
     Effect.gen(function* () {
+      refusals.splice(0);
       const built = yield* ProbeToolkit;
       const { result } = yield* built
         .handle(tool, {})
         .pipe(Stream.unwrap, Stream.run(Sink.last()), Effect.flatMap(Effect.fromOption));
       expect(result).toMatchObject({ code: "thread_credential_required" });
+      if (tool === "acts_as_caller") expect(refusals).toEqual([]);
     }).pipe(
       Effect.provide(McpToolAccess.HandlersLayer.layer(layerProbeHandlers)),
       Effect.provideService(McpInvocationContext.McpInvocationContext, fullAccessClient),
       Effect.provide(Layer.mock(ThreadManagement.ThreadManagementService)({})),
     ),
+);
+
+it.effect("acts_as_caller reports a handler's refusal and keeps it when onRefused breaks", () =>
+  Effect.gen(function* () {
+    const RefusingToolkit = Toolkit.make(
+      Tool.make("acts_as_caller", probe).annotate(
+        McpSchema.EnabledWhen,
+        McpInvocationContext.hiddenFromOutsideClients,
+      ),
+    );
+    const seen: Array<readonly [unknown, string]> = [];
+    const handlers = McpToolAccess.toLayer(RefusingToolkit, {
+      acts_as_caller: McpToolAccess.actsAsCaller(
+        () => Effect.fail(new OrchestratorMcpFailure({ code: "invalid_request", message: "no" })),
+        {
+          onRefused: (params, error) =>
+            Effect.sync(() => seen.push([params, error.code])).pipe(
+              Effect.andThen(Effect.die("broken")),
+            ),
+        },
+      ),
+    });
+    const { result } = yield* RefusingToolkit.pipe(
+      Effect.flatMap((built) => built.handle("acts_as_caller", {})),
+      Stream.unwrap,
+      Stream.run(Sink.last()),
+      Effect.flatMap(Effect.fromOption),
+      Effect.provide(McpToolAccess.HandlersLayer.layer(handlers)),
+    );
+    expect(result).toMatchObject({ code: "invalid_request" });
+    expect(seen).toEqual([[{}, "invalid_request"]]);
+  }).pipe(
+    Effect.provideService(McpInvocationContext.McpInvocationContext, supervised),
+    Effect.provide(
+      Layer.mock(ThreadManagement.ThreadManagementService)({
+        getThreadShell: (threadId) => Effect.succeed(shells.get(threadId) ?? null),
+      }),
+    ),
+  ),
 );
 
 it.effect("refuses to build a thread-bound tool that outside clients would be offered", () =>
