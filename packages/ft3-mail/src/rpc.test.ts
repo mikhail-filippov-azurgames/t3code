@@ -37,6 +37,7 @@ const mailServiceStubLayer = Layer.succeed(
     timeoutOverdueDeliveries: unusedMailService,
     closeTask: unusedMailService,
     settleMember: unusedMailService,
+    reportSendRefusal: unusedMailService,
     purgeFinishedTasks: unusedMailService,
   }),
 );

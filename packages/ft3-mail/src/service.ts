@@ -371,6 +371,20 @@ export interface SettleMailMemberResult {
   readonly letter: MailLetter | null;
 }
 
+export interface ReportSendRefusalInput {
+  readonly callerThreadId: string;
+  readonly taskId: string;
+  readonly clientRequestId: string;
+  readonly code: string;
+  readonly message: string;
+  readonly to: string;
+  readonly kind: string;
+  readonly body: string;
+}
+
+/** How much of a refused body the lead's notice keeps, from its end. */
+export const SEND_REFUSAL_BODY_TAIL = 2000;
+
 /** The applied policy snapshot as JSON, and the board card that keeps it for a task that belongs to one. */
 export class MailPolicyEvidence extends Context.Service<
   MailPolicyEvidence,
@@ -510,6 +524,14 @@ export class MailService extends Context.Service<
       SettleMailMemberResult | null,
       MailRepositoryError | MailIdempotencyConflict
     >;
+    /**
+     * Tells the lead with one `blocked` system letter that an active
+     * participant's `mail_send` was refused, with the refused text. Writes
+     * nothing for any other caller, a closed task or `mail_disabled`.
+     */
+    readonly reportSendRefusal: (
+      input: ReportSendRefusalInput,
+    ) => Effect.Effect<MailLetter | null, MailRepositoryError | MailIdempotencyConflict>;
     /** Purges closed tasks older than the cutoff, with their planner claims settled first. */
     readonly purgeFinishedTasks: (input: {
       readonly before: string;
@@ -1743,6 +1765,50 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const reportSendRefusal = Effect.fn("MailService.reportSendRefusal")(function* (
+    input: ReportSendRefusalInput,
+  ) {
+    if (input.code === "mail_disabled") return null;
+    const task = yield* repository.getTask(input.taskId);
+    if (task === null || task.status !== "open") return null;
+    // Mail turned off after the task was created must not still write a letter.
+    const mailOn = yield* requireMailForTask(task).pipe(
+      Effect.as(true),
+      Effect.catchTags({ MailServiceError: () => Effect.succeed(false) }),
+    );
+    if (!mailOn) return null;
+    const member = (yield* repository.listMembers(task.taskId)).find(
+      (candidate) =>
+        candidate.participantThreadId === input.callerThreadId && candidate.status === "active",
+    );
+    if (member === undefined) return null;
+    const truncated = input.body.length > SEND_REFUSAL_BODY_TAIL;
+    const body =
+      `Written by the server: mail_send from participant ${member.roleId} was refused: ` +
+      `${input.code}: ${input.message}\n` +
+      `to: ${input.to}, kind: ${input.kind}\n` +
+      (truncated
+        ? `Refused body, last ${SEND_REFUSAL_BODY_TAIL} characters:\n`
+        : "Refused body:\n") +
+      input.body.slice(-SEND_REFUSAL_BODY_TAIL);
+    const deliveryId = yield* newId;
+    return yield* repository.applySendRefusalNotice({
+      taskId: task.taskId,
+      memberId: member.memberId,
+      letterId: yield* newId,
+      body,
+      clientRequestId: `mail:send-refused:${member.memberId}:${input.clientRequestId}`,
+      requestFingerprint: yield* fingerprintOf([
+        "send-refused",
+        task.taskId,
+        member.memberId,
+        input.clientRequestId,
+      ]),
+      deliveryId,
+      at: yield* nowIso,
+    });
+  });
+
   const setMemberModel = Effect.fn("MailService.setMemberModel")(function* (
     input: SetMemberModelInput,
   ) {
@@ -1804,6 +1870,7 @@ const make = Effect.gen(function* () {
     timeoutOverdueDeliveries,
     closeTask,
     settleMember,
+    reportSendRefusal,
     purgeFinishedTasks,
   });
 });

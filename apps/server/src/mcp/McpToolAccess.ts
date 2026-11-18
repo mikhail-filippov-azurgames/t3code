@@ -150,15 +150,42 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 
-export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
-  declare(
+export const actsAsCaller = <P, A, E, R, E2 = never, R2 = never>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+  options?: {
+    /**
+     * Sees what a thread caller's call was refused with, by the caller check
+     * or the handler. The tool answers the same; its own failure is logged.
+     */
+    readonly onRefused?: (
+      params: P,
+      error: E | Effect.Error<typeof writingCaller>,
+    ) => Effect.Effect<unknown, E2, R2>;
+  },
+) => {
+  const onRefused = options?.onRefused;
+  return declare(
     (params: P) =>
       requireThreadCaller.pipe(
-        Effect.andThen(writingCaller),
-        Effect.flatMap(() => handle(params)),
+        Effect.flatMap(() => {
+          const checked = writingCaller.pipe(Effect.flatMap(() => handle(params)));
+          return onRefused === undefined
+            ? checked
+            : checked.pipe(
+                Effect.tapError((error) =>
+                  Effect.suspend(() => onRefused(params, error)).pipe(
+                    Effect.ignoreCause({
+                      log: "Warn",
+                      message: "An MCP onRefused callback failed",
+                    }),
+                  ),
+                ),
+              );
+        }),
       ),
     undefined,
   );
+};
 
 /**
  * Changes something that belongs to no thread, such as a pending upload or a

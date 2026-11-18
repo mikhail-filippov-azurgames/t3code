@@ -107,27 +107,47 @@ export const mailMcpLayerFrom = <E1, R1, E2, R2>(
               .pipe(Effect.mapError(toMcpFailure));
           }),
         ),
-        mail_send: McpToolAccess.actsAsCaller((input) =>
-          Effect.gen(function* () {
-            const threadId = yield* callerThreadId;
-            yield* requireMailForCaller(threadId);
-            const service = yield* MailService;
-            return yield* service
-              .sendLetter({
-                taskId: input.taskId,
-                to: input.to,
-                kind: input.kind,
-                body: input.body,
-                clientRequestId: input.clientRequestId,
-                callerThreadId: threadId,
-                ...(input.replyToLetterId === undefined
-                  ? {}
-                  : { replyToLetterId: input.replyToLetterId }),
-                ...(input.plan === undefined ? {} : { plan: input.plan }),
-                ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
-              })
-              .pipe(Effect.mapError(toMcpFailure));
-          }),
+        mail_send: McpToolAccess.actsAsCaller(
+          (input) =>
+            Effect.gen(function* () {
+              const threadId = yield* callerThreadId;
+              yield* requireMailForCaller(threadId);
+              const service = yield* MailService;
+              return yield* service
+                .sendLetter({
+                  taskId: input.taskId,
+                  to: input.to,
+                  kind: input.kind,
+                  body: input.body,
+                  clientRequestId: input.clientRequestId,
+                  callerThreadId: threadId,
+                  ...(input.replyToLetterId === undefined
+                    ? {}
+                    : { replyToLetterId: input.replyToLetterId }),
+                  ...(input.plan === undefined ? {} : { plan: input.plan }),
+                  ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
+                })
+                .pipe(Effect.mapError(toMcpFailure));
+            }),
+          {
+            // A refusal otherwise reaches only the participant, and its text is lost.
+            onRefused: (input, error) =>
+              error.code === "mail_disabled_notice"
+                ? Effect.void
+                : Effect.gen(function* () {
+                    const service = yield* MailService;
+                    yield* service.reportSendRefusal({
+                      callerThreadId: yield* callerThreadId,
+                      taskId: input.taskId,
+                      clientRequestId: input.clientRequestId,
+                      code: error.code,
+                      message: error.message,
+                      to: input.to,
+                      kind: input.kind,
+                      body: input.body,
+                    });
+                  }),
+          },
         ),
         mail_read: McpToolAccess.readsAsCaller((input) =>
           Effect.gen(function* () {
