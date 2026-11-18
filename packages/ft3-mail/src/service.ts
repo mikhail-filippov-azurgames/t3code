@@ -1187,7 +1187,9 @@ const make = Effect.gen(function* () {
     // policy is fixed; an overridden member launches on its override instead.
     const launched: MailMemberLaunched[] = [];
     const launchFailures: MailMemberLaunchFailed[] = [];
-    const launchedThreads = new Map<string, string>();
+    const memberThreads = new Map<string, string>();
+    // Only a member launched by this letter got it in its first prompt.
+    const startedWithLetter = new Set<string>();
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
@@ -1206,7 +1208,7 @@ const make = Effect.gen(function* () {
                 threadId: member.participantThreadId,
               })
               .pipe(Effect.mapError(planFailure));
-            launchedThreads.set(member.memberId, member.participantThreadId);
+            memberThreads.set(member.memberId, member.participantThreadId);
           }
           continue;
         }
@@ -1221,7 +1223,7 @@ const make = Effect.gen(function* () {
               participantThreadId: claim.threadId,
               at: yield* nowIso,
             });
-            launchedThreads.set(current.memberId, claim.threadId);
+            memberThreads.set(current.memberId, claim.threadId);
             continue;
           }
           if (claim._tag === "Pending") {
@@ -1281,7 +1283,8 @@ const make = Effect.gen(function* () {
           at: yield* nowIso,
         });
         launched.push({ memberId: current.memberId, participantThreadId: outcome.threadId });
-        launchedThreads.set(current.memberId, outcome.threadId);
+        memberThreads.set(current.memberId, outcome.threadId);
+        startedWithLetter.add(current.memberId);
         if (plannerCardId !== null) {
           yield* planGate
             .bindPlanner({
@@ -1305,10 +1308,10 @@ const make = Effect.gen(function* () {
               memberId: target.memberId,
               recipient: target.recipient,
               participantThreadId:
-                (target.memberId !== null ? launchedThreads.get(target.memberId) : undefined) ??
+                (target.memberId !== null ? memberThreads.get(target.memberId) : undefined) ??
                 target.participantThreadId,
               initialState:
-                target.memberId !== null && launchedThreads.has(target.memberId)
+                target.memberId !== null && startedWithLetter.has(target.memberId)
                   ? "delivered"
                   : "pending",
               createdAt: now,
@@ -1316,7 +1319,10 @@ const make = Effect.gen(function* () {
             .pipe(
               Effect.flatMap((recorded) => {
                 const memberId = target.memberId;
-                const launched = memberId !== null ? launchedThreads.get(memberId) : undefined;
+                const launched =
+                  memberId !== null && startedWithLetter.has(memberId)
+                    ? memberThreads.get(memberId)
+                    : undefined;
                 if (
                   memberId === null ||
                   launched === undefined ||
