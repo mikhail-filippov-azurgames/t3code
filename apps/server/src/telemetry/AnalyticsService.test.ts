@@ -113,7 +113,11 @@ const recordTwentyEvents = Effect.gen(function* () {
   }
 });
 
-const analyticsLayerWith = (client: HttpClient.HttpClient, policy?: ManagedPolicyDocument) =>
+const analyticsLayerWith = (
+  client: HttpClient.HttpClient,
+  policy?: ManagedPolicyDocument,
+  telemetryEnabled: boolean | "absent" = true,
+) =>
   AnalyticsService.layer.pipe(
     Layer.provideMerge(
       ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-telemetry-retry-" }),
@@ -121,7 +125,7 @@ const analyticsLayerWith = (client: HttpClient.HttpClient, policy?: ManagedPolic
     Layer.provide(
       ConfigProvider.layer(
         ConfigProvider.fromUnknown({
-          T3CODE_TELEMETRY_ENABLED: true,
+          ...(telemetryEnabled === "absent" ? {} : { T3CODE_TELEMETRY_ENABLED: telemetryEnabled }),
           T3CODE_POSTHOG_KEY: "phc_test_key",
           T3CODE_POSTHOG_HOST: "http://localhost",
         }),
@@ -151,6 +155,7 @@ const sendFor = (
     AnalyticsService.AnalyticsService | Effect.Services<typeof getTelemetryIdentity>
   > = recordTwentyEvents,
   policy?: ManagedPolicyDocument,
+  telemetryEnabled: boolean | "absent" = true,
 ) =>
   Effect.gen(function* () {
     const batches: Array<ReadonlyArray<SentEvent>> = [];
@@ -165,7 +170,7 @@ const sendFor = (
         return yield* respond(request);
       }),
     );
-    const runtimeLayer = analyticsLayerWith(client, policy);
+    const runtimeLayer = analyticsLayerWith(client, policy, telemetryEnabled);
 
     yield* Effect.gen(function* () {
       yield* record;
@@ -268,6 +273,27 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
         });
         assert.deepEqual(denied, []);
       }),
+  );
+
+  it.effect("sends nothing unless T3CODE_TELEMETRY_ENABLED is set to true", () =>
+    Effect.gen(function* () {
+      const absent = yield* sendFor(
+        1,
+        respondWithStatus(204),
+        recordTwentyEvents,
+        undefined,
+        "absent",
+      );
+      assert.deepEqual(absent, []);
+      const enabled = yield* sendFor(
+        1,
+        respondWithStatus(204),
+        recordTwentyEvents,
+        undefined,
+        true,
+      );
+      assert.equal(enabled.length, 1);
+    }),
   );
 
   it.effect("drops a batch the endpoint rejects without sending it again", () =>
