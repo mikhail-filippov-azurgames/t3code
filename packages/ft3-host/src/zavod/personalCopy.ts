@@ -25,6 +25,13 @@ export interface FilteredMcpServers {
   readonly skipped: ReadonlyArray<SkippedMcpServer>;
 }
 
+const FILE_ENTRIES: ReadonlySet<string> = new Set([
+  "CLAUDE.md",
+  "AGENTS.md",
+  "AGENTS.override.md",
+  "hooks.json",
+]);
+
 // Anything not listed here is never copied.
 export const personalCopySpec = {
   claude: {
@@ -359,10 +366,6 @@ interface PersonalCopyPlan extends PersonalCopyReport {
 
 const MAX_LINK_HOPS = 40;
 
-type TargetKind = "missing" | "blocked" | "directory" | "file" | "link" | "other";
-
-const isNotDirectory = (error: PlatformError.PlatformError) =>
-  (error.reason.cause as { readonly code?: unknown } | undefined)?.code === "ENOTDIR";
 const UNREADABLE = Symbol("unreadable");
 const BROKEN_LINK = Symbol("broken link");
 const NO_BYTES = new Uint8Array();
@@ -498,13 +501,14 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
           return Effect.undefined;
         }),
       );
-      if (real === undefined) return undefined;
+      if (real === undefined) return "invalid" as const;
       if (ancestors.has(real) || contains(real, sourceRoot)) {
         skip(rel, "link");
-        return undefined;
+        return "link" as const;
       }
       return new Set(ancestors).add(real);
     });
+    // Walks a personal folder into `tree`; false means something in it could not be read.
     const walk = Effect.fn("ZavodPersonalCopy.walk")(function* (
       dir: string,
       rel: string,
@@ -512,26 +516,31 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       ancestors: ReadonlySet<string>,
       tree: Array<TreeEntry>,
     ): Effect.fn.Return<
-      void,
+      boolean,
       ZavodPersonalCopyError | PlatformError.PlatformError,
       FileSystem.FileSystem | Path.Path
     > {
       const names = yield* listDirectory(dir);
       if (names === undefined) {
         skip(rel, "invalid");
-        return;
+        return false;
       }
+      let complete = true;
       for (const name of names) {
         const child = path.join(dir, name);
         const childRel = `${rel}/${name}`;
         const childSub = sub === "" ? name : `${sub}/${name}`;
         const found = yield* probe(child);
+        // Listed a moment ago and gone now: the folder can no longer be copied in full.
+        if (found.kind === "unreadable" || found.kind === "missing") complete = false;
+        if (found.kind === "missing") skip(childRel, "invalid");
         if (found.kind === "missing" || !usable(childRel, found)) continue;
         if (found.kind === "file") {
           yield* count(found.size);
           const bytes = yield* readBytes(child);
           if (bytes === undefined) {
             skip(childRel, "invalid");
+            complete = false;
             continue;
           }
           yield* countGrowth(found.size, bytes);
@@ -539,47 +548,36 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
           continue;
         }
         const next = yield* descend(child, childRel, ancestors);
-        if (next === undefined) continue;
+        if (typeof next === "string") {
+          if (next === "invalid") complete = false;
+          continue;
+        }
         tree.push({ sub: childSub, type: "Directory", mode: 0o755, bytes: NO_BYTES });
-        yield* walk(child, childRel, childSub, next, tree);
+        if (!(yield* walk(child, childRel, childSub, next, tree))) complete = false;
       }
+      return complete;
     });
-    // Copying lays files over the Zavod home like a file manager: nothing there is removed, so
-    // a file where a folder should go (or the reverse) is skipped rather than replaced.
-    const inspectTarget = (file: string) =>
+    const exists = (file: string) =>
       fs.lstat(file).pipe(
-        Effect.map(
-          (info) =>
-            (info.type === "Directory"
-              ? "directory"
-              : info.type === "File"
-                ? "file"
-                : info.type === "SymbolicLink"
-                  ? "link"
-                  : "other") as TargetKind,
-        ),
-        Effect.catch((error): Effect.Effect<TargetKind, PlatformError.PlatformError> =>
-          isNotFound(error)
-            ? Effect.succeed("missing")
-            : isNotDirectory(error)
-              ? Effect.succeed("blocked")
-              : Effect.fail(error),
-        ),
+        Effect.as(true),
+        Effect.catchIf(isNotFound, () => Effect.succeed(false)),
       );
+    // Copying replaces an element of the Zavod home as a whole. An element that could not be read
+    // in full is skipped instead, so the Zavod copy is never replaced by part of it.
     const planUnit = Effect.fn("ZavodPersonalCopy.planUnit")(function* (
       rel: string,
       file: string,
       ancestors: ReadonlySet<string>,
     ) {
       const found = yield* probe(file);
-      if (found.kind === "missing" || !usable(rel, found)) return;
+      if (found.kind === "missing") {
+        skip(rel, "invalid");
+        return;
+      }
+      if (!usable(rel, found)) return;
       const target = path.join(source.targetHome, ...rel.split("/"));
-      const here = yield* inspectTarget(target);
+      const action = (yield* exists(target)) ? "overwrite" : "create";
       if (found.kind === "file") {
-        if (here === "directory" || here === "blocked" || here === "other") {
-          skip(rel, "invalid");
-          return;
-        }
         yield* count(found.size);
         const bytes = yield* readBytes(file);
         if (bytes === undefined) {
@@ -588,49 +586,34 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         }
         yield* countGrowth(found.size, bytes);
         plan.units.push({ rel, target, type: "File", mode: found.mode, bytes, tree: [] });
-        items.push({ family, path: rel, action: here === "missing" ? "create" : "overwrite" });
-        return;
-      }
-      if (here === "file" || here === "blocked" || here === "other") {
-        skip(rel, "invalid");
-        return;
-      }
-      const next = yield* descend(file, rel, ancestors);
-      if (next === undefined) return;
-      const walked: Array<TreeEntry> = [];
-      yield* walk(file, rel, "", next, walked);
-      const tree: Array<TreeEntry> = [];
-      const conflicts: Array<string> = [];
-      let overwrites = false;
-      for (const entry of walked) {
-        if (conflicts.some((folder) => entry.sub.startsWith(`${folder}/`))) continue;
-        const there = yield* inspectTarget(path.join(target, ...entry.sub.split("/")));
-        const clash =
-          entry.type === "Directory"
-            ? there === "file" || there === "blocked" || there === "other"
-            : there === "directory" || there === "blocked" || there === "other";
-        if (clash) {
-          if (entry.type === "Directory") conflicts.push(entry.sub);
-          skip(`${rel}/${entry.sub}`, "invalid");
-          continue;
+      } else {
+        const next = yield* descend(file, rel, ancestors);
+        if (typeof next === "string") return;
+        const tree: Array<TreeEntry> = [];
+        if (!(yield* walk(file, rel, "", next, tree))) {
+          skip(rel, "invalid");
+          return;
         }
-        if (entry.type === "File" && (there === "file" || there === "link")) overwrites = true;
-        tree.push(entry);
+        plan.units.push({ rel, target, type: "Directory", mode: 0o755, bytes: NO_BYTES, tree });
       }
-      plan.units.push({ rel, target, type: "Directory", mode: 0o755, bytes: NO_BYTES, tree });
-      items.push({ family, path: rel, action: overwrites ? "overwrite" : "create" });
+      items.push({ family, path: rel, action });
     });
 
     for (const name of homeUsable ? spec.entries : []) {
       const entry = path.join(source.sourceHome, name);
       const found = yield* probe(entry);
       if (found.kind === "missing" || !usable(name, found)) continue;
+      // A file where a folder entry belongs (or the reverse) would replace the wrong kind of element.
+      if ((found.kind === "file") !== FILE_ENTRIES.has(name)) {
+        skip(name, "invalid");
+        continue;
+      }
       if (found.kind === "file") {
         yield* planUnit(name, entry, new Set());
         continue;
       }
       const next = yield* descend(entry, name, new Set());
-      if (next === undefined) continue;
+      if (typeof next === "string") continue;
       const children = yield* listDirectory(entry);
       if (children === undefined) {
         skip(name, "invalid");
@@ -788,41 +771,24 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
           yield* guard(resolved);
           return resolved;
         });
-        const writeBytes = Effect.fn("ZavodPersonalCopy.writeBytes")(function* (
-          target: string,
-          bytes: Uint8Array,
-          mode: number,
-        ) {
-          const resolved = yield* resolveInside(target);
-          const directory = path.dirname(resolved);
-          yield* fs.makeDirectory(directory, { recursive: true });
-          // The file lands whole or not at all: it is written beside the target and renamed over it.
-          yield* Effect.scoped(
-            Effect.gen(function* () {
-              const temp = yield* Effect.acquireRelease(
-                fs.makeTempDirectory({ directory, prefix: ".zavod-write-" }),
-                (folder) => fs.remove(folder, { recursive: true, force: true }).pipe(Effect.ignore),
-              );
-              const staged = path.join(temp, "contents.tmp");
-              yield* fs.writeFile(staged, bytes, windows ? undefined : { mode });
-              yield* fs.rename(staged, resolved);
-            }),
-          );
-        });
+        const writeFile = (to: string, bytes: Uint8Array, mode: number) =>
+          fs.writeFile(to, bytes, windows ? undefined : { mode });
 
         for (const unit of family.units) {
+          // Whatever stands where the element goes is removed, then the personal copy is written.
+          const parent = yield* resolveInside(path.dirname(unit.target));
+          const target = path.join(parent, path.basename(unit.target));
+          yield* fs.makeDirectory(parent, { recursive: true });
+          yield* fs.remove(target, { recursive: true, force: true });
           if (unit.type === "File") {
-            yield* writeBytes(unit.target, unit.bytes, unit.mode);
+            yield* writeFile(target, unit.bytes, unit.mode);
             continue;
           }
-          yield* fs.makeDirectory(yield* resolveInside(unit.target), { recursive: true });
+          yield* fs.makeDirectory(target);
           for (const entry of unit.tree) {
-            const to = path.join(unit.target, ...entry.sub.split("/"));
-            if (entry.type === "Directory") {
-              yield* fs.makeDirectory(yield* resolveInside(to), { recursive: true });
-            } else {
-              yield* writeBytes(to, entry.bytes, entry.mode);
-            }
+            const to = path.join(target, ...entry.sub.split("/"));
+            if (entry.type === "Directory") yield* fs.makeDirectory(to);
+            else yield* writeFile(to, entry.bytes, entry.mode);
           }
         }
 
