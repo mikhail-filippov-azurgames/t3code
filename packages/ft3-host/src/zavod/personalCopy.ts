@@ -347,6 +347,10 @@ interface ConfigWrite {
   readonly contents: string;
 }
 
+interface TreeState {
+  complete: boolean;
+}
+
 interface FamilyPlan {
   readonly targetHome: string;
   readonly units: Array<CopyUnit>;
@@ -491,10 +495,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       dir: string,
       rel: string,
       ancestors: ReadonlySet<string>,
+      state?: TreeState,
     ) {
       const real = yield* fs.realPath(dir).pipe(
         Effect.catch((error) => {
-          skip(rel, sourceSkipReason(error));
+          const reason = sourceSkipReason(error);
+          if (reason === "invalid" && state !== undefined) state.complete = false;
+          skip(rel, reason);
           return Effect.undefined;
         }),
       );
@@ -511,6 +518,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       sub: string,
       ancestors: ReadonlySet<string>,
       tree: Array<TreeEntry>,
+      state: TreeState,
     ): Effect.fn.Return<
       void,
       ZavodPersonalCopyError | PlatformError.PlatformError,
@@ -518,6 +526,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
     > {
       const names = yield* listDirectory(dir);
       if (names === undefined) {
+        state.complete = false;
         skip(rel, "invalid");
         return;
       }
@@ -526,11 +535,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         const childRel = `${rel}/${name}`;
         const childSub = sub === "" ? name : `${sub}/${name}`;
         const found = yield* probe(child);
+        if (found.kind === "unreadable") state.complete = false;
         if (found.kind === "missing" || !usable(childRel, found)) continue;
         if (found.kind === "file") {
           yield* count(found.size);
           const bytes = yield* readBytes(child);
           if (bytes === undefined) {
+            state.complete = false;
             skip(childRel, "invalid");
             continue;
           }
@@ -538,10 +549,10 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
           tree.push({ sub: childSub, type: "File", mode: found.mode, bytes });
           continue;
         }
-        const next = yield* descend(child, childRel, ancestors);
+        const next = yield* descend(child, childRel, ancestors, state);
         if (next === undefined) continue;
         tree.push({ sub: childSub, type: "Directory", mode: 0o755, bytes: NO_BYTES });
-        yield* walk(child, childRel, childSub, next, tree);
+        yield* walk(child, childRel, childSub, next, tree, state);
       }
     });
     const planUnit = Effect.fn("ZavodPersonalCopy.planUnit")(function* (
@@ -566,7 +577,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         const next = yield* descend(file, rel, ancestors);
         if (next === undefined) return;
         const tree: Array<TreeEntry> = [];
-        yield* walk(file, rel, "", next, tree);
+        const state: TreeState = { complete: true };
+        yield* walk(file, rel, "", next, tree, state);
+        // A tree that could not be read in full would replace a whole Zavod folder with part of it.
+        if (!state.complete) {
+          skip(rel, "invalid");
+          return;
+        }
         plan.units.push({
           rel,
           target,

@@ -586,7 +586,7 @@ const denyReads = (
 const failPaths = (
   fs: FileSystem.FileSystem,
   broken: ReadonlyArray<{
-    readonly method: "realPath" | "stat" | "lstat";
+    readonly method: "realPath" | "stat" | "lstat" | "readDirectory";
     readonly file: string;
     readonly tag: "PermissionDenied" | "NotFound" | "Unknown";
     readonly code?: string;
@@ -594,7 +594,7 @@ const failPaths = (
 ): FileSystem.FileSystem => {
   const wrap =
     <A>(
-      method: "realPath" | "stat" | "lstat",
+      method: "realPath" | "stat" | "lstat" | "readDirectory",
       call: (file: string) => Effect.Effect<A, PlatformError.PlatformError>,
     ) =>
     (file: string) => {
@@ -614,11 +614,14 @@ const failPaths = (
             }),
           );
     };
+  const readDirectory = wrap("readDirectory", (file: string) => fs.readDirectory(file));
   return {
     ...fs,
     realPath: wrap("realPath", fs.realPath),
     stat: wrap("stat", fs.stat),
     lstat: wrap("lstat", fs.lstat),
+    readDirectory: (file, options) =>
+      options === undefined ? readDirectory(file) : fs.readDirectory(file, options),
   };
 };
 
@@ -889,15 +892,56 @@ describe("personal copy on disk", () => {
       );
       assert.isFalse(report.items.some((item) => item.path === "CLAUDE.md"));
       assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "CLAUDE.md")));
-      assert.isFalse(
-        yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/bin/run.sh")),
-      );
-      assert.strictEqual(
-        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
-        "alpha v1",
-      );
       assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+      assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "agents/reviewer.md")));
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect(
+    "keeps the existing Zavod folder when the personal folder is only partly readable",
+    () =>
+      Effect.gen(function* () {
+        for (const how of ["folder", "subfolder", "file"] as const) {
+          const f = yield* copyFixture();
+          yield* f.put(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md"), "zavod alpha");
+          yield* f.put(f.s("skills/beta/SKILL.md"), "beta");
+          const guarded =
+            how === "file"
+              ? denyReads(f.fs, new Set([f.s("skills/alpha/bin/run.sh")]))
+              : failPaths(f.fs, [
+                  {
+                    method: "readDirectory",
+                    file: how === "folder" ? f.s("skills/alpha") : f.s("skills/alpha/bin"),
+                    tag: "PermissionDenied",
+                  },
+                ]);
+          const report = yield* f
+            .run(false)
+            .pipe(Effect.provideService(FileSystem.FileSystem, guarded));
+          assert.includeDeepMembers(
+            [...report.skipped],
+            [{ family: "claude", path: "skills/alpha", reason: "invalid" }],
+          );
+          assert.isFalse(
+            report.items.some((item) => item.path === "skills/alpha"),
+            how,
+          );
+          assert.strictEqual(
+            yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
+            "zavod alpha",
+            how,
+          );
+          assert.isFalse(
+            yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/bin")),
+            how,
+          );
+          assert.strictEqual(
+            yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/beta/SKILL.md")),
+            "beta",
+            how,
+          );
+        }
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
   it.effect("still fails when the existing Zavod config cannot be read", () =>
