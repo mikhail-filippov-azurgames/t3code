@@ -18,7 +18,8 @@ T3, на которой основан Corvis. Версия Corvis растёт 
 - На Windows — Microsoft Visual C++ Redistributable (x64). Если его нет, установщик сам
   скачает `vc_redist.x64.exe` с `https://aka.ms/vs/17/release/vc_redist.x64.exe` и поставит
   его без окон. Если установка не удалась, поставьте его вручную по этой ссылке.
-- Corepack и pnpm. После установки Corepack выполните команды ниже.
+- pnpm. На Windows установщик сам ставит Corepack (в Node.js 25+ его нет) и включает pnpm.
+  На macOS и Linux выполните команды ниже.
 - CLI `claude` и `codex`. Они должны быть доступны приложению в окружении запуска.
   Claude Code ставьте нативным установщиком, а не через npm: npm 11.19+ блокирует его
   postinstall, и `claude` не запускается. Codex ставится через npm.
@@ -45,7 +46,8 @@ curl -fsSL https://claude.ai/install.sh | bash
 ```
 
 Откройте новый терминал после установки инструментов. Установщик проверяет наличие
-`git`, `node`, `corepack` и `pnpm` перед скачиванием исходников.
+`git`, `node`, `corepack` и `pnpm` перед скачиванием исходников. Он скачивает только последнюю
+версию `corvis/main`, без истории и без справочной папки `.repos`.
 
 ## Windows
 

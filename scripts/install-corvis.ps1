@@ -78,6 +78,17 @@ try {
         $requiredNodeVersion = (Get-Content -LiteralPath $sourceManifest -Raw | ConvertFrom-Json).engines.node
     }
 
+    # Node 25+ no longer bundles Corepack, so it is installed for the current user when missing.
+    if ((Get-Command npm -ErrorAction SilentlyContinue) -and -not (Get-Command corepack -ErrorAction SilentlyContinue)) {
+        Write-Host 'Installing Corepack...'
+        Invoke-Checked npm @('install', '--global', 'corepack') | Out-Host
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+    }
+    if ((Get-Command corepack -ErrorAction SilentlyContinue) -and -not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
+        $shimDirectory = Split-Path -Parent (Get-Command corepack).Source
+        Invoke-Checked corepack @('enable', '--install-directory', $shimDirectory, 'pnpm') | Out-Host
+    }
+
     $prerequisites = [ordered]@{
         node = "Install Node.js 26 from https://nodejs.org/ (engines.node is $requiredNodeVersion)."
         corepack = 'Install Corepack following https://github.com/nodejs/corepack#installation.'
@@ -126,13 +137,16 @@ try {
             throw 'The installation checkout has local commits. Preserve them before updating.'
         }
         Invoke-Checked git @('-C', $InstallDirectory, 'config', '--local', 'core.longpaths', 'true')
-        Invoke-Checked git @('-c', 'core.longpaths=true', '-C', $InstallDirectory, 'fetch', 'origin', "+refs/heads/${branch}:refs/remotes/origin/$branch")
+        Invoke-Checked git @('-c', 'core.longpaths=true', '-C', $InstallDirectory, 'fetch', '--depth', '1', 'origin', "+refs/heads/${branch}:refs/remotes/origin/$branch")
         Invoke-Checked git @('-C', $InstallDirectory, 'checkout', '-B', $branch)
         Invoke-Checked git @('-C', $InstallDirectory, 'reset', '--hard', "origin/$branch")
     } else {
         Write-Host "Cloning Corvis into $InstallDirectory"
-        Invoke-Checked git @('-c', 'core.longpaths=true', 'clone', '--branch', $branch, '--single-branch', '--', $repositoryUrl, $InstallDirectory)
+        # Only the latest commit, and without .repos (vendored references the app never builds from).
+        Invoke-Checked git @('-c', 'core.longpaths=true', 'clone', '--depth', '1', '--filter=blob:none', '--no-checkout', '--branch', $branch, '--single-branch', '--', $repositoryUrl, $InstallDirectory)
         Invoke-Checked git @('-C', $InstallDirectory, 'config', '--local', 'core.longpaths', 'true')
+        Invoke-Checked git @('-C', $InstallDirectory, 'sparse-checkout', 'set', '--no-cone', '/*', '!/.repos/')
+        Invoke-Checked git @('-c', 'core.longpaths=true', '-C', $InstallDirectory, 'checkout', $branch)
     }
 
     $manifest = Get-Content -LiteralPath (Join-Path $InstallDirectory 'package.json') -Raw | ConvertFrom-Json

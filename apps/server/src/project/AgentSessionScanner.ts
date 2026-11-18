@@ -863,6 +863,8 @@ export const make = Effect.gen(function* () {
   const excludedProjectAncestors = [
     path.join(homeDir, "Downloads"),
     path.join(homeDir, "Documents", "Codex"),
+    // ft3: an elevated PowerShell starts agents in the Windows folder, which is never a project.
+    ...(isWindows ? [hostEnvironment.SystemRoot ?? "C:\\Windows"] : []),
   ];
 
   const isExcludedProjectPath = (candidatePath: string) =>
