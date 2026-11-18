@@ -1787,8 +1787,19 @@ export const layerWithOptions = (
                   if (entry === undefined) return current;
                   const mcpCredentialIdByThread = new Map(entry.mcpCredentialIdByThread);
                   mcpCredentialIdByThread.set(input.threadId, mcpCredentialId);
+                  // ft3: Codex takes the MCP header only on thread start/resume, so a new credential forces a native resume.
+                  const loadedProviderThreadKeyByThread = new Map(
+                    entry.loadedProviderThreadKeyByThread,
+                  );
+                  if (entry.mcpCredentialIdByThread.get(input.threadId) !== mcpCredentialId) {
+                    loadedProviderThreadKeyByThread.delete(input.threadId);
+                  }
                   const updated = new Map(current);
-                  updated.set(key, { ...entry, mcpCredentialIdByThread });
+                  updated.set(key, {
+                    ...entry,
+                    mcpCredentialIdByThread,
+                    loadedProviderThreadKeyByThread,
+                  });
                   return updated;
                 });
               }

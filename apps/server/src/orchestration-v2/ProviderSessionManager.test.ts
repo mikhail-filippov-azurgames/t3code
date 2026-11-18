@@ -452,6 +452,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly mcpConfigs?: Ref.Ref<
       ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
     >;
+    readonly resumedMcpConfigs?: Ref.Ref<
+      ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+    >;
     readonly beforeOpen?: (input: {
       readonly providerSessionId: ProviderSessionId;
       readonly initialProviderItemIdentityVersion?: 2;
@@ -576,7 +579,23 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             Ref.update(state, (current) => ({
               ...current,
               resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            })).pipe(
+              Effect.andThen(
+                Effect.suspend(() => {
+                  const resumedMcpConfigs = options.resumedMcpConfigs;
+                  const threadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
+                  if (resumedMcpConfigs === undefined || threadId === null) return Effect.void;
+                  return mcpSessions
+                    .read(threadId)
+                    .pipe(
+                      Effect.flatMap((config) =>
+                        Ref.update(resumedMcpConfigs, (configs) => [...configs, config]),
+                      ),
+                    );
+                }),
+              ),
+              Effect.as(threadInput.providerThread),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
@@ -624,6 +643,9 @@ function layerTest(input: {
   readonly capabilities?: OrchestrationV2ProviderCapabilities;
   readonly extensionStatuses?: OrchestrationV2ProviderSession["extensionStatuses"];
   readonly mcpConfigs?: Ref.Ref<
+    ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+  >;
+  readonly resumedMcpConfigs?: Ref.Ref<
     ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
   >;
   readonly beforeOpen?: (input: {
@@ -678,6 +700,9 @@ function layerTest(input: {
         ? {}
         : { extensionStatuses: input.extensionStatuses }),
       ...(input.mcpConfigs === undefined ? {} : { mcpConfigs: input.mcpConfigs }),
+      ...(input.resumedMcpConfigs === undefined
+        ? {}
+        : { resumedMcpConfigs: input.resumedMcpConfigs }),
       ...(input.beforeOpen === undefined ? {} : { beforeOpen: input.beforeOpen }),
       ...(input.hasPendingBackgroundWork === undefined
         ? {}
@@ -704,9 +729,12 @@ function layerTest(input: {
       Effect.flatMap((adapter) =>
         input.secondInstanceId === undefined
           ? Effect.succeed([adapter])
-          : makeProviderAdapter(input.state, { instanceId: input.secondInstanceId }).pipe(
-              Effect.map((second) => [adapter, second]),
-            ),
+          : makeProviderAdapter(input.state, {
+              instanceId: input.secondInstanceId,
+              ...(input.resumedMcpConfigs === undefined
+                ? {}
+                : { resumedMcpConfigs: input.resumedMcpConfigs }),
+            }).pipe(Effect.map((second) => [adapter, second])),
       ),
       Effect.map(ProviderAdapterRegistry.layerFromAdapters),
     ),
@@ -3029,6 +3057,84 @@ it.effect(
         assert.equal(yield* credentialInstance, instanceB);
       }).pipe(
         Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, secondInstanceId: instanceB })),
+      );
+    }),
+);
+
+// regression: a natively loaded thread skipped resume after a reissue and kept the revoked header
+it.effect(
+  "ProviderSessionManagerV2 resumes a loaded native thread with the credential reissued for its instance",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const resumedMcpConfigs = yield* Ref.make<
+        ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+      >([]);
+      const instanceB = ProviderInstanceId.make("codex-second");
+      yield* Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const registry = yield* McpSessionRegistry.McpSessionRegistry;
+        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-reissue-resume");
+        const sessionA = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        const sessionB = idAllocator.derive.providerSession({ providerInstanceId: instanceB });
+        const selectionB = { instanceId: instanceB, model: "gpt-5.4" } satisfies ModelSelection;
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId: sessionA,
+          now,
+          nativeThreadId: "native-reissue-resume",
+        });
+        const runtimeA = yield* manager.open({
+          threadId,
+          providerSessionId: sessionA,
+          modelSelection,
+          runtimePolicy,
+        });
+        const resumeOnA = runtimeA.resumeThread({
+          threadId,
+          providerThread,
+          modelSelection,
+          runtimePolicy,
+        });
+        yield* resumeOnA;
+        yield* manager.open({
+          threadId,
+          providerSessionId: sessionB,
+          modelSelection: selectionB,
+          runtimePolicy,
+        });
+
+        yield* resumeOnA;
+
+        const current = yield* mcpSessions.read(threadId);
+        assert.isDefined(current);
+        const resumed = yield* Ref.get(resumedMcpConfigs);
+        assert.lengthOf(resumed, 2);
+        assert.equal(resumed[1]?.authorizationHeader, current!.authorizationHeader);
+        const token = current!.authorizationHeader.replace(/^Bearer\s+/, "");
+        assert.equal(
+          (yield* registry.resolve(token))?.thread.providerInstanceId,
+          modelSelection.instanceId,
+        );
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            secondInstanceId: instanceB,
+            resumedMcpConfigs,
+          }),
+        ),
       );
     }),
 );
