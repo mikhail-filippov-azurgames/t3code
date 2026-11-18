@@ -208,6 +208,7 @@ base_url = "https://personal.example/v1"
 
 [profiles.fast]
 model_provider = "openai"
+model = "gpt-fixture-fast"
 model_reasoning_effort = "low"
 
 [shell_environment_policy]
@@ -270,7 +271,7 @@ API_KEY = "fixture-codex-env-secret"
     assert.deepStrictEqual(config.projects, { "/work": { trust_level: "trusted" } });
   });
 
-  it("drops model_provider from profiles and secret keys from the shell policy", () => {
+  it("drops model and model_provider from profiles and secret keys from the shell policy", () => {
     assert.deepStrictEqual(config.profiles, { fast: { model_reasoning_effort: "low" } });
     assert.deepStrictEqual(config.shell_environment_policy, {
       inherit: "core",

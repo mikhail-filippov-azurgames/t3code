@@ -157,7 +157,9 @@ export function filterCodexConfig(config: Table): {
     result.profiles = Object.fromEntries(
       Object.entries(config.profiles).map(([name, profile]) => [
         name,
-        isTable(profile) ? pick(profile, (key) => key !== "model_provider") : profile,
+        isTable(profile)
+          ? pick(profile, (key) => key !== "model_provider" && key !== "model")
+          : profile,
       ]),
     );
   }
