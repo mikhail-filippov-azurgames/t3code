@@ -1169,4 +1169,6 @@ ACP RPC subset. `packages/ft3-docs/src/store.ts` использует `writerWor
 
 В репозитории нет сборочных значений `VITE_RELAY_OTLP_*` и `T3CODE_RELAY_CLIENT_OTLP_*`. Даже если они появятся, relay-трассы уходят только при явном `T3CODE_TELEMETRY_ENABLED=true` (сервер, desktop и обычный браузер, где значение фиксируется при сборке); одни credentials не разрешение. Не меняются OTLP-экспорт в приёмник, заданный пользователем, mobile, `infra/relay` и `AgentAwarenessRelay`.
 
+Известное ограничение: включение телеметрии позже через shell profile не работает, `T3CODE_TELEMETRY_ENABLED=true` задаётся в среде запуска сервера или сборки; решение ведущего, не чинится.
+
 Модуль `GitHubStarPrompt.tsx` остаётся в коде без вызовов. Запасной вариант, если проверка неиспользуемых экспортов начнёт на него ругаться: начальное значение `shownThisSession = true` вместо удаления вызова. При конфликте upstream-sync в этих файлах побеждает upstream, шов применяется заново.
