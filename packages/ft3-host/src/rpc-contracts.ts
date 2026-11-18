@@ -36,6 +36,7 @@ export const ZavodConnectResult = Schema.Struct({
   ...ZavodStatus.fields,
   claudeInstanceId: ProviderInstanceId,
   codexInstanceId: ProviderInstanceId,
+  personalCopy: Schema.optionalKey(Schema.Literals(["copied", "failed"])),
 });
 export type ZavodConnectResult = typeof ZavodConnectResult.Type;
 

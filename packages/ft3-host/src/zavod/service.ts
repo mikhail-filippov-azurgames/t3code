@@ -7,6 +7,7 @@ import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -22,6 +23,7 @@ import {
   copyPersonalSettings,
   ZavodPersonalCopyError,
   type PersonalCopyReport,
+  type PersonalFamily,
   type PersonalCopySource,
 } from "./personalCopy.ts";
 
@@ -131,8 +133,9 @@ const make = Effect.gen(function* () {
   });
   const detection = () => personalContext().pipe(Effect.flatMap(detectWith));
 
-  const copyPersonal = Effect.fn("ZavodService.copyPersonal")(function* (input: {
+  const copyFamilies = Effect.fn("ZavodService.copyFamilies")(function* (input: {
     readonly dryRun: boolean;
+    readonly only?: ReadonlySet<PersonalFamily>;
   }) {
     const context = yield* personalContext();
     const detected = yield* detectWith(context);
@@ -175,7 +178,7 @@ const make = Effect.gen(function* () {
       ["codex", "zavod-codex", codexHome],
     ] as const) {
       const instance = context.current.providerInstances[ProviderInstanceId.make(id)];
-      if (instance === undefined) continue;
+      if (instance === undefined || input.only?.has(family) === false) continue;
       const targetHome = path.join(zavodRoot, id);
       if (configuredHome(instance.config) !== targetHome) {
         return yield* new ZavodPersonalCopyError({ stage: "state" });
@@ -197,17 +200,39 @@ const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
     );
-  }, Instances.connectSemaphore.withPermits(1));
+  });
+  const copyLocked = (input: {
+    readonly dryRun: boolean;
+    readonly only?: ReadonlySet<PersonalFamily>;
+  }) => copyFamilies(input).pipe(Instances.connectSemaphore.withPermits(1));
 
   return ZavodService.of({
-    copyPersonal,
+    copyPersonal: Effect.fn("ZavodService.copyPersonal")(
+      ({ dryRun }: { readonly dryRun: boolean }) => copyLocked({ dryRun }),
+    ),
     detect: Effect.fn("ZavodService.detect")(function* () {
       return toZavodStatus(yield* detection());
     }),
     connect: Effect.fn("ZavodService.connect")(function* () {
-      const detected = yield* detection();
+      const context = yield* personalContext();
+      const detected = yield* detectWith(context);
+      // Only a family whose instance is created now gets the first copy; reconnect never copies.
+      const created = new Set<PersonalFamily>(
+        (["claude", "codex"] as const).filter(
+          (family) =>
+            context.current.providerInstances[ProviderInstanceId.make(`zavod-${family}`)] ===
+            undefined,
+        ),
+      );
       const connected = yield* instances.connect(detected);
-      return { ...toZavodStatus(detected), ...connected };
+      const status = { ...toZavodStatus(detected), ...connected };
+      if (created.size === 0) return status;
+      // The connection is already committed, so a failed copy only changes the reported outcome.
+      const copy = yield* Effect.exit(copyLocked({ dryRun: false, only: created }));
+      return {
+        ...status,
+        personalCopy: Exit.isSuccess(copy) ? ("copied" as const) : ("failed" as const),
+      };
     }),
   });
 });

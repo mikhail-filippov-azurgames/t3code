@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, describe, it } from "@effect/vitest";
+import { ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -797,76 +798,94 @@ describe("personal copy on disk", () => {
   );
 });
 
-describe("ZavodService.copyPersonal", () => {
+describe("ZavodService", () => {
   const layer = ServerSettings.layerTest({}).pipe(
     Layer.provideMerge(ServerConfig.layerTest(".", { prefix: "t3-zavod-copy-service-" })),
     Layer.provideMerge(fsLayer),
   );
 
+  const serviceFixture = Effect.fn("test.zavodServiceFixture")(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const settings = yield* ServerSettings.ServerSettingsService;
+    const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-zavod-copy-home-" });
+    const put = Effect.fn("test.servicePut")(function* (file: string, text: string) {
+      yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+      yield* fs.writeFileString(file, text);
+    });
+    const helper = path.join(
+      home,
+      ".zavod",
+      "bin",
+      path.sep === "\\" ? "zavod-key.exe" : "zavod-key",
+    );
+    yield* put(helper, "fixture helper");
+    yield* put(
+      path.join(home, ".zavod", "desktop", "state.json"),
+      JSON.stringify({ version: 1, base_url: "https://zavod.example:8443" }),
+    );
+    yield* put(path.join(home, ".claude", "CLAUDE.md"), "personal notes");
+    yield* put(path.join(home, ".claude", "skills", "alpha", "SKILL.md"), "alpha");
+    yield* put(path.join(home, ".claude", ".credentials.json"), "fixture-credential-secret");
+    yield* put(
+      path.join(home, ".claude.json"),
+      JSON.stringify({
+        oauthAccount: { emailAddress: "fixture-oauth-secret" },
+        mcpServers: { ok: { command: "node" } },
+      }),
+    );
+    yield* put(path.join(home, ".codex", "AGENTS.md"), "codex notes");
+    yield* put(path.join(home, ".codex", "auth.json"), "fixture-codex-auth-secret");
+
+    const observed: Array<boolean> = [];
+    const watched: FileSystem.FileSystem = {
+      ...fs,
+      readDirectory: (directory, options) =>
+        Instances.connectSemaphore
+          .withPermitsIfAvailable(1)(Effect.void)
+          .pipe(
+            Effect.tap((permit) => Effect.sync(() => observed.push(Option.isNone(permit)))),
+            Effect.andThen(fs.readDirectory(directory, options)),
+          ),
+    };
+    const context = yield* Layer.build(Service.layer.pipe(Layer.provide(Instances.layer))).pipe(
+      Effect.provideService(HostProcess.HomeDirectory, home),
+      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(FileSystem.FileSystem, watched),
+    );
+    return {
+      fs,
+      path,
+      settings,
+      home,
+      put,
+      observed,
+      service: Context.get(context, Service.ZavodService),
+      claudeTarget: path.join(config.stateDir, "zavod", "zavod-claude"),
+      codexTarget: path.join(config.stateDir, "zavod", "zavod-codex"),
+    };
+  });
+
   it.effect(
-    "copies from the resolved personal homes, holds the connect lock and needs Zavod instances",
+    "copyPersonal copies from the resolved personal homes, holds the connect lock and needs Zavod instances",
     () =>
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const config = yield* ServerConfig.ServerConfig;
-        const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-zavod-copy-home-" });
-        const put = Effect.fn("test.servicePut")(function* (file: string, text: string) {
-          yield* fs.makeDirectory(path.dirname(file), { recursive: true });
-          yield* fs.writeFileString(file, text);
-        });
-        const helper = path.join(
-          home,
-          ".zavod",
-          "bin",
-          path.sep === "\\" ? "zavod-key.exe" : "zavod-key",
-        );
-        yield* put(helper, "fixture helper");
-        yield* put(
-          path.join(home, ".zavod", "desktop", "state.json"),
-          JSON.stringify({ version: 1, base_url: "https://zavod.example:8443" }),
-        );
-        yield* put(path.join(home, ".claude", "CLAUDE.md"), "personal notes");
-        yield* put(path.join(home, ".claude", "skills", "alpha", "SKILL.md"), "alpha");
-        yield* put(path.join(home, ".claude", ".credentials.json"), "fixture-credential-secret");
-        yield* put(
-          path.join(home, ".claude.json"),
-          JSON.stringify({
-            oauthAccount: { emailAddress: "fixture-oauth-secret" },
-            mcpServers: { ok: { command: "node" } },
-          }),
-        );
-        yield* put(path.join(home, ".codex", "AGENTS.md"), "codex notes");
-        yield* put(path.join(home, ".codex", "auth.json"), "fixture-codex-auth-secret");
-
-        const observed: Array<boolean> = [];
-        const watched: FileSystem.FileSystem = {
-          ...fs,
-          readDirectory: (directory, options) =>
-            Instances.connectSemaphore
-              .withPermitsIfAvailable(1)(Effect.void)
-              .pipe(
-                Effect.tap((permit) => Effect.sync(() => observed.push(Option.isNone(permit)))),
-                Effect.andThen(fs.readDirectory(directory, options)),
-              ),
-        };
-        const context = yield* Layer.build(Service.layer.pipe(Layer.provide(Instances.layer))).pipe(
-          Effect.provideService(HostProcess.HomeDirectory, home),
-          Effect.provideService(HostProcess.Environment, {}),
-          Effect.provideService(FileSystem.FileSystem, watched),
-        );
-        const service = Context.get(context, Service.ZavodService);
-
-        const early = yield* service.copyPersonal({ dryRun: false }).pipe(Effect.flip);
+        const f = yield* serviceFixture();
+        const early = yield* f.service.copyPersonal({ dryRun: false }).pipe(Effect.flip);
         assert.isTrue(isCopyError(early) && early.stage === "state");
 
-        yield* service.connect();
-        const claudeTarget = path.join(config.stateDir, "zavod", "zavod-claude");
-        const codexTarget = path.join(config.stateDir, "zavod", "zavod-codex");
+        yield* f.service.connect();
+        // Undo the first-connect copy so the explicit one starts from the bare homes.
+        yield* f.fs.remove(f.path.join(f.claudeTarget, "CLAUDE.md"));
+        yield* f.fs.remove(f.path.join(f.claudeTarget, "skills"), { recursive: true });
+        yield* f.fs.remove(f.path.join(f.claudeTarget, ".claude.json"));
+        yield* f.fs.remove(f.path.join(f.codexTarget, "AGENTS.md"));
+        f.observed.length = 0;
 
-        const planned = yield* service.copyPersonal({ dryRun: true });
-        assert.isFalse(yield* fs.exists(path.join(claudeTarget, "CLAUDE.md")));
-        const copied = yield* service.copyPersonal({ dryRun: false });
+        const planned = yield* f.service.copyPersonal({ dryRun: true });
+        assert.isFalse(yield* f.fs.exists(f.path.join(f.claudeTarget, "CLAUDE.md")));
+        const copied = yield* f.service.copyPersonal({ dryRun: false });
         assert.deepStrictEqual(copied, planned);
         assert.deepStrictEqual(
           copied.items.map((item) => `${item.family}:${item.path}:${item.action}`),
@@ -877,21 +896,83 @@ describe("ZavodService.copyPersonal", () => {
             "codex:AGENTS.md:create",
           ],
         );
-        assert.strictEqual(
-          yield* fs.readFileString(path.join(claudeTarget, "CLAUDE.md")),
-          "personal notes",
-        );
         assert.deepStrictEqual(
-          JSON.parse(yield* fs.readFileString(path.join(claudeTarget, ".claude.json"))),
+          JSON.parse(yield* f.fs.readFileString(f.path.join(f.claudeTarget, ".claude.json"))),
           { mcpServers: { ok: { command: "node" } } },
         );
-        assert.strictEqual(
-          yield* fs.readFileString(path.join(codexTarget, "AGENTS.md")),
-          "codex notes",
-        );
-        assert.isFalse(yield* fs.exists(path.join(claudeTarget, ".credentials.json")));
-        assert.isFalse(yield* fs.exists(path.join(codexTarget, "auth.json")));
-        assert.isTrue(observed.length > 0 && observed.every(Boolean));
+        assert.isFalse(yield* f.fs.exists(f.path.join(f.claudeTarget, ".credentials.json")));
+        assert.isFalse(yield* f.fs.exists(f.path.join(f.codexTarget, "auth.json")));
+        assert.isTrue(f.observed.length > 0 && f.observed.every(Boolean));
       }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("the first connect copies personal settings and a reconnect does not", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      const first = yield* f.service.connect();
+      assert.strictEqual(first.personalCopy, "copied");
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.claudeTarget, "CLAUDE.md")),
+        "personal notes",
+      );
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.claudeTarget, "skills/alpha/SKILL.md")),
+        "alpha",
+      );
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.codexTarget, "AGENTS.md")),
+        "codex notes",
+      );
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.claudeTarget, ".credentials.json")));
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.codexTarget, "auth.json")));
+
+      yield* f.put(f.path.join(f.home, ".claude", "CLAUDE.md"), "edited later");
+      const second = yield* f.service.connect();
+      assert.isFalse("personalCopy" in second);
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.claudeTarget, "CLAUDE.md")),
+        "personal notes",
+      );
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("a failed first copy keeps the connection", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      const outside = f.path.join(f.home, "outside");
+      yield* f.put(f.path.join(outside, "keep.md"), "keep");
+      yield* f.fs.makeDirectory(f.claudeTarget, { recursive: true });
+      yield* junction(outside, f.path.join(f.claudeTarget, "skills"));
+
+      const connected = yield* f.service.connect();
+      assert.strictEqual(connected.personalCopy, "failed");
+      const providers = (yield* f.settings.getSettings).providerInstances;
+      assert.isDefined(providers[connected.claudeInstanceId]);
+      assert.isDefined(providers[connected.codexInstanceId]);
+      assert.deepStrictEqual(yield* f.fs.readDirectory(outside, { recursive: true }), ["keep.md"]);
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("only a family whose instance is created gets the first copy", () =>
+    Effect.gen(function* () {
+      const f = yield* serviceFixture();
+      yield* f.settings.updateProviderInstance({
+        operation: "create",
+        instanceId: ProviderInstanceId.make("zavod-claude"),
+        instance: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          displayName: "Claude (Zavod)",
+          enabled: true,
+          config: { homePath: f.claudeTarget },
+        },
+      });
+      const connected = yield* f.service.connect();
+      assert.strictEqual(connected.personalCopy, "copied");
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.claudeTarget, "CLAUDE.md")));
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.codexTarget, "AGENTS.md")),
+        "codex notes",
+      );
+    }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 });

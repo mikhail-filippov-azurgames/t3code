@@ -986,6 +986,7 @@ describe("Zavod RPC", () => {
                 ...detected,
                 claudeInstanceId: "zavod-claude",
                 codexInstanceId: "zavod-codex",
+                personalCopy: "copied",
               });
               expect(JSON.stringify(connected)).not.toContain(f.helperPath);
               expect(JSON.stringify(connected)).not.toContain(f.key);
