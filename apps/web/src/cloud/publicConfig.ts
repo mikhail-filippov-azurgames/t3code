@@ -2,6 +2,7 @@ import {
   clerkFrontendApiHostnameFromPublishableKey,
   relayClerkTokenOptions,
 } from "@t3tools/shared/relayAuth";
+import { isRelayTracingEnabled } from "@t3tools/shared/otelEnvironment";
 import { normalizeSecureRelayUrl } from "@t3tools/shared/relayUrl";
 import * as Schema from "effect/Schema";
 
@@ -63,9 +64,16 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
 
 let desktopRelayTelemetry: boolean | null = null;
 
+function browserRelayTelemetryEnabled(): boolean {
+  return isRelayTracingEnabled({
+    T3CODE_TELEMETRY_ENABLED: import.meta.env.T3CODE_TELEMETRY_ENABLED as string | undefined,
+  });
+}
+
 /** Whether relay spans may be exported now; the desktop host may not know yet at startup. */
 export function relayTelemetryEnabled(): boolean | null {
-  if (typeof window === "undefined" || !window.desktopBridge) return true;
+  // No host to ask in a plain browser: build credentials alone never permit export.
+  if (typeof window === "undefined" || !window.desktopBridge) return browserRelayTelemetryEnabled();
   desktopRelayTelemetry ??= window.desktopBridge.getRelayTelemetryEnabled();
   return desktopRelayTelemetry;
 }
