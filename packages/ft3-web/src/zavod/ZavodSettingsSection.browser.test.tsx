@@ -1,8 +1,13 @@
 import { EnvironmentId } from "@t3tools/contracts";
-import type { ZavodStatus } from "@t3tools/ft3-host/rpc-contracts";
+import {
+  ZavodRpcError,
+  type ZavodCopyPersonalResult,
+  type ZavodStatus,
+} from "@t3tools/ft3-host/rpc-contracts";
+import * as Cause from "effect/Cause";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import { act, render } from "../../../../apps/web/test/render";
 
@@ -18,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   permission: vi.fn(),
   refresh: vi.fn(),
   connect: vi.fn(),
+  copy: vi.fn(),
+  copyCommand: {},
 }));
 
 vi.mock("./state.ts", async () => {
@@ -33,6 +40,10 @@ vi.mock("./state.ts", async () => {
           return mocks.canConnect ? allowed : denied;
         },
       },
+      // Both commands need providers:manage, so one flag drives them.
+      copyPersonal: Object.assign(mocks.copyCommand, {
+        permissionAtom: () => (mocks.canConnect ? allowed : denied),
+      }),
     },
   };
 });
@@ -55,7 +66,10 @@ vi.mock("~/state/query", () => ({
     refresh: mocks.refresh,
   }),
 }));
-vi.mock("~/state/use-atom-command", () => ({ useAtomCommand: () => mocks.connect }));
+vi.mock("~/state/use-atom-command", () => ({
+  useAtomCommand: (command: unknown) =>
+    command === mocks.copyCommand ? mocks.copy : mocks.connect,
+}));
 vi.mock("~/components/settings/settingsLayout", () => ({
   SettingsSection: ({ title, children }: { title: string; children: ReactNode }) => (
     <section aria-label={title}>{children}</section>
@@ -71,6 +85,26 @@ vi.mock("~/components/settings/settingsLayout", () => ({
 import { ZavodSettingsSection } from "./ZavodSettingsSection.tsx";
 
 const environmentId = EnvironmentId.make("selected-environment");
+const connectedInstances = {
+  "zavod-claude": { driver: "claudeAgent" },
+  "zavod-codex": { driver: "codex" },
+} as const;
+const copyPlan: ZavodCopyPersonalResult = {
+  items: [
+    { family: "claude", path: "skills/alpha", action: "create" },
+    { family: "claude", path: "CLAUDE.md", action: "overwrite" },
+    { family: "codex", path: "config.toml", action: "merge" },
+  ],
+  skipped: [{ family: "claude", path: ".claude.json:mcpServers.leaky", reason: "secret" }],
+};
+// Dialog buttons are clicked in code: this project loads no CSS, so the modal layer would cover them.
+const press = (locator: { element(): Element }) =>
+  act(() => (locator.element() as HTMLElement).click());
+const textOf = (locator: { element(): Element }) => () => locator.element().textContent ?? "";
+const copyFailure = (stage: ZavodRpcError["stage"]) => ({
+  _tag: "Failure",
+  cause: Cause.fail(new ZavodRpcError({ operation: "copy", stage })),
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -89,6 +123,7 @@ beforeEach(() => {
     _tag: "Success",
     value: { ...mocks.status, claudeInstanceId: "zavod-claude", codexInstanceId: "zavod-codex" },
   });
+  mocks.copy.mockResolvedValue({ _tag: "Success", value: copyPlan });
 });
 
 describe("Zavod settings", () => {
@@ -249,5 +284,127 @@ describe("Zavod settings", () => {
     await userEvent.click(screen.getByRole("button", { name: "Refresh Zavod status" }));
     expect(mocks.refresh).toHaveBeenCalledOnce();
     expect(screen.container.textContent).not.toContain("private server details");
+  });
+  describe("Copy personal settings", () => {
+    it("is hidden until Zavod is connected and without permission", async () => {
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await expect
+        .element(screen.getByRole("button", { name: "Copy personal settings" }))
+        .not.toBeInTheDocument();
+      mocks.providerInstances = connectedInstances;
+      await screen.rerender(<ZavodSettingsSection environmentId={environmentId} />);
+      await expect
+        .element(screen.getByRole("button", { name: "Copy personal settings" }))
+        .toBeEnabled();
+      mocks.canConnect = false;
+      await screen.rerender(<ZavodSettingsSection environmentId={environmentId} />);
+      await expect.element(screen.getByRole("button")).not.toBeInTheDocument();
+    });
+
+    it("shows the dry run and applies only after confirmation", async () => {
+      mocks.providerInstances = connectedInstances;
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy personal settings" }));
+      expect(mocks.copy).toHaveBeenCalledExactlyOnceWith({
+        environmentId,
+        input: { dryRun: true },
+      });
+      const dialog = page.getByRole("alertdialog");
+      await expect.element(dialog).toBeVisible();
+      await expect.poll(textOf(dialog)).toContain("Claude · skills/alpha");
+      await expect.poll(textOf(dialog)).toContain("Will be replaced (1)");
+      await expect.poll(textOf(dialog)).toContain("Codex · config.toml");
+      await expect
+        .poll(textOf(dialog))
+        .toContain(".claude.json:mcpServers.leaky (contains a secret)");
+
+      await press(page.getByRole("button", { name: "Cancel" }));
+      await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+      expect(mocks.copy).toHaveBeenCalledOnce();
+
+      await userEvent.click(screen.getByRole("button", { name: "Copy personal settings" }));
+      await press(page.getByRole("button", { name: "Copy", exact: true }));
+      await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+      expect(mocks.copy).toHaveBeenCalledTimes(3);
+      expect(mocks.copy).toHaveBeenLastCalledWith({ environmentId, input: { dryRun: false } });
+      await expect.element(screen.getByText("Personal settings copied. 1 skipped.")).toBeVisible();
+    });
+
+    it("has nothing to confirm when the plan is empty", async () => {
+      mocks.providerInstances = connectedInstances;
+      mocks.copy.mockResolvedValue({ _tag: "Success", value: { items: [], skipped: [] } });
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy personal settings" }));
+      await expect.element(screen.getByText("Nothing to copy.")).toBeVisible();
+      await expect.element(page.getByRole("button", { name: "Copy", exact: true })).toBeDisabled();
+    });
+
+    it.each([
+      ["state", "Zavod is not ready. Connect Zavod, then copy personal settings again."],
+      ["limit", "Your personal settings are too large to copy"],
+      ["copy", "Could not check personal settings. Try again."],
+    ] as const)("explains a %s failure of the check", async (stage, text) => {
+      mocks.providerInstances = connectedInstances;
+      mocks.copy.mockResolvedValue(copyFailure(stage));
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy personal settings" }));
+      await expect.poll(textOf(screen.getByRole("alert"))).toContain(text);
+      await expect.element(page.getByRole("alertdialog")).not.toBeInTheDocument();
+      expect(mocks.copy).toHaveBeenCalledOnce();
+    });
+
+    it("explains a failed apply and keeps the button usable", async () => {
+      mocks.providerInstances = connectedInstances;
+      mocks.copy
+        .mockResolvedValueOnce({ _tag: "Success", value: copyPlan })
+        .mockResolvedValueOnce(copyFailure("copy"));
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await userEvent.click(screen.getByRole("button", { name: "Copy personal settings" }));
+      await press(page.getByRole("button", { name: "Copy", exact: true }));
+      await expect
+        .poll(textOf(screen.getByRole("alert")))
+        .toContain("Could not finish copying personal settings.");
+      await expect
+        .element(screen.getByRole("button", { name: "Copy personal settings" }))
+        .toBeEnabled();
+    });
+
+    it("hints at the button when the copy after the first connect failed", async () => {
+      mocks.connect.mockResolvedValue({
+        _tag: "Success",
+        value: {
+          ...mocks.status,
+          claudeInstanceId: "zavod-claude",
+          codexInstanceId: "zavod-codex",
+          personalCopy: "failed",
+        },
+      });
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await userEvent.click(screen.getByRole("button", { name: "Connect Zavod" }));
+      await expect
+        .poll(textOf(screen.getByRole("status")))
+        .toContain("personal settings were not copied");
+      mocks.providerInstances = connectedInstances;
+      await screen.rerender(<ZavodSettingsSection environmentId={environmentId} />);
+      await expect
+        .element(screen.getByRole("button", { name: "Copy personal settings" }))
+        .toBeEnabled();
+    });
+
+    it("stays quiet when the first copy succeeded", async () => {
+      mocks.connect.mockResolvedValue({
+        _tag: "Success",
+        value: {
+          ...mocks.status,
+          claudeInstanceId: "zavod-claude",
+          codexInstanceId: "zavod-codex",
+          personalCopy: "copied",
+        },
+      });
+      await using screen = await render(<ZavodSettingsSection environmentId={environmentId} />);
+      await userEvent.click(screen.getByRole("button", { name: "Connect Zavod" }));
+      await expect.element(screen.getByRole("button", { name: "Connect Zavod" })).toBeEnabled();
+      await expect.element(screen.getByRole("status")).not.toBeInTheDocument();
+    });
   });
 });

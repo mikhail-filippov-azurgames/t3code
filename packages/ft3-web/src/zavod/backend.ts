@@ -21,5 +21,9 @@ export function createZavodEnvironmentAtoms<R, E>(
       label: "environment-data:zavod:connect",
       tag: FT3_ZAVOD_WS_METHODS.zavodConnect,
     }),
+    copyPersonal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:zavod:copyPersonal",
+      tag: FT3_ZAVOD_WS_METHODS.zavodCopyPersonal,
+    }),
   };
 }
