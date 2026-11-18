@@ -47,14 +47,37 @@ describe("usageSourceRows", () => {
     expect(usageSourceRows(undefined)).toEqual([]);
   });
 
-  it("adds the remainder as a shared row only when it has usage", () => {
+  it("hides source rows with zero tokens", () => {
+    const used = {
+      key: "used",
+      fingerprint,
+      instances: [label("claudeZavod", "local", "Zavod")],
+      ...zero,
+      totalTokens: 12,
+    };
+    const idle = {
+      key: "idle",
+      fingerprint: { ...fingerprint, resolvedHomePath: "/idle" },
+      instances: [label("claudeIdle", "local", "Idle")],
+      ...zero,
+      costUsd: 3,
+      records: 2,
+      sessions: 1,
+    };
+    expect(
+      usageSourceRows({ provider: "claude", rows: [used, idle], unattributed: zero }).map(
+        (r) => r.label,
+      ),
+    ).toEqual(["Zavod"]);
+  });
+
+  it("adds the remainder as a shared row only when it has tokens", () => {
     const row = {
       key: "k",
       fingerprint,
       instances: [label("claudeZavod", "local", "Zavod")],
       ...zero,
-      costUsd: 3,
-      records: 2,
+      totalTokens: 7,
     };
     expect(
       usageSourceRows({ provider: "claude", rows: [row], unattributed: zero }).map((r) => r.label),
@@ -63,11 +86,32 @@ describe("usageSourceRows", () => {
       usageSourceRows({
         provider: "claude",
         rows: [row],
-        unattributed: { ...zero, costUsd: 1, records: 1 },
+        unattributed: { ...zero, costUsd: 1, totalTokens: 2 },
       }).map((r) => [r.label, r.costUsd]),
     ).toEqual([
-      ["Zavod", 3],
+      ["Zavod", 0],
       [UNATTRIBUTED_SOURCE_LABEL, 1],
     ]);
+    expect(
+      usageSourceRows({
+        provider: "claude",
+        rows: [row],
+        unattributed: { ...zero, costUsd: 1, records: 1, sessions: 1 },
+      }).map((r) => r.label),
+    ).toEqual(["Zavod"]);
+  });
+
+  it("returns no rows when nothing carried tokens", () => {
+    const row = {
+      key: "k",
+      fingerprint,
+      instances: [label("claudeZavod", "local", "Zavod")],
+      ...zero,
+      costUsd: 3,
+      sessions: 2,
+    };
+    expect(
+      usageSourceRows({ provider: "claude", rows: [row], unattributed: { ...zero, sessions: 1 } }),
+    ).toEqual([]);
   });
 });

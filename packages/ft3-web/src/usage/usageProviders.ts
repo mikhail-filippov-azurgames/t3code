@@ -1,28 +1,19 @@
 import type { UsageProviderKind } from "@t3tools/contracts";
 
-import {
-  PROVIDER_ORDER,
-  providersWithUsage,
-  rankProvidersByMetric,
-} from "~/components/usage/usageProviders";
+import { PROVIDER_ORDER, rankProvidersByMetric } from "~/components/usage/usageProviders";
 
 export { rankProvidersByMetric };
 
-/**
- * A provider whose scan reported a source is configured for this environment,
- * so its column stays put even when the selected window has no events;
- * otherwise every window change reshuffles the page and a provider looks
- * broken rather than idle.
- */
+/** Providers with tokens in the selected window, in display order; zero-token providers are hidden. */
 export function providersForWindow(
   totals: readonly {
     readonly provider: UsageProviderKind;
     readonly costUsd: number;
     readonly totalTokens: number;
   }[],
-  reported: Iterable<UsageProviderKind>,
 ): readonly UsageProviderKind[] {
-  const visible = new Set(providersWithUsage(totals));
-  for (const provider of reported) visible.add(provider);
+  const visible = new Set(
+    totals.filter((entry) => entry.totalTokens > 0).map((entry) => entry.provider),
+  );
   return PROVIDER_ORDER.filter((provider) => visible.has(provider));
 }

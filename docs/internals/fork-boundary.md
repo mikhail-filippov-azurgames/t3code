@@ -811,16 +811,16 @@ archive/delete: upstream-подтверждение без детей и кас�
 Kimi instances run on the upstream `acpRegistry` driver, so the snapshot alone cannot name or price
 them. `packages/ft3-kimi` now owns the Kimi identity (`displayName` "Kimi"), a scan usage reader over
 `<KIMI_CODE_HOME or ~/.kimi-code>/sessions/**/wire.jsonl` `usage.record` lines, and the existing plan
-limits. The usage page keeps a column for every provider whose scan reported a source, so a provider
-with no events in the selected window (Codex after its last turn, OpenCode on a failed 90-day scan)
-stays visible instead of vanishing when the range changes.
+limits. The usage page hides a provider whose merged totals carry zero tokens for the selected window,
+and source rows with zero tokens go hidden with it; a provider still loading stays visible, so the
+window change does not flicker.
 
 | Upstream file                                            | Connection                                                                                                                                       | Reason                                                                           |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
 | `packages/contracts/src/usage.ts`                        | add `"kimi"` to `UsageProviderKind`                                                                                                              | carry Kimi buckets through the usage contract                                    |
 | `apps/server/src/provider/builtInDrivers.ts`             | `AcpRegistryDriver` joins `BUILT_IN_USAGE_DRIVERS` and `BuiltInUsageReadersEnv`                                                                  | run the Kimi scan reader beside the other usage readers                          |
 | `apps/web/src/components/usage/usageProviders.ts`        | add only the `kimi` presentation entry                                                                                                           | the presentation map is exhaustive over the contract                             |
-| `apps/web/src/components/usage/UsagePage.tsx`            | build the active provider set from `providersForWindow` (imported from `@t3tools/ft3-web/usage`) and the summaries' sources                      | a zero-usage or failed provider must not disappear with the selected range       |
+| `apps/web/src/components/usage/UsagePage.tsx`            | build the active provider set from `providersWithUsage` over the merged totals                                                                   | a zero-token provider hides with the selected range; loading providers stay      |
 | `apps/web/src/components/chat/ProviderInstanceIcon.tsx`  | early-return `KimiProviderInstanceIcon` from `@t3tools/ft3-web/kimi` when `isKimiProviderInstance` matches; the Kimi shell and glyph live there  | the driver kind alone is generic ACP                                             |
 | `apps/mobile/src/features/usage/usageProviders.ts`       | add kimi to the ordered kinds, labels and colors                                                                                                 | mobile has no ft3-web dependency                                                 |
 | `packages/ft3-host/src/import/importProviderSettings.ts` | imported kimi instances get `displayName: "Kimi"`                                                                                                | V1 named the provider, the ACP driver does not                                   |

@@ -223,23 +223,25 @@ export function sourceRowLabel(instances: readonly UsageSourceLabel[]): string {
   return [...new Set(names)].join(", ");
 }
 
-/** Rows under a provider; none when no source carries an instance label. */
+/** Rows under a provider; none when no source carries an instance label. Zero-token rows are hidden. */
 export function usageSourceRows(
   breakdown: ProviderSourceBreakdown | undefined,
 ): readonly UsageSourceDisplayRow[] {
   if (breakdown === undefined || breakdown.rows.length === 0) return [];
-  const rows: UsageSourceDisplayRow[] = breakdown.rows.map(({ key, instances, ...totals }) => ({
-    key,
-    label: sourceRowLabel(instances),
-    unattributed: false,
-    costUsd: totals.costUsd,
-    totalTokens: totals.totalTokens,
-    records: totals.records,
-    unpricedRecords: totals.unpricedRecords,
-    sessions: totals.sessions,
-  }));
+  const rows: UsageSourceDisplayRow[] = breakdown.rows
+    .filter(({ totalTokens }) => totalTokens > 0)
+    .map(({ key, instances, ...totals }) => ({
+      key,
+      label: sourceRowLabel(instances),
+      unattributed: false,
+      costUsd: totals.costUsd,
+      totalTokens: totals.totalTokens,
+      records: totals.records,
+      unpricedRecords: totals.unpricedRecords,
+      sessions: totals.sessions,
+    }));
   const rest = breakdown.unattributed;
-  if (rest.records > 0 || rest.sessions > 0 || rest.costUsd !== 0 || rest.totalTokens > 0) {
+  if (rest.totalTokens > 0) {
     rows.push({
       key: "\u0000unattributed",
       label: UNATTRIBUTED_SOURCE_LABEL,
