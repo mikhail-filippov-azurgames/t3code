@@ -583,6 +583,45 @@ const denyReads = (
   };
 };
 
+const failPaths = (
+  fs: FileSystem.FileSystem,
+  broken: ReadonlyArray<{
+    readonly method: "realPath" | "stat" | "lstat";
+    readonly file: string;
+    readonly tag: "PermissionDenied" | "NotFound" | "Unknown";
+    readonly code?: string;
+  }>,
+): FileSystem.FileSystem => {
+  const wrap =
+    <A>(
+      method: "realPath" | "stat" | "lstat",
+      call: (file: string) => Effect.Effect<A, PlatformError.PlatformError>,
+    ) =>
+    (file: string) => {
+      const rule = broken.find((entry) => entry.method === method && entry.file === file);
+      return rule === undefined
+        ? call(file)
+        : Effect.fail(
+            PlatformError.systemError({
+              _tag: rule.tag,
+              module: "FileSystem",
+              method,
+              pathOrDescriptor: file,
+              description: "fixture failure",
+              ...(rule.code === undefined
+                ? {}
+                : { cause: Object.assign(new Error(rule.code), { code: rule.code }) }),
+            }),
+          );
+    };
+  return {
+    ...fs,
+    realPath: wrap("realPath", fs.realPath),
+    stat: wrap("stat", fs.stat),
+    lstat: wrap("lstat", fs.lstat),
+  };
+};
+
 const junction = (target: string, link: string) =>
   Effect.promise(() => NodeFSP.symlink(target, link, "junction"));
 
@@ -871,6 +910,74 @@ describe("personal copy on disk", () => {
           Effect.provideService(FileSystem.FileSystem, denyReads(f.fs, new Set([blocked]))),
           Effect.flip,
         );
+      assert.strictEqual(error.stage, "copy");
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("skips a personal folder whose real path cannot be resolved and keeps copying", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      yield* f.put(f.s("skills/beta/SKILL.md"), "beta");
+      yield* f.put(f.s("skills/gamma/SKILL.md"), "gamma");
+      yield* f.put(f.s("skills/delta/SKILL.md"), "delta");
+      const broken = failPaths(f.fs, [
+        { method: "realPath", file: f.s("skills/alpha"), tag: "Unknown", code: "ELOOP" },
+        { method: "realPath", file: f.s("skills/beta"), tag: "PermissionDenied" },
+        { method: "realPath", file: f.s("skills/gamma"), tag: "NotFound" },
+      ]);
+      const report = yield* f.run(false).pipe(Effect.provideService(FileSystem.FileSystem, broken));
+      assert.includeDeepMembers(
+        [...report.skipped],
+        [
+          { family: "claude", path: "skills/alpha", reason: "link" },
+          { family: "claude", path: "skills/beta", reason: "invalid" },
+          { family: "claude", path: "skills/gamma", reason: "link" },
+        ],
+      );
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/delta/SKILL.md")),
+        "delta",
+      );
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha")));
+      assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("skips a personal entry it may not stat and keeps copying", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      yield* f.put(f.s("skills/beta/SKILL.md"), "beta");
+      const broken = failPaths(f.fs, [
+        { method: "stat", file: f.s("skills/beta"), tag: "PermissionDenied" },
+        { method: "lstat", file: f.s("skills/beta"), tag: "PermissionDenied" },
+        { method: "stat", file: f.s("agents/reviewer.md"), tag: "PermissionDenied" },
+        { method: "lstat", file: f.s("agents/reviewer.md"), tag: "PermissionDenied" },
+      ]);
+      const report = yield* f.run(false).pipe(Effect.provideService(FileSystem.FileSystem, broken));
+      assert.includeDeepMembers(
+        [...report.skipped],
+        [
+          { family: "claude", path: "skills/beta", reason: "invalid" },
+          { family: "claude", path: "agents/reviewer.md", reason: "invalid" },
+        ],
+      );
+      assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("still fails when the Zavod side cannot be inspected", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const broken = failPaths(f.fs, [
+        {
+          method: "lstat",
+          file: f.path.join(f.homes.claudeTarget, "CLAUDE.md"),
+          tag: "PermissionDenied",
+        },
+      ]);
+      const error = yield* f
+        .run(false)
+        .pipe(Effect.provideService(FileSystem.FileSystem, broken), Effect.flip);
       assert.strictEqual(error.stage, "copy");
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );

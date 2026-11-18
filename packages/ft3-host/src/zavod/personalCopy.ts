@@ -321,7 +321,7 @@ const codexConfigContents = (
   );
 
 type Probe =
-  | { readonly kind: "missing" | "broken" | "other" | "dir" }
+  | { readonly kind: "missing" | "broken" | "unreadable" | "other" | "dir" }
   | { readonly kind: "file"; readonly size: number; readonly mode: number };
 
 interface TreeEntry {
@@ -361,6 +361,14 @@ const MAX_LINK_HOPS = 40;
 const UNREADABLE = Symbol("unreadable");
 const NO_BYTES = new Uint8Array();
 
+// A link that loops or points nowhere is a link problem; anything else is not ours to read.
+const sourceSkipReason = (error: PlatformError.PlatformError): "link" | "invalid" => {
+  const code = (error.reason.cause as { readonly code?: unknown } | undefined)?.code;
+  return error.reason._tag === "NotFound" || code === "ELOOP" || code === "ENOTDIR"
+    ? "link"
+    : "invalid";
+};
+
 const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
 
 const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
@@ -392,10 +400,14 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
             ? { kind: "dir" }
             : { kind: "other" },
       ),
-      Effect.catch(() =>
+      Effect.catch((statError) =>
         fs.lstat(file).pipe(
-          Effect.map((): Probe => ({ kind: "broken" })),
-          Effect.catchIf(isNotFound, () => Effect.succeed<Probe>({ kind: "missing" })),
+          Effect.map((): Probe => ({
+            kind: sourceSkipReason(statError) === "link" ? "broken" : "unreadable",
+          })),
+          Effect.catch((error) =>
+            Effect.succeed<Probe>({ kind: isNotFound(error) ? "missing" : "unreadable" }),
+          ),
         ),
       ),
     );
@@ -429,9 +441,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
   for (const source of input.families) {
     const { family } = source;
     const spec = personalCopySpec[family];
-    const sourceReal = yield* fs
-      .realPath(source.sourceHome)
-      .pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
+    const sourceReal = yield* fs.realPath(source.sourceHome).pipe(
+      Effect.catchIf(isNotFound, () => Effect.undefined),
+      Effect.catch((error) => {
+        skipped.push({ family, path: ".", reason: sourceSkipReason(error) });
+        return Effect.undefined;
+      }),
+    );
     if (sourceReal === undefined) continue;
     const targetReal = yield* fs
       .realPath(source.targetHome)
@@ -447,7 +463,7 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
     };
     const usable = (rel: string, found: Probe) => {
       if (found.kind === "broken") skip(rel, "link");
-      else if (found.kind === "other") skip(rel, "invalid");
+      else if (found.kind === "other" || found.kind === "unreadable") skip(rel, "invalid");
       return found.kind === "file" || found.kind === "dir";
     };
     // A link back to an ancestor, or to the home itself, would pull in credentials and history.
@@ -456,7 +472,13 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       rel: string,
       ancestors: ReadonlySet<string>,
     ) {
-      const real = yield* fs.realPath(dir);
+      const real = yield* fs.realPath(dir).pipe(
+        Effect.catch((error) => {
+          skip(rel, sourceSkipReason(error));
+          return Effect.undefined;
+        }),
+      );
+      if (real === undefined) return undefined;
       if (ancestors.has(real) || contains(real, sourceReal)) {
         skip(rel, "link");
         return undefined;
