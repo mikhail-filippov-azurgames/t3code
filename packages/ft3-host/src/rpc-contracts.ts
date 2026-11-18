@@ -46,7 +46,7 @@ export const ZavodCopyPersonalResult = Schema.Struct({
     Schema.Struct({
       family: Schema.Literals(["claude", "codex"]),
       path: Schema.String,
-      action: Schema.Literals(["create", "overwrite", "merge"]),
+      action: Schema.Literals(["create", "overwrite", "merge", "delete"]),
     }),
   ),
   skipped: Schema.Array(

@@ -313,9 +313,7 @@ describe("Zavod settings", () => {
       await expect.element(dialog).toBeVisible();
       await expect.poll(textOf(dialog)).toContain("Claude · skills/alpha");
       await expect.poll(textOf(dialog)).toContain("Will be replaced (1)");
-      await expect
-        .poll(textOf(dialog))
-        .toContain("Replaced items lose any changes made to them inside the Zavod instance.");
+      await expect.poll(textOf(dialog)).toContain("The Zavod instance gets an exact copy");
       await expect.poll(textOf(dialog)).toContain("Codex · config.toml");
       await expect
         .poll(textOf(dialog))

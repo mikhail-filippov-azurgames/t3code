@@ -231,7 +231,7 @@ export class ZavodPersonalCopyError extends Schema.TaggedError<
 export interface PersonalCopyItem {
   readonly family: PersonalFamily;
   readonly path: string;
-  readonly action: "create" | "overwrite" | "merge";
+  readonly action: "create" | "overwrite" | "merge" | "delete";
 }
 
 export interface PersonalCopySkipped {
@@ -342,7 +342,7 @@ interface TreeEntry {
 interface CopyUnit {
   readonly rel: string;
   readonly target: string;
-  readonly type: "File" | "Directory";
+  readonly type: "File" | "Directory" | "Delete";
   readonly mode: number;
   readonly bytes: Uint8Array;
   readonly tree: ReadonlyArray<TreeEntry>;
@@ -599,10 +599,27 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       items.push({ family, path: rel, action });
     });
 
+    // The Zavod home gets an exact copy of each allowlisted entry: missing in the personal home
+    // means removed from the Zavod home too. Only an element that cannot be read is left alone.
     for (const name of homeUsable ? spec.entries : []) {
       const entry = path.join(source.sourceHome, name);
       const found = yield* probe(entry);
-      if (found.kind === "missing" || !usable(name, found)) continue;
+      if (found.kind === "missing") {
+        const target = path.join(source.targetHome, name);
+        if (yield* exists(target)) {
+          plan.units.push({
+            rel: name,
+            target,
+            type: "Delete",
+            mode: 0,
+            bytes: NO_BYTES,
+            tree: [],
+          });
+          items.push({ family, path: name, action: "delete" });
+        }
+        continue;
+      }
+      if (!usable(name, found)) continue;
       // A file where a folder entry belongs (or the reverse) would replace the wrong kind of element.
       if ((found.kind === "file") !== FILE_ENTRIES.has(name)) {
         skip(name, "invalid");
@@ -621,6 +638,14 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       }
       for (const child of children) {
         yield* planUnit(`${name}/${child}`, path.join(entry, child), next);
+      }
+      // What the Zavod folder has and the personal one does not is removed.
+      const zavodChildren = (yield* listDirectory(path.join(source.targetHome, name))) ?? [];
+      for (const child of zavodChildren.filter((child) => !children.includes(child))) {
+        const rel = `${name}/${child}`;
+        const target = path.join(source.targetHome, name, child);
+        plan.units.push({ rel, target, type: "Delete", mode: 0, bytes: NO_BYTES, tree: [] });
+        items.push({ family, path: rel, action: "delete" });
       }
     }
 
@@ -780,6 +805,7 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
           const target = path.join(parent, path.basename(unit.target));
           yield* fs.makeDirectory(parent, { recursive: true });
           yield* fs.remove(target, { recursive: true, force: true });
+          if (unit.type === "Delete") continue;
           if (unit.type === "File") {
             yield* writeFile(target, unit.bytes, unit.mode);
             continue;

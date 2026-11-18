@@ -25,6 +25,7 @@ const ACTION_GROUPS = [
   { action: "create", title: "Will be created" },
   { action: "overwrite", title: "Will be replaced" },
   { action: "merge", title: "Will be merged into the existing settings" },
+  { action: "delete", title: "Will be removed" },
 ] as const;
 const SKIP_REASON = {
   secret: "contains a secret",
@@ -129,9 +130,12 @@ function CopyPlanDialog({
                   label: `${FAMILY_LABEL[item.family]} · ${item.path} (${SKIP_REASON[item.reason]})`,
                 }))}
               />
-              {plan.items.some((item) => item.action === "overwrite") ? (
+              {plan.items.some(
+                (item) => item.action === "overwrite" || item.action === "delete",
+              ) ? (
                 <p className="text-muted-foreground text-xs">
-                  Replaced items lose any changes made to them inside the Zavod instance.
+                  The Zavod instance gets an exact copy: replaced and removed items lose any changes
+                  made to them there.
                 </p>
               ) : null}
             </div>

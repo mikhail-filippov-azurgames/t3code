@@ -637,6 +637,7 @@ describe("personal copy on disk", () => {
       assert.deepStrictEqual(report.items, [
         { family: "claude", path: "CLAUDE.md", action: "create" },
         { family: "claude", path: "skills/alpha", action: "create" },
+        { family: "claude", path: "skills/zavod-only", action: "delete" },
         { family: "claude", path: "agents/reviewer.md", action: "create" },
         { family: "claude", path: "settings.json", action: "merge" },
         { family: "claude", path: ".claude.json", action: "create" },
@@ -662,8 +663,6 @@ describe("personal copy on disk", () => {
         "skills/alpha/SKILL.md",
         "skills/alpha/bin",
         "skills/alpha/bin/run.sh",
-        "skills/zavod-only",
-        "skills/zavod-only/SKILL.md",
       ]);
       assert.deepStrictEqual(yield* f.listing(f.homes.codexTarget), [
         "AGENTS.md",
@@ -684,10 +683,8 @@ describe("personal copy on disk", () => {
         .join("\n");
       for (const marker of leakMarkers) assert.isFalse(everything.includes(marker), marker);
 
-      assert.strictEqual(
-        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/zavod-only/SKILL.md")),
-        "zavod only",
-      );
+      // An exact copy: a skill only the Zavod home had is gone.
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/zavod-only")));
       const settings = JSON.parse(
         yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "settings.json")),
       );
@@ -804,7 +801,8 @@ describe("personal copy on disk", () => {
       const f = yield* copyFixture();
       // Eight copied files plus settings.json, .claude.json and config.toml.
       const exact = { maxFiles: 11, maxBytes: 1_000_000 };
-      assert.strictEqual((yield* f.run(true, exact)).items.length, 10);
+      // The removed Zavod-only skill is reported too, but costs no file.
+      assert.strictEqual((yield* f.run(true, exact)).items.length, 11);
       const tight = { ...exact, maxFiles: 10 };
       for (const dryRun of [true, false]) {
         const error = yield* f.run(dryRun, tight).pipe(Effect.flip);
@@ -1071,7 +1069,7 @@ describe("personal copy on disk", () => {
       f.path.join(f.homes.claudeTarget, ...rest);
     const read = (f: Fixture, ...rest: Array<string>) => f.fs.readFileString(inZavod(f, ...rest));
 
-    it.effect("a repeat replaces a changed skill whole and keeps everything only Zavod has", () =>
+    it.effect("a repeat makes the Zavod home an exact copy of the personal one", () =>
       Effect.gen(function* () {
         const f = yield* copyFixture();
         const first = yield* f.run(false);
@@ -1091,8 +1089,21 @@ describe("personal copy on disk", () => {
         assert.strictEqual(yield* read(f, "skills/alpha/SKILL.md"), "alpha v2");
         assert.isFalse(yield* f.fs.exists(inZavod(f, "skills/alpha/local-only.md")));
         assert.isFalse(yield* f.fs.exists(inZavod(f, "skills/alpha/bin")));
-        assert.strictEqual(yield* read(f, "skills/zavod-only/SKILL.md"), "zavod only");
-        assert.strictEqual(yield* read(f, "agents/zavod-agent.md"), "zavod agent");
+        assert.isFalse(yield* f.fs.exists(inZavod(f, "skills/zavod-only")));
+        assert.isFalse(yield* f.fs.exists(inZavod(f, "agents/zavod-agent.md")));
+        assert.deepStrictEqual(
+          report.items.filter((item) => item.action === "delete").map((item) => item.path),
+          ["agents/zavod-agent.md"],
+        );
+
+        // An entry the personal home no longer has is removed from the Zavod home as a whole.
+        yield* f.fs.remove(f.s("agents"), { recursive: true });
+        const third = yield* f.run(false);
+        assert.deepStrictEqual(
+          third.items.filter((item) => item.action === "delete").map((item) => item.path),
+          ["agents"],
+        );
+        assert.isFalse(yield* f.fs.exists(inZavod(f, "agents")));
       }).pipe(Effect.scoped, Effect.provide(fsLayer)),
     );
 
