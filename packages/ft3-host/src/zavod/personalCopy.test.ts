@@ -1,8 +1,25 @@
+// @effect-diagnostics nodeBuiltinImport:off - Directory junctions need Node's symlink API.
+import * as NodeFSP from "node:fs/promises";
+
+import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
+import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, describe, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { parse, stringify } from "smol-toml";
 
-import { configContents } from "./instances.ts";
+import * as ServerConfig from "../../../../apps/server/src/config.ts";
+import * as ServerSettings from "../../../../apps/server/src/serverSettings.ts";
+import * as Instances from "./instances.ts";
+import * as Service from "./service.ts";
 import {
+  copyPersonalSettings,
   filterClaudeMcpServers,
   filterClaudeSettings,
   filterCodexConfig,
@@ -12,8 +29,11 @@ import {
   mergeClaudeSettings,
   mergeCodexConfig,
   personalCopySpec,
+  ZavodPersonalCopyError,
 } from "./personalCopy.ts";
 
+const configContents = Instances.configContents;
+const isCopyError = Schema.is(ZavodPersonalCopyError);
 const baseUrl = "https://zavod.example/v1";
 const helperPath = "/opt/zavod/zavod-key";
 const secrets = [
@@ -415,4 +435,463 @@ base_url = "https://personal.example/v1"
       }
     }
   });
+});
+
+const fsLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
+const leakMarkers = [
+  "fixture-credential-secret",
+  "fixture-history-secret",
+  "fixture-session-secret",
+  "fixture-oauth-secret",
+  "fixture-codex-auth-secret",
+  "ghp_fixtureMcpToken",
+  "sk-ant-fixture-personal-key",
+  "fixture-helper-secret",
+  "fixture-codex-env-secret",
+];
+
+const copyFixture = Effect.fn("test.personalCopyFixture")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const windows = path.sep === "\\";
+  const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-personal-copy-" });
+  const put = Effect.fn("test.put")(function* (file: string, text: string) {
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+    yield* fs.writeFileString(file, text);
+  });
+  const homes = {
+    claudeSource: path.join(root, "personal-claude"),
+    codexSource: path.join(root, "personal-codex"),
+    claudeJson: path.join(root, "personal-claude.json"),
+    claudeTarget: path.join(root, "zavod", "zavod-claude"),
+    codexTarget: path.join(root, "zavod", "zavod-codex"),
+  };
+  const s = (name: string) => path.join(homes.claudeSource, name);
+  const c = (name: string) => path.join(homes.codexSource, name);
+
+  yield* put(s("CLAUDE.md"), "personal claude notes");
+  yield* put(s("skills/alpha/SKILL.md"), "alpha v1");
+  yield* put(s("skills/alpha/bin/run.sh"), "#!/bin/sh\necho alpha");
+  yield* put(s("agents/reviewer.md"), "reviewer");
+  yield* put(s("settings.json"), JSON.stringify(personalSettings));
+  yield* put(s(".credentials.json"), "fixture-credential-secret");
+  yield* put(s("history.jsonl"), "fixture-history-secret");
+  yield* put(s("sessions/one.jsonl"), "fixture-session-secret");
+  yield* put(s("projects/p/memory.md"), "fixture-session-secret");
+  yield* put(s("cache/blob"), "fixture-session-secret");
+  yield* put(s("plugins/p/index.js"), "fixture-session-secret");
+  yield* put(
+    homes.claudeJson,
+    JSON.stringify({
+      numStartups: 7,
+      oauthAccount: { emailAddress: "fixture-oauth-secret" },
+      projects: { "/work": { history: ["fixture-history-secret"] } },
+      mcpServers: {
+        ok: { command: "node", args: ["server.js"] },
+        leaky: { command: "gh-mcp", env: { GITHUB_TOKEN: "ghp_fixtureMcpToken" } },
+      },
+    }),
+  );
+  yield* put(c("AGENTS.md"), "personal codex notes");
+  yield* put(c("skills/s/SKILL.md"), "codex skill");
+  yield* put(c("prompts/p.md"), "prompt");
+  yield* put(c("hooks.json"), "{}");
+  yield* put(c("auth.json"), "fixture-codex-auth-secret");
+  yield* put(c("history.jsonl"), "fixture-history-secret");
+  yield* put(c("sessions/one.jsonl"), "fixture-session-secret");
+  yield* put(
+    c("config.toml"),
+    [
+      'model_provider = "openai"',
+      'model_reasoning_effort = "high"',
+      "[mcp_servers.ok]",
+      'command = "node"',
+      "[mcp_servers.leaky]",
+      'command = "tool"',
+      "[mcp_servers.leaky.env]",
+      'API_KEY = "fixture-codex-env-secret"',
+    ].join("\n"),
+  );
+  yield* put(
+    path.join(homes.claudeTarget, "settings.json"),
+    configContents(undefined, true, baseUrl, helperPath, windows),
+  );
+  yield* put(path.join(homes.claudeTarget, "skills/zavod-only/SKILL.md"), "zavod only");
+  yield* put(
+    path.join(homes.codexTarget, "config.toml"),
+    configContents(undefined, false, baseUrl, helperPath, windows),
+  );
+
+  const families = [
+    {
+      family: "claude" as const,
+      sourceHome: homes.claudeSource,
+      targetHome: homes.claudeTarget,
+      claudeJson: homes.claudeJson,
+    },
+    { family: "codex" as const, sourceHome: homes.codexSource, targetHome: homes.codexTarget },
+  ];
+  const run = (dryRun: boolean, limits?: { maxFiles: number; maxBytes: number }) =>
+    copyPersonalSettings({
+      families,
+      baseUrl,
+      helperPath,
+      dryRun,
+      ...(limits === undefined ? {} : { limits }),
+    });
+  const listing = Effect.fn("test.listing")(function* (dir: string) {
+    return (yield* fs.readDirectory(dir, { recursive: true }))
+      .map((entry) => entry.replaceAll("\\", "/"))
+      .toSorted();
+  });
+  const snapshot = Effect.fn("test.snapshot")(function* (dir: string) {
+    const entries: Array<[string, string]> = [];
+    for (const entry of yield* listing(dir)) {
+      const info = yield* fs.stat(path.join(dir, entry));
+      const text = info.type === "File" ? yield* fs.readFileString(path.join(dir, entry)) : "";
+      entries.push([entry, text]);
+    }
+    return entries;
+  });
+  return { fs, path, root, homes, put, s, c, run, listing, snapshot };
+});
+
+const junction = (target: string, link: string) =>
+  Effect.promise(() => NodeFSP.symlink(target, link, "junction"));
+
+describe("personal copy on disk", () => {
+  it.effect("copies only allowlisted entries and leaves no credential or secret behind", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const report = yield* f.run(false);
+
+      assert.deepStrictEqual(report.items, [
+        { family: "claude", path: "CLAUDE.md", action: "create" },
+        { family: "claude", path: "skills/alpha", action: "create" },
+        { family: "claude", path: "agents/reviewer.md", action: "create" },
+        { family: "claude", path: "settings.json", action: "merge" },
+        { family: "claude", path: ".claude.json", action: "create" },
+        { family: "codex", path: "AGENTS.md", action: "create" },
+        { family: "codex", path: "skills/s", action: "create" },
+        { family: "codex", path: "prompts/p.md", action: "create" },
+        { family: "codex", path: "hooks.json", action: "create" },
+        { family: "codex", path: "config.toml", action: "merge" },
+      ]);
+      assert.deepStrictEqual(report.skipped, [
+        { family: "claude", path: ".claude.json:mcpServers.leaky", reason: "secret" },
+        { family: "codex", path: "config.toml:mcp_servers.leaky", reason: "secret" },
+      ]);
+
+      assert.deepStrictEqual(yield* f.listing(f.homes.claudeTarget), [
+        ".claude.json",
+        "CLAUDE.md",
+        "agents",
+        "agents/reviewer.md",
+        "settings.json",
+        "skills",
+        "skills/alpha",
+        "skills/alpha/SKILL.md",
+        "skills/alpha/bin",
+        "skills/alpha/bin/run.sh",
+        "skills/zavod-only",
+        "skills/zavod-only/SKILL.md",
+      ]);
+      assert.deepStrictEqual(yield* f.listing(f.homes.codexTarget), [
+        "AGENTS.md",
+        "config.toml",
+        "hooks.json",
+        "prompts",
+        "prompts/p.md",
+        "skills",
+        "skills/s",
+        "skills/s/SKILL.md",
+      ]);
+
+      const everything = [
+        ...(yield* f.snapshot(f.homes.claudeTarget)),
+        ...(yield* f.snapshot(f.homes.codexTarget)),
+      ]
+        .map(([, text]) => text)
+        .join("\n");
+      for (const marker of leakMarkers) assert.isFalse(everything.includes(marker), marker);
+
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/zavod-only/SKILL.md")),
+        "zavod only",
+      );
+      const settings = JSON.parse(
+        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "settings.json")),
+      );
+      assert.strictEqual(settings.theme, "dark");
+      assert.strictEqual(settings.env.ANTHROPIC_BASE_URL, "https://zavod.example");
+      assert.strictEqual(settings.env.EDITOR, "vim");
+      assert.isFalse("model" in settings);
+      assert.deepStrictEqual(
+        JSON.parse(yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, ".claude.json"))),
+        { mcpServers: { ok: { command: "node", args: ["server.js"] } } },
+      );
+      const codex = parse(
+        yield* f.fs.readFileString(f.path.join(f.homes.codexTarget, "config.toml")),
+      );
+      assert.strictEqual(codex.model_provider, "zavod");
+      assert.strictEqual(codex.model_reasoning_effort, "high");
+      assert.deepStrictEqual(codex.mcp_servers, { ok: { command: "node" } });
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("keeps executable bits on skill scripts", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      if (f.path.sep === "\\") return;
+      yield* f.fs.chmod(f.path.join(f.homes.claudeSource, "skills/alpha/bin/run.sh"), 0o755);
+      yield* f.run(false);
+      const info = yield* f.fs.stat(f.path.join(f.homes.claudeTarget, "skills/alpha/bin/run.sh"));
+      assert.strictEqual(info.mode & 0o111, 0o111);
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("a dry run reports the apply plan and writes nothing", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const before = [
+        ...(yield* f.snapshot(f.homes.claudeTarget)),
+        ...(yield* f.snapshot(f.homes.codexTarget)),
+      ];
+      const planned = yield* f.run(true);
+      assert.deepStrictEqual(
+        [...(yield* f.snapshot(f.homes.claudeTarget)), ...(yield* f.snapshot(f.homes.codexTarget))],
+        before,
+      );
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, ".claude.json")));
+      assert.deepStrictEqual(yield* f.run(false), planned);
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("a repeat replaces a skill whole and leaves Zavod-only skills alone", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      yield* f.run(false);
+      yield* f.fs.remove(f.path.join(f.homes.claudeSource, "skills/alpha/bin"), {
+        recursive: true,
+      });
+      yield* f.put(f.s("skills/alpha/SKILL.md"), "alpha v2");
+      yield* f.put(f.s("skills/alpha/notes.md"), "new");
+      yield* f.put(f.path.join(f.homes.claudeTarget, "skills/alpha/stale.md"), "stale");
+
+      const report = yield* f.run(false);
+      assert.deepStrictEqual(
+        report.items.filter((item) => item.family === "claude" && item.path.startsWith("skills")),
+        [{ family: "claude", path: "skills/alpha", action: "overwrite" }],
+      );
+      assert.deepStrictEqual(yield* f.listing(f.path.join(f.homes.claudeTarget, "skills")), [
+        "alpha",
+        "alpha/SKILL.md",
+        "alpha/notes.md",
+        "zavod-only",
+        "zavod-only/SKILL.md",
+      ]);
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
+        "alpha v2",
+      );
+      assert.deepStrictEqual(
+        (yield* f.listing(f.homes.claudeTarget)).filter((entry) => entry.startsWith(".zavod")),
+        [],
+      );
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("follows links as copies and skips cycles, links home and broken links", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      yield* f.put(f.path.join(f.root, "shared-skill/SKILL.md"), "shared");
+      yield* f.put(f.s("skills/loop/SKILL.md"), "loop");
+      yield* junction(f.path.join(f.root, "shared-skill"), f.s("skills/linked"));
+      yield* junction(f.s("skills/loop"), f.s("skills/loop/self"));
+      yield* junction(f.homes.claudeSource, f.s("skills/home"));
+      yield* junction(f.path.join(f.root, "missing"), f.s("skills/broken"));
+
+      const report = yield* f.run(false);
+      assert.deepStrictEqual(
+        report.skipped
+          .filter((entry) => entry.reason === "link")
+          .map((entry) => entry.path)
+          .toSorted(),
+        ["skills/broken", "skills/home", "skills/loop/self"],
+      );
+      const linked = yield* f.fs.lstat(f.path.join(f.homes.claudeTarget, "skills/linked"));
+      assert.strictEqual(linked.type, "Directory");
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/linked/SKILL.md")),
+        "shared",
+      );
+      const everything = (yield* f.snapshot(f.homes.claudeTarget))
+        .map(([, text]) => text)
+        .join("\n");
+      for (const marker of leakMarkers) assert.isFalse(everything.includes(marker), marker);
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("fails over the file or byte limit before writing anything", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const before = yield* f.snapshot(f.homes.claudeTarget);
+      for (const limits of [
+        { maxFiles: 2, maxBytes: 1_000_000 },
+        { maxFiles: 100, maxBytes: 10 },
+      ]) {
+        for (const dryRun of [true, false]) {
+          const error = yield* f.run(dryRun, limits).pipe(Effect.flip);
+          assert.isTrue(isCopyError(error));
+          assert.strictEqual(error.stage, "limit");
+        }
+      }
+      assert.deepStrictEqual(yield* f.snapshot(f.homes.claudeTarget), before);
+      assert.isFalse(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("refuses a personal home that is the Zavod home", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const error = yield* copyPersonalSettings({
+        families: [
+          { family: "codex", sourceHome: f.homes.codexTarget, targetHome: f.homes.codexTarget },
+        ],
+        baseUrl,
+        helperPath,
+        dryRun: false,
+      }).pipe(Effect.flip);
+      assert.strictEqual(error.stage, "state");
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("never writes through a linked folder in the Zavod home", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const outside = f.path.join(f.root, "outside");
+      yield* f.put(f.path.join(outside, "keep.md"), "keep");
+      yield* f.fs.remove(f.path.join(f.homes.claudeTarget, "skills"), { recursive: true });
+      yield* junction(outside, f.path.join(f.homes.claudeTarget, "skills"));
+      const error = yield* f.run(false).pipe(Effect.flip);
+      assert.strictEqual(error.stage, "copy");
+      assert.deepStrictEqual(yield* f.listing(outside), ["keep.md"]);
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
+  it.effect("skips unreadable personal configs instead of failing", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      yield* f.put(f.s("settings.json"), "[1, 2");
+      yield* f.put(f.c("config.toml"), "this is = = not toml");
+      const report = yield* f.run(false);
+      assert.deepStrictEqual(
+        report.skipped.filter((entry) => entry.reason === "invalid"),
+        [
+          { family: "claude", path: "settings.json", reason: "invalid" },
+          { family: "codex", path: "config.toml", reason: "invalid" },
+        ],
+      );
+      assert.isTrue(report.items.some((item) => item.path === "skills/alpha"));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+});
+
+describe("ZavodService.copyPersonal", () => {
+  const layer = ServerSettings.layerTest({}).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(".", { prefix: "t3-zavod-copy-service-" })),
+    Layer.provideMerge(fsLayer),
+  );
+
+  it.effect(
+    "copies from the resolved personal homes, holds the connect lock and needs Zavod instances",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const config = yield* ServerConfig.ServerConfig;
+        const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-zavod-copy-home-" });
+        const put = Effect.fn("test.servicePut")(function* (file: string, text: string) {
+          yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+          yield* fs.writeFileString(file, text);
+        });
+        const helper = path.join(
+          home,
+          ".zavod",
+          "bin",
+          path.sep === "\\" ? "zavod-key.exe" : "zavod-key",
+        );
+        yield* put(helper, "fixture helper");
+        yield* put(
+          path.join(home, ".zavod", "desktop", "state.json"),
+          JSON.stringify({ version: 1, base_url: "https://zavod.example:8443" }),
+        );
+        yield* put(path.join(home, ".claude", "CLAUDE.md"), "personal notes");
+        yield* put(path.join(home, ".claude", "skills", "alpha", "SKILL.md"), "alpha");
+        yield* put(path.join(home, ".claude", ".credentials.json"), "fixture-credential-secret");
+        yield* put(
+          path.join(home, ".claude.json"),
+          JSON.stringify({
+            oauthAccount: { emailAddress: "fixture-oauth-secret" },
+            mcpServers: { ok: { command: "node" } },
+          }),
+        );
+        yield* put(path.join(home, ".codex", "AGENTS.md"), "codex notes");
+        yield* put(path.join(home, ".codex", "auth.json"), "fixture-codex-auth-secret");
+
+        const observed: Array<boolean> = [];
+        const watched: FileSystem.FileSystem = {
+          ...fs,
+          readDirectory: (directory, options) =>
+            Instances.connectSemaphore
+              .withPermitsIfAvailable(1)(Effect.void)
+              .pipe(
+                Effect.tap((permit) => Effect.sync(() => observed.push(Option.isNone(permit)))),
+                Effect.andThen(fs.readDirectory(directory, options)),
+              ),
+        };
+        const context = yield* Layer.build(Service.layer.pipe(Layer.provide(Instances.layer))).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.provideService(HostProcess.Environment, {}),
+          Effect.provideService(FileSystem.FileSystem, watched),
+        );
+        const service = Context.get(context, Service.ZavodService);
+
+        const early = yield* service.copyPersonal({ dryRun: false }).pipe(Effect.flip);
+        assert.isTrue(isCopyError(early) && early.stage === "state");
+
+        yield* service.connect();
+        const claudeTarget = path.join(config.stateDir, "zavod", "zavod-claude");
+        const codexTarget = path.join(config.stateDir, "zavod", "zavod-codex");
+
+        const planned = yield* service.copyPersonal({ dryRun: true });
+        assert.isFalse(yield* fs.exists(path.join(claudeTarget, "CLAUDE.md")));
+        const copied = yield* service.copyPersonal({ dryRun: false });
+        assert.deepStrictEqual(copied, planned);
+        assert.deepStrictEqual(
+          copied.items.map((item) => `${item.family}:${item.path}:${item.action}`),
+          [
+            "claude:CLAUDE.md:create",
+            "claude:skills/alpha:create",
+            "claude:.claude.json:create",
+            "codex:AGENTS.md:create",
+          ],
+        );
+        assert.strictEqual(
+          yield* fs.readFileString(path.join(claudeTarget, "CLAUDE.md")),
+          "personal notes",
+        );
+        assert.deepStrictEqual(
+          JSON.parse(yield* fs.readFileString(path.join(claudeTarget, ".claude.json"))),
+          { mcpServers: { ok: { command: "node" } } },
+        );
+        assert.strictEqual(
+          yield* fs.readFileString(path.join(codexTarget, "AGENTS.md")),
+          "codex notes",
+        );
+        assert.isFalse(yield* fs.exists(path.join(claudeTarget, ".credentials.json")));
+        assert.isFalse(yield* fs.exists(path.join(codexTarget, "auth.json")));
+        assert.isTrue(observed.length > 0 && observed.every(Boolean));
+      }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
 });

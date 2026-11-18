@@ -1,12 +1,23 @@
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { fromLenientJson } from "@t3tools/shared/schemaJson";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
+import { parse, stringify } from "smol-toml";
+
+import { configContents } from "./instances.ts";
+
 export type PersonalFamily = "claude" | "codex";
 
 type Table = Record<string, unknown>;
 
-export type PersonalSkipReason = "secret" | "invalid";
+export type PersonalSkipReason = "secret" | "invalid" | "link";
 
 export interface SkippedMcpServer {
   readonly name: string;
-  readonly reason: PersonalSkipReason;
+  readonly reason: "secret" | "invalid";
 }
 
 export interface FilteredMcpServers {
@@ -197,3 +208,462 @@ export const mergeClaudeMcpServers = (existingClaudeJson: Table, servers: Table)
 
 export const mergeCodexConfig = (existing: Table, personal: Table): Table =>
   mergeTables(existing, personal, ["mcp_servers"]);
+
+export class ZavodPersonalCopyError extends Schema.TaggedError<
+  ZavodPersonalCopyError,
+  { readonly brand: unique symbol }
+>()("ZavodPersonalCopyError", {
+  stage: Schema.Literals(["state", "limit", "copy"]),
+  cause: Schema.optionalKey(Schema.Defect()),
+}) {
+  override get message(): string {
+    return `Zavod personal copy ${this.stage} failed.`;
+  }
+}
+
+export interface PersonalCopyItem {
+  readonly family: PersonalFamily;
+  readonly path: string;
+  readonly action: "create" | "overwrite" | "merge";
+}
+
+export interface PersonalCopySkipped {
+  readonly family: PersonalFamily;
+  readonly path: string;
+  readonly reason: PersonalSkipReason;
+}
+
+export interface PersonalCopyReport {
+  readonly items: ReadonlyArray<PersonalCopyItem>;
+  readonly skipped: ReadonlyArray<PersonalCopySkipped>;
+}
+
+export interface PersonalCopySource {
+  readonly family: PersonalFamily;
+  readonly sourceHome: string;
+  readonly targetHome: string;
+  /** Claude only: the file that holds the user-scope `mcpServers`. */
+  readonly claudeJson?: string;
+}
+
+export interface PersonalCopyLimits {
+  readonly maxFiles: number;
+  readonly maxBytes: number;
+}
+
+export const PERSONAL_COPY_LIMITS: PersonalCopyLimits = {
+  maxFiles: 5000,
+  maxBytes: 64 * 1024 * 1024,
+};
+
+const isCopyError = Schema.is(ZavodPersonalCopyError);
+const decodeJsonTable = Schema.decodeUnknownSync(
+  fromLenientJson(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+const parseJsonTable = (text: string): Table | undefined => {
+  try {
+    return decodeJsonTable(text);
+  } catch {
+    return undefined;
+  }
+};
+
+const parseTomlTable = (text: string): Table | undefined => {
+  try {
+    return parse(text);
+  } catch {
+    return undefined;
+  }
+};
+
+// The Zavod route is laid over the merged text again, so a personal route can never win.
+const claudeSettingsContents = (
+  existingText: string | undefined,
+  personal: Table,
+  baseUrl: string,
+  helperPath: string,
+  windows: boolean,
+): string =>
+  configContents(
+    JSON.stringify(
+      mergeClaudeSettings(
+        existingText === undefined ? {} : decodeJsonTable(existingText),
+        filterClaudeSettings(personal),
+      ),
+    ),
+    true,
+    baseUrl,
+    helperPath,
+    windows,
+  );
+
+const claudeJsonContents = (existingText: string | undefined, servers: Table): string =>
+  `${JSON.stringify(
+    mergeClaudeMcpServers(existingText === undefined ? {} : decodeJsonTable(existingText), servers),
+    null,
+    2,
+  )}\n`;
+
+const codexConfigContents = (
+  existingText: string | undefined,
+  filtered: Table,
+  baseUrl: string,
+  helperPath: string,
+  windows: boolean,
+): string =>
+  configContents(
+    stringify(mergeCodexConfig(existingText === undefined ? {} : parse(existingText), filtered)),
+    false,
+    baseUrl,
+    helperPath,
+    windows,
+  );
+
+type Probe =
+  | { readonly kind: "missing" | "broken" | "other" | "dir" }
+  | { readonly kind: "file"; readonly size: number; readonly mode: number };
+
+interface TreeEntry {
+  readonly sub: string;
+  readonly source: string;
+  readonly type: "File" | "Directory";
+  readonly mode: number;
+}
+
+interface CopyUnit {
+  readonly rel: string;
+  readonly source: string;
+  readonly target: string;
+  readonly type: "File" | "Directory";
+  readonly mode: number;
+  readonly tree: ReadonlyArray<TreeEntry>;
+}
+
+interface ConfigWrite {
+  readonly rel: string;
+  readonly target: string;
+  readonly contents: string;
+}
+
+interface FamilyPlan {
+  readonly targetHome: string;
+  readonly units: Array<CopyUnit>;
+  readonly writes: Array<ConfigWrite>;
+}
+
+interface PersonalCopyPlan extends PersonalCopyReport {
+  readonly families: ReadonlyArray<FamilyPlan>;
+}
+
+const isNotFound = (error: PlatformError.PlatformError) => error.reason._tag === "NotFound";
+
+const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
+  readonly families: ReadonlyArray<PersonalCopySource>;
+  readonly baseUrl: string;
+  readonly helperPath: string;
+  readonly limits: PersonalCopyLimits;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const windows = path.sep === "\\";
+  const budget = { files: 0, bytes: 0 };
+  const items: Array<PersonalCopyItem> = [];
+  const skipped: Array<PersonalCopySkipped> = [];
+  const familyPlans: Array<FamilyPlan> = [];
+
+  const normalize = (value: string) => (windows ? value.toLowerCase() : value);
+  const contains = (outer: string, inner: string) => {
+    const base = normalize(outer);
+    const target = normalize(inner);
+    return target === base || target.startsWith(base.endsWith(path.sep) ? base : base + path.sep);
+  };
+  const probe = (file: string): Effect.Effect<Probe, PlatformError.PlatformError> =>
+    fs.stat(file).pipe(
+      Effect.map((info): Probe =>
+        info.type === "File"
+          ? { kind: "file", size: Number(info.size), mode: info.mode & 0o777 }
+          : info.type === "Directory"
+            ? { kind: "dir" }
+            : { kind: "other" },
+      ),
+      Effect.catch(() =>
+        fs.lstat(file).pipe(
+          Effect.map((): Probe => ({ kind: "broken" })),
+          Effect.catchIf(isNotFound, () => Effect.succeed<Probe>({ kind: "missing" })),
+        ),
+      ),
+    );
+  const exists = (file: string) =>
+    fs.lstat(file).pipe(
+      Effect.as(true),
+      Effect.catchIf(isNotFound, () => Effect.succeed(false)),
+    );
+  const readText = (file: string) =>
+    fs.readFileString(file).pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
+  const count = (size: number) => {
+    budget.files += 1;
+    budget.bytes += size;
+    return budget.files > input.limits.maxFiles || budget.bytes > input.limits.maxBytes
+      ? Effect.fail(new ZavodPersonalCopyError({ stage: "limit" }))
+      : Effect.void;
+  };
+
+  for (const source of input.families) {
+    const { family } = source;
+    const spec = personalCopySpec[family];
+    const sourceReal = yield* fs
+      .realPath(source.sourceHome)
+      .pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
+    if (sourceReal === undefined) continue;
+    const targetReal = yield* fs
+      .realPath(source.targetHome)
+      .pipe(Effect.catchIf(isNotFound, () => Effect.succeed(source.targetHome)));
+    if (normalize(sourceReal) === normalize(targetReal)) {
+      return yield* new ZavodPersonalCopyError({ stage: "state" });
+    }
+    const plan: FamilyPlan = { targetHome: source.targetHome, units: [], writes: [] };
+    familyPlans.push(plan);
+
+    const skip = (rel: string, reason: PersonalSkipReason) => {
+      skipped.push({ family, path: rel, reason });
+    };
+    const usable = (rel: string, found: Probe) => {
+      if (found.kind === "broken") skip(rel, "link");
+      else if (found.kind === "other") skip(rel, "invalid");
+      return found.kind === "file" || found.kind === "dir";
+    };
+    // A link back to an ancestor, or to the home itself, would pull in credentials and history.
+    const descend = Effect.fn("ZavodPersonalCopy.descend")(function* (
+      dir: string,
+      rel: string,
+      ancestors: ReadonlySet<string>,
+    ) {
+      const real = yield* fs.realPath(dir);
+      if (ancestors.has(real) || contains(real, sourceReal)) {
+        skip(rel, "link");
+        return undefined;
+      }
+      return new Set(ancestors).add(real);
+    });
+    const walk = Effect.fn("ZavodPersonalCopy.walk")(function* (
+      dir: string,
+      rel: string,
+      sub: string,
+      ancestors: ReadonlySet<string>,
+      tree: Array<TreeEntry>,
+    ): Effect.fn.Return<
+      void,
+      ZavodPersonalCopyError | PlatformError.PlatformError,
+      FileSystem.FileSystem | Path.Path
+    > {
+      for (const name of (yield* fs.readDirectory(dir)).toSorted()) {
+        const child = path.join(dir, name);
+        const childRel = `${rel}/${name}`;
+        const childSub = sub === "" ? name : `${sub}/${name}`;
+        const found = yield* probe(child);
+        if (found.kind === "missing" || !usable(childRel, found)) continue;
+        if (found.kind === "file") {
+          yield* count(found.size);
+          tree.push({ sub: childSub, source: child, type: "File", mode: found.mode });
+          continue;
+        }
+        const next = yield* descend(child, childRel, ancestors);
+        if (next === undefined) continue;
+        tree.push({ sub: childSub, source: child, type: "Directory", mode: 0o755 });
+        yield* walk(child, childRel, childSub, next, tree);
+      }
+    });
+    const planUnit = Effect.fn("ZavodPersonalCopy.planUnit")(function* (
+      rel: string,
+      file: string,
+      ancestors: ReadonlySet<string>,
+    ) {
+      const found = yield* probe(file);
+      if (found.kind === "missing" || !usable(rel, found)) return;
+      const target = path.join(source.targetHome, ...rel.split("/"));
+      const action = (yield* exists(target)) ? "overwrite" : "create";
+      if (found.kind === "file") {
+        yield* count(found.size);
+        plan.units.push({ rel, source: file, target, type: "File", mode: found.mode, tree: [] });
+      } else {
+        const next = yield* descend(file, rel, ancestors);
+        if (next === undefined) return;
+        const tree: Array<TreeEntry> = [];
+        yield* walk(file, rel, "", next, tree);
+        plan.units.push({ rel, source: file, target, type: "Directory", mode: 0o755, tree });
+      }
+      items.push({ family, path: rel, action });
+    });
+
+    for (const name of spec.entries) {
+      const entry = path.join(source.sourceHome, name);
+      const found = yield* probe(entry);
+      if (found.kind === "missing" || !usable(name, found)) continue;
+      if (found.kind === "file") {
+        yield* planUnit(name, entry, new Set());
+        continue;
+      }
+      const next = yield* descend(entry, name, new Set());
+      if (next === undefined) continue;
+      for (const child of (yield* fs.readDirectory(entry)).toSorted()) {
+        yield* planUnit(`${name}/${child}`, path.join(entry, child), next);
+      }
+    }
+
+    const guarded = <A>(compute: () => A) =>
+      Effect.try({
+        try: compute,
+        catch: (cause) => new ZavodPersonalCopyError({ stage: "copy", cause }),
+      });
+    const addWrite = (rel: string, contents: string, existed: boolean) => {
+      plan.writes.push({ rel, target: path.join(source.targetHome, rel), contents });
+      items.push({ family, path: rel, action: existed ? "merge" : "create" });
+    };
+
+    if (family === "claude") {
+      const claude = personalCopySpec.claude;
+      const personalText = yield* readText(path.join(source.sourceHome, claude.config));
+      const personal = personalText === undefined ? undefined : parseJsonTable(personalText);
+      if (personalText !== undefined && personal === undefined) skip(claude.config, "invalid");
+      if (personal !== undefined) {
+        const existingText = yield* readText(path.join(source.targetHome, claude.config));
+        const contents = yield* guarded(() =>
+          claudeSettingsContents(existingText, personal, input.baseUrl, input.helperPath, windows),
+        );
+        addWrite(claude.config, contents, existingText !== undefined);
+      }
+      const jsonText =
+        source.claudeJson === undefined ? undefined : yield* readText(source.claudeJson);
+      const json = jsonText === undefined ? undefined : parseJsonTable(jsonText);
+      if (jsonText !== undefined && json === undefined) skip(claude.mcpFile, "invalid");
+      if (json !== undefined) {
+        const filtered = filterClaudeMcpServers(json.mcpServers);
+        for (const server of filtered.skipped) {
+          skip(`${claude.mcpFile}:mcpServers.${server.name}`, server.reason);
+        }
+        if (Object.keys(filtered.servers).length > 0) {
+          const existingText = yield* readText(path.join(source.targetHome, claude.mcpFile));
+          const contents = yield* guarded(() => claudeJsonContents(existingText, filtered.servers));
+          addWrite(claude.mcpFile, contents, existingText !== undefined);
+        }
+      }
+    } else {
+      const codex = personalCopySpec.codex;
+      const personalText = yield* readText(path.join(source.sourceHome, codex.config));
+      const personal = personalText === undefined ? undefined : parseTomlTable(personalText);
+      if (personalText !== undefined && personal === undefined) skip(codex.config, "invalid");
+      if (personal !== undefined) {
+        const filtered = filterCodexConfig(personal);
+        for (const server of filtered.skipped) {
+          skip(`${codex.config}:mcp_servers.${server.name}`, server.reason);
+        }
+        const existingText = yield* readText(path.join(source.targetHome, codex.config));
+        const contents = yield* guarded(() =>
+          codexConfigContents(
+            existingText,
+            filtered.config,
+            input.baseUrl,
+            input.helperPath,
+            windows,
+          ),
+        );
+        addWrite(codex.config, contents, existingText !== undefined);
+      }
+    }
+  }
+  return { items, skipped, families: familyPlans } satisfies PersonalCopyPlan;
+});
+
+const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: PersonalCopyPlan) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const windows = path.sep === "\\";
+  const normalize = (value: string) => (windows ? value.toLowerCase() : value);
+  const inside = (root: string, file: string) => {
+    const base = normalize(root);
+    const target = normalize(file);
+    return target === base || target.startsWith(base.endsWith(path.sep) ? base : base + path.sep);
+  };
+
+  for (const family of plan.families) {
+    if (family.units.length === 0 && family.writes.length === 0) continue;
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* fs.makeDirectory(family.targetHome, { recursive: true });
+        const root = yield* fs.realPath(family.targetHome);
+        const guard = Effect.fn("ZavodPersonalCopy.guard")(function* (real: string) {
+          if (!inside(root, real)) return yield* new ZavodPersonalCopyError({ stage: "copy" });
+        });
+        // Staging sits in the Zavod home, outside the copied folders, so a crash leaves no phantom skill.
+        const staging = yield* Effect.acquireRelease(
+          fs.makeTempDirectory({ directory: family.targetHome, prefix: ".zavod-copy-" }),
+          (directory) => fs.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore),
+        );
+        const copyFile = (from: string, to: string, mode: number) =>
+          fs
+            .readFile(from)
+            .pipe(
+              Effect.flatMap((bytes) => fs.writeFile(to, bytes, windows ? undefined : { mode })),
+            );
+
+        for (const [index, unit] of family.units.entries()) {
+          const parent = path.dirname(unit.target);
+          yield* fs.makeDirectory(parent, { recursive: true });
+          yield* guard(yield* fs.realPath(parent));
+          const stage = path.join(staging, String(index));
+          if (unit.type === "File") {
+            yield* copyFile(unit.source, stage, unit.mode);
+          } else {
+            yield* fs.makeDirectory(stage);
+            for (const entry of unit.tree) {
+              const to = path.join(stage, ...entry.sub.split("/"));
+              if (entry.type === "Directory") yield* fs.makeDirectory(to);
+              else yield* copyFile(entry.source, to, entry.mode);
+            }
+          }
+          const current = yield* fs
+            .lstat(unit.target)
+            .pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
+          if (current === undefined || (unit.type === "File" && current.type === "File")) {
+            yield* fs.rename(stage, unit.target);
+            continue;
+          }
+          const old = path.join(staging, `${index}.old`);
+          yield* fs.rename(unit.target, old);
+          yield* fs
+            .rename(stage, unit.target)
+            .pipe(Effect.tapError(() => fs.rename(old, unit.target).pipe(Effect.ignore)));
+          yield* fs.remove(old, { recursive: true, force: true });
+        }
+
+        for (const write of family.writes) {
+          const real = yield* fs
+            .realPath(write.target)
+            .pipe(Effect.catchIf(isNotFound, () => fs.realPath(path.dirname(write.target))));
+          yield* guard(real);
+          yield* writeFileStringAtomically({ filePath: write.target, contents: write.contents });
+        }
+      }),
+    );
+  }
+});
+
+/** Copies allowlisted personal settings into the Zavod homes; a dry run only reports the plan. */
+export const copyPersonalSettings = Effect.fn("ZavodPersonalCopy.copy")(
+  function* (input: {
+    readonly families: ReadonlyArray<PersonalCopySource>;
+    readonly baseUrl: string;
+    readonly helperPath: string;
+    readonly dryRun: boolean;
+    readonly limits?: PersonalCopyLimits;
+  }) {
+    const plan = yield* buildPlan({ ...input, limits: input.limits ?? PERSONAL_COPY_LIMITS });
+    if (!input.dryRun) yield* applyPlan(plan);
+    return { items: plan.items, skipped: plan.skipped } satisfies PersonalCopyReport;
+  },
+  (effect) =>
+    Effect.mapError(effect, (cause) =>
+      isCopyError(cause) ? cause : new ZavodPersonalCopyError({ stage: "copy", cause }),
+    ),
+);

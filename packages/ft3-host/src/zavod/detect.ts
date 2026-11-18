@@ -82,6 +82,27 @@ export function expandHome(value: string, home: string, path: Path.Path): string
   return value;
 }
 
+/** A personal home: the instance's homePath, then the tool's env variable, then `~/<defaultName>`. */
+export function resolvePersonalHome(
+  input: {
+    readonly configured?: string | undefined;
+    readonly environment?: string | undefined;
+    readonly defaultName: string;
+    readonly home: string;
+  },
+  path: Path.Path,
+): string {
+  return path.resolve(
+    expandHome(
+      input.configured?.trim() ||
+        input.environment?.trim() ||
+        path.join(input.home, input.defaultName),
+      input.home,
+      path,
+    ),
+  );
+}
+
 export function helperIsPath(
   value: string,
   home: string,
@@ -170,23 +191,23 @@ export const detectZavod = Effect.fn("Zavod.detect")(function* (
     Effect.map((state) => (state === undefined ? undefined : endpointOrigin(state.base_url))),
     Effect.orElseSucceed(() => undefined),
   );
-  const claudeHome = path.resolve(
-    expandHome(
-      options.claudeHomePath?.trim() ||
-        claudeEnvironment.CLAUDE_CONFIG_DIR?.trim() ||
-        path.join(home, ".claude"),
+  const claudeHome = resolvePersonalHome(
+    {
+      configured: options.claudeHomePath,
+      environment: claudeEnvironment.CLAUDE_CONFIG_DIR,
+      defaultName: ".claude",
       home,
-      path,
-    ),
+    },
+    path,
   );
-  const codexHome = path.resolve(
-    expandHome(
-      options.codexHomePath?.trim() ||
-        codexEnvironment.CODEX_HOME?.trim() ||
-        path.join(home, ".codex"),
+  const codexHome = resolvePersonalHome(
+    {
+      configured: options.codexHomePath,
+      environment: codexEnvironment.CODEX_HOME,
+      defaultName: ".codex",
       home,
-      path,
-    ),
+    },
+    path,
   );
 
   const claude = yield* endpointOrReason(

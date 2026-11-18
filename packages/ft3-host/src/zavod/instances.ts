@@ -63,7 +63,7 @@ const managedIds = {
 };
 
 // RPC layers are built per connection, so all layer instances share this process-wide lock.
-const connectSemaphore = Semaphore.makeUnsafe(1);
+export const connectSemaphore = Semaphore.makeUnsafe(1);
 
 export function configContents(
   text: string | undefined,
