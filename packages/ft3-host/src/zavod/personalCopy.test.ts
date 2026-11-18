@@ -736,40 +736,6 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
-  it.effect("a repeat replaces a skill whole and leaves Zavod-only skills alone", () =>
-    Effect.gen(function* () {
-      const f = yield* copyFixture();
-      yield* f.run(false);
-      yield* f.fs.remove(f.path.join(f.homes.claudeSource, "skills/alpha/bin"), {
-        recursive: true,
-      });
-      yield* f.put(f.s("skills/alpha/SKILL.md"), "alpha v2");
-      yield* f.put(f.s("skills/alpha/notes.md"), "new");
-      yield* f.put(f.path.join(f.homes.claudeTarget, "skills/alpha/stale.md"), "stale");
-
-      const report = yield* f.run(false);
-      assert.deepStrictEqual(
-        report.items.filter((item) => item.family === "claude" && item.path.startsWith("skills")),
-        [{ family: "claude", path: "skills/alpha", action: "overwrite" }],
-      );
-      assert.deepStrictEqual(yield* f.listing(f.path.join(f.homes.claudeTarget, "skills")), [
-        "alpha",
-        "alpha/SKILL.md",
-        "alpha/notes.md",
-        "zavod-only",
-        "zavod-only/SKILL.md",
-      ]);
-      assert.strictEqual(
-        yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
-        "alpha v2",
-      );
-      assert.deepStrictEqual(
-        (yield* f.listing(f.homes.claudeTarget)).filter((entry) => entry.startsWith(".zavod")),
-        [],
-      );
-    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
-  );
-
   it.effect("follows links as copies and skips cycles, links home and broken links", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
@@ -895,53 +861,6 @@ describe("personal copy on disk", () => {
       assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.codexTarget, "AGENTS.md")));
       assert.isTrue(yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "agents/reviewer.md")));
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
-  );
-
-  it.effect(
-    "keeps the existing Zavod folder when the personal folder is only partly readable",
-    () =>
-      Effect.gen(function* () {
-        for (const how of ["folder", "subfolder", "file"] as const) {
-          const f = yield* copyFixture();
-          yield* f.put(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md"), "zavod alpha");
-          yield* f.put(f.s("skills/beta/SKILL.md"), "beta");
-          const guarded =
-            how === "file"
-              ? denyReads(f.fs, new Set([f.s("skills/alpha/bin/run.sh")]))
-              : failPaths(f.fs, [
-                  {
-                    method: "readDirectory",
-                    file: how === "folder" ? f.s("skills/alpha") : f.s("skills/alpha/bin"),
-                    tag: "PermissionDenied",
-                  },
-                ]);
-          const report = yield* f
-            .run(false)
-            .pipe(Effect.provideService(FileSystem.FileSystem, guarded));
-          assert.includeDeepMembers(
-            [...report.skipped],
-            [{ family: "claude", path: "skills/alpha", reason: "invalid" }],
-          );
-          assert.isFalse(
-            report.items.some((item) => item.path === "skills/alpha"),
-            how,
-          );
-          assert.strictEqual(
-            yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/alpha/SKILL.md")),
-            "zavod alpha",
-            how,
-          );
-          assert.isFalse(
-            yield* f.fs.exists(f.path.join(f.homes.claudeTarget, "skills/alpha/bin")),
-            how,
-          );
-          assert.strictEqual(
-            yield* f.fs.readFileString(f.path.join(f.homes.claudeTarget, "skills/beta/SKILL.md")),
-            "beta",
-            how,
-          );
-        }
-      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
   it.effect("still fails when the existing Zavod config cannot be read", () =>
@@ -1142,154 +1061,198 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
-  describe("replacing a Zavod folder", () => {
-    // The folder is moved aside, then the new copy moves in; this fails or stalls that second step.
-    const withInstallStep = (
-      f: {
-        readonly fs: FileSystem.FileSystem;
-        readonly path: Path.Path;
-        readonly homes: { readonly claudeTarget: string };
-      },
-      onInstall: Effect.Effect<void, PlatformError.PlatformError>,
-      onRestore?: Effect.Effect<void, PlatformError.PlatformError>,
-    ): FileSystem.FileSystem => {
-      const skill = f.path.join(f.homes.claudeTarget, "skills", "alpha");
-      return {
-        ...f.fs,
-        rename: (from, to) => {
-          if (to === skill && from.includes(".zavod-copy-") && !from.endsWith(".old")) {
-            return onInstall.pipe(Effect.andThen(f.fs.rename(from, to)));
-          }
-          if (to === skill && from.endsWith(".old") && onRestore !== undefined) {
-            return onRestore.pipe(Effect.andThen(f.fs.rename(from, to)));
-          }
-          return f.fs.rename(from, to);
-        },
-      };
-    };
-    const setup = Effect.fn("test.replaceSetup")(function* () {
-      const f = yield* copyFixture();
-      const skill = f.path.join(f.homes.claudeTarget, "skills", "alpha");
-      yield* f.put(f.path.join(skill, "SKILL.md"), "zavod alpha");
-      yield* f.put(f.path.join(skill, "local-only.md"), "local changes");
-      return { f, skill };
-    });
-    const intact = Effect.fn("test.replaceIntact")(function* (
-      f: { readonly fs: FileSystem.FileSystem; readonly path: Path.Path },
-      skill: string,
-    ) {
-      assert.strictEqual(yield* f.fs.readFileString(f.path.join(skill, "SKILL.md")), "zavod alpha");
-      assert.strictEqual(
-        yield* f.fs.readFileString(f.path.join(skill, "local-only.md")),
-        "local changes",
+  describe("copying over a Zavod home", () => {
+    const zavodSkill = (
+      f: { readonly path: Path.Path; readonly homes: { readonly claudeTarget: string } },
+      ...rest: Array<string>
+    ) => f.path.join(f.homes.claudeTarget, "skills", ...rest);
+    const leftovers = Effect.fn("test.leftovers")(function* (f: {
+      readonly fs: FileSystem.FileSystem;
+      readonly homes: { readonly claudeTarget: string };
+    }) {
+      return (yield* f.fs.readDirectory(f.homes.claudeTarget, { recursive: true })).filter(
+        (entry) => entry.includes(".zavod-write-") || entry.includes(".zavod-copy-"),
       );
     });
-    const failure = (method: string, file: string) =>
-      PlatformError.systemError({
-        _tag: "PermissionDenied",
-        module: "FileSystem",
-        method,
-        pathOrDescriptor: file,
-        description: "fixture failure",
-      });
 
-    it.effect("restores the old folder when the new one cannot be installed", () =>
+    it.effect("a repeat overwrites a changed file and keeps everything only Zavod has", () =>
       Effect.gen(function* () {
-        const { f, skill } = yield* setup();
-        const error = yield* f
-          .run(false)
-          .pipe(
-            Effect.provideService(
-              FileSystem.FileSystem,
-              withInstallStep(f, Effect.fail(failure("rename", skill))),
-            ),
-            Effect.flip,
-          );
-        assert.strictEqual(error.stage, "copy");
-        yield* intact(f, skill);
+        const f = yield* copyFixture();
+        const first = yield* f.run(false);
+        assert.isTrue(
+          first.items.some((item) => item.path === "skills/alpha" && item.action === "create"),
+        );
+        yield* f.put(f.s("skills/alpha/SKILL.md"), "alpha v2");
+        yield* f.put(zavodSkill(f, "alpha", "local-only.md"), "local changes");
+        yield* f.put(zavodSkill(f, "alpha", "bin", "extra.sh"), "extra");
+
+        const report = yield* f.run(false);
+        assert.deepStrictEqual(
+          report.items.filter((item) => item.path === "skills/alpha"),
+          [{ family: "claude", path: "skills/alpha", action: "overwrite" }],
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "SKILL.md")),
+          "alpha v2",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "local-only.md")),
+          "local changes",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "bin", "extra.sh")),
+          "extra",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "zavod-only", "SKILL.md")),
+          "zavod only",
+        );
+        assert.deepStrictEqual(yield* leftovers(f), []);
       }).pipe(Effect.scoped, Effect.provide(fsLayer)),
     );
 
-    it.effect("restores the old folder when the copy is interrupted after moving it aside", () =>
+    it.effect("skips a file where a folder is expected and the reverse, and removes nothing", () =>
       Effect.gen(function* () {
-        const { f, skill } = yield* setup();
-        const reached = yield* Deferred.make<void>();
-        const pending = yield* f
-          .run(false)
-          .pipe(
-            Effect.provideService(
-              FileSystem.FileSystem,
-              withInstallStep(
-                f,
-                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
-              ),
-            ),
-            Effect.forkChild,
-          );
-        yield* Deferred.await(reached);
-        yield* Fiber.interrupt(pending);
-        yield* intact(f, skill);
-        assert.deepStrictEqual(
-          (yield* f.fs.readDirectory(f.homes.claudeTarget)).filter((name) =>
-            name.startsWith(".zavod-copy-"),
-          ),
-          [],
+        const f = yield* copyFixture();
+        yield* f.put(f.s("skills/beta/note"), "personal note");
+        yield* f.put(f.s("skills/gamma/SKILL.md"), "gamma");
+        // Zavod has a folder where the personal side has a file, a file where it has a folder,
+        // and a file where a whole personal skill should go.
+        yield* f.put(zavodSkill(f, "beta", "note", "inside.md"), "zavod inside");
+        yield* f.put(zavodSkill(f, "alpha", "bin"), "zavod file in place of a folder");
+        yield* f.put(zavodSkill(f, "gamma"), "zavod file in place of a skill");
+
+        const report = yield* f.run(false);
+        assert.includeDeepMembers(
+          [...report.skipped],
+          [
+            { family: "claude", path: "skills/beta/note", reason: "invalid" },
+            { family: "claude", path: "skills/alpha/bin", reason: "invalid" },
+            { family: "claude", path: "skills/gamma", reason: "invalid" },
+          ],
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "beta", "note", "inside.md")),
+          "zavod inside",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "bin")),
+          "zavod file in place of a folder",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "gamma")),
+          "zavod file in place of a skill",
+        );
+        // The rest of the skill that held a conflict is still copied.
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "SKILL.md")),
+          "alpha v1",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "zavod-only", "SKILL.md")),
+          "zavod only",
+        );
+        assert.deepStrictEqual(yield* leftovers(f), []);
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+    );
+
+    it.effect("skips a personal skills entry that is a plain file and keeps Zavod skills", () =>
+      Effect.gen(function* () {
+        const f = yield* copyFixture();
+        yield* f.fs.remove(f.s("skills"), { recursive: true });
+        yield* f.put(f.s("skills"), "malformed personal skills container");
+        const report = yield* f.run(false);
+        assert.includeDeepMembers(
+          [...report.skipped],
+          [{ family: "claude", path: "skills", reason: "invalid" }],
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "zavod-only", "SKILL.md")),
+          "zavod only",
         );
       }).pipe(Effect.scoped, Effect.provide(fsLayer)),
     );
 
-    it.effect("restores the old folder when an interruption lands while it is moved aside", () =>
+    it.effect("skips a personal file that disappears while listed and copies the others", () =>
       Effect.gen(function* () {
-        const { f, skill } = yield* setup();
-        const moved = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const checkpointFs: FileSystem.FileSystem = {
+        const f = yield* copyFixture();
+        yield* f.put(zavodSkill(f, "alpha", "SKILL.md"), "zavod alpha");
+        yield* f.put(zavodSkill(f, "alpha", "local-only.md"), "local changes");
+        const racing: FileSystem.FileSystem = {
           ...f.fs,
-          rename: (from, to) =>
+          readDirectory: (dir, options) =>
             f.fs
-              .rename(from, to)
+              .readDirectory(dir, options)
               .pipe(
-                Effect.andThen(
-                  from === skill && to.endsWith(".old")
-                    ? Deferred.succeed(moved, undefined).pipe(
-                        Effect.andThen(Deferred.await(release)),
-                      )
+                Effect.tap(() =>
+                  dir === f.s("skills/alpha")
+                    ? f.fs.remove(f.s("skills/alpha/SKILL.md"))
                     : Effect.void,
                 ),
               ),
         };
-        const pending = yield* f
+        const report = yield* f
           .run(false)
-          .pipe(Effect.provideService(FileSystem.FileSystem, checkpointFs), Effect.forkChild);
-        yield* Deferred.await(moved);
-        const interrupting = yield* Fiber.interrupt(pending).pipe(Effect.forkChild);
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(interrupting);
-        yield* intact(f, skill);
+          .pipe(Effect.provideService(FileSystem.FileSystem, racing));
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "local-only.md")),
+          "local changes",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "SKILL.md")),
+          "zavod alpha",
+        );
+        assert.strictEqual(
+          yield* f.fs.readFileString(zavodSkill(f, "alpha", "bin", "run.sh")),
+          "#!/bin/sh\necho alpha",
+        );
+        assert.isTrue(report.items.some((item) => item.path === "skills/alpha"));
       }).pipe(Effect.scoped, Effect.provide(fsLayer)),
     );
 
-    it.effect("keeps the moved-aside folder when it cannot be put back", () =>
+    it.effect("copies what it can read of a partly readable personal skill", () =>
       Effect.gen(function* () {
-        const { f, skill } = yield* setup();
-        const error = yield* f
-          .run(false)
-          .pipe(
-            Effect.provideService(
-              FileSystem.FileSystem,
-              withInstallStep(
-                f,
-                Effect.fail(failure("rename", skill)),
-                Effect.fail(failure("rename", skill)),
-              ),
+        for (const how of ["folder", "subfolder", "file"] as const) {
+          const f = yield* copyFixture();
+          yield* f.put(zavodSkill(f, "alpha", "SKILL.md"), "zavod alpha");
+          yield* f.put(zavodSkill(f, "alpha", "local-only.md"), "local changes");
+          yield* f.put(f.s("skills/beta/SKILL.md"), "beta");
+          const guarded =
+            how === "file"
+              ? denyReads(f.fs, new Set([f.s("skills/alpha/bin/run.sh")]))
+              : failPaths(f.fs, [
+                  {
+                    method: "readDirectory",
+                    file: how === "folder" ? f.s("skills/alpha") : f.s("skills/alpha/bin"),
+                    tag: "PermissionDenied",
+                  },
+                ]);
+          const report = yield* f
+            .run(false)
+            .pipe(Effect.provideService(FileSystem.FileSystem, guarded));
+          assert.isTrue(
+            report.skipped.some(
+              (entry) => entry.path.startsWith("skills/alpha") && entry.reason === "invalid",
             ),
-            Effect.flip,
+            how,
           );
-        assert.strictEqual(error.stage, "copy");
-        const kept = (yield* f.fs.readDirectory(f.homes.claudeTarget, { recursive: true })).filter(
-          (entry) => entry.replaceAll("\\", "/").endsWith(".old/local-only.md"),
-        );
-        assert.strictEqual(kept.length, 1);
+          assert.strictEqual(
+            yield* f.fs.readFileString(zavodSkill(f, "alpha", "local-only.md")),
+            "local changes",
+            how,
+          );
+          // A folder that cannot be listed leaves the Zavod copy as it is; otherwise the readable files land.
+          assert.strictEqual(
+            yield* f.fs.readFileString(zavodSkill(f, "alpha", "SKILL.md")),
+            how === "folder" ? "zavod alpha" : "alpha v1",
+            how,
+          );
+          assert.strictEqual(
+            yield* f.fs.readFileString(zavodSkill(f, "beta", "SKILL.md")),
+            "beta",
+            how,
+          );
+        }
       }).pipe(Effect.scoped, Effect.provide(fsLayer)),
     );
   });

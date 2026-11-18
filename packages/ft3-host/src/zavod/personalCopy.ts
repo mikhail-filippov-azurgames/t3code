@@ -1,7 +1,6 @@
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
@@ -348,10 +347,6 @@ interface ConfigWrite {
   readonly contents: string;
 }
 
-interface TreeState {
-  complete: boolean;
-}
-
 interface FamilyPlan {
   readonly targetHome: string;
   readonly units: Array<CopyUnit>;
@@ -363,6 +358,11 @@ interface PersonalCopyPlan extends PersonalCopyReport {
 }
 
 const MAX_LINK_HOPS = 40;
+
+type TargetKind = "missing" | "blocked" | "directory" | "file" | "link" | "other";
+
+const isNotDirectory = (error: PlatformError.PlatformError) =>
+  (error.reason.cause as { readonly code?: unknown } | undefined)?.code === "ENOTDIR";
 const UNREADABLE = Symbol("unreadable");
 const BROKEN_LINK = Symbol("broken link");
 const NO_BYTES = new Uint8Array();
@@ -416,11 +416,6 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
           ),
         ),
       ),
-    );
-  const exists = (file: string) =>
-    fs.lstat(file).pipe(
-      Effect.as(true),
-      Effect.catchIf(isNotFound, () => Effect.succeed(false)),
     );
   const readText = (file: string) =>
     fs.readFileString(file).pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
@@ -496,13 +491,10 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       dir: string,
       rel: string,
       ancestors: ReadonlySet<string>,
-      state?: TreeState,
     ) {
       const real = yield* fs.realPath(dir).pipe(
         Effect.catch((error) => {
-          const reason = sourceSkipReason(error);
-          if (reason === "invalid" && state !== undefined) state.complete = false;
-          skip(rel, reason);
+          skip(rel, sourceSkipReason(error));
           return Effect.undefined;
         }),
       );
@@ -519,7 +511,6 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       sub: string,
       ancestors: ReadonlySet<string>,
       tree: Array<TreeEntry>,
-      state: TreeState,
     ): Effect.fn.Return<
       void,
       ZavodPersonalCopyError | PlatformError.PlatformError,
@@ -527,7 +518,6 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
     > {
       const names = yield* listDirectory(dir);
       if (names === undefined) {
-        state.complete = false;
         skip(rel, "invalid");
         return;
       }
@@ -536,13 +526,11 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         const childRel = `${rel}/${name}`;
         const childSub = sub === "" ? name : `${sub}/${name}`;
         const found = yield* probe(child);
-        if (found.kind === "unreadable") state.complete = false;
         if (found.kind === "missing" || !usable(childRel, found)) continue;
         if (found.kind === "file") {
           yield* count(found.size);
           const bytes = yield* readBytes(child);
           if (bytes === undefined) {
-            state.complete = false;
             skip(childRel, "invalid");
             continue;
           }
@@ -550,12 +538,34 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
           tree.push({ sub: childSub, type: "File", mode: found.mode, bytes });
           continue;
         }
-        const next = yield* descend(child, childRel, ancestors, state);
+        const next = yield* descend(child, childRel, ancestors);
         if (next === undefined) continue;
         tree.push({ sub: childSub, type: "Directory", mode: 0o755, bytes: NO_BYTES });
-        yield* walk(child, childRel, childSub, next, tree, state);
+        yield* walk(child, childRel, childSub, next, tree);
       }
     });
+    // Copying lays files over the Zavod home like a file manager: nothing there is removed, so
+    // a file where a folder should go (or the reverse) is skipped rather than replaced.
+    const inspectTarget = (file: string) =>
+      fs.lstat(file).pipe(
+        Effect.map(
+          (info) =>
+            (info.type === "Directory"
+              ? "directory"
+              : info.type === "File"
+                ? "file"
+                : info.type === "SymbolicLink"
+                  ? "link"
+                  : "other") as TargetKind,
+        ),
+        Effect.catch((error): Effect.Effect<TargetKind, PlatformError.PlatformError> =>
+          isNotFound(error)
+            ? Effect.succeed("missing")
+            : isNotDirectory(error)
+              ? Effect.succeed("blocked")
+              : Effect.fail(error),
+        ),
+      );
     const planUnit = Effect.fn("ZavodPersonalCopy.planUnit")(function* (
       rel: string,
       file: string,
@@ -564,8 +574,12 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       const found = yield* probe(file);
       if (found.kind === "missing" || !usable(rel, found)) return;
       const target = path.join(source.targetHome, ...rel.split("/"));
-      const action = (yield* exists(target)) ? "overwrite" : "create";
+      const here = yield* inspectTarget(target);
       if (found.kind === "file") {
+        if (here === "directory" || here === "blocked" || here === "other") {
+          skip(rel, "invalid");
+          return;
+        }
         yield* count(found.size);
         const bytes = yield* readBytes(file);
         if (bytes === undefined) {
@@ -574,27 +588,37 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
         }
         yield* countGrowth(found.size, bytes);
         plan.units.push({ rel, target, type: "File", mode: found.mode, bytes, tree: [] });
-      } else {
-        const next = yield* descend(file, rel, ancestors);
-        if (next === undefined) return;
-        const tree: Array<TreeEntry> = [];
-        const state: TreeState = { complete: true };
-        yield* walk(file, rel, "", next, tree, state);
-        // A tree that could not be read in full would replace a whole Zavod folder with part of it.
-        if (!state.complete) {
-          skip(rel, "invalid");
-          return;
-        }
-        plan.units.push({
-          rel,
-          target,
-          type: "Directory",
-          mode: 0o755,
-          bytes: NO_BYTES,
-          tree,
-        });
+        items.push({ family, path: rel, action: here === "missing" ? "create" : "overwrite" });
+        return;
       }
-      items.push({ family, path: rel, action });
+      if (here === "file" || here === "blocked" || here === "other") {
+        skip(rel, "invalid");
+        return;
+      }
+      const next = yield* descend(file, rel, ancestors);
+      if (next === undefined) return;
+      const walked: Array<TreeEntry> = [];
+      yield* walk(file, rel, "", next, walked);
+      const tree: Array<TreeEntry> = [];
+      const conflicts: Array<string> = [];
+      let overwrites = false;
+      for (const entry of walked) {
+        if (conflicts.some((folder) => entry.sub.startsWith(`${folder}/`))) continue;
+        const there = yield* inspectTarget(path.join(target, ...entry.sub.split("/")));
+        const clash =
+          entry.type === "Directory"
+            ? there === "file" || there === "blocked" || there === "other"
+            : there === "directory" || there === "blocked" || there === "other";
+        if (clash) {
+          if (entry.type === "Directory") conflicts.push(entry.sub);
+          skip(`${rel}/${entry.sub}`, "invalid");
+          continue;
+        }
+        if (entry.type === "File" && (there === "file" || there === "link")) overwrites = true;
+        tree.push(entry);
+      }
+      plan.units.push({ rel, target, type: "Directory", mode: 0o755, bytes: NO_BYTES, tree });
+      items.push({ family, path: rel, action: overwrites ? "overwrite" : "create" });
     });
 
     for (const name of homeUsable ? spec.entries : []) {
@@ -756,72 +780,55 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
         const guard = Effect.fn("ZavodPersonalCopy.guard")(function* (real: string) {
           if (!inside(root, real)) return yield* new ZavodPersonalCopyError({ stage: "copy" });
         });
-        // A moved-aside folder that could not be put back lives in staging, so staging then stays.
-        let retainStaging = false;
-        // Staging sits in the Zavod home, outside the copied folders, so a crash leaves no phantom skill.
-        const staging = yield* Effect.acquireRelease(
-          fs.makeTempDirectory({ directory: family.targetHome, prefix: ".zavod-copy-" }),
-          (directory) =>
-            retainStaging
-              ? Effect.void
-              : fs.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore),
-        );
-        const copyFile = (bytes: Uint8Array, to: string, mode: number) =>
-          fs.writeFile(to, bytes, windows ? undefined : { mode });
+        // The path is resolved and checked first, so even creating a missing folder stays inside the home.
+        const resolveInside = Effect.fn("ZavodPersonalCopy.resolveInside")(function* (
+          target: string,
+        ) {
+          const resolved = yield* resolveWriteTarget(target);
+          yield* guard(resolved);
+          return resolved;
+        });
+        const writeBytes = Effect.fn("ZavodPersonalCopy.writeBytes")(function* (
+          target: string,
+          bytes: Uint8Array,
+          mode: number,
+        ) {
+          const resolved = yield* resolveInside(target);
+          const directory = path.dirname(resolved);
+          yield* fs.makeDirectory(directory, { recursive: true });
+          // The file lands whole or not at all: it is written beside the target and renamed over it.
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const temp = yield* Effect.acquireRelease(
+                fs.makeTempDirectory({ directory, prefix: ".zavod-write-" }),
+                (folder) => fs.remove(folder, { recursive: true, force: true }).pipe(Effect.ignore),
+              );
+              const staged = path.join(temp, "contents.tmp");
+              yield* fs.writeFile(staged, bytes, windows ? undefined : { mode });
+              yield* fs.rename(staged, resolved);
+            }),
+          );
+        });
 
-        for (const [index, unit] of family.units.entries()) {
-          const parent = path.dirname(unit.target);
-          yield* fs.makeDirectory(parent, { recursive: true });
-          yield* guard(yield* fs.realPath(parent));
-          const stage = path.join(staging, String(index));
+        for (const unit of family.units) {
           if (unit.type === "File") {
-            yield* copyFile(unit.bytes, stage, unit.mode);
-          } else {
-            yield* fs.makeDirectory(stage);
-            for (const entry of unit.tree) {
-              const to = path.join(stage, ...entry.sub.split("/"));
-              if (entry.type === "Directory") yield* fs.makeDirectory(to);
-              else yield* copyFile(entry.bytes, to, entry.mode);
-            }
-          }
-          const current = yield* fs
-            .lstat(unit.target)
-            .pipe(Effect.catchIf(isNotFound, () => Effect.undefined));
-          if (current === undefined || (unit.type === "File" && current.type === "File")) {
-            yield* fs.rename(stage, unit.target);
+            yield* writeBytes(unit.target, unit.bytes, unit.mode);
             continue;
           }
-          const old = path.join(staging, `${index}.old`);
-          // Moving aside is the acquire step and the release always runs, so an error, a defect or an
-          // interruption between the two moves puts the old folder back.
-          yield* Effect.acquireUseRelease(
-            fs.rename(unit.target, old),
-            // An interruption that arrived while moving aside is honoured here, before the install.
-            () => Effect.yieldNow.pipe(Effect.andThen(fs.rename(stage, unit.target))),
-            (_, exit) =>
-              Exit.isSuccess(exit)
-                ? fs.remove(old, { recursive: true, force: true }).pipe(Effect.ignore)
-                : Effect.gen(function* () {
-                    // A new copy that landed before the failure stays; only a missing target needs the old one.
-                    const landed = yield* fs.lstat(unit.target).pipe(
-                      Effect.as(true),
-                      Effect.catchIf(isNotFound, () => Effect.succeed(false)),
-                    );
-                    if (landed) yield* fs.remove(old, { recursive: true, force: true });
-                    else yield* fs.rename(old, unit.target);
-                  }).pipe(
-                    Effect.catch(() => {
-                      retainStaging = true;
-                      return Effect.fail(new ZavodPersonalCopyError({ stage: "copy" }));
-                    }),
-                  ),
-          );
+          yield* fs.makeDirectory(yield* resolveInside(unit.target), { recursive: true });
+          for (const entry of unit.tree) {
+            const to = path.join(unit.target, ...entry.sub.split("/"));
+            if (entry.type === "Directory") {
+              yield* fs.makeDirectory(yield* resolveInside(to), { recursive: true });
+            } else {
+              yield* writeBytes(to, entry.bytes, entry.mode);
+            }
+          }
         }
 
         for (const write of family.writes) {
           // Writing to the checked path itself keeps the check and the write on the same file.
-          const resolved = yield* resolveWriteTarget(write.target);
-          yield* guard(resolved);
+          const resolved = yield* resolveInside(write.target);
           yield* writeFileStringAtomically({ filePath: resolved, contents: write.contents });
         }
       }),
