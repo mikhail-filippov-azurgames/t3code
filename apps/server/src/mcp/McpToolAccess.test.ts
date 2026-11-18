@@ -518,27 +518,30 @@ it.effect("acts_as_caller reports a handler's refusal and keeps it when onRefuse
         McpInvocationContext.hiddenFromOutsideClients,
       ),
     );
-    const seen: Array<readonly [unknown, string]> = [];
-    const handlers = McpToolAccess.toLayer(RefusingToolkit, {
-      acts_as_caller: McpToolAccess.actsAsCaller(
-        () => Effect.fail(new OrchestratorMcpFailure({ code: "invalid_request", message: "no" })),
-        {
-          onRefused: (params, error) =>
-            Effect.sync(() => seen.push([params, error.code])).pipe(
-              Effect.andThen(Effect.die("broken")),
-            ),
-        },
-      ),
-    });
-    const { result } = yield* RefusingToolkit.pipe(
-      Effect.flatMap((built) => built.handle("acts_as_caller", {})),
-      Stream.unwrap,
-      Stream.run(Sink.last()),
-      Effect.flatMap(Effect.fromOption),
-      Effect.provide(McpToolAccess.HandlersLayer.layer(handlers)),
-    );
-    expect(result).toMatchObject({ code: "invalid_request" });
-    expect(seen).toEqual([[{}, "invalid_request"]]);
+    for (const breaks of ["dies", "throws"] as const) {
+      const seen: Array<readonly [unknown, string]> = [];
+      const handlers = McpToolAccess.toLayer(RefusingToolkit, {
+        acts_as_caller: McpToolAccess.actsAsCaller(
+          () => Effect.fail(new OrchestratorMcpFailure({ code: "invalid_request", message: "no" })),
+          {
+            onRefused: (params, error) => {
+              seen.push([params, error.code]);
+              if (breaks === "throws") throw new Error("broken");
+              return Effect.die("broken");
+            },
+          },
+        ),
+      });
+      const { result } = yield* RefusingToolkit.pipe(
+        Effect.flatMap((built) => built.handle("acts_as_caller", {})),
+        Stream.unwrap,
+        Stream.run(Sink.last()),
+        Effect.flatMap(Effect.fromOption),
+        Effect.provide(McpToolAccess.HandlersLayer.layer(handlers)),
+      );
+      expect(result).toMatchObject({ code: "invalid_request" });
+      expect(seen).toEqual([[{}, "invalid_request"]]);
+    }
   }).pipe(
     Effect.provideService(McpInvocationContext.McpInvocationContext, supervised),
     Effect.provide(

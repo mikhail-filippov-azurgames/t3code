@@ -173,7 +173,7 @@ export const actsAsCaller = <P, A, E, R, E2 = never, R2 = never>(
             ? checked
             : checked.pipe(
                 Effect.tapError((error) =>
-                  onRefused(params, error).pipe(
+                  Effect.suspend(() => onRefused(params, error)).pipe(
                     Effect.ignoreCause({
                       log: "Warn",
                       message: "An MCP onRefused callback failed",
