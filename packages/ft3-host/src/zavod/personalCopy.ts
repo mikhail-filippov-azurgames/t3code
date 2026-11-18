@@ -642,6 +642,8 @@ const buildPlan = Effect.fn("ZavodPersonalCopy.plan")(function* (input: {
       if (read === UNREADABLE) skip(rel, "invalid");
       else if (read === BROKEN_LINK) skip(rel, "link");
       else {
+        // The whole file is held in memory before the filter drops anything, so it is counted first.
+        yield* charge(0, new TextEncoder().encode(read).length);
         const parsed = parseText(read);
         if (parsed === undefined) skip(rel, "invalid");
         return parsed;

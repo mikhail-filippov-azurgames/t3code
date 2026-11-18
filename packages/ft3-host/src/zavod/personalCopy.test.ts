@@ -1108,6 +1108,40 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect("counts the personal config that is read, including what is filtered away", () =>
+    Effect.gen(function* () {
+      for (const [file, family, text] of [
+        ["settings.json", "claude", JSON.stringify({ theme: "dark", model: "x".repeat(2000) })],
+        ["settings.json", "claude", `[${"x".repeat(2000)}`],
+        [
+          "config.toml",
+          "codex",
+          `model = "${"x".repeat(2000)}"
+`,
+        ],
+      ] as const) {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-personal-copy-config-" });
+        const sourceHome = path.join(root, "personal");
+        const targetHome = path.join(root, "zavod");
+        yield* fs.makeDirectory(sourceHome);
+        yield* fs.writeFileString(path.join(sourceHome, file), text);
+        for (const dryRun of [true, false]) {
+          const error = yield* copyPersonalSettings({
+            families: [{ family, sourceHome, targetHome }],
+            baseUrl,
+            helperPath,
+            dryRun,
+            limits: { maxFiles: 10, maxBytes: 1000 },
+          }).pipe(Effect.flip);
+          assert.strictEqual(error.stage, "limit", file);
+        }
+        assert.isFalse(yield* fs.exists(targetHome), file);
+      }
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("refuses a personal home that is the Zavod home", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
