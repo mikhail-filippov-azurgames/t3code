@@ -1188,8 +1188,6 @@ const make = Effect.gen(function* () {
     const launched: MailMemberLaunched[] = [];
     const launchFailures: MailMemberLaunchFailed[] = [];
     const memberThreads = new Map<string, string>();
-    // Only a member launched by this letter got it in its first prompt.
-    const startedWithLetter = new Set<string>();
     if (sender.kind === "lead") {
       for (const target of targets) {
         const member = target.member;
@@ -1277,14 +1275,39 @@ const make = Effect.gen(function* () {
           launchFailures.push({ memberId: current.memberId, reason: outcome.reason });
           continue;
         }
-        yield* repository.setParticipantThread({
-          memberId: current.memberId,
-          participantThreadId: outcome.threadId,
-          at: yield* nowIso,
-        });
+        // The thread becomes visible to a drain only together with this letter's
+        // delivered row, so a resend never leaves it pending behind the new thread.
+        const memberId = current.memberId;
+        const deliveryId = yield* newId;
+        yield* repository.transaction(
+          Effect.gen(function* () {
+            const recorded = yield* repository.recordDelivery({
+              deliveryId,
+              taskId: task.taskId,
+              letterId: appended.letter.letterId,
+              memberId,
+              recipient: target.recipient,
+              participantThreadId: outcome.threadId,
+              initialState: "delivered",
+              createdAt: now,
+            });
+            if (recorded.participantThreadId === null && recorded.state === "pending") {
+              yield* repository.bindDeliveryThread({
+                deliveryId: recorded.deliveryId,
+                participantThreadId: outcome.threadId,
+                at: now,
+                deliveredAt: now,
+              });
+            }
+            yield* repository.setParticipantThread({
+              memberId,
+              participantThreadId: outcome.threadId,
+              at: now,
+            });
+          }),
+        );
         launched.push({ memberId: current.memberId, participantThreadId: outcome.threadId });
         memberThreads.set(current.memberId, outcome.threadId);
-        startedWithLetter.add(current.memberId);
         if (plannerCardId !== null) {
           yield* planGate
             .bindPlanner({
@@ -1296,71 +1319,26 @@ const make = Effect.gen(function* () {
         }
       }
     }
-    // Recording is idempotent per (letter, recipient), so a replay heals a letter whose deliveries never landed.
-    const recordedDeliveries = yield* Effect.forEach(targets, (target) =>
+    // Recording is idempotent per (letter, recipient), so a replay heals a letter whose
+    // deliveries never landed; a member launched above already has its delivered row.
+    const deliveries = yield* Effect.forEach(targets, (target) =>
       newId.pipe(
         Effect.flatMap((deliveryId) =>
-          repository
-            .recordDelivery({
-              deliveryId,
-              taskId: task.taskId,
-              letterId: appended.letter.letterId,
-              memberId: target.memberId,
-              recipient: target.recipient,
-              participantThreadId:
-                (target.memberId !== null ? memberThreads.get(target.memberId) : undefined) ??
-                target.participantThreadId,
-              initialState:
-                target.memberId !== null && startedWithLetter.has(target.memberId)
-                  ? "delivered"
-                  : "pending",
-              createdAt: now,
-            })
-            .pipe(
-              Effect.flatMap((recorded) => {
-                const memberId = target.memberId;
-                const launched =
-                  memberId !== null && startedWithLetter.has(memberId)
-                    ? memberThreads.get(memberId)
-                    : undefined;
-                if (
-                  memberId === null ||
-                  launched === undefined ||
-                  recorded.participantThreadId !== null ||
-                  recorded.state !== "pending"
-                ) {
-                  return Effect.succeed(recorded);
-                }
-                // A resend after the policy was fixed launches the member, but the
-                // delivery row already exists without a thread: bind it and mark it
-                // delivered in one conditional update, atomically with the member's
-                // thread assignment, so a drain never sees it pending with a thread.
-                return repository
-                  .transaction(
-                    Effect.gen(function* () {
-                      yield* repository.setParticipantThread({
-                        memberId,
-                        participantThreadId: launched,
-                        at: now,
-                      });
-                      return yield* repository.bindDeliveryThread({
-                        deliveryId: recorded.deliveryId,
-                        participantThreadId: launched,
-                        at: now,
-                        deliveredAt: now,
-                      });
-                    }),
-                  )
-                  .pipe(Effect.map((bound) => bound ?? recorded));
-              }),
-            ),
+          repository.recordDelivery({
+            deliveryId,
+            taskId: task.taskId,
+            letterId: appended.letter.letterId,
+            memberId: target.memberId,
+            recipient: target.recipient,
+            participantThreadId:
+              (target.memberId !== null ? memberThreads.get(target.memberId) : undefined) ??
+              target.participantThreadId,
+            initialState: "pending",
+            createdAt: now,
+          }),
         ),
       ),
     );
-    // A member launched by this letter already received it in its first prompt,
-    // so its delivery is born delivered; only a pending delivery with a thread
-    // gets a wake.
-    const deliveries = recordedDeliveries;
     // An agent thread gets a durable wake; the reactor drains it and marks the delivery.
     yield* Effect.forEach(
       deliveries.filter(

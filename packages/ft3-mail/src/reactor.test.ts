@@ -50,6 +50,7 @@ import {
 } from "./mail.testkit.ts";
 import { normalServicePolicyLayer } from "@t3tools/ft3-policies/routing";
 import type { FeatureId } from "@t3tools/ft3-policies/contracts";
+import type { RoutingRoleId } from "@t3tools/ft3-policies/routingPolicy";
 import { layer as mailServiceLayer } from "./service.ts";
 import { MailDeliveryReactor, layer as mailReactorLayer } from "./reactor.ts";
 
@@ -150,9 +151,10 @@ function fixture(
   failParticipantLookup = false,
   failSteer = false,
   projectOverrides: Record<string, Partial<Record<FeatureId, boolean>>> = {},
+  routable?: Array<RoutingRoleId>,
 ) {
   const dispatched: Array<Dispatch> = [];
-  const routing = routingFake({});
+  const routing = routingFake(routable === undefined ? {} : { routable });
   const evidence = policyEvidenceFake();
   const launcher = launcherFake();
   // Faults are injected at the service boundary: the wrapper builds the real
@@ -180,11 +182,13 @@ function fixture(
         return Layer.succeed(MailRepository, {
           ...withFaults,
           recordDelivery: (input) =>
-            withFaults.recordDelivery(input).pipe(
-              Effect.tap(() =>
-                recoverAfterDelivery === null ? Effect.void : recoverAfterDelivery(),
+            withFaults
+              .recordDelivery(input)
+              .pipe(
+                Effect.tap(() =>
+                  recoverAfterDelivery === null ? Effect.void : recoverAfterDelivery(),
+                ),
               ),
-            ),
         });
       },
     ),
@@ -776,6 +780,53 @@ it.effect("keeps a launched member's delivery single when a drain runs mid-send"
     const repository = yield* MailRepository;
     const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
     assert.equal(delivery?.state, "delivered");
+    yield* reactor.recover;
+    assert.equal(harness.dispatched.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps a resent letter single when a drain runs while its member launches", () => {
+  const routable: Array<RoutingRoleId> = [];
+  const harness = fixture(true, false, false, {}, routable);
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const mail = yield* MailService;
+    const reactor = yield* MailDeliveryReactor;
+    const letter = {
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request" as const,
+      body: "Start.",
+      clientRequestId: "request:letter",
+    };
+    const first = yield* mail.sendLetter(letter);
+    assert.deepStrictEqual(
+      first.deliveries.map((delivery) => [delivery.participantThreadId, delivery.state]),
+      [[null, "pending"]],
+    );
+    const member = yield* memberOf(created.task.taskId);
+    const launchedId = ThreadId.make(`thread:participant:${member.memberId}`);
+    yield* harness.emit({
+      ...base(launchedId),
+      type: "thread.created",
+      payload: appThread(launchedId),
+    });
+    // The resend after the routing fix launches the member with this letter; a
+    // drain that sees the member's thread before the old delivery moves on
+    // used to dispatch a second copy.
+    routable.push("implementation");
+    harness.setRecoverAfterDelivery(() => reactor.recover.pipe(Effect.orDie));
+    const resent = yield* mail.sendLetter(letter);
+    harness.setRecoverAfterDelivery(null);
+
+    assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.dispatched.length, 0);
+    assert.deepStrictEqual(
+      resent.deliveries.map((delivery) => [delivery.participantThreadId, delivery.state]),
+      [[launchedId, "delivered"]],
+    );
     yield* reactor.recover;
     assert.equal(harness.dispatched.length, 0);
   }).pipe(Effect.provide(harness.layer));
