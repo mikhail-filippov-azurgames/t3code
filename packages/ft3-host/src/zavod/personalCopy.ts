@@ -1,6 +1,7 @@
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { fromLenientJson } from "@t3tools/shared/schemaJson";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
@@ -755,10 +756,15 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
         const guard = Effect.fn("ZavodPersonalCopy.guard")(function* (real: string) {
           if (!inside(root, real)) return yield* new ZavodPersonalCopyError({ stage: "copy" });
         });
+        // A moved-aside folder that could not be put back lives in staging, so staging then stays.
+        let retainStaging = false;
         // Staging sits in the Zavod home, outside the copied folders, so a crash leaves no phantom skill.
         const staging = yield* Effect.acquireRelease(
           fs.makeTempDirectory({ directory: family.targetHome, prefix: ".zavod-copy-" }),
-          (directory) => fs.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore),
+          (directory) =>
+            retainStaging
+              ? Effect.void
+              : fs.remove(directory, { recursive: true, force: true }).pipe(Effect.ignore),
         );
         const copyFile = (bytes: Uint8Array, to: string, mode: number) =>
           fs.writeFile(to, bytes, windows ? undefined : { mode });
@@ -786,11 +792,30 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
             continue;
           }
           const old = path.join(staging, `${index}.old`);
-          yield* fs.rename(unit.target, old);
-          yield* fs
-            .rename(stage, unit.target)
-            .pipe(Effect.tapError(() => fs.rename(old, unit.target).pipe(Effect.ignore)));
-          yield* fs.remove(old, { recursive: true, force: true });
+          // Moving aside is the acquire step and the release always runs, so an error, a defect or an
+          // interruption between the two moves puts the old folder back.
+          yield* Effect.acquireUseRelease(
+            fs.rename(unit.target, old),
+            // An interruption that arrived while moving aside is honoured here, before the install.
+            () => Effect.yieldNow.pipe(Effect.andThen(fs.rename(stage, unit.target))),
+            (_, exit) =>
+              Exit.isSuccess(exit)
+                ? fs.remove(old, { recursive: true, force: true }).pipe(Effect.ignore)
+                : Effect.gen(function* () {
+                    // A new copy that landed before the failure stays; only a missing target needs the old one.
+                    const landed = yield* fs.lstat(unit.target).pipe(
+                      Effect.as(true),
+                      Effect.catchIf(isNotFound, () => Effect.succeed(false)),
+                    );
+                    if (landed) yield* fs.remove(old, { recursive: true, force: true });
+                    else yield* fs.rename(old, unit.target);
+                  }).pipe(
+                    Effect.catch(() => {
+                      retainStaging = true;
+                      return Effect.fail(new ZavodPersonalCopyError({ stage: "copy" }));
+                    }),
+                  ),
+          );
         }
 
         for (const write of family.writes) {

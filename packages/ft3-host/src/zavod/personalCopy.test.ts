@@ -1142,6 +1142,158 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  describe("replacing a Zavod folder", () => {
+    // The folder is moved aside, then the new copy moves in; this fails or stalls that second step.
+    const withInstallStep = (
+      f: {
+        readonly fs: FileSystem.FileSystem;
+        readonly path: Path.Path;
+        readonly homes: { readonly claudeTarget: string };
+      },
+      onInstall: Effect.Effect<void, PlatformError.PlatformError>,
+      onRestore?: Effect.Effect<void, PlatformError.PlatformError>,
+    ): FileSystem.FileSystem => {
+      const skill = f.path.join(f.homes.claudeTarget, "skills", "alpha");
+      return {
+        ...f.fs,
+        rename: (from, to) => {
+          if (to === skill && from.includes(".zavod-copy-") && !from.endsWith(".old")) {
+            return onInstall.pipe(Effect.andThen(f.fs.rename(from, to)));
+          }
+          if (to === skill && from.endsWith(".old") && onRestore !== undefined) {
+            return onRestore.pipe(Effect.andThen(f.fs.rename(from, to)));
+          }
+          return f.fs.rename(from, to);
+        },
+      };
+    };
+    const setup = Effect.fn("test.replaceSetup")(function* () {
+      const f = yield* copyFixture();
+      const skill = f.path.join(f.homes.claudeTarget, "skills", "alpha");
+      yield* f.put(f.path.join(skill, "SKILL.md"), "zavod alpha");
+      yield* f.put(f.path.join(skill, "local-only.md"), "local changes");
+      return { f, skill };
+    });
+    const intact = Effect.fn("test.replaceIntact")(function* (
+      f: { readonly fs: FileSystem.FileSystem; readonly path: Path.Path },
+      skill: string,
+    ) {
+      assert.strictEqual(yield* f.fs.readFileString(f.path.join(skill, "SKILL.md")), "zavod alpha");
+      assert.strictEqual(
+        yield* f.fs.readFileString(f.path.join(skill, "local-only.md")),
+        "local changes",
+      );
+    });
+    const failure = (method: string, file: string) =>
+      PlatformError.systemError({
+        _tag: "PermissionDenied",
+        module: "FileSystem",
+        method,
+        pathOrDescriptor: file,
+        description: "fixture failure",
+      });
+
+    it.effect("restores the old folder when the new one cannot be installed", () =>
+      Effect.gen(function* () {
+        const { f, skill } = yield* setup();
+        const error = yield* f
+          .run(false)
+          .pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              withInstallStep(f, Effect.fail(failure("rename", skill))),
+            ),
+            Effect.flip,
+          );
+        assert.strictEqual(error.stage, "copy");
+        yield* intact(f, skill);
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+    );
+
+    it.effect("restores the old folder when the copy is interrupted after moving it aside", () =>
+      Effect.gen(function* () {
+        const { f, skill } = yield* setup();
+        const reached = yield* Deferred.make<void>();
+        const pending = yield* f
+          .run(false)
+          .pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              withInstallStep(
+                f,
+                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
+              ),
+            ),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(reached);
+        yield* Fiber.interrupt(pending);
+        yield* intact(f, skill);
+        assert.deepStrictEqual(
+          (yield* f.fs.readDirectory(f.homes.claudeTarget)).filter((name) =>
+            name.startsWith(".zavod-copy-"),
+          ),
+          [],
+        );
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+    );
+
+    it.effect("restores the old folder when an interruption lands while it is moved aside", () =>
+      Effect.gen(function* () {
+        const { f, skill } = yield* setup();
+        const moved = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const checkpointFs: FileSystem.FileSystem = {
+          ...f.fs,
+          rename: (from, to) =>
+            f.fs
+              .rename(from, to)
+              .pipe(
+                Effect.andThen(
+                  from === skill && to.endsWith(".old")
+                    ? Deferred.succeed(moved, undefined).pipe(
+                        Effect.andThen(Deferred.await(release)),
+                      )
+                    : Effect.void,
+                ),
+              ),
+        };
+        const pending = yield* f
+          .run(false)
+          .pipe(Effect.provideService(FileSystem.FileSystem, checkpointFs), Effect.forkChild);
+        yield* Deferred.await(moved);
+        const interrupting = yield* Fiber.interrupt(pending).pipe(Effect.forkChild);
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(interrupting);
+        yield* intact(f, skill);
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+    );
+
+    it.effect("keeps the moved-aside folder when it cannot be put back", () =>
+      Effect.gen(function* () {
+        const { f, skill } = yield* setup();
+        const error = yield* f
+          .run(false)
+          .pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              withInstallStep(
+                f,
+                Effect.fail(failure("rename", skill)),
+                Effect.fail(failure("rename", skill)),
+              ),
+            ),
+            Effect.flip,
+          );
+        assert.strictEqual(error.stage, "copy");
+        const kept = (yield* f.fs.readDirectory(f.homes.claudeTarget, { recursive: true })).filter(
+          (entry) => entry.replaceAll("\\", "/").endsWith(".old/local-only.md"),
+        );
+        assert.strictEqual(kept.length, 1);
+      }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+    );
+  });
+
   it.effect("refuses a personal home that is the Zavod home", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
