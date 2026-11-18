@@ -28,6 +28,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { readableEnvironmentLabel } from "@t3tools/ft3-web/onboarding";
+import { ZavodWelcomeRow } from "@t3tools/ft3-web/zavod";
 import { Link, useBlocker } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import {
@@ -636,6 +637,10 @@ function AgentsSection({
           {note}
         </p>
       ))}
+      <ZavodWelcomeRow
+        environmentId={environmentId}
+        onConnected={() => void refreshProviders({ environmentId, input: {} })}
+      />
       <Collapsible open={showMore} onOpenChange={setMoreOpen}>
         <CollapsibleTrigger className="group flex min-h-10 w-full items-center gap-3 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset">
           <RowIcon>

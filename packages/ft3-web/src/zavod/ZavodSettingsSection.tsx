@@ -12,6 +12,7 @@ import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope } from "~/state/session";
 import { zavodEnvironment } from "./state.ts";
+import { zavodStatusDescription } from "./statusDescription.ts";
 import { ZavodActions } from "./ZavodActions.tsx";
 
 export function ZavodSettingsSection({ environmentId }: { readonly environmentId: EnvironmentId }) {
@@ -33,19 +34,11 @@ function ZavodSettings({ environmentId }: { readonly environmentId: EnvironmentI
 
   if (status?.state === "absent") return null;
 
-  let description = "Checking Zavod configuration…";
-  if (query.error) {
-    description = "Could not check Zavod status. Refresh to try again.";
-  } else if (status?.state === "on") {
-    description = "Claude and Codex already use Zavod.";
-  } else if (status?.state === "off") {
-    description = connected
-      ? "Claude and Codex go through Zavod instances."
-      : "Connect Claude and Codex through Zavod.";
-  } else if (status) {
-    description =
-      status.reason ?? "Check the Claude and Codex configuration before connecting Zavod.";
-  }
+  const description = query.error
+    ? "Could not check Zavod status. Refresh to try again."
+    : status
+      ? zavodStatusDescription(status, connected)
+      : "Checking Zavod configuration…";
 
   return (
     <SettingsSection title="Zavod">

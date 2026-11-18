@@ -160,6 +160,7 @@ export function ZavodActions({
   environmentId,
   connected,
   disabled,
+  size = "sm",
   onConnected,
   onSettled,
 }: {
@@ -167,6 +168,8 @@ export function ZavodActions({
   /** Both Zavod instances exist, so there is something to copy into. */
   readonly connected: boolean;
   readonly disabled: boolean;
+  /** Button size; the welcome list uses the smaller one like its other rows. */
+  readonly size?: "xs" | "sm";
   /** Runs after a connect that succeeded. */
   readonly onConnected?: () => void;
   /** Runs after every connect attempt, successful or not. */
@@ -247,7 +250,7 @@ export function ZavodActions({
       {canConnect ? (
         <Button
           type="button"
-          size="sm"
+          size={size}
           variant="outline"
           disabled={connecting || disabled}
           aria-busy={connecting}
@@ -259,7 +262,7 @@ export function ZavodActions({
       {canCopy && connected ? (
         <Button
           type="button"
-          size="sm"
+          size={size}
           variant="outline"
           disabled={connecting || checking || applying || disabled}
           aria-busy={checking}
