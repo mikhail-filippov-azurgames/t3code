@@ -609,7 +609,9 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
     }
     if (info.type === "SymbolicLink") {
       const link = yield* fs.readLink(file);
-      return yield* resolveWriteTarget(path.resolve(path.dirname(file), link), hops + 1);
+      // The OS resolves a relative link from the real folder that holds it, not from this spelling.
+      const parent = yield* resolveWriteTarget(path.dirname(file), hops + 1);
+      return yield* resolveWriteTarget(path.resolve(parent, link), hops + 1);
     }
     return yield* fs.realPath(file);
   });
@@ -666,8 +668,10 @@ const applyPlan = Effect.fn("ZavodPersonalCopy.apply")(function* (plan: Personal
         }
 
         for (const write of family.writes) {
-          yield* guard(yield* resolveWriteTarget(write.target));
-          yield* writeFileStringAtomically({ filePath: write.target, contents: write.contents });
+          // Writing to the checked path itself keeps the check and the write on the same file.
+          const resolved = yield* resolveWriteTarget(write.target);
+          yield* guard(resolved);
+          yield* writeFileStringAtomically({ filePath: resolved, contents: write.contents });
         }
       }),
     );

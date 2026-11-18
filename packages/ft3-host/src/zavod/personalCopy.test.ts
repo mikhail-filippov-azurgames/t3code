@@ -836,6 +836,33 @@ describe("personal copy on disk", () => {
     }).pipe(Effect.scoped, Effect.provide(fsLayer)),
   );
 
+  it.effect("resolves a relative link from the real folder of the link", () =>
+    Effect.gen(function* () {
+      const f = yield* copyFixture();
+      const home = f.homes.claudeTarget;
+      const outside = f.path.join(f.path.dirname(home), "outside", "escaped-settings.json");
+      yield* f.fs.makeDirectory(f.path.join(home, "sub"));
+      yield* junction(home, f.path.join(home, "sub", "alias"));
+      yield* f.fs.remove(f.path.join(home, "settings.json"));
+      const linked = yield* Effect.promise(async () => {
+        await NodeFSP.symlink(
+          "../outside/escaped-settings.json",
+          f.path.join(home, "link.json"),
+          "file",
+        );
+        await NodeFSP.symlink("sub/alias/link.json", f.path.join(home, "settings.json"), "file");
+      }).pipe(
+        Effect.as(true),
+        // Windows without the symlink privilege cannot build this fixture.
+        Effect.catchCause(() => Effect.succeed(false)),
+      );
+      if (!linked) return;
+      const error = yield* f.run(false).pipe(Effect.flip);
+      assert.strictEqual(error.stage, "copy");
+      assert.isFalse(yield* f.fs.exists(outside));
+    }).pipe(Effect.scoped, Effect.provide(fsLayer)),
+  );
+
   it.effect("follows a chain of links to its end before writing a config", () =>
     Effect.gen(function* () {
       const f = yield* copyFixture();
