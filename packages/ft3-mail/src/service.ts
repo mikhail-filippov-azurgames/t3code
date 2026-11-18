@@ -1307,13 +1307,18 @@ const make = Effect.gen(function* () {
               participantThreadId:
                 (target.memberId !== null ? launchedThreads.get(target.memberId) : undefined) ??
                 target.participantThreadId,
+              initialState:
+                target.memberId !== null && launchedThreads.has(target.memberId)
+                  ? "delivered"
+                  : "pending",
               createdAt: now,
             })
             .pipe(
               Effect.flatMap((recorded) => {
-                const launched =
-                  target.memberId !== null ? launchedThreads.get(target.memberId) : undefined;
+                const memberId = target.memberId;
+                const launched = memberId !== null ? launchedThreads.get(memberId) : undefined;
                 if (
+                  memberId === null ||
                   launched === undefined ||
                   recorded.participantThreadId !== null ||
                   recorded.state !== "pending"
@@ -1321,29 +1326,35 @@ const make = Effect.gen(function* () {
                   return Effect.succeed(recorded);
                 }
                 // A resend after the policy was fixed launches the member, but the
-                // delivery row already exists without a thread: bind it instead of
-                // dropping the launch, so the wake below reaches the thread.
+                // delivery row already exists without a thread: bind it and mark it
+                // delivered in one conditional update, atomically with the member's
+                // thread assignment, so a drain never sees it pending with a thread.
                 return repository
-                  .bindDeliveryThread({
-                    deliveryId: recorded.deliveryId,
-                    participantThreadId: launched,
-                    at: now,
-                  })
+                  .transaction(
+                    Effect.gen(function* () {
+                      yield* repository.setParticipantThread({
+                        memberId,
+                        participantThreadId: launched,
+                        at: now,
+                      });
+                      return yield* repository.bindDeliveryThread({
+                        deliveryId: recorded.deliveryId,
+                        participantThreadId: launched,
+                        at: now,
+                        deliveredAt: now,
+                      });
+                    }),
+                  )
                   .pipe(Effect.map((bound) => bound ?? recorded));
               }),
             ),
         ),
       ),
     );
-    // A member launched by this letter already received it in its first prompt, so its delivery is
-    // delivered and gets no wake; only a pending delivery with a thread is woken.
-    const deliveries = yield* Effect.forEach(recordedDeliveries, (delivery) =>
-      launched.some((member) => member.memberId === delivery.memberId)
-        ? repository
-            .markDeliveryDelivered({ deliveryId: delivery.deliveryId, at: now })
-            .pipe(Effect.map((marked) => marked ?? delivery))
-        : Effect.succeed(delivery),
-    );
+    // A member launched by this letter already received it in its first prompt,
+    // so its delivery is born delivered; only a pending delivery with a thread
+    // gets a wake.
+    const deliveries = recordedDeliveries;
     // An agent thread gets a durable wake; the reactor drains it and marks the delivery.
     yield* Effect.forEach(
       deliveries.filter(

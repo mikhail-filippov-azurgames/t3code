@@ -123,6 +123,7 @@ it.effect("round-trips a task, members, letters and delivery state", () =>
       recipient: "role:implementation",
       participantThreadId: "thread:worker",
       createdAt: "2026-01-01T00:00:04.000Z",
+      initialState: "pending",
     });
     assert.equal(delivery.state, "pending");
     assert.equal(delivery.participantThreadId, "thread:worker");
@@ -212,6 +213,7 @@ it.effect("keeps a read delivery read and lists only deliveries a thread can rec
       recipient: "member:one",
       participantThreadId: null,
       createdAt: "2026-01-01T00:00:04.000Z",
+      initialState: "pending",
     });
     yield* repository.recordDelivery({
       deliveryId: "delivery:two",
@@ -221,6 +223,7 @@ it.effect("keeps a read delivery read and lists only deliveries a thread can rec
       recipient: "member:two",
       participantThreadId: null,
       createdAt: "2026-01-01T00:00:05.000Z",
+      initialState: "pending",
     });
     const pendingBefore = yield* repository.listUndeliveredDeliveries({ limit: 10 });
     assert.deepStrictEqual(
@@ -443,6 +446,7 @@ it.effect("purges only closed tasks older than the retention cutoff", () =>
       recipient: "role:implementation",
       participantThreadId: "thread:worker",
       createdAt: "2026-01-01T00:00:04.000Z",
+      initialState: "pending",
     });
     yield* repository.createRound({
       roundId: "round:one",
@@ -537,6 +541,7 @@ it.effect("fails listed pending deliveries without touching delivered ones", () 
       recipient: "role:implementation",
       participantThreadId: "thread:worker",
       createdAt: "2026-01-01T00:00:04.000Z",
+      initialState: "pending",
     });
     yield* repository.recordDelivery({
       deliveryId: "delivery:settled",
@@ -546,6 +551,7 @@ it.effect("fails listed pending deliveries without touching delivered ones", () 
       recipient: "role:implementation",
       participantThreadId: "thread:worker",
       createdAt: "2026-01-01T00:00:05.000Z",
+      initialState: "pending",
     });
     yield* repository.markDeliveryDelivered({
       deliveryId: "delivery:settled",
@@ -603,6 +609,7 @@ it.effect("lists only wakes for open tasks with an active member", () =>
       recipient: "role:implementation",
       participantThreadId: "thread:worker",
       createdAt: "2026-01-01T00:00:04.000Z",
+      initialState: "pending",
     });
     yield* repository.recordWake({
       wakeId: "mail:wake:delivery:one",

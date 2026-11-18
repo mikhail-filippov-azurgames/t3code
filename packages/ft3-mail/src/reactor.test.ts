@@ -155,17 +155,18 @@ function fixture(
   const routing = routingFake({});
   const evidence = policyEvidenceFake();
   const launcher = launcherFake();
-  // The lookup fault is injected at the service boundary: the wrapper builds
-  // the real repository and replaces exactly one method.
-  const repositoryLayer = failParticipantLookup
-    ? Layer.unwrap(
-        Effect.map(
-          Effect.provide(
-            Effect.service(MailRepository),
-            mailRepositoryLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
-          ),
-          (real) =>
-            Layer.succeed(MailRepository, {
+  // Faults are injected at the service boundary: the wrapper builds the real
+  // repository and replaces exactly the methods a test drives.
+  let recoverAfterDelivery: (() => Effect.Effect<void, never, never>) | null = null;
+  const repositoryLayer = Layer.unwrap(
+    Effect.map(
+      Effect.provide(
+        Effect.service(MailRepository),
+        mailRepositoryLayer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)),
+      ),
+      (real) => {
+        const withFaults = failParticipantLookup
+          ? {
               ...real,
               findParticipantByThread: () =>
                 Effect.fail(
@@ -174,10 +175,20 @@ function fixture(
                     cause: new Error("forced lookup failure"),
                   }),
                 ),
-            }),
-        ),
-      )
-    : mailRepositoryLayer;
+            }
+          : real;
+        return Layer.succeed(MailRepository, {
+          ...withFaults,
+          recordDelivery: (input) =>
+            withFaults.recordDelivery(input).pipe(
+              Effect.tap(() =>
+                recoverAfterDelivery === null ? Effect.void : recoverAfterDelivery(),
+              ),
+            ),
+        });
+      },
+    ),
+  );
   const managedThreads = Layer.unwrap(
     Effect.gen(function* () {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -266,6 +277,9 @@ function fixture(
     launcher,
     setProjectFeature: (projectId: string, feature: FeatureId, value: boolean) => {
       projectOverrides[projectId] = { ...projectOverrides[projectId], [feature]: value };
+    },
+    setRecoverAfterDelivery: (run: (() => Effect.Effect<void, never, never>) | null) => {
+      recoverAfterDelivery = run;
     },
   };
 }
@@ -732,6 +746,37 @@ it.effect("marks a launched member's delivery delivered without a wake", () => {
     assert.equal((yield* repository.listUndeliveredWakes({ limit: 10 })).length, 0);
     yield* (yield* MailDeliveryReactor).recover;
     assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.dispatched.length, 0);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("keeps a launched member's delivery single when a drain runs mid-send", () => {
+  const harness = fixture();
+  return Effect.gen(function* () {
+    yield* harness.seed;
+    const created = yield* harness.team;
+    const mail = yield* MailService;
+    const reactor = yield* MailDeliveryReactor;
+    // A drain between recording the delivery and closing the send used to see
+    // the pending row already bound to the launched thread and dispatch a
+    // second copy of the letter.
+    harness.setRecoverAfterDelivery(() => reactor.recover.pipe(Effect.ignore));
+    const sent = yield* mail.sendLetter({
+      callerThreadId: ThreadId.make("mail-reactor:lead"),
+      taskId: created.task.taskId,
+      to: "role:implementation",
+      kind: "request",
+      body: "Start.",
+      clientRequestId: "request:letter",
+    });
+    harness.setRecoverAfterDelivery(null);
+
+    assert.equal(harness.launcher.launches.length, 1);
+    assert.equal(harness.dispatched.length, 0);
+    const repository = yield* MailRepository;
+    const delivery = yield* repository.getDelivery(sent.deliveries[0]!.deliveryId);
+    assert.equal(delivery?.state, "delivered");
+    yield* reactor.recover;
     assert.equal(harness.dispatched.length, 0);
   }).pipe(Effect.provide(harness.layer));
 });
