@@ -312,7 +312,12 @@ describe("Zavod settings", () => {
       const dialog = page.getByRole("alertdialog");
       await expect.element(dialog).toBeVisible();
       await expect.poll(textOf(dialog)).toContain("Claude · skills/alpha");
-      await expect.poll(textOf(dialog)).toContain("Will be replaced (1)");
+      await expect.poll(textOf(dialog)).toContain("Will be overwritten (1)");
+      await expect
+        .poll(textOf(dialog))
+        .toContain(
+          "Files with the same name are overwritten; nothing in the Zavod instance is deleted.",
+        );
       await expect.poll(textOf(dialog)).toContain("Codex · config.toml");
       await expect
         .poll(textOf(dialog))
