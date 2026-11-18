@@ -129,13 +129,18 @@ jobs:
         run: vp test run src/orchestrationV2.test.ts src/clientRpcPermissions.test.ts
 
       # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
+      - name: Test changed shared files
+        working-directory: packages/shared
+        run: vp test run src/otelEnvironment.test.ts
+
+      # Positional files need `vp test run` inside the package; `vp run ... test --` drops them.
       - name: Test changed server files
         working-directory: apps/server
-        run: vp test run src/ws.test.ts src/persistence/Sqlite.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts src/textGeneration/ClaudeTextGeneration.test.ts src/provider/ClaudeCapabilitiesProbe.test.ts src/cli/config.test.ts src/provider/AgentContextBudget.test.ts src/mcp/McpToolAccess.test.ts src/auth/RpcAuthorization.test.ts src/usage/usagePricing.test.ts src/mcp/OrchestratorMcpService.delegationRoles.test.ts src/serverSettings.test.ts
+        run: vp test run src/ws.test.ts src/persistence/Sqlite.test.ts src/persistence/ft3Migrations.test.ts src/textGeneration/CodexTextGeneration.test.ts src/textGeneration/ClaudeTextGeneration.test.ts src/provider/ClaudeCapabilitiesProbe.test.ts src/cli/config.test.ts src/provider/AgentContextBudget.test.ts src/mcp/McpToolAccess.test.ts src/auth/RpcAuthorization.test.ts src/usage/usagePricing.test.ts src/mcp/OrchestratorMcpService.delegationRoles.test.ts src/serverSettings.test.ts src/telemetry/AnalyticsService.test.ts src/cloud/publicConfig.test.ts
 
       - name: Test changed desktop files
         working-directory: apps/desktop
-        run: vp test run src/app/DesktopAppIdentity.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts src/backend/DesktopExternalBackend.test.ts src/backend/DesktopBackendPool.test.ts
+        run: vp test run src/app/DesktopAppIdentity.test.ts src/app/DesktopEnvironment.test.ts src/app/DesktopUserData.test.ts src/electron/ElectronProtocol.test.ts src/backend/DesktopExternalBackend.test.ts src/backend/DesktopBackendPool.test.ts src/ipc/methods/window.test.ts
 
       - name: Test provider-muse
         run: vp run --filter @t3tools/provider-muse test
