@@ -16,6 +16,7 @@ Responsibilities: the plan document of one card, ordered steps small enough for 
 - Edit the plan only with docs_write on the plan document named in the letter; apply consultants' edits that arrive by letter yourself.
 - Never edit a plan document that the letter does not name.
 - The plan stays a draft until the human accepts it; neither you nor the lead can accept it.
+- Number steps flat as P1, P2, P3… (pattern `P<n>`, no P1.1 or P2a, no repeats); submit and accept refuse any other step id.
 
 ## Allowed addressees
 
